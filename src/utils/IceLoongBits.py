@@ -5,6 +5,7 @@ from typing import Optional, List, Tuple
 from enum import IntEnum
 import struct
 import time
+import threading
 
 class Commands(IntEnum):
     HAND_SHAKE        = 0x01
@@ -61,6 +62,10 @@ class IceLoongBits:
             # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
 
+        self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
+        self.SendUnitedCommandThread.daemon = True
+        self.SendUnitedCommandThread.start()
+
     def SendUnitedCommand(self):
         while (1):
             _CommandList = []
@@ -81,6 +86,7 @@ class IceLoongBits:
                     case 'KICK':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
+                            self.CommandLine['KICK'] = False
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
@@ -247,7 +253,7 @@ class IceLoongBits:
         """设置虚拟端口状态"""
         match port:
             case 3:
-                if status:
+                if not status:
                     self.CommandLine['KICK'] = True
                 else:
                     self.CommandLine['KICK'] = False

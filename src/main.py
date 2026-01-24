@@ -1,13 +1,13 @@
-from LunaPre import *
-from BasicFuc import *
+# from LunaPre import *
+# from BasicFuc import *
 
-lock = LockSeries()
+# lock = LockSeries()
 
 try:
-    Peripherals().ShootBall()    
-
+    pass
 except Exception as e:
     raise e
 finally:
-    chassis.stop()
-    lidar.stop()
+    pass
+    # chassis.stop()
+    # lidar.stop()
