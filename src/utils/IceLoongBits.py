@@ -64,9 +64,9 @@ class IceLoongBits:
             # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
 
-        self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
-        self.SendUnitedCommandThread.daemon = True
-        self.SendUnitedCommandThread.start()
+        # self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
+        # self.SendUnitedCommandThread.daemon = True
+        # self.SendUnitedCommandThread.start()
 
     def SendUnitedCommand(self):
         while (1):
