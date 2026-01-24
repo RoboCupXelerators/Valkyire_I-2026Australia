@@ -41,6 +41,8 @@ class IceLoongBits:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+
+        self.yaw = 0.0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -182,3 +184,12 @@ class IceLoongBits:
                         continue
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
         return rx_data
+
+    def Get_Yaw(self) -> float:
+        """获取当前偏航角（度）。"""
+        yaw = self.ExecuteCommands([
+            (Commands.HAND_SHAKE,),
+            (Commands.GET_BMI088_DATA,),
+        ])
+        print("响应:", yaw)
+        return yaw
