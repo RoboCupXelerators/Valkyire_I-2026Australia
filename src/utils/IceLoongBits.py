@@ -11,6 +11,7 @@ class Commands(IntEnum):
     SET_WHEELS_SPEED  = 0x03
     KICK              = 0x04
     SET_DRIBBLE_SPEED = 0x05
+    SET_RYB_LIGHTS    = 0x06
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:        1 + 1, 
@@ -18,6 +19,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.SET_WHEELS_SPEED:  1, 
     Commands.KICK:              1, 
     Commands.SET_DRIBBLE_SPEED: 1, 
+    Commands.SET_RYB_LIGHTS:    1, 
 }
 
 try:
@@ -150,7 +152,9 @@ class IceLoongBits:
                 case Commands.KICK:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_DRIBBLE_SPEED:
-                    tx_bytes += bytes([cmd[0]]) + struct.pack('<B', cmd[1])
+                    tx_bytes += bytes([cmd[0]]) + bytes([cmd[1]])
+                case Commands.SET_RYB_LIGHTS:
+                    tx_bytes += bytes([cmd[0]]) + bytes([((cmd[0] & 1) << 0) | ((cmd[1] & 1) << 1) | ((cmd[2] & 1) << 2)])
                 case _:
                     continue
             resp_len += COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
@@ -179,7 +183,9 @@ class IceLoongBits:
                     case Commands.KICK:
                         rx_data.append((resp[i],))
                     case Commands.SET_DRIBBLE_SPEED:
-                        rx_data.append((resp[i], ))
+                        rx_data.append((resp[i],))
+                    case Commands.SET_RYB_LIGHTS:
+                        rx_data.append((resp[i],))
                     case _:
                         continue
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
