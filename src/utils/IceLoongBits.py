@@ -10,12 +10,14 @@ class Commands(IntEnum):
     GET_BMI088_DATA   = 0x02
     SET_WHEELS_SPEED  = 0x03
     KICK              = 0x04
+    SET_DRIBBLE_SPEED = 0x05
 
 COMMAND_RESPONSE_LENGTHS = {
-    Commands.HAND_SHAKE:       1 + 1, 
-    Commands.GET_BMI088_DATA:  1 + 3 * 4 + 4, 
-    Commands.SET_WHEELS_SPEED: 1, 
-    Commands.KICK:             1,
+    Commands.HAND_SHAKE:        1 + 1, 
+    Commands.GET_BMI088_DATA:   1 + 3 * 4 + 4, 
+    Commands.SET_WHEELS_SPEED:  1, 
+    Commands.KICK:              1, 
+    Commands.SET_DRIBBLE_SPEED: 1, 
 }
 
 try:
@@ -145,6 +147,8 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
                     tx_bytes += bytes([cmd[0]])
+                case Commands.SET_DRIBBLE_SPEED:
+                    tx_bytes += bytes([cmd[0]]) + struct.pack('<B', cmd[1])
                 case _:
                     continue
             resp_len += COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
@@ -172,6 +176,8 @@ class IceLoongBits:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
                         rx_data.append((resp[i],))
+                    case Commands.SET_DRIBBLE_SPEED:
+                        rx_data.append((resp[i], ))
                     case _:
                         continue
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
