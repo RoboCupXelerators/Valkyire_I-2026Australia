@@ -4,7 +4,7 @@ pyserial
 ujson
 uvicorn
 gradio==6.4.0
-numpy
+numpy==1.26.4
 simple_pid
 scipy==1.17.0
 ./hailort-4.23.0-cp312-cp312-linux_aarch64.whl

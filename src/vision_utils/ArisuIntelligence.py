@@ -119,7 +119,7 @@ class ArisuIntelligence(VisionPreUntil):
             self.InferTF = self.InferTF + 1
             # 确保在传递给 BindingsList 之前执行此操作
             try:
-                self.ConfiguredInferModel.run(BindingsList, 1000)
+                self.ConfiguredInferModel.run(BindingsList, 2000)
             except Exception as e:
                 self.logger.error(f"Hailo Inference Error: {e}, automatically restarting inference thread.")
                 self.ModelInfer()
