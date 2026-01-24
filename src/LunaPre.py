@@ -35,7 +35,7 @@ elif cfg.RoboInfo.Bit == "IL":
     from utils.IceLoongBits import IceLoongBits
     Bits = IceLoongBits(port=Settings.Ports.IceLoongPort)
     lidar = Lidar(Bits.GetYaw)
-    peripheral = Peripherals(Bits.SetIO) #TODO
+    peripheral = Peripherals(Bits.VirtualPorts) #TODO
     chassis = Car(Bits.SetWheelSpeed,Bits.GetYaw)
     compass = Bits.GetYaw
     # key = Key(Bits.GetKey)

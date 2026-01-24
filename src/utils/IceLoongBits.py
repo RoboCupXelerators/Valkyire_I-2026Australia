@@ -4,6 +4,8 @@ import logging
 from typing import Optional, List, Tuple
 from enum import IntEnum
 import struct
+import time
+import threading
 
 class Commands(IntEnum):
     HAND_SHAKE        = 0x01
@@ -46,6 +48,14 @@ class IceLoongBits:
         self.baudrate = baudrate
         self.timeout = timeout
 
+        self.CommandLine = {
+            'HAND_SHAKE': True,
+            'GET_BMI088_DATA': True,
+            'SET_WHEELS_SPEED': (0,0,0,0),
+            'SET_DRIBBLE_SPEED': 0,
+            'KICK': 0,
+        }
+
         self.yaw = 0.0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
@@ -53,6 +63,50 @@ class IceLoongBits:
         if not self.logger.handlers:
             # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
+
+        self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
+        self.SendUnitedCommandThread.daemon = True
+        self.SendUnitedCommandThread.start()
+
+    def SendUnitedCommand(self):
+        while (1):
+            _CommandList = []
+            for i in self.CommandLine:
+                match i:
+                    case 'HAND_SHAKE':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.HAND_SHAKE,))
+                    case 'GET_BMI088_DATA':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.GET_BMI088_DATA,))
+                    case 'SET_WHEELS_SPEED':
+                        Speed1,Speed2,Speed3,Speed4 = self.CommandLine[i]
+                        self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1,Speed2,Speed3,Speed4)])
+                    case 'SET_DRIBBLE_SPEED':
+                        Speed = self.CommandLine[i]
+                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed)])
+                    case 'KICK':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.KICK,))
+                            self.CommandLine['KICK'] = False
+            response = self.ExecuteCommands(_CommandList)
+            for i in response:
+                match i[0] ^ 0x80:
+                    case 0x00:
+                        i+=1
+                        continue
+                    case Commands.HAND_SHAKE:
+                        pass
+                    case Commands.GET_BMI088_DATA:
+                        _, pitch, roll, yaw, timestamp = i
+                        self.yaw = yaw
+                    case Commands.SET_WHEELS_SPEED:
+                        pass
+                    case Commands.KICK:
+                        pass
+                    case Commands.SET_DRIBBLE_SPEED:
+                        pass
+            time.sleep(0.02)
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -197,11 +251,26 @@ class IceLoongBits:
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
         return rx_data
 
-    def Get_Yaw(self) -> float:
+    def GetYaw(self) -> float:
         """获取当前偏航角（度）。"""
-        yaw = self.ExecuteCommands([
-            (Commands.HAND_SHAKE,),
-            (Commands.GET_BMI088_DATA,),
-        ])
-        print("响应:", yaw)
-        return yaw
+        return self.yaw
+    
+    def VirtualPorts(self,port,status):
+        """设置虚拟端口状态"""
+        match port:
+            case 3:
+                if not status:
+                    self.CommandLine['KICK'] = True
+                else:
+                    self.CommandLine['KICK'] = False
+            case 4:
+                self.CommandLine['SET_DRIBBLE_SPEED'] = status
+
+    def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
+        """设置轮子速度"""
+        self.CommandLine['SET_WHEELS_SPEED'] = (Speed1,Speed2,Speed3,Speed4)
+
+    def GetKey(self):
+        """获取按键状态"""
+        # TODO
+        return 0
