@@ -210,7 +210,7 @@ class IceLoongBits:
                 case Commands.SET_DRIBBLE_SPEED:
                     tx_bytes += bytes([cmd[0]]) + bytes([cmd[1]])
                 case Commands.SET_RYB_LIGHTS:
-                    tx_bytes += bytes([cmd[0]]) + bytes([((cmd[0] & 1) << 0) | ((cmd[1] & 1) << 1) | ((cmd[2] & 1) << 2)])
+                    tx_bytes += bytes([cmd[0]]) + bytes([((cmd[1] & 1) << 0) | ((cmd[2] & 1) << 1) | ((cmd[3] & 1) << 2)])
                 case Commands.GET_RUN_KEY_DELTA:
                     tx_bytes += bytes([cmd[0]])
                 case _:

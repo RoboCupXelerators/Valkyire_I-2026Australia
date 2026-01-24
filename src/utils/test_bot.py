@@ -41,10 +41,13 @@ def main():
         # 测试4：混合复合命令
         print("\n=== 测试4: 混合复合命令 ===")
         resp4 = bot.ExecuteCommands([
-            (Commands.HAND_SHAKE,),
-            (Commands.SET_WHEELS_SPEED, 100, 100, -100, -100),
-            (Commands.GET_BMI088_DATA,),
-            (Commands.KICK,)
+            (Commands.HAND_SHAKE,), 
+            (Commands.SET_WHEELS_SPEED, 100, 100, -100, -100), 
+            (Commands.GET_BMI088_DATA,), 
+            (Commands.KICK,), 
+            (Commands.SET_DRIBBLE_SPEED, 2), 
+            (Commands.SET_RYB_LIGHTS, 1, 1, 1), 
+            (Commands.GET_RUN_KEY_DELTA,)
         ])
         print("响应:", resp4)
 
