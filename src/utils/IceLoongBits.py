@@ -12,6 +12,7 @@ class Commands(IntEnum):
     KICK              = 0x04
     SET_DRIBBLE_SPEED = 0x05
     SET_RYB_LIGHTS    = 0x06
+    GET_RUN_KEY_DELTA = 0x07
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:        1 + 1, 
@@ -20,6 +21,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.KICK:              1, 
     Commands.SET_DRIBBLE_SPEED: 1, 
     Commands.SET_RYB_LIGHTS:    1, 
+    Commands.GET_RUN_KEY_DELTA: 1 + 1, 
 }
 
 try:
@@ -155,6 +157,8 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]]) + bytes([cmd[1]])
                 case Commands.SET_RYB_LIGHTS:
                     tx_bytes += bytes([cmd[0]]) + bytes([((cmd[0] & 1) << 0) | ((cmd[1] & 1) << 1) | ((cmd[2] & 1) << 2)])
+                case Commands.GET_RUN_KEY_DELTA:
+                    tx_bytes += bytes([cmd[0]])
                 case _:
                     continue
             resp_len += COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
@@ -186,6 +190,8 @@ class IceLoongBits:
                         rx_data.append((resp[i],))
                     case Commands.SET_RYB_LIGHTS:
                         rx_data.append((resp[i],))
+                    case Commands.GET_RUN_KEY_DELTA:
+                        rx_data.append((resp[i], resp[i+1]))
                     case _:
                         continue
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
