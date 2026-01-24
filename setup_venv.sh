@@ -43,7 +43,7 @@ sudo apt-get update
 sudo apt-get install libgl1 libglx-mesa0
 
 # === 6. 重建虚拟环境 ===
-PROJECT_DIR="$HOME/Xelerator-Soccer-OpenSource"
+PROJECT_DIR="$HOME/Software/"
 VENV_DIR="$PROJECT_DIR/venv"
 
 if [ -d "$VENV_DIR" ]; then
@@ -147,7 +147,7 @@ echo "Python path: $(which python)"
 echo "Virtual environment: $VIRTUAL_ENV"
 echo ""
 echo "💡 请重新打开终端，或运行：source ~/.bashrc"
-echo "然后进入项目目录：cd ~/Xelerator-Soccer-OpenSource && source venv/bin/activate"
+echo "然后进入项目目录：cd ~/Software && source venv/bin/activate"
 
 echo "🔧 安装hailo8环境..."
 wget http://fishros.com/install -O fishros && . fishros

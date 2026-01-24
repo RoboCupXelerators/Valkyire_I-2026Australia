@@ -3,7 +3,7 @@ opencv-python
 pyserial
 ujson
 uvicorn
-gradio
+gradio==6.4.0
 numpy
 simple_pid
 scipy
