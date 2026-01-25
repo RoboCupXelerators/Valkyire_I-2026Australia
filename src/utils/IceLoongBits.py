@@ -92,9 +92,6 @@ class IceLoongBits:
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
-                    case 0x00:
-                        i+=1
-                        continue
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
