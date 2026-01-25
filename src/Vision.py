@@ -174,7 +174,7 @@ class UnitedVision(Detect_Method):
                         BY = X
                     elif CameraIndex == 2:
                         BX = X
-                        BY = Y
+                        BY = -Y
                     elif CameraIndex == 3:
                         BX = -Y
                         BY = -X

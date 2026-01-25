@@ -305,30 +305,14 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        ballX,ballY = vision.GetBallPos()
-        if [ballX,ballY] == [0,0]:
+        ballX,ballY = self.Relative_Ball_Position()
+        if [ballX,ballY] == [0xfff,0xfff]:
             return [0xfff,0xfff]
-        if [ballX,ballY] == cfg.ExpectedVals.CatchVal:
+        if [ballX,ballY] == [0xddd,0xddd]:
             return [0xddd,0xddd]
         else:
             SelfX,SelfY,SelfZ = self.AbsRoboPosition()
-            ballDistance = math.sqrt(ballX**2 + ballY**2)
-            if ballY == 0:
-                ballRltAngle = 0
-            try:
-                ballRltAngle =  -int(math.degrees(math.atan2(ballY,ballX)) - 90)
-            except ZeroDivisionError:
-                ballRltAngle =  0
-            ballAbsAngle = (ballRltAngle + SelfZ)%360
-            if ballAbsAngle > 180:
-                k = -1
-            else:
-                k = 1
-            AbsBallPositon = [
-                ballDistance * math.cos(math.radians(ballAbsAngle)) + SelfX,
-                ballDistance * math.sin(math.radians(ballAbsAngle)) + SelfY
-                ]
-            # 20251017 already changed X,Y dimension
+            AbsBallPositon = [SelfX + ballX, SelfY + ballY]
             return AbsBallPositon
 
     def RelChassisAngle(self):

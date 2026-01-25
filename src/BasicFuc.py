@@ -96,7 +96,7 @@ class LockSeries:
             #     Kp = 10
             #     KpZ = 2
             self.D_time += 1
-            Kp = 3 + iBX/100 + iBY/100 + (iBX+iBY)*self.D_time/10
+            Kp = 3
             KpZ = Fangle*self.D_time/500
             logger.success(Kp)
             logger.warning(KpZ)
