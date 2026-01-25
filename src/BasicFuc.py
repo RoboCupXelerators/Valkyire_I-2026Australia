@@ -83,33 +83,33 @@ class LockSeries:
             Compass = compass()
             Angle = ((math.degrees(math.atan2(iBY, iBX))) % 360)
             Fangle = Angle + Compass
-            # if iBX > 75 or iBY > 75:
-            #     logger.success('Method 1')
-            #     Kp = 15
-            #     KpZ = 0.9
-            # elif 25 < iBX <= 75 or 25 < iBY <= 75:
-            #     logger.success('Method 2')
-            #     Kp = 12
-            #     KpZ = 0.5
-            # else:
-                # logger.success('Method 3')
-            #     Kp = 10
-            #     KpZ = 2
-            self.D_time += 1
-            Kp = 3
-            KpZ = Fangle*self.D_time/500
+            if iBX > 75 or iBY > 75:
+                logger.success('Method 1')
+                Kp = 15
+                KpZ = 0.9
+            elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                logger.success('Method 2')
+                Kp = 12
+                KpZ = 0.5
+            else:
+                logger.success('Method 3')
+                Kp = 10
+                KpZ = 2
+            # self.D_time += 1
+            # Kp = 3
+            # KpZ = Fangle*self.D_time/500
             logger.success(Kp)
             logger.warning(KpZ)
             SpeedX = iBX * Kp
             SpeedY = iBY * Kp
-            # if SpeedX > 300:
-            #     SpeedX = 300
-            # if SpeedY > 300:
-            #     SpeedY = 300
-            # if SpeedX < -300:
-            #     SpeedX = -300
-            # if SpeedY < -300:
-            #     SpeedY = -300
+            if SpeedX > 300:
+                SpeedX = 300
+            if SpeedY > 300:
+                SpeedY = 300
+            if SpeedX < -300:
+                SpeedX = -300
+            if SpeedY < -300:
+                SpeedY = -300
             chassis.AbsMoveVetor(SpeedX,SpeedY,Fangle,KpZ) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
 lockball = LockSeries()
