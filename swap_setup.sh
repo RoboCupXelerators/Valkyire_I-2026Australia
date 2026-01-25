@@ -71,3 +71,8 @@ echo "✅ 8GB 交换文件已成功创建并启用！"
 echo "📊 当前 swap 状态："
 swapon --show
 free -h
+
+echo "更改电流设置中..."
+
+echo "usb_max_current_enable=1" >> /boot/firmware/config.txt
+
