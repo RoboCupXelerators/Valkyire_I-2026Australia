@@ -316,9 +316,17 @@ def main():
             (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
             (Commands.GET_BMI088_DATA,), 
             (Commands.KICK,), 
-            (Commands.SET_DRIBBLE_SPEED, 0), 
+            (Commands.SET_DRIBBLE_SPEED, 2), 
             (Commands.SET_RYB_LIGHTS, 1, 1, 1), 
             (Commands.GET_RUN_KEY_DELTA,)
+        ])
+        print("响应:", resp4)
+        time.sleep(2)
+
+        # 测试5：盘球降速
+        print("\n=== 测试5：盘球降速 ===")
+        resp4 = bot.ExecuteCommands([
+            (Commands.SET_DRIBBLE_PWM, 0.5)
         ])
         print("响应:", resp4)
 
