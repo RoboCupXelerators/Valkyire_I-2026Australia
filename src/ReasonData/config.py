@@ -37,7 +37,7 @@ class Preference:
                 },
                 "Ports": {
                     "LidarID": 88,
-                    "IceLoongPort": '/dev/ttyUSB0',
+                    "IceLoongPort": '/dev/iceloong',
                     "LowTigger" : 0, 
                     "ReferPort": 1,
                     "ElecMagnet" : 3,
