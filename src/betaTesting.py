@@ -8,6 +8,9 @@ except Exception as e:
     raise e
 
 finally:
+    chassis.stop()
+    lidar.stop()
+
     if Settings.Debug.Beta == True:
         snap2 = tracemalloc.take_snapshot()
         stats = snap2.compare_to(snap_start, 'lineno')
@@ -26,6 +29,3 @@ finally:
         df = pd.DataFrame(data)
         from ReasonData import DATA_DIR
         df.to_csv(str(DATA_DIR / "tracemalloc.csv"), index=False)
-
-    chassis.stop()
-    lidar.stop()
