@@ -112,6 +112,8 @@ class LockSeries:
             #     SpeedY = -300
             chassis.AbsMoveVetor(SpeedX,SpeedY,Fangle,KpZ) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
+lockball = LockSeries()
+
 def NormalShoot(x=1):
     BX, BY = UnitedPosition.Relative_Ball_Position()
     logger.debug("Current Position: %s" % [BX, BY])
@@ -252,7 +254,7 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
     ### EnemyPos : 敌人坐标
     ### GoalPos : 球门坐标
     '''
-    # peripheral.Dribble(True)
+    peripheral.Dribble(True)
     LocalPos = UnitedPosition.AbsBallPos()
     LocalX,LocalY,_ = LocalPos
     EnemyX,EnemyY = EnemyPos

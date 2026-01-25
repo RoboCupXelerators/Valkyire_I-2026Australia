@@ -99,7 +99,7 @@ class IceLoongBits:
                         pass
                     case Commands.GET_BMI088_DATA:
                         _, pitch, roll, yaw, timestamp = i
-                        self.yaw = yaw
+                        self.yaw = yaw % 360
                     case Commands.SET_WHEELS_SPEED:
                         pass
                     case Commands.KICK:
@@ -268,7 +268,7 @@ class IceLoongBits:
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
-        self.CommandLine['SET_WHEELS_SPEED'] = (Speed1,Speed2,Speed3,Speed4)
+        self.CommandLine['SET_WHEELS_SPEED'] = (Speed1,Speed2,-Speed3,-Speed4)
 
     def GetKey(self):
         """获取按键状态"""
