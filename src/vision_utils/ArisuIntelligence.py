@@ -88,6 +88,7 @@ class ArisuIntelligence(VisionPreUntil):
                 Frame = self.Frames[i]
                 if Frame is not None:
                     Frame = self.Resize(Frame, (640, 640))
+                    # TODO 大块内存偶尔分配
                     Frame = cv2.cvtColor(Frame, cv2.COLOR_BGR2RGB)
                     # cv2.imshow(f"Frame {i}", Frame)
                     # Frame = Frame.astype(np.uint8)
@@ -111,10 +112,11 @@ class ArisuIntelligence(VisionPreUntil):
         while(1):
             FrameCount += 1
             CurrentTime = time.time()
-            if CurrentTime - LastTime >= 1.0:
-                self.logger.debug(f"Hailo Process FPS: {FrameCount}")
-                FrameCount = 0
-                LastTime = CurrentTime
+            if Settings.Debug.FullLog:
+                if CurrentTime - LastTime >= 1.0:
+                    self.logger.debug(f"Hailo Process FPS: {FrameCount}")
+                    FrameCount = 0
+                    LastTime = CurrentTime
             BindingsList = self.YOLOQueue.get()
             self.InferTF = self.InferTF + 1
             # 确保在传递给 BindingsList 之前执行此操作

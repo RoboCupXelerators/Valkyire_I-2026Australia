@@ -1,8 +1,8 @@
 from rplidar import RPLidar, RPLidarException
 import time
 
-PORT = '/dev/ttyUSB0'
-BAUDRATE = 256000 # S1用256000，S2用1000000
+PORT = '/dev/ttyACM0'
+BAUDRATE = 1000000 # S1用256000，S2用1000000
 
 def get_robust_tuple_list():
     lidar = RPLidar(PORT, baudrate=BAUDRATE, timeout=1)

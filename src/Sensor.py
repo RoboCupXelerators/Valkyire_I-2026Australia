@@ -53,6 +53,18 @@ def RoundThresholdJudger(Value, Round, MiddleValue, Offset):
     else:
         return Value >= LowerThreshold or Value <= UpperThreshold
 
+# TODO Beta
+class DirDistance:
+    __slots__ = ('angle', 'distance')  # 避免 dict overhead
+    def __init__(self):
+        self.angle = 0.0
+        self.distance = 0.0
+
+    def set(self, angle, distance):
+        self.angle = angle
+        self.distance = distance
+
+# 初始化一次
 
 
 class ROSLidarParser(Node):
@@ -60,7 +72,14 @@ class ROSLidarParser(Node):
         '''
         解析sllidar_ros2的雷达数据
         '''
-        self.dirDistance = []
+        if Settings.Debug.Beta == True:
+            if Settings.RoboInfo.LidarType == 's1':
+                NumRanges = 360
+            elif Settings.RoboInfo.LidarType == 's2':
+                NumRanges = 3240
+            self.dirDistance = np.zeros((NumRanges, 2), dtype=np.float32)
+        else:
+            self.dirDistance = []
         self.Queue = Queue
         super().__init__('sllidar_node')
 
@@ -71,15 +90,33 @@ class ROSLidarParser(Node):
             durability=QoSDurabilityPolicy.VOLATILE
         )
         
-        self.subscription = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.scanCallback,
-            qos_profile=oQos)
-        
-        
+        if Settings.Debug.Beta == True:
+            self.subscription = self.create_subscription(
+                LaserScan,
+                '/scan',
+                self._scanCallback_beta,
+                qos_profile=oQos)
+        else:
+            self.subscription = self.create_subscription(
+                LaserScan,
+                '/scan',
+                self.scanCallback,
+                qos_profile=oQos)
+
+    # TODO beta
+    def _scanCallback_beta(self, msg):
+        AngleMin = msg.angle_min
+        AngleIncrement = msg.angle_increment
+        Ranges = np.array(msg.ranges, dtype=np.float32)
+
+        angles = (np.degrees(AngleMin + np.arange(len(Ranges))*AngleIncrement) + 180) % 360
+        self.dirDistance[:,0] = angles
+        self.dirDistance[:,1] = Ranges
+
+        self.Queue.put(self.dirDistance)
+
     def scanCallback(self, msg):
-        self.dirDistance = []
+        self.dirDistance.clear()
         ScanTime = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         AngleMin = msg.angle_min
         AngleMax = msg.angle_max
@@ -90,6 +127,7 @@ class ROSLidarParser(Node):
         NumRanges = len(Ranges)
         for i in range(NumRanges):
             Angle = AngleMin + i * AngleIncrement
+            # TODO 高频小对象地狱
             self.dirDistance.append(((math.degrees(Angle)+180) % 360, Ranges[i]))
         self.Queue.put(self.dirDistance)
 
@@ -257,21 +295,23 @@ class Lidar:
                         points.append((X, Y, Element[0]))
                 
                 if points:
+                    c = 0
                     for i in range(0,len(points),step):
+                        c +=1
                         if i + 1 < len(points):
                             Line = (points[i][0], points[i][1], points[i+1][0], points[i+1][1])
                             Theta = GetLineTheta(Line)
                             LidarAVGTheta = (points[i][2] + points[i+1][2]) / 2
                             Distance = GetLineDistance(Line)
                             lines.append((points[i][0], points[i][1], points[i+1][0], points[i+1][1], Distance, Theta, LidarAVGTheta))
-
                     frameCount += 1
                     CurrentTime = time.time()
                     if CurrentTime - lastTime >= 1.0:
-                        # if Settings.Debug.FullLog:
-                        logger.debug(f"FPS: {frameCount}")
-                        frameCount = 0
-                        lastTime = CurrentTime
+                        if Settings.Debug.FullLog:
+                            logger.debug(f"FPS: {frameCount}")
+                            logger.debug(f"Points: {c}")
+                            frameCount = 0
+                            lastTime = CurrentTime
 
                     Compass = self.GetYaw()
                     CompassFull = Compass

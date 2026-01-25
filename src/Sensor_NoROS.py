@@ -2,7 +2,10 @@ from rplidar import RPLidar
 
 from ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV
 from pathlib import Path
-import time, math, queue, threading, os, signal, subprocess
+import time, math, threading, os, signal, subprocess
+
+import numpy as np
+from queue import Queue, Full
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -19,8 +22,10 @@ def GetLineStandardEquation(Line):
 
 def GetLineDistance(Line, Point=(0,0)):
     A, B, C = GetLineStandardEquation(Line)
-    Distance = (A * Point[0] + B * Point[1] + C) / math.sqrt(A**2 + B**2)
-
+    try:
+        Distance = (A * Point[0] + B * Point[1] + C) / math.sqrt(A**2 + B**2)
+    except ZeroDivisionError:
+        Distance = 0
     return Distance
 
 def GetLineTheta(Line):
@@ -51,15 +56,18 @@ def RoundThresholdJudger(Value, Round, MiddleValue, Offset):
 class Lidar:
 
     def __init__(self,GetYaw=None):
-        self.PORT = '/dev/ttyUSB0'
-        self.BAUDRATE = 256000  # S1 尝试 256000, S2 尝试 1000000
-
+        self.PORT = '/dev/ttyACM0'
+        self.BAUDRATE = 1000000  # S1 尝试 256000, S2 尝试 1000000
+        time.sleep(2)
         self.GetYaw = GetYaw
         self.domainID = Settings.Ports.LidarID
 
         self.dirNormalizedDistance = [0,0,0,0]
 
-        self.dirLidarQueue = queue.Queue()
+        self.dirLidarQueue = Queue()
+
+        self.buffer = np.zeros((3240, 2), dtype=np.float32)
+        self.queue = Queue(maxsize=3240)
 
         self.ParseLidarThread = threading.Thread(target=self.ParseLidar)
         self.ParseLidarThread.daemon = True
@@ -72,27 +80,25 @@ class Lidar:
         # 自动启动 sllidar 驱动（强制基于 Settings）
 
     def ParseLidar(self):
-        lidar = RPLidar(self.PORT, baudrate=self.BAUDRATE)
+        self.lidar = RPLidar(self.PORT, baudrate=self.BAUDRATE)
+        # iter_scans 每次迭代返回一整圈的点
         try:
-            # iter_scans 每次迭代返回一整圈的点
-            for scan in lidar.iter_scans():
+            for scan in self.lidar.iter_scans():
                 # scan 的原始格式是 [(quality, angle, distance), ...]
                 # 我们将其转换为你需要的 ((angle, dist), (angle, dist), ...)
                 
-                formatted_data = tuple((round(angle, 2), round(dist, 2)) for _, angle, dist in scan)
+                formatted_data = tuple((round(angle, 2), round(dist/1000, 2)) for _, angle, dist in scan)
                 
                 self.dirLidarQueue.put(formatted_data)
                 # 打印当前这一圈拿到了多少个点
-                print(f"当前圈点数: {len(formatted_data)} | 样例数据: {formatted_data[:2]}")
+                # print(f"当前圈点数: {len(formatted_data)} | 样例数据: {formatted_data[:2]}")
                 
                 # 在这里将 formatted_data 传递给你的算法
                 # process_algorithm(formatted_data)
-                
-        except KeyboardInterrupt:
-            print("停止...")
-        finally:
-            lidar.stop()
-            lidar.disconnect()
+        except Exception as e:
+            logger.error(f"ParseLidar exception: {e}")
+            self.ParseLidar()
+
 
     def LidarNormalize(self):
         step = 2
@@ -109,7 +115,7 @@ class Lidar:
                         X = Element[1] * math.sin(math.radians(Element[0]))
                         Y = Element[1] * math.cos(math.radians(Element[0]))
                         points.append((X, Y, Element[0]))
-                
+                # print(points)
                 if points:
                     for i in range(0,len(points),step):
                         if i + 1 < len(points):
@@ -183,53 +189,12 @@ class Lidar:
     
     def GetFullData(self):
         return self.dirLidarQueue.get()
-
-    def _settings_watcher(self):
-        """Background thread: watch config (via Preference) and restart lidar driver / parser if LidarID or LidarType changes."""
-        while True:
-            # read fresh Preference each loop so that external changes are seen
-            try:
-                desired_domain = int(Preference().read('Ports', 'LidarID'))
-            except Exception:
-                desired_domain = self.domainID
-            try:
-                desired_type = Preference().read('RoboInfo', 'LidarType')
-                desired_launch = 'sllidar_s1_launch.py' if str(desired_type).lower() == 's1' else 'sllidar_s2_launch.py'
-            except Exception:
-                desired_launch = self.current_launch
-
-            if (self.current_domain != desired_domain) or (self.current_launch != desired_launch):
-                logger.info(f"Lidar settings changed: domain {self.current_domain}->{desired_domain}, launch {self.current_launch}->{desired_launch}")
-                # restart lidar driver to apply new settings
-                try:
-                    self.stop()
-                except Exception:
-                    pass
-                try:
-                    p = self.start_sllidar_driver(enforce_settings=True)
-                    if p is None:
-                        logger.warning("Failed to restart sllidar driver after settings change")
-                except Exception as e:
-                    logger.error(f"Error restarting sllidar driver: {e}")
-
-                # if domain changed, restart ROS parser as well
-                if self.domainID != desired_domain:
-                    try:
-                        rclpy.shutdown()
-                    except Exception:
-                        pass
-                    self.domainID = desired_domain
-                    try:
-                        self.ParseLidarThread = threading.Thread(target=self.ParseLidar)
-                        self.ParseLidarThread.daemon = True
-                        self.ParseLidarThread.start()
-                    except Exception as e:
-                        logger.error(f"Failed to restart ParseLidarThread: {e}")
-
-            time.sleep(5)
+    
+    def stop(self):
+        self.lidar.stop()
     
     def __exit__(self):
-        self.stop_process_group(self.stop)
+        self.lidar.stop()
 
 # class LidarWithoutYaw:
 #     def start_sllidar_driver(self, enforce_settings: bool = True, bashrc: str = ROS_ENV):

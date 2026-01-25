@@ -90,7 +90,7 @@ class Preference:
                 },
                 "Debug": {
                     "FullLog": False,
-                    "Database": False,
+                    "Beta": False,
                 }
             }
         try:
@@ -213,7 +213,7 @@ class Prompts(object):
     class _debug(object):
         def __init__(self):
             self.FullLog = False
-            self.Database = False
+            self.Beta = False
 
     def __init__(self):
         self.RoboInfo = self._roboinfo()

@@ -9,9 +9,10 @@ class Car:
         self.MotorEncoder = MotorEncoder
         self.Kp = 1
         self.cfg = Settings
-        if self.cfg.Debug.Database:
-            from ReasonData.data import Outputs
-            self.DataBase = Outputs()
+        # TODO Database is ready to archieve
+        # if self.cfg.Debug.Database:
+        #     from ReasonData.data import Outputs
+        #     self.DataBase = Outputs()
         if self.cfg.Debug.FullLog:
             from ReasonData import logger
             self.logger = logger

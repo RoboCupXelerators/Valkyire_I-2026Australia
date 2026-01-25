@@ -11,6 +11,13 @@ cfg = Settings
 from Vision import UnitedVision
 vision = UnitedVision()
 
+# TODO Debug
+if cfg.Debug.Beta == True:
+    logger.warning("Beta Mode Enabled! Some Functions May Be Unstable!")
+    import tracemalloc
+    tracemalloc.start()
+    snap_start = tracemalloc.take_snapshot()
+
 from simple_pid import PID
 PositionP = 3
 PositionI = 0.1
