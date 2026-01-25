@@ -141,9 +141,9 @@ class Peripherals:
             pass
         else:
             if Status:
-                self.SetIO(self.cfg.Ports.Dribble,1)
+                self.SetIO(self.cfg.Ports.Dribble,1.0)
             else:
-                self.SetIO(self.cfg.Ports.Dribble,0)
+                self.SetIO(self.cfg.Ports.Dribble,0.0)
             self.DribbleStatus = Status
             self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
 
