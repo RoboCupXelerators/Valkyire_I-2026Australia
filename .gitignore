@@ -210,3 +210,5 @@ install/
 log/
 log/
 data/
+
+result.json
