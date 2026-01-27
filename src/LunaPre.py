@@ -1,8 +1,5 @@
 import math, time, threading
-import socket
-import pickle
-import subprocess
-import os
+
 
 from ReasonData import logger, Settings
 cfg = Settings
@@ -147,8 +144,7 @@ class Positions:
             `0xddd` stand for `CatchBall`
         '''
         # 20251017 already changed X,Y dimension    
-        vision_data = self.get_vision_data()
-        self.ballPos = vision_data["ball_pos"]
+        self.ballPos = vision.GetBallPos()
         if self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/8 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
@@ -244,7 +240,7 @@ class Positions:
                     chassis weidth
         '''
         # 20251017 already changed X,Y dimension
-        ChassisRawList = self.get_vision_data()["chassis_pos"]
+        ChassisRawList = vision.GetChassisPos()
         SelfX,SelfY,SelfZ = self.AbsRoboPosition()
         OutputDistanceList = []
         for c in ChassisRawList:
@@ -277,7 +273,7 @@ class Positions:
         ### Returns:
             ballangle: int | relative ball angle
         '''
-        ballX,ballY = self.get_vision_data()["ball_pos"]
+        ballX,ballY = vision.GetBallPos()
         if ballY == 0:
             relBallAngle = 0
         try:
@@ -349,7 +345,7 @@ class Positions:
         #### Returns:
             [a1,a2,a3,etc]
         '''
-        ChassisRawList = self.get_vision_data()["chassis_pos"]
+        ChassisRawList = vision.GetChassisPos()
         ChassisAngleList = []
         for c in ChassisRawList:
             if c[1] == 0:
