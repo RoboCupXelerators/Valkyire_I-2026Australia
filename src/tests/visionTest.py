@@ -13,7 +13,5 @@ vision = UnitedVision()
 while True:
     ball_pos = vision.GetBallPos()
     chassis_pos = vision.GetChassisPos()
-    data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
-    pickled_data = pickle.dumps(data)
-    sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
+    print(f"Ball Position: {ball_pos}, Chassis Position: {chassis_pos}")
     time.sleep(0.01)  # Adjust sleep time as needed for performance

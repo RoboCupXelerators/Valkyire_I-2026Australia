@@ -3,7 +3,6 @@ import numpy as np
 import cv2
 
 from ReasonData import Settings
-
 from vision_utils import Detect_Method, DATA_DIR
 
 class UnitedVision(Detect_Method):
@@ -193,3 +192,26 @@ class UnitedVision(Detect_Method):
     def GetBallPos(self):
         return self.BallPos
     
+import socket
+import pickle
+import time
+
+# UDP socket setup
+UDP_IP = "127.0.0.1"
+UDP_PORT = 5005
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+vision = UnitedVision()
+
+if __name__ == "__main__":
+    while(1):
+        try:
+            ball_pos = vision.GetBallPos()
+            chassis_pos = vision.GetChassisPos()
+            data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
+            print(data)
+            pickled_data = pickle.dumps(data)
+            sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
+        except Exception as e:
+            print(f"Error in vision server: {e}")
+        time.sleep(0.01)  # Adjust sleep time as needed for performance

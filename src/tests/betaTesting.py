@@ -5,15 +5,14 @@ try:
         rob = UnitedPosition.AbsRoboPosition()
         ball = UnitedPosition.Relative_Ball_Position()
         time.sleep(0.1)
-        print("rob:",rob,"ball:",ball)
+        # print("rob:",rob,"ball:",ball)
     
 except Exception as e:
     raise e
 
 finally:
+    UnitedPosition.stop()
     chassis.stop()
-    UnitedPosition.vision_process.terminate()
-    lidar.stop()
 
     if Settings.Debug.Beta == True:
         snap2 = tracemalloc.take_snapshot()
