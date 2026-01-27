@@ -6,5 +6,4 @@ except Exception as e:
     raise e
 finally:
     chassis.stop()
-    lidar.stop()
-    UnitedPosition.vision_process.terminate()
+    UnitedPosition.stop()

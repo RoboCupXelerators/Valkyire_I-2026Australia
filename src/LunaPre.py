@@ -1,18 +1,10 @@
-import math, time, threading
-
+import math, time, threading, subprocess, os
+import socket
+import pickle
+import time
 
 from ReasonData import logger, Settings
 cfg = Settings
-
-# from Vision import UnitedVision
-# vision = UnitedVision()
-
-# TODO Debug
-if cfg.Debug.Beta == True:
-    logger.warning("Beta Mode Enabled! Some Functions May Be Unstable!")
-    import tracemalloc
-    tracemalloc.start()
-    snap_start = tracemalloc.take_snapshot()
 
 from simple_pid import PID
 PositionP = 3
@@ -90,12 +82,18 @@ class Positions:
             except socket.timeout:
                 if self.vision_process is None or self.vision_process.poll() is not None:
                     project_root = os.path.dirname(os.path.dirname(__file__))
-                    self.vision_process = subprocess.Popen(["python", "src/vision_server.py"], cwd=project_root)
+                    self.vision_process = subprocess.Popen(["python", "src/Vision.py"], cwd=project_root)
                     logger.info("Started vision server process")
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
         
     def get_vision_data(self):
         return self.vision_data
+
+    def GetBallPos(self):
+        return self.get_vision_data()["ball_pos"]
+    
+    def GetChassisPos(self):
+        return self.get_vision_data()["chassis_pos"]
 
     class Calculate:
         def Local2Angle(lAimPos:list[int,int]) -> int:
@@ -144,7 +142,7 @@ class Positions:
             `0xddd` stand for `CatchBall`
         '''
         # 20251017 already changed X,Y dimension    
-        self.ballPos = vision.GetBallPos()
+        self.ballPos = self.GetBallPos()
         if self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/8 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
@@ -240,7 +238,7 @@ class Positions:
                     chassis weidth
         '''
         # 20251017 already changed X,Y dimension
-        ChassisRawList = vision.GetChassisPos()
+        ChassisRawList = self.GetChassisPos()
         SelfX,SelfY,SelfZ = self.AbsRoboPosition()
         OutputDistanceList = []
         for c in ChassisRawList:
@@ -273,7 +271,7 @@ class Positions:
         ### Returns:
             ballangle: int | relative ball angle
         '''
-        ballX,ballY = vision.GetBallPos()
+        ballX,ballY = self.GetBallPos()
         if ballY == 0:
             relBallAngle = 0
         try:
@@ -345,7 +343,7 @@ class Positions:
         #### Returns:
             [a1,a2,a3,etc]
         '''
-        ChassisRawList = vision.GetChassisPos()
+        ChassisRawList = self.GetChassisPos()
         ChassisAngleList = []
         for c in ChassisRawList:
             if c[1] == 0:
