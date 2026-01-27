@@ -80,13 +80,8 @@ class Positions:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("127.0.0.1", 5005))
         self.sock.settimeout(0.01)
-        # Socket for sensor data
-        self.sensor_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sensor_sock.bind(("127.0.0.1", 5006))
-        self.sensor_sock.settimeout(0.01)
         # Process management
         self.vision_process = None
-        # self.sensor_process = None
 
     def get_vision_data(self):
         try:
@@ -98,17 +93,6 @@ class Positions:
                 self.vision_process = subprocess.Popen(["python", "src/vision_server.py"], cwd=project_root)
                 logger.info("Started vision server process")
             return {"ball_pos": [0, 0], "chassis_pos": []}
-
-    # def get_sensor_data(self):
-    #     try:
-    #         data, addr = self.sensor_sock.recvfrom(4096)
-    #         return pickle.loads(data)
-    #     except socket.timeout:
-    #         if self.sensor_process is None or self.sensor_process.poll() is not None:
-    #             project_root = os.path.dirname(os.path.dirname(__file__))
-    #             self.sensor_process = subprocess.Popen(["python", "src/sensor_server.py"], cwd=project_root)
-    #             logger.info("Started sensor server process")
-    #         return {"dists": [0, 0, 0, 0]}
 
     class Calculate:
         def Local2Angle(lAimPos:list[int,int]) -> int:
@@ -473,6 +457,16 @@ class Positions:
 
     def referee2Start(self):
         pass
+
+    def __exit__(self):
+        try:
+            self.sock.close()
+        except:
+            pass
+        try:
+            self.vision_process.terminate()
+        except:
+            self.vision_process.kill()
 
 UnitedPosition = Positions()
 

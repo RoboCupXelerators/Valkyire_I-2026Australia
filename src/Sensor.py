@@ -10,7 +10,6 @@ from pathlib import Path
 import time, math, queue, threading, os, signal, subprocess
 
 import numpy as np
-from scipy.optimize import least_squares
 
 def GetLineStandardEquation(Line):
 
@@ -74,7 +73,7 @@ class ROSLidarParser(Node):
         '''
         if Settings.Debug.Beta == True:
             if Settings.RoboInfo.LidarType == 's1':
-                NumRanges = 360
+                NumRanges = 1080
             elif Settings.RoboInfo.LidarType == 's2':
                 NumRanges = 3240
             self.dirDistance = np.zeros((NumRanges, 2), dtype=np.float32)

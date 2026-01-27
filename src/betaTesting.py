@@ -3,13 +3,17 @@ from LunaPre import *
 try:
     while(1):
         rob = UnitedPosition.AbsRoboPosition()
+        ball = UnitedPosition.Relative_Ball_Position()
+        time.sleep(0.1)
+        print("rob:",rob,"ball:",ball)
     
 except Exception as e:
     raise e
 
 finally:
     chassis.stop()
-    # lidar.stop()
+    UnitedPosition.vision_process.terminate()
+    lidar.stop()
 
     if Settings.Debug.Beta == True:
         snap2 = tracemalloc.take_snapshot()
