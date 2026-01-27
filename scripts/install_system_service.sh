@@ -4,7 +4,7 @@
 USER_NAME=$(whoami)
 PROJECT_DIR=$(pwd)
 SCRIPT_PATH="$PROJECT_DIR/src/main.py"  # 请确保路径正确
-SERVICE_NAME="XEL"
+SERVICE_NAME="ENDFIELD"
 
 # 2. 动态探测 ROS2 安装路径
 # 优先从当前环境变量获取，如果没有，则去 /opt/ros 下找最新的版本
@@ -35,7 +35,7 @@ User=$USER_NAME
 Group=$USER_NAME
 WorkingDirectory=$PROJECT_DIR
 # 这里的路径完全是根据当前环境“写死”生成的
-ExecStart=/usr/bin/bash -c 'source $ROS_SETUP; source $PROJECT_DIR/venv/bin/activate; python3 $SCRIPT_PATH'
+ExecStart=/usr/bin/bash -c 'source $PROJECT_DIR/src/ROS2_Nodes/sllidarROS/install/setup.bash; source $ROS_SETUP; source $PROJECT_DIR/venv/bin/activate; python3 $SCRIPT_PATH'
 Restart=always
 RestartSec=5
 

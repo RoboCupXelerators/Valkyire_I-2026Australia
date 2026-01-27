@@ -59,7 +59,7 @@ class LockSeries:
         
         # Compass = chassis.GetYaw()#获取机器人的航向
         # Angle = (math.degrees(math.atan2(iBX, iBY))) % 360
-        Angle = UnitedPosition.AbsBallAngle()
+        Angle = UnitedPosition.RelBallAngle()
         # Fangle = -(Angle - Compass)
         logger.debug("Ball Angle: %f" % Angle)
         chassis.AbsTurn(Angle)
@@ -71,37 +71,32 @@ class LockSeries:
 
     def LockBallSlip(self):
         iBX,iBY = UnitedPosition.Relative_Ball_Position()
-        if [iBX,iBY] == [4095,4095]:
+        if [iBX,iBY] == [0xfff,0xfff]:
             chassis.stop()
-            self.D_time = 0
             return False
         elif [iBX,iBY] == [0xddd,0xddd]:
             chassis.stop()
-            self.D_time = 0
             return True
         else:
             Compass = compass()
-            Angle = ((math.degrees(math.atan2(iBY, iBX))) % 360)
-            Fangle = Angle + Compass
+            if iBX == 0:
+                relBallAngle = 0
+            relBallAngle = int(math.degrees(math.atan2(iBY,iBX)))
+            Fangle = relBallAngle
             if iBX > 75 or iBY > 75:
-                logger.success('Method 1')
-                Kp = 15
+                Kp = 7
                 KpZ = 0.9
             elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                logger.success('Method 2')
-                Kp = 12
+                Kp = 5
                 KpZ = 0.5
             else:
-                logger.success('Method 3')
-                Kp = 10
-                KpZ = 2
-            # self.D_time += 1
+                Kp = 3.5
+                KpZ = 0.4
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
-            logger.success(Kp)
-            logger.warning(KpZ)
             SpeedX = iBX * Kp
             SpeedY = iBY * Kp
+            Fangle = Fangle * KpZ
             if SpeedX > 300:
                 SpeedX = 300
             if SpeedY > 300:
@@ -110,7 +105,8 @@ class LockSeries:
                 SpeedX = -300
             if SpeedY < -300:
                 SpeedY = -300
-            chassis.AbsMoveVetor(SpeedX,SpeedY,Fangle,KpZ) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RelMoveVetor(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
 lockball = LockSeries()
 

@@ -8,11 +8,11 @@ cfg = Settings
 
 from simple_pid import PID
 PositionP = 3
-PositionI = 0.1
-PositionD = 0.05
+PositionI = 0
+PositionD = 0
 Pid_controller_1 = PID(PositionP, PositionI, PositionD, setpoint=1)
 Pid_controller_2 = PID(PositionP, PositionI, PositionD, setpoint=1)
-Pid_controller_3 = PID(PositionP, PositionI, PositionD, setpoint=1)
+Pid_controller_3 = PID(PositionP/2, PositionI, PositionD, setpoint=1)
 
 from Sensor import Lidar
 from chassis import Car, Peripherals, Key # Universal-Movement-Standard
@@ -145,7 +145,7 @@ class Positions:
         self.ballPos = self.GetBallPos()
         if self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/8 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
+        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/10 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/10:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
@@ -271,14 +271,14 @@ class Positions:
         ### Returns:
             ballangle: int | relative ball angle
         '''
-        ballX,ballY = self.GetBallPos()
+        ballY,ballX = self.GetBallPos()
         if ballY == 0:
             relBallAngle = 0
         try:
-            if -int(math.degrees(math.atan2(ballY,ballX)) - 90) < 0:
-                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX)) - 90) + 360
+            if -int(math.degrees(math.atan2(ballY,ballX))) < 0:
+                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX))) + 360
             else:
-                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX)) - 90)
+                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX)))
         except ZeroDivisionError:
             relBallAngle = 0
         return relBallAngle
@@ -375,7 +375,7 @@ class Positions:
                 OutputAngles.append(int(ChassisAngleCache))
         return OutputAngles
 
-    def Pos2Pos(self,AimPos:list, Speed:int | None = None) -> int:
+    def Pos2Pos(self,AimPos:list, speed_gain:int | None = None) -> int:
         '''
         iFacingAngle 移动时面对的方向 0~360
         lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
@@ -418,16 +418,11 @@ class Positions:
         elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
             chassis.AbsTurn(iAimZ)
         else:
-            if Speed:
-                chassis.AbsMoveAngle(AimPos[2],iMovedAngle,Speed)
+            if speed_gain:
+                chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
+                # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                if Beta_Func:
-                    Pid_X = Pid_controller_1(iLocX)
-                    Pid_Y = Pid_controller_1(iLocY)
-                    Pid_Z = Pid_controller_1(iLocZ)
-                    chassis.AbsMoveVetor(Pid_X,Pid_Y,Pid_Z)
-                else:
-                    chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
+                chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
             return False
 
     def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int,A2O:bool | None = False):

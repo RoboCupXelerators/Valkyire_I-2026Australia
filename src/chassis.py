@@ -44,14 +44,14 @@ class Car:
     def Compass(self):
         return self.GetYaw()
 
-    def RelMoveVetor(self,SpeedX,SpeedY,SpeedZ):
+    def RelMoveVetor(self,SpeedX,SpeedY,SpeedZ,Z_Kp:int = 1):
         '''
         a vector movement (SpeedX,SpeedY,SpeedZ) without YawCorrect
         '''
-        Speed1 = SpeedX - SpeedY - SpeedZ
-        Speed2 = SpeedX + SpeedY - SpeedZ
-        Speed3 = SpeedX + SpeedY + SpeedZ
-        Speed4 = SpeedX - SpeedY + SpeedZ
+        Speed1 = SpeedX - SpeedY - SpeedZ*Z_Kp
+        Speed2 = SpeedX + SpeedY - SpeedZ*Z_Kp
+        Speed3 = SpeedX + SpeedY + SpeedZ*Z_Kp
+        Speed4 = SpeedX - SpeedY + SpeedZ*Z_Kp
         output = [Speed1, Speed2, Speed3, Speed4]
         self.SetMotor(output)
     
@@ -76,7 +76,7 @@ class Car:
         
     def AbsMoveVetor(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
         '''
-        vector movement (SpeedX,SpeedY,SpeedZ) with YawCorrect
+        vector movement (SpeedX,SpeedY,AngleZ˚,Angle_Gain) with YawCorrect
         '''
         Yaw = self.GetYaw()
         # TODO change facing
@@ -135,14 +135,16 @@ class Peripherals:
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.logger.info("Used ElecMagnet")
 
-    def Dribble(self,Status:bool):
+    def Dribble(self,Status):
         if self.DribbleStatus == Status:
             pass
         else:
-            if Status:
+            if Status == True:
                 self.SetIO(self.cfg.Ports.Dribble,1.0)
-            else:
+            elif Status == False:
                 self.SetIO(self.cfg.Ports.Dribble,0.0)
+            else:
+                self.SetIO(self.cfg.Ports.Dribble,Status)
             self.DribbleStatus = Status
             self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
 

@@ -149,6 +149,7 @@ class UnitedVision(Detect_Method):
                 # print(self.MergedChassisList)
                 except:
                     continue
+            time.sleep(0.01)
 
     def GetChassisPos(self):
         # 20251118 already changed X,Y dimension
@@ -188,6 +189,7 @@ class UnitedVision(Detect_Method):
                 self.BallPos = [BX, BY]
             else:
                 self.BallPos = [0, 0]       
+            time.sleep(0.01)
 
     def GetBallPos(self):
         return self.BallPos
@@ -209,7 +211,6 @@ if __name__ == "__main__":
             ball_pos = vision.GetBallPos()
             chassis_pos = vision.GetChassisPos()
             data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
-            print(data)
             pickled_data = pickle.dumps(data)
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
         except Exception as e:
