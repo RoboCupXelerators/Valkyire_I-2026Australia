@@ -4,12 +4,8 @@ import math, time, threading
 from ReasonData import logger, Settings
 cfg = Settings
 
-# TODO 20260125 stop using
-# from headunit import ArisuIntelligence
-# vision = ArisuIntelligence()
-
-from Vision import UnitedVision
-vision = UnitedVision()
+# from Vision import UnitedVision
+# vision = UnitedVision()
 
 # TODO Debug
 if cfg.Debug.Beta == True:
@@ -73,6 +69,33 @@ class Positions:
         self.WaitTime = 3.5
         # Values for configs
         self.FullLog = cfg.Debug.FullLog
+        # Socket for vision data
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 5005))
+        self.sock.settimeout(0.01)
+        self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+        # Process management
+        self.vision_process = None
+        self.vision_data_stop_event = threading.Event()
+        self.get_vision_data_process = threading.Thread(target=self._get_vision_data)
+        self.get_vision_data_process.daemon = True
+        self.get_vision_data_process.start()
+        
+    def _get_vision_data(self):
+        while not self.vision_data_stop_event.is_set():
+            time.sleep(0.005)
+            try:
+                data, addr = self.sock.recvfrom(4096)
+                self.vision_data = pickle.loads(data)
+            except socket.timeout:
+                if self.vision_process is None or self.vision_process.poll() is not None:
+                    project_root = os.path.dirname(os.path.dirname(__file__))
+                    self.vision_process = subprocess.Popen(["python", "src/vision_server.py"], cwd=project_root)
+                    logger.info("Started vision server process")
+                self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+        
+    def get_vision_data(self):
+        return self.vision_data
 
     class Calculate:
         def Local2Angle(lAimPos:list[int,int]) -> int:
@@ -399,11 +422,7 @@ class Positions:
         else:
             if Speed:
                 chassis.AbsMoveAngle(AimPos[2],iMovedAngle,Speed)
-                # pass
             else:
-                # time.sleep(0.5)
-                # chassis.stop()
-                # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,int((abs(iDeltaX)+abs(iDeltaY))/3)+self.P2P_I)
                 if Beta_Func:
                     Pid_X = Pid_controller_1(iLocX)
                     Pid_Y = Pid_controller_1(iLocY)
@@ -411,8 +430,6 @@ class Positions:
                     chassis.AbsMoveVetor(Pid_X,Pid_Y,Pid_Z)
                 else:
                     chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
-            # print(AimPos[2],iMovedAngle,int((abs(iDeltaX)+abs(iDeltaY))*2.5)+self.P2P_I)
-            # print(iMovedAngle)
             return False
 
     def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int,A2O:bool | None = False):
@@ -436,6 +453,15 @@ class Positions:
 
     def referee2Start(self):
         pass
+
+    def stop(self):
+        '''
+        ### Function for stopping the vision data thread
+        '''
+        lidar.stop()
+        self.vision_data_stop_event.set()
+        if self.vision_process is not None:
+            self.vision_process.terminate()
 
 UnitedPosition = Positions()
 
