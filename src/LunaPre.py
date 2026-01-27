@@ -11,8 +11,8 @@ cfg = Settings
 # from headunit import ArisuIntelligence
 # vision = ArisuIntelligence()
 
-from Vision import UnitedVision
-vision = UnitedVision()
+# from Vision import UnitedVision
+# vision = UnitedVision()
 
 # TODO Debug
 if cfg.Debug.Beta == True:
@@ -86,7 +86,7 @@ class Positions:
         self.sensor_sock.settimeout(0.01)
         # Process management
         self.vision_process = None
-        self.sensor_process = None
+        # self.sensor_process = None
 
     def get_vision_data(self):
         try:
@@ -99,16 +99,16 @@ class Positions:
                 logger.info("Started vision server process")
             return {"ball_pos": [0, 0], "chassis_pos": []}
 
-    def get_sensor_data(self):
-        try:
-            data, addr = self.sensor_sock.recvfrom(4096)
-            return pickle.loads(data)
-        except socket.timeout:
-            if self.sensor_process is None or self.sensor_process.poll() is not None:
-                project_root = os.path.dirname(os.path.dirname(__file__))
-                self.sensor_process = subprocess.Popen(["python", "src/sensor_server.py"], cwd=project_root)
-                logger.info("Started sensor server process")
-            return {"dists": [0, 0, 0, 0]}
+    # def get_sensor_data(self):
+    #     try:
+    #         data, addr = self.sensor_sock.recvfrom(4096)
+    #         return pickle.loads(data)
+    #     except socket.timeout:
+    #         if self.sensor_process is None or self.sensor_process.poll() is not None:
+    #             project_root = os.path.dirname(os.path.dirname(__file__))
+    #             self.sensor_process = subprocess.Popen(["python", "src/sensor_server.py"], cwd=project_root)
+    #             logger.info("Started sensor server process")
+    #         return {"dists": [0, 0, 0, 0]}
 
     class Calculate:
         def Local2Angle(lAimPos:list[int,int]) -> int:
@@ -181,7 +181,7 @@ class Positions:
         #### Note:
             `0xfff` stand for `NoPosition`
         '''
-        self.BoundsDistance = self.get_sensor_data()["dists"]
+        self.BoundsDistance = lidar.GetDists()
         if self.BoundsDistance == [0, 0, 0, 0]:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))

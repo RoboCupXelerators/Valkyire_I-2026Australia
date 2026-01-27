@@ -9,7 +9,7 @@ except Exception as e:
 
 finally:
     chassis.stop()
-    lidar.stop()
+    # lidar.stop()
 
     if Settings.Debug.Beta == True:
         snap2 = tracemalloc.take_snapshot()
