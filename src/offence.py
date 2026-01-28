@@ -2,7 +2,7 @@ from BasicFuc import *
 
 try:
     peripheral.Dribble(1)
-    time.sleep(0.5)
+    time.sleep(1)
     while(1):
         # OHMYBACK()
         # print(UnitedPosition.AbsRoboPosition())

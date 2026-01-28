@@ -136,17 +136,15 @@ class Peripherals:
         self.logger.info("Used ElecMagnet")
 
     def Dribble(self,Status):
-        if self.DribbleStatus == Status:
-            pass
+        if Status == True:
+            self.SetIO(self.cfg.Ports.Dribble,1.0)
+        elif Status == False:
+            self.SetIO(self.cfg.Ports.Dribble,0.0)
         else:
-            if Status == True:
-                self.SetIO(self.cfg.Ports.Dribble,1.0)
-            elif Status == False:
-                self.SetIO(self.cfg.Ports.Dribble,0.0)
-            else:
-                self.SetIO(self.cfg.Ports.Dribble,Status)
-            self.DribbleStatus = Status
-            self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
+            self.SetIO(self.cfg.Ports.Dribble,Status)
+        self.DribbleStatus = Status
+        self.logger.info("Dribble set to %s" % str(Status))
+        # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
 
 class Key:
     def __init__(self,GetKeyFunc):
