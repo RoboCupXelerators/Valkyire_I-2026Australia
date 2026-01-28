@@ -90,7 +90,7 @@ class LockSeries:
                 Kp = 5
                 KpZ = 0.5
             else:
-                Kp = 3.5
+                Kp = 4
                 KpZ = 0.4
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
@@ -106,7 +106,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            chassis.RelMoveVetor(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
 lockball = LockSeries()
 
@@ -162,6 +162,22 @@ def NormalShoot(x=1):
         peripheral.Dribble(True)
         LockSeries().LockBallSlip()
 
+# def CircleAround_old(iAimAngle):
+# #    if abs(compass.read() - iAimAngle) >= 180:
+#     iDirectionFactor = 1
+# #    else:
+# #        iDirectionFactor = -1
+#     while(1):
+#         lBallPos = GetBallPos()
+#         iX, iY = lBallPos[0], lBallPos[1]
+#         if iY > 0:
+#             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
+#         print(iX,iY,iDeltaAngle,compass.read())
+#         if roundThresholdJudger(compass.read(), 360, iAimAngle, 3):
+#             break
+#         else:
+#             set_motor.RPM(iDirectionFactor * 30,-iDirectionFactor * (130 - iDeltaAngle),-iDirectionFactor * 30,iDirectionFactor * (130 - iDeltaAngle))
+#     car.stop()
 
 def CircleAround(iAimAngle):
     iCompass = int(compass())
@@ -169,8 +185,23 @@ def CircleAround(iAimAngle):
         iDirectionFactor = 1
     else:
         iDirectionFactor = -1
-    lBallPos = UnitedPosition.AbsBallPos()
+    lBallPos = UnitedPosition.Relative_Ball_Position()
+
+    TempBX = -lBallPos[1]
+    TempBY = lBallPos[0]
+
+    lBallPos = [TempBX,TempBY]
+
+
     while(1):
+        lBallPos = UnitedPosition.Relative_Ball_Position()
+
+        TempBX = -lBallPos[1]
+        TempBY = lBallPos[0]
+
+        lBallPos = [TempBX,TempBY]
+
+
         iX, iY = lBallPos[0], lBallPos[1]
         if iY > 0:
             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
@@ -178,20 +209,29 @@ def CircleAround(iAimAngle):
         if roundThresholdJudger(compass(), 360, iAimAngle, 3):
             break
         else:
-            chassis.SetMotor(iDirectionFactor * 30,-iDirectionFactor * (130 - iDeltaAngle),-iDirectionFactor * 30,iDirectionFactor * (130 - iDeltaAngle))
+            chassis.SetMotor([iDirectionFactor * 50,-iDirectionFactor * (150 - iDeltaAngle),-iDirectionFactor * 50,iDirectionFactor * (150 - iDeltaAngle)])
+        time.sleep(.03)
     chassis.TurnTo(iAimAngle)
     while(1):
-        iBX = lBallPos
-        if iBX <= -2:
+        lBallPos = UnitedPosition.Relative_Ball_Position()
+
+        TempBX = -lBallPos[1]
+        TempBY = lBallPos[0]
+
+        lBallPos = [TempBX,TempBY]
+
+        iBX = lBallPos[0]
+        if iBX <= -Settings.ExpectedVals.ErrorRange/3:
             print('atleft')
-            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,-20)
-        elif iBX >= 2:
+            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,40)
+        elif iBX >= Settings.ExpectedVals.ErrorRange/3:
             print('atright')
-            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,20)
+            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,-40)
         else:
             for _ in range(3):
                 chassis.stop()
             break
+        time.sleep(.03)
     print('stopped')
 
 def GoBack():
@@ -200,6 +240,7 @@ def GoBack():
 
 def NormalShoot(x=1,HomePos=[0,-20,0]):
     BX, BY = UnitedPosition.Relative_Ball_Position()
+
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
         logger.info("Ball not found, stopping chassis.")
