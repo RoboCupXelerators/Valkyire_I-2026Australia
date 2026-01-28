@@ -199,8 +199,7 @@ def GoBack():
 
 
 def NormalShoot(x=1,HomePos=[0,-20,0]):
-    BX, BY = UnitedPosition.AbsRoboPosition()
-    logger.debug("Current Position: %s" % [BX, BY])
+    BX, BY = UnitedPosition.Relative_Ball_Position()
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
         logger.info("Ball not found, stopping chassis.")
@@ -282,7 +281,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
     #正常
     if UnitedPosition.AbsBallPos() == [0xddd,0xddd]:
         peripheral.Dribble(True)
-        iLocX,iLocY,_ = UnitedPosition.AbsRoboPosition()()
+        iLocX,iLocY,_ = UnitedPosition.AbsRoboPosition()
         Cx ,Cy = UnitedPosition.AbsChassisPos()
         if [Cx ,Cy] == [0,0]:
             if iLocX > 0:

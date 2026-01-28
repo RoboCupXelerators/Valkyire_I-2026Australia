@@ -1,4 +1,4 @@
-import math, time, threading, subprocess, os
+import math, time, threading, subprocess, os, sys
 import socket
 import pickle
 import time
@@ -82,7 +82,7 @@ class Positions:
             except socket.timeout:
                 if self.vision_process is None or self.vision_process.poll() is not None:
                     project_root = os.path.dirname(os.path.dirname(__file__))
-                    self.vision_process = subprocess.Popen(["python", "src/Vision.py"], cwd=project_root)
+                    self.vision_process = subprocess.Popen([sys.executable, "src/Vision.py"], cwd=project_root)
                     logger.info("Started vision server process")
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
         
@@ -114,7 +114,7 @@ class Positions:
                     iDeltaAngle = 90
             return int(iDeltaAngle)
         
-        def Pos2Angle(lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
+        def Pos2Angle(self,lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
             '''
             lInputPos 输入坐标
             lAimPos 目标坐标 示例：[0,0]
