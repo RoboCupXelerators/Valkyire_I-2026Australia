@@ -26,3 +26,10 @@ except Exception as e:
 finally:
     pass
 
+except Exception as e:
+    raise e
+finally:
+    peripheral.Dribble(False)
+    chassis.stop()
+    UnitedPosition.stop()
+    chassis.stop()

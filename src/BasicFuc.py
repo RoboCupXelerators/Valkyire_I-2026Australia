@@ -85,13 +85,13 @@ class LockSeries:
             Fangle = relBallAngle
             if iBX > 75 or iBY > 75:
                 Kp = 7
-                KpZ = 0.9
+                KpZ = 0.5
             elif 25 < iBX <= 75 or 25 < iBY <= 75:
                 Kp = 5
                 KpZ = 0.5
             else:
                 Kp = 4
-                KpZ = 0.4
+                KpZ = 1.5
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
             KpZ = 1
