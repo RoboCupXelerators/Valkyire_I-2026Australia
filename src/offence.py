@@ -11,16 +11,18 @@ try:
         # time.sleep(1)
         if BalllPosition == [0xfff,0xfff]:
             peripheral.Dribble(0.7)
-            UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
+            UnitedPosition.Pos2Pos([Settings.CheckPoints.Home[0]+20,Settings.CheckPoints.Home[1],0],4.5)
         elif BalllPosition == [0xddd,0xddd]:
             peripheral.Dribble(1)
-            chassis.stop()
-            time.sleep(0.3)
+            chassis.RelMoveAngle(0,200)
+            time.sleep(.02)
             peripheral.ShootBall()
+            chassis.stop()
             time.sleep(1)
         else:
             peripheral.Dribble(0.7)
             lockball.LockBallSlip()
+        time.sleep(.03)
 except Exception as e:
     raise e
 finally:
