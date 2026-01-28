@@ -2,7 +2,7 @@ from BasicFuc import *
 
 try:
     while(1):
-        BalllPosition = UnitedPosition.Relative_Ball_Position()
+        # BalllPosition = UnitedPosition.Relative_Ball_Position()
         # Yaw = Bits.GetYaw()
         # BallAngle = UnitedPosition.RelBallAngle()
         # if BalllPosition == [0xfff,0xfff]:
@@ -18,14 +18,6 @@ try:
         #     else:
         #         chassis.AbsMoveVetor(0,BalllPosition[1]*5,0)
         time.sleep(0.001)
-
-
-    pass
-except Exception as e:
-    raise e
-finally:
-    pass
-
 except Exception as e:
     raise e
 finally:
