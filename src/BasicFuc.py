@@ -178,7 +178,7 @@ def CircleAround(iAimAngle):
         if roundThresholdJudger(compass(), 360, iAimAngle, 3):
             break
         else:
-            chassis.SetMotor(iDirectionFactor * 30,-iDirectionFactor * (130 - iDeltaAngle),-iDirectionFactor * 30,iDirectionFactor * (130 - iDeltaAngle))
+            chassis.SetMotor([iDirectionFactor * 30,-iDirectionFactor * (130 - iDeltaAngle),-iDirectionFactor * 30,iDirectionFactor * (130 - iDeltaAngle)])
     chassis.TurnTo(iAimAngle)
     while(1):
         iBX = lBallPos
@@ -282,7 +282,11 @@ def OHMYBACK(HomePos=[0,-20,0]):
     if UnitedPosition.AbsBallPos() == [0xddd,0xddd]:
         peripheral.Dribble(True)
         iLocX,iLocY,_ = UnitedPosition.AbsRoboPosition()
-        Cx ,Cy = UnitedPosition.AbsChassisPos()
+        try:
+            Cx ,Cy = UnitedPosition.AbsChassisPos()
+        except:
+            Cx = 0
+            Cy = 0
         if [Cx ,Cy] == [0,0]:
             if iLocX > 0:
                 Angle = 90
@@ -295,10 +299,10 @@ def OHMYBACK(HomePos=[0,-20,0]):
             ChassisY = CDistance * math.cos(math.radians(Fangle))+iLocY
             Angle = (math.degrees(math.atan2(iLocX - ChassisX, iLocY - ChassisY)-270)) % 360
         if iLocX > 0:
-            ShootX = 65
+            ShootY = 65
         else:
-            ShootX = -65
-        if abs(ShootX - iLocX) < 5 :
+            ShootY = -65
+        if abs(ShootY - iLocX) < 5 :
             if abs(iLocY - 75) < 5:
                 X,Y,_ = UnitedPosition.AbsRoboPosition()()
                 DeltaY = cfg.Bounds.Long/2 - Y
@@ -317,9 +321,9 @@ def OHMYBACK(HomePos=[0,-20,0]):
                     peripheral.ShootBall()
                 
             else:
-                UnitedPosition.Pos2Pos([ShootX,85,Angle],False,50)
+                UnitedPosition.Pos2Pos([85,ShootY,Angle],5)
         else:
-            UnitedPosition.Pos2Pos([ShootX,85,Angle],False,50)
+            UnitedPosition.Pos2Pos([85,ShootY,Angle],5)
     else:
         NormalShoot(x=0,HomePos=HomePos)
         

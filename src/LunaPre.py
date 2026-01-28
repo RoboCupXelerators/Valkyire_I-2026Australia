@@ -95,38 +95,37 @@ class Positions:
     def GetChassisPos(self):
         return self.get_vision_data()["chassis_pos"]
 
-    class Calculate:
-        def Local2Angle(lAimPos:list[int,int]) -> int:
-            '''
-            lAimPos 一个坐标 示例：[0,0]
-            '''
-            iAimX = lAimPos[0]
-            iAimY = lAimPos[1]
-            iLocX,iLocY,_ = Positions().AbsRoboPosition()
-            iDeltaX = iAimX - iLocX
-            iDeltaY = iAimY - iLocY
-            try:
-                iDeltaAngle = -math.degrees(math.atan(iDeltaX/iDeltaY))
-            except:
-                if iDeltaX > 0:
-                    iDeltaAngle = -90
-                else:
-                    iDeltaAngle = 90
-            return int(iDeltaAngle)
-        
-        def Pos2Angle(self,lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
-            '''
-            lInputPos 输入坐标
-            lAimPos 目标坐标 示例：[0,0]
-            '''
-            iAimX = lAimPos[0]
-            iAimY = lAimPos[1]
-            iLocX = lInputPos[0]
-            iLocY = lInputPos[1]
-            iDeltaX = iAimX - iLocX
-            iDeltaY = iAimY - iLocY
-            iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
-            return int(iDeltaAngle)
+    def Local2Angle(self,lAimPos:list[int,int]) -> int:
+        '''
+        lAimPos 一个坐标 示例：[0,0]
+        '''
+        iAimX = lAimPos[0]
+        iAimY = lAimPos[1]
+        iLocX,iLocY,_ = self.AbsRoboPosition()
+        iDeltaX = iAimX - iLocX
+        iDeltaY = iAimY - iLocY
+        try:
+            iDeltaAngle = -math.degrees(math.atan(iDeltaX/iDeltaY))
+        except:
+            if iDeltaX > 0:
+                iDeltaAngle = -90
+            else:
+                iDeltaAngle = 90
+        return int(iDeltaAngle)
+    
+    def Pos2Angle(self,lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
+        '''
+        lInputPos 输入坐标
+        lAimPos 目标坐标 示例：[0,0]
+        '''
+        iAimX = lAimPos[0]
+        iAimY = lAimPos[1]
+        iLocX = lInputPos[0]
+        iLocY = lInputPos[1]
+        iDeltaX = iAimX - iLocX
+        iDeltaY = iAimY - iLocY
+        iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
+        return int(iDeltaAngle)
 
     # ********* BASIC FUNCTIONS ********
     def Relative_Ball_Position(self):

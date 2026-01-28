@@ -17,8 +17,6 @@ try:
         #         LockSeries().LockBallSlip()
         #     else:
         #         chassis.AbsMoveVetor(0,BalllPosition[1]*5,0)
-        Angle=UnitedPosition.Calculate().Pos2Angle(BalllPosition,[0,70,0])
-        print(Angle)
         time.sleep(0.001)
 
 
