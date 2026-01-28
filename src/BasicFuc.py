@@ -94,6 +94,7 @@ class LockSeries:
                 KpZ = 0.4
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
+            KpZ = 1
             SpeedX = iBX * Kp
             SpeedY = iBY * Kp
             Fangle = Fangle * KpZ
@@ -106,7 +107,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RelMoveVetor(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
 lockball = LockSeries()
 
