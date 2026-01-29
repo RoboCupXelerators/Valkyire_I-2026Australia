@@ -5,7 +5,6 @@ try:
     time.sleep(1)
     while(1):
         # OHMYBACK()
-        print(UnitedPosition.AbsRoboPosition())
         BalllPosition = UnitedPosition.Relative_Ball_Position()
         # print("BalllPosition:",BalllPosition)
         # time.sleep(1)
