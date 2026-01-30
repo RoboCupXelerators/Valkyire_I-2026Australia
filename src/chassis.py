@@ -88,6 +88,7 @@ class Car:
         SpeedZ = Error * Kp
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
+        self.logger.info(f"used AbsMoveVector: {WheelX, WheelY, SpeedZ}")
         self.RelMoveVetor(WheelX, WheelY, SpeedZ)
     
     def RelXMove(self,Angle,Speed):
