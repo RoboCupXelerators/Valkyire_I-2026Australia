@@ -10,6 +10,8 @@ try:
         # print("BalllPosition:",BalllPosition)
         # time.sleep(1)
         goal_angle = UnitedPosition.Local2Angle([110,0])
+        print(goal_angle)
+        c = 0
         if BalllPosition == [0xfff,0xfff]:
             peripheral.Dribble(0.7)
             UnitedPosition.Pos2Pos([Settings.CheckPoints.Home[0]+20,Settings.CheckPoints.Home[1],0],4.5)
@@ -22,7 +24,12 @@ try:
                 chassis.stop()
                 logger.error(1)
             else:
+                c += 1
+                peripheral.ShootBall()
                 logger.success(TurnTo_with_ball(goal_angle))
+                time.sleep(1)
+                if c >= 50:
+                    c = 0
         else:
             logger.warning(1)
             peripheral.Dribble(0.7)
