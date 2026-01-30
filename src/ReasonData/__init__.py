@@ -17,7 +17,7 @@ DATA_DIR = APP_DIR / "data"
 LOG_FILE = DATA_DIR / f"{Date}.log"
 logger.add(
     LOG_FILE,
-    rotation="1 MB",
+    rotation="20 MB",
     retention="1 days",
     encoding="utf-8",
     backtrace=True,

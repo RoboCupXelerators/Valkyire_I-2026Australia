@@ -78,7 +78,6 @@ class LockSeries:
             chassis.stop()
             return True
         else:
-            Compass = compass()
             if iBX == 0:
                 relBallAngle = 0
             relBallAngle = int(math.degrees(math.atan2(iBY,iBX)))
@@ -108,6 +107,7 @@ class LockSeries:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            return False
 
 lockball = LockSeries()
 
@@ -240,25 +240,26 @@ def CircleAround(iAimAngle):
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
     ball = UnitedPosition.Relative_Ball_Position()
-    if lockball.LockBallSlip():
+    if lockball.LockBallSlip() == True:
         iDeltaAngle = -int(math.degrees(math.atan2(ball[0], ball[1])) - 90)
         Error = -( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if Error < 0:
             iDirectionFactor = -1
         elif Error > 0:
             iDirectionFactor = 1
-        else:
-            pass
-        if not Error <= Settings.ExpectedVals.ErrorRange/6:
+        if not abs(Error) <= Settings.ExpectedVals.ErrorRange/6:
             chassis.SetMotor([
                 iDirectionFactor * 15 *SpeedK,
                 -iDirectionFactor * (150 - iDeltaAngle) * SpeedK,
                 -iDirectionFactor * 15 * SpeedK,
                 iDirectionFactor * (150 - iDeltaAngle) * SpeedK
                 ])
-            print(1)
+            return False
         else:
             return True
+    else:
+        return lockball.LockBallSlip()
+
 
 def GoBack():
     UnitedPosition.Pos2Pos(cfg.read("Position","Home"),False)

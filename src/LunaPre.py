@@ -142,7 +142,7 @@ class Positions:
         '''
         # 20251017 already changed X,Y dimension    
         self.ballPos = self.GetBallPos()
-        if self.ballPos == [0,0] or self.ballPos[0] > 200 or self.ballPos[1] > 200:
+        if self.ballPos == [0,0] or self.ballPos[0] > 300 or self.ballPos[1] > 300:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/10 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= 0:
             self.ballPosOut = [0xddd,0xddd]
