@@ -380,49 +380,50 @@ class Positions:
         lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
         # TODO 调整PID
         '''
-        iLocX,iLocY,iLocZ = self.AbsRoboPosition()
-        if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
-            chassis.stop()
-            return False
-        if iLocX < 0:
-            kX = -1
-        else:
-            kX = 1
-        if iLocY < 0:
-            kY = -1
-        else:
-            kY = 1
-        iAimX,iAimY,iAimZ = AimPos
-        iDeltaX = (iAimX) - (iLocX)
-        iDeltaY = (iAimY) - (iLocY)
-        iDeltaZ = (iAimZ) - (iLocZ)
-        RestrictedX = Settings.Bounds.FarPos[0]
-        RestrictedY = Settings.Bounds.FarPos[1]
-        try:
-            try:
-                Slope = iDeltaX/iDeltaY
-            except ZeroDivisionError:
-                Slope = 1
-            if Slope*RestrictedY > RestrictedX:
-                iAimX = (RestrictedX - 3)*kX
-            if Slope/RestrictedX > RestrictedY:
-                iAimY = (RestrictedY - 3)*kY
-        except:
-            iAimX,iAimY,iAimZ = AimPos
-        iErrorRange = Settings.ExpectedVals.ErrorRange
-        iMovedAngle = (int(math.degrees(math.atan2(iDeltaY,iDeltaX))))%360
-        if iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and abs(iErrorRange) > iDeltaZ:
-            chassis.stop()
-            return True
-        elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
-            chassis.AbsTurn(iAimZ)
-        else:
-            if speed_gain:
-                chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
-                # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
+        if self.Restricted_Area():
+            iLocX,iLocY,iLocZ = self.AbsRoboPosition()
+            if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
+                chassis.stop()
+                return False
+            if iLocX < 0:
+                kX = -1
             else:
-                chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
-            return False
+                kX = 1
+            if iLocY < 0:
+                kY = -1
+            else:
+                kY = 1
+            iAimX,iAimY,iAimZ = AimPos
+            iDeltaX = (iAimX) - (iLocX)
+            iDeltaY = (iAimY) - (iLocY)
+            iDeltaZ = (iAimZ) - (iLocZ)
+            RestrictedX = Settings.Bounds.FarPos[0]
+            RestrictedY = Settings.Bounds.FarPos[1]
+            try:
+                try:
+                    Slope = iDeltaX/iDeltaY
+                except ZeroDivisionError:
+                    Slope = 1
+                if Slope*RestrictedY > RestrictedX:
+                    iAimX = (RestrictedX - 3)*kX
+                if Slope/RestrictedX > RestrictedY:
+                    iAimY = (RestrictedY - 3)*kY
+            except:
+                iAimX,iAimY,iAimZ = AimPos
+            iErrorRange = Settings.ExpectedVals.ErrorRange
+            iMovedAngle = (int(math.degrees(math.atan2(iDeltaY,iDeltaX))))%360
+            if iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and abs(iErrorRange) > iDeltaZ:
+                chassis.stop()
+                return True
+            elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
+                chassis.AbsTurn(iAimZ)
+            else:
+                if speed_gain:
+                    chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
+                    # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
+                else:
+                    chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
+                return False
 
     def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int,A2O:bool | None = False):
         for i in Posistions:
@@ -445,6 +446,33 @@ class Positions:
 
     def referee2Start(self):
         pass
+
+    def Restricted_Area(self):
+        Distance = lidar.GetDists()
+        
+        border = 300
+        wedge = 180
+        restricted_area = 700
+
+        if Distance[0] == 0:
+            pass
+        else:
+            if Distance[1]>restricted_area or Distance[3]>restricted_area:
+                if Distance[0]<border:
+                    chassis.AbsMoveAngle(0,180,300)
+                elif Distance[2]<border:
+                    chassis.AbsMoveAngle(0,0,300)
+            elif Distance[0]<wedge:
+                chassis.AbsMoveAngle(0,180,300)
+            elif Distance[2]<wedge:
+                chassis.AbsMoveAngle(0,0,300)
+            elif Distance[1]<wedge:
+                chassis.AbsMoveAngle(0,270,-300)
+            elif Distance[3]<wedge:
+                chassis.AbsMoveAngle(0,90,-300)
+            else:
+                return True
+            
 
     def stop(self):
         '''

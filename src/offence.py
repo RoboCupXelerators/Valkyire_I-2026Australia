@@ -9,14 +9,16 @@ try:
         BalllPosition = UnitedPosition.Relative_Ball_Position()
         # print("BalllPosition:",BalllPosition)
         # time.sleep(1)
+        goal_angle = UnitedPosition.Local2Angle([110,0])
         if BalllPosition == [0xfff,0xfff]:
             peripheral.Dribble(0.7)
             UnitedPosition.Pos2Pos([Settings.CheckPoints.Home[0]+20,Settings.CheckPoints.Home[1],0],4.5)
         elif BalllPosition == [0xddd,0xddd]:
-            peripheral.Dribble(1)
-            chassis.RelMoveAngle(0,200)
-            time.sleep(.02)
-            peripheral.ShootBall()
+            if TurnTo_with_ball(goal_angle):
+                peripheral.Dribble(1)
+                chassis.RelMoveAngle(0,200)
+                time.sleep(.02)
+                peripheral.ShootBall()
             chassis.stop()
             time.sleep(1)
         else:
