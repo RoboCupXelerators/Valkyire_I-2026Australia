@@ -360,10 +360,12 @@ class Lidar:
 
                         self.dirNormalizedDistance = LidarDists
         except Exception as e:
-            raise e
             self.LidarNormalize()
 
     def GetDists(self):
+        '''
+        返回一个列表[前，左，后，右]
+        '''
         return self.dirNormalizedDistance
     
     def GetFullData(self):
