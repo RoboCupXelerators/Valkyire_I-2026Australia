@@ -142,14 +142,14 @@ class Positions:
         '''
         # 20251017 already changed X,Y dimension    
         self.ballPos = self.GetBallPos()
-        if self.ballPos == [0,0]:
+        if self.ballPos == [0,0] or self.ballPos[0] > 200 or self.ballPos[1] > 200:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/10 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= 0:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
         if Settings.Debug.FullLog:
-            logger.debug("[Relative] Ball Position: %s"%self.ballPos)
+            logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
 
     def direct_distance(self):
@@ -214,7 +214,7 @@ class Positions:
         else:
             X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
         self.LidarPos = [Y/10,X/10,compass()]
-        # logger.info("[Absolute] Robot Position: %s"%self.LidarPos)
+        logger.info("[Absolute] Robot Position: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
         try:
             if Bits.Odometer:# if use odometer datas
@@ -380,50 +380,49 @@ class Positions:
         lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
         # TODO 调整PID
         '''
-        if self.Restricted_Area():
-            iLocX,iLocY,iLocZ = self.AbsRoboPosition()
-            if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
-                chassis.stop()
-                return False
-            if iLocX < 0:
-                kX = -1
-            else:
-                kX = 1
-            if iLocY < 0:
-                kY = -1
-            else:
-                kY = 1
-            iAimX,iAimY,iAimZ = AimPos
-            iDeltaX = (iAimX) - (iLocX)
-            iDeltaY = (iAimY) - (iLocY)
-            iDeltaZ = (iAimZ) - (iLocZ)
-            RestrictedX = Settings.Bounds.FarPos[0]
-            RestrictedY = Settings.Bounds.FarPos[1]
+        iLocX,iLocY,iLocZ = self.AbsRoboPosition()
+        if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
+            chassis.stop()
+            return False
+        if iLocX < 0:
+            kX = -1
+        else:
+            kX = 1
+        if iLocY < 0:
+            kY = -1
+        else:
+            kY = 1
+        iAimX,iAimY,iAimZ = AimPos
+        iDeltaX = (iAimX) - (iLocX)
+        iDeltaY = (iAimY) - (iLocY)
+        iDeltaZ = (iAimZ) - (iLocZ)
+        RestrictedX = Settings.Bounds.FarPos[0]
+        RestrictedY = Settings.Bounds.FarPos[1]
+        try:
             try:
-                try:
-                    Slope = iDeltaX/iDeltaY
-                except ZeroDivisionError:
-                    Slope = 1
-                if Slope*RestrictedY > RestrictedX:
-                    iAimX = (RestrictedX - 3)*kX
-                if Slope/RestrictedX > RestrictedY:
-                    iAimY = (RestrictedY - 3)*kY
-            except:
-                iAimX,iAimY,iAimZ = AimPos
-            iErrorRange = Settings.ExpectedVals.ErrorRange
-            iMovedAngle = (int(math.degrees(math.atan2(iDeltaY,iDeltaX))))%360
-            if iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and abs(iErrorRange) > iDeltaZ:
-                chassis.stop()
-                return True
-            elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
-                chassis.AbsTurn(iAimZ)
+                Slope = iDeltaX/iDeltaY
+            except ZeroDivisionError:
+                Slope = 1
+            if Slope*RestrictedY > RestrictedX:
+                iAimX = (RestrictedX - 3)*kX
+            if Slope/RestrictedX > RestrictedY:
+                iAimY = (RestrictedY - 3)*kY
+        except:
+            iAimX,iAimY,iAimZ = AimPos
+        iErrorRange = Settings.ExpectedVals.ErrorRange
+        iMovedAngle = (int(math.degrees(math.atan2(iDeltaY,iDeltaX))))%360
+        if iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and abs(iErrorRange) > iDeltaZ:
+            chassis.stop()
+            return True
+        elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
+            chassis.AbsTurn(iAimZ)
+        else:
+            if speed_gain:
+                chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
+                # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                if speed_gain:
-                    chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
-                    # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
-                else:
-                    chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
-                return False
+                chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
+            return False
 
     def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int,A2O:bool | None = False):
         for i in Posistions:
@@ -448,28 +447,36 @@ class Positions:
         pass
 
     def Restricted_Area(self):
-        Distance = lidar.GetDists()
+        Distance = self.direct_distance()
         
         border = 300
-        wedge = 180
-        restricted_area = 700
+        wedge = 220
+        restricted_area = 650
 
         if Distance[0] == 0:
-            pass
+                print(Distance)
         else:
             if Distance[1]>restricted_area or Distance[3]>restricted_area:
                 if Distance[0]<border:
                     chassis.AbsMoveAngle(0,180,300)
+                    return False
                 elif Distance[2]<border:
                     chassis.AbsMoveAngle(0,0,300)
-            elif Distance[0]<wedge:
+                    return False
+                else:
+                    return True
+            if Distance[0]<wedge:
                 chassis.AbsMoveAngle(0,180,300)
+                return False
             elif Distance[2]<wedge:
                 chassis.AbsMoveAngle(0,0,300)
+                return False
             elif Distance[1]<wedge:
                 chassis.AbsMoveAngle(0,270,-300)
+                return False
             elif Distance[3]<wedge:
                 chassis.AbsMoveAngle(0,90,-300)
+                return False
             else:
                 return True
             

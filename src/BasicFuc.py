@@ -248,14 +248,15 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
         elif Error > 0:
             iDirectionFactor = 1
         else:
-            return True
-        if not abs(Aim_Angle - yaw) <= Settings.ExpectedVals.ErrorRange:
+            pass
+        if not Error <= Settings.ExpectedVals.ErrorRange/6:
             chassis.SetMotor([
                 iDirectionFactor * 15 *SpeedK,
                 -iDirectionFactor * (150 - iDeltaAngle) * SpeedK,
                 -iDirectionFactor * 15 * SpeedK,
                 iDirectionFactor * (150 - iDeltaAngle) * SpeedK
                 ])
+            print(1)
         else:
             return True
 
