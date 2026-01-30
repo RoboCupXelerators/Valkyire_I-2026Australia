@@ -1,10 +1,10 @@
 from BasicFuc import *
 
 try:
-    peripheral.Dribble(1)
-    time.sleep(3)
+    # peripheral.Dribble(1)
+    # time.sleep(3)
     while(1):
-        # OHMYBACK()
+    #     # OHMYBACK()
         print(UnitedPosition.AbsRoboPosition())
         BalllPosition = UnitedPosition.Relative_Ball_Position()
         # print("BalllPosition:",BalllPosition)
@@ -22,7 +22,6 @@ try:
         else:
             peripheral.Dribble(0.7)
             lockball.LockBallSlip()
-        time.sleep(.03)
 except Exception as e:
     raise e
 finally:
