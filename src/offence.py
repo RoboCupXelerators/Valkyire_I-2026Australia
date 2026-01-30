@@ -20,7 +20,11 @@ try:
                 time.sleep(.02)
                 peripheral.ShootBall()
                 chassis.stop()
+                logger.error(1)
+            else:
+                logger.success(TurnTo_with_ball(goal_angle))
         else:
+            logger.warning(1)
             peripheral.Dribble(0.7)
             lockball.LockBallSlip()
 except Exception as e:
