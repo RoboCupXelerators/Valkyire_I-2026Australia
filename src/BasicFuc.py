@@ -242,7 +242,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     ball = UnitedPosition.Relative_Ball_Position()
     if lockball.LockBallSlip() == True:
         iDeltaAngle = -int(math.degrees(math.atan2(ball[0], ball[1])) - 90)
-        Error = -( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
+        Error = ( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if Error < 0:
             iDirectionFactor = 1
         elif Error > 0:
