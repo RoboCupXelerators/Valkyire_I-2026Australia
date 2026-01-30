@@ -105,7 +105,7 @@ class Positions:
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         try:
-            iDeltaAngle = -math.degrees(math.atan(iDeltaX/iDeltaY))
+            iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
         except:
             if iDeltaX > 0:
                 iDeltaAngle = -90

@@ -158,7 +158,7 @@ class Lidar:
             domain = getattr(self, 'domainID', Settings.Ports.LidarID)
             launch_file = getattr(self, 'current_launch', 'sllidar_s2_launch.py')
 
-        cmd = f'source {bashrc} && export ROS_DOMAIN_ID={domain} && exec ros2 launch sllidar_ros2 {launch_file}'
+        cmd = f'source {bashrc} && export ROS_DOMAIN_ID={domain} && exec ros2 launch sllidar_ros2 {launch_file} serial_port:=/dev/sllidar'
 
         # place logs into ReasonData data directory under logs/sllidar
         log_dir = Path(DATA_DIR) / 'logs' / 'sllidar'
@@ -360,10 +360,12 @@ class Lidar:
 
                         self.dirNormalizedDistance = LidarDists
         except Exception as e:
-            raise e
             self.LidarNormalize()
 
     def GetDists(self):
+        '''
+        返回一个列表[前，左，后，右]
+        '''
         return self.dirNormalizedDistance
     
     def GetFullData(self):
