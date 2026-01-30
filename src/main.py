@@ -23,7 +23,6 @@ try:
             peripheral.Dribble(0.5)
             lockball.LockBallSlip()
         Distance = lidar.GetDists()
-        chassis.stop()
         border = 300
         if Distance[1]>650 or Distance[3]>650:
             if Distance[0]<border:

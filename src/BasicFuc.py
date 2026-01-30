@@ -107,6 +107,7 @@ class LockSeries:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            return False
 
 lockball = LockSeries()
 
@@ -160,7 +161,7 @@ def NormalShoot(x=1):
         peripheral.ShootBall()
     else:
         peripheral.Dribble(True)
-        LockSeries().LockBallSlip()
+        lockball().LockBallSlip()
 
 # def CircleAround_old(iAimAngle):
 # #    if abs(compass.read() - iAimAngle) >= 180:
@@ -205,11 +206,11 @@ def CircleAround(iAimAngle):
         iX, iY = lBallPos[0], lBallPos[1]
         if iY > 0:
             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
-        print(iX,iY,iDeltaAngle,compass())
+        # print(iX,iY,iDeltaAngle,compass())
         if roundThresholdJudger(compass(), 360, iAimAngle, 3):
             break
         else:
-            chassis.SetMotor([iDirectionFactor * 50,-iDirectionFactor * (150 - iDeltaAngle),-iDirectionFactor * 50,iDirectionFactor * (150 - iDeltaAngle)])
+            chassis.SetMotor([iDirectionFactor * 15,-iDirectionFactor * (150 - iDeltaAngle),-iDirectionFactor * 15,iDirectionFactor * (150 - iDeltaAngle)])
         time.sleep(.03)
     chassis.TurnTo(iAimAngle)
     while(1):
@@ -221,11 +222,13 @@ def CircleAround(iAimAngle):
         lBallPos = [TempBX,TempBY]
 
         iBX = lBallPos[0]
+        if lBallPos[0] + lBallPos[1] > 20:
+            break
         if iBX <= -Settings.ExpectedVals.ErrorRange/3:
-            print('atleft')
+            logger.debug('atleft')
             chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,40)
         elif iBX >= Settings.ExpectedVals.ErrorRange/3:
-            print('atright')
+            logger.debug('atright')
             chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,-40)
         else:
             for _ in range(3):
