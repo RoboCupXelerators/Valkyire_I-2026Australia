@@ -464,6 +464,7 @@ class Positions:
                     chassis.AbsMoveAngle(0,0,300)
                     return False
                 else:
+                    chassis.stop()
                     return True
             if Distance[0]<wedge:
                 chassis.AbsMoveAngle(0,180,300)
@@ -478,6 +479,7 @@ class Positions:
                 chassis.AbsMoveAngle(0,90,-300)
                 return False
             else:
+                chassis.stop()
                 return True
             
 

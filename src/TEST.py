@@ -11,14 +11,14 @@ try:
         # elif BalllPosition == [0xddd,0xddd]:
         #     Angle=UnitedPosition.Calculate().Pos2Angle(BalllPosition,[0,70,0])
         #     chassis.AbsMoveVetor(0,BalllPosition[1]*5,Angle)
-        #     peripheral.ShootBall()
-        #     time.sleep(1)
+            peripheral.ShootBall()
+            time.sleep(1)
         # else:
         #     if BalllPosition[0] < 20:
         #         LockSeries().LockBallSlip()
         #     else:
         #         chassis.AbsMoveVetor(0,BalllPosition[1]*5,0)
-        time.sleep(0.001)
+        # time.sleep(0.001)
 
 except Exception as e:
     raise e

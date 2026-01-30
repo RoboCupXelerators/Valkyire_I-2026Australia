@@ -19,8 +19,7 @@ try:
                 chassis.RelMoveAngle(0,200)
                 time.sleep(.02)
                 peripheral.ShootBall()
-            chassis.stop()
-            time.sleep(1)
+                chassis.stop()
         else:
             peripheral.Dribble(0.7)
             lockball.LockBallSlip()
