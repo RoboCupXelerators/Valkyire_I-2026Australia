@@ -144,7 +144,7 @@ class Positions:
         self.ballPos = self.GetBallPos()
         if self.ballPos == [0,0] or self.ballPos[0] > 300 or self.ballPos[1] > 300:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/2 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
+        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos

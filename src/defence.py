@@ -1,6 +1,7 @@
 from BasicFuc import *
 
 try:
+    # peripheral.Dribble(True)
     while(1):
         if UnitedPosition.Restricted_Area():
             BalllPosition = UnitedPosition.Relative_Ball_Position()
@@ -10,9 +11,11 @@ try:
                 UnitedPosition.Pos2Pos(Settings.CheckPoints.Home,4.5)
             elif BalllPosition == [0xddd,0xddd]:
                 if TurnTo_with_ball(UnitedPosition.Local2Angle([100,0])):
+                    peripheral.Dribble(0.3)
                     peripheral.ShootBall()
                     time.sleep(0.5)
             else:
+                peripheral.Dribble(0.5)
                 if 0 < BalllPosition[0] < 30:
                     lockball.LockBallSlip()
                 else:
