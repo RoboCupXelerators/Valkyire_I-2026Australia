@@ -98,8 +98,8 @@ class IceLoongBits:
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, pitch, roll, yaw, timestamp = i
-                        self.yaw = yaw % 360
+                        _, yaw, pitch, roll, timestamp = i
+                        self.yaw = round(yaw % 360,2)
                     case Commands.SET_WHEELS_SPEED:
                         pass
                     case Commands.KICK:

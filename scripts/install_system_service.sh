@@ -47,6 +47,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable $SERVICE_NAME
 sudo systemctl restart $SERVICE_NAME
+# sudo systemctl stop $SERVICE_NAME
 
 echo "服务已部署！可通过以下命令查看实时日志："
 echo "journalctl -u $SERVICE_NAME -f"

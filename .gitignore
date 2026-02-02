@@ -212,3 +212,6 @@ log/
 data/
 
 result.json
+
+main.py
+TEST.py

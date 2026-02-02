@@ -86,11 +86,11 @@ class LockSeries:
                 Kp = 7
                 KpZ = 0.5
             elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                Kp = 5
+                Kp = 3
                 KpZ = 0.5
             else:
-                Kp = 4
-                KpZ = 1.5
+                Kp = 2
+                KpZ = 1
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
             KpZ = 1
@@ -240,6 +240,8 @@ def CircleAround(iAimAngle):
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
     ball = UnitedPosition.Relative_Ball_Position()
+    Aim_Angle = Aim_Angle%360
+    logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
         iDeltaAngle = -int(math.degrees(math.atan2(ball[0], ball[1])) - 90)
         Error = -( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
@@ -247,7 +249,8 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error > 0:
             iDirectionFactor = 1
-        if not abs(Error) <= Settings.ExpectedVals.ErrorRange/6:
+        if not abs(Aim_Angle-yaw) <= Settings.ExpectedVals.ErrorRange/5:
+            logger.error(Aim_Angle-yaw)
             chassis.SetMotor([
                 iDirectionFactor * 15 *SpeedK,
                 -iDirectionFactor * (150 - iDeltaAngle) * SpeedK,
