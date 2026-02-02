@@ -16,12 +16,14 @@ try:
         elif BalllPosition == [0xddd,0xddd]:
             if TurnTo_with_ball((goal_angle)%360):
                 if BalllPosition[0] > 80:
+                    chassis.RelMoveAngle(0,100)
                     peripheral.ShootBall()
                 else:
                     peripheral.Dribble(0.2)
-                    chassis.RelMoveAngle(0,200)
+                    chassis.RelMoveAngle(0,300)
+                    time.sleep(.2)
                     peripheral.ShootBall()
-                time.sleep(.2)
+                time.sleep(.5)
                 chassis.stop()
             else:
                 c += 1
