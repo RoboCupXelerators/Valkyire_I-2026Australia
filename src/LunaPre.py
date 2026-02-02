@@ -144,7 +144,7 @@ class Positions:
         self.ballPos = self.GetBallPos()
         if self.ballPos == [0,0] or self.ballPos[0] > 300 or self.ballPos[1] > 300:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= cfg.ExpectedVals.ErrorRange/8:
+        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) == 0:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
@@ -359,7 +359,7 @@ class Positions:
 
     def AbsChassisAngle(self):
         '''
-        获取[球]相对于[场地几何中心]的角度列表
+        获取[其他机器]相对于[场地几何中心]的角度列表
         ##### retrun a list of the absolute angles of the chassis
         #### Returns:
             [a1,a2,a3,etc]
@@ -449,37 +449,33 @@ class Positions:
     def Restricted_Area(self):
         Distance = self.direct_distance()
         
-        border = 300
-        wedge = 220
-        restricted_area = 650
+        border = 240
+        restricted_area_x = 400
+        restricted_area_y = 800
 
         if Distance[0] == 0:
-                print(Distance)
+            return False
         else:
-            if Distance[1]>restricted_area or Distance[3]>restricted_area:
-                if Distance[0]<border:
+            if abs(Distance[1] - Distance[3])<restricted_area_y:
+                if Distance[0]<restricted_area_x:
                     chassis.AbsMoveAngle(0,180,300)
                     return False
-                elif Distance[2]<border:
+                elif Distance[2]<restricted_area_x:
                     chassis.AbsMoveAngle(0,0,300)
                     return False
-                else:
-                    chassis.stop()
-                    return True
-            if Distance[0]<wedge:
+            if Distance[0]<border:
                 chassis.AbsMoveAngle(0,180,300)
                 return False
-            elif Distance[2]<wedge:
+            if Distance[2]<border:
                 chassis.AbsMoveAngle(0,0,300)
                 return False
-            elif Distance[1]<wedge:
+            if Distance[1]<border:
                 chassis.AbsMoveAngle(0,270,-300)
                 return False
-            elif Distance[3]<wedge:
+            if Distance[3]<border:
                 chassis.AbsMoveAngle(0,90,-300)
                 return False
             else:
-                chassis.stop()
                 return True
             
 
@@ -487,7 +483,10 @@ class Positions:
         '''
         ### Function for stopping the vision data thread
         '''
+        chassis.stop()
+        peripheral.Dribble(False)
         lidar.stop()
+        chassis.stop()
         self.vision_data_stop_event.set()
         if self.vision_process is not None:
             self.vision_process.terminate()
