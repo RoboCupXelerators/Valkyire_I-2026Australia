@@ -82,10 +82,10 @@ class Positions:
         return self.vision_data
 
     def GetBallPos(self):
-        return self.vision_data()["ball_pos"]
+        return self.vision_data["ball_pos"]
     
     def GetChassisPos(self):
-        return self.vision_data()["chassis_pos"]
+        return self.vision_data["chassis_pos"]
 
     def Local2Angle(self,AimPos:list[int,int]) -> int:
         '''
