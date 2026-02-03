@@ -6,14 +6,6 @@ import time
 from ReasonData import logger, Settings
 cfg = Settings
 
-from simple_pid import PID
-PositionP = 3
-PositionI = 0
-PositionD = 0
-Pid_controller_1 = PID(PositionP, PositionI, PositionD, setpoint=1)
-Pid_controller_2 = PID(PositionP, PositionI, PositionD, setpoint=1)
-Pid_controller_3 = PID(PositionP/2, PositionI, PositionD, setpoint=1)
-
 from Sensor import Lidar
 from chassis import Car, Peripherals, Key # Universal-Movement-Standard
 if cfg.RoboInfo.Bit == "AB":
@@ -90,17 +82,19 @@ class Positions:
         return self.vision_data
 
     def GetBallPos(self):
-        return self.get_vision_data()["ball_pos"]
+        return self.vision_data()["ball_pos"]
     
     def GetChassisPos(self):
-        return self.get_vision_data()["chassis_pos"]
+        return self.vision_data()["chassis_pos"]
 
-    def Local2Angle(self,lAimPos:list[int,int]) -> int:
+    def Local2Angle(self,AimPos:list[int,int]) -> int:
         '''
-        lAimPos 一个坐标 示例：[0,0]
+        `非阻塞函数`
+        
+        AimPos 一个坐标 示例：[0,0]
         '''
-        iAimX = lAimPos[0]
-        iAimY = lAimPos[1]
+        iAimX = AimPos[0]
+        iAimY = AimPos[1]
         iLocX,iLocY,_ = self.AbsRoboPosition()
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
@@ -112,9 +106,11 @@ class Positions:
             else:
                 iDeltaAngle = 90
         return int(iDeltaAngle)
-    
+
     def Pos2Angle(self,lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
         '''
+        `非阻塞函数`
+
         lInputPos 输入坐标
         lAimPos 目标坐标 示例：[0,0]
         '''
@@ -130,7 +126,10 @@ class Positions:
     # ********* BASIC FUNCTIONS ********
     def Relative_Ball_Position(self):
         '''
+        `非阻塞函数`
+
         Get the [Relative] Position of the ball
+
         获取[球]相对于[机器几何中心]的位置
         #### Args:
         
@@ -154,9 +153,11 @@ class Positions:
 
     def direct_distance(self):
         '''
+        `非阻塞函数`
         Get the [Direct] Distance From the bound to the Bound
+
         获取四面墙的距离 
-        TODO 维修四边分离
+
         #### Args:
 
         #### Returns:
@@ -180,13 +181,16 @@ class Positions:
                 logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
             else:
                 pass
-        # logger.debug("Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
     def AbsRoboPosition(self,lower:bool|None = False):
         '''
+        `非阻塞函数`
+
         Get the [Absolute] Position of the Robot
+
         获取[机器人几何中心]相对于[场地几何中心]的位置 [x_forward,y_left,yaw]
+
         #### Args:
             lower: `bool`, choose to using lower data
 
@@ -226,7 +230,10 @@ class Positions:
 
     def AbsChassisPos(self):
         '''
+        `非阻塞函数`
+
         获取[对方机器人]相对于[场地几何中心]的位置 [[x_forward,y_left],[x_forward,y_left],[x_forward,y_left]]
+
         ##### retrun a list of the absloute position of all chassis
         #### Returns:
             OutputDistanceList: [c1,c2]
@@ -265,7 +272,10 @@ class Positions:
     # ********* UPPER FUNCTIONS ********
     def RelBallAngle(self):
         '''
+        `非阻塞函数`
+
         获取[球]相对于[机器几何中心]的角度
+
         retrun a relative angle of the ball
         ### Returns:
             ballangle: int | relative ball angle
@@ -284,6 +294,10 @@ class Positions:
     
     def AbsBallAngle(self):
         '''
+        `非阻塞函数`
+
+        获取[球]相对于[场地几何中心]的角度
+
         retrun a absolute angle of the ball
         #### Returns:
             BallAngle: int | absolute ball angle
@@ -293,7 +307,10 @@ class Positions:
 
     def AbsBallDistance(self):
         '''
+        `非阻塞函数`
+
         获取[球]相对于[机器几何中心]的距离
+
         Get the [Absolute] Distance from Robot to Ball
         #### Returns:
             BallDistance: int | absolute Distance from Robot to Ball
@@ -316,7 +333,10 @@ class Positions:
 
     def AbsBallPos(self):
         '''
+        `非阻塞函数`
+
         获取[球]相对于[场地几何中心]的距离
+
         Get the [Absolute] Position for the Ball in the Field
         #### Returns:
             BallPos: list | [0,0]
@@ -337,6 +357,8 @@ class Positions:
 
     def RelChassisAngle(self):
         '''
+        `非阻塞函数`
+
         获取[球]相对于[机器人几何中心]的角度列表
         ##### retrun a list of the relative angle from the robot to the chassis
         #### Returns:
@@ -359,6 +381,8 @@ class Positions:
 
     def AbsChassisAngle(self):
         '''
+        `非阻塞函数`
+
         获取[其他机器]相对于[场地几何中心]的角度列表
         ##### retrun a list of the absolute angles of the chassis
         #### Returns:
@@ -376,9 +400,14 @@ class Positions:
 
     def Pos2Pos(self,AimPos:list, speed_gain:int | None = None) -> int:
         '''
-        iFacingAngle 移动时面对的方向 0~360
-        lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
-        # TODO 调整PID
+        `非阻塞函数`
+
+        ### Args:
+            iFacingAngle 移动时面对的方向 0~360
+            lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
+        ### Returns:
+            True 到达目标值
+            False 未到达目标值
         '''
         iLocX,iLocY,iLocZ = self.AbsRoboPosition()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
@@ -424,7 +453,16 @@ class Positions:
                 chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
             return False
 
-    def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int,A2O:bool | None = False):
+    def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int):
+        '''
+        `阻塞函数`
+
+        遍历`Posistions`里的每一个点，直到到达最后一个点完成后返回`True`
+        
+        ### Args:
+            Posistions 移动路径列表
+            iWaitMs 每次移动后等待时间
+        '''
         for i in Posistions:
             while (1):
                 if self.Pos2Pos(i):
@@ -437,6 +475,12 @@ class Positions:
                     pass
 
     def Cover2Start(self):
+        '''
+        `阻塞函数`
+
+        直到前方被遮挡后才会返回True
+
+        '''
         while 1:
             if 100 < lidar.GetDists()[0] <= 500:
                 return True
@@ -449,30 +493,30 @@ class Positions:
     def Restricted_Area(self):
         Distance = self.direct_distance()
         
-        border = 240
-        restricted_area_x = 400
-        restricted_area_y = 800
+        # border = 240
+        # restricted_area_x = 400
+        # restricted_area_y = 800
 
         if Distance[0] == 0:
             return False
         else:
-            if abs(Distance[1] - Distance[3])<restricted_area_y:
-                if Distance[0]<restricted_area_x:
+            if abs(Distance[1] - Distance[3])<Settings.Bounds.restricted_area_y:
+                if Distance[0]<Settings.Bounds.restricted_area_x:
                     chassis.AbsMoveAngle(0,180,300)
                     return False
-                elif Distance[2]<restricted_area_x:
+                elif Distance[2]<Settings.Bounds.restricted_area_x:
                     chassis.AbsMoveAngle(0,0,300)
                     return False
-            if Distance[0]<border:
+            if Distance[0]<Settings.Bounds.Distance2Bound:
                 chassis.AbsMoveAngle(0,180,300)
                 return False
-            if Distance[2]<border:
+            if Distance[2]<Settings.Bounds.Distance2Bound:
                 chassis.AbsMoveAngle(0,0,300)
                 return False
-            if Distance[1]<border:
+            if Distance[1]<Settings.Bounds.Distance2Bound:
                 chassis.AbsMoveAngle(0,270,-300)
                 return False
-            if Distance[3]<border:
+            if Distance[3]<Settings.Bounds.Distance2Bound:
                 chassis.AbsMoveAngle(0,90,-300)
                 return False
             else:

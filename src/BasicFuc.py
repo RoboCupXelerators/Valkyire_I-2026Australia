@@ -238,6 +238,14 @@ def CircleAround(iAimAngle):
     print('stopped')
 
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
+    '''
+    `非阻塞函数`
+    带球转身
+    
+    ### Args
+        Aim_Angle : 目标角度
+        SpeedK : 角度系数
+    '''
     yaw = chassis.GetYaw()
     ball = UnitedPosition.Relative_Ball_Position()
     Aim_Angle = Aim_Angle%360
@@ -265,7 +273,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
 
 
 def GoBack():
-    UnitedPosition.Pos2Pos(cfg.read("Position","Home"),False)
+    UnitedPosition.Pos2Pos(Settings.CheckPoints.Home,False)
 
 
 def NormalShoot(x=1,HomePos=[0,-20,0]):
@@ -311,7 +319,7 @@ def NormalShoot(x=1,HomePos=[0,-20,0]):
         LockSeries().LockBallSlip()
 
 
-def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
+def Slipsideshot(EnemyPos,GoalPos:list | None = [90,10]): #溜边 10,-90
     '''
     #### Yaw : 指南针 
     ##### <code>Yaw: int | [0,360]</code>
@@ -334,16 +342,14 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
         AimX = -AimX
         k = -45
     Angle = (math.degrees(math.atan2(LocalX - EnemyX, LocalY - EnemyY)-270)) % 360
-    UnitedPosition.Pos2Pos([AimX,AimY,Angle],False,200)
+    UnitedPosition.Pos2Pos([AimX,AimY,Angle],200)
     if abs(AimX-LocalX)+abs(AimX-LocalX) < 5:
         DeltaY = LocalY - GoalY
         DeltaX = LocalX
         Theta =((math.degrees(math.atan2(DeltaX, DeltaY)-270)) % 360) + 180 +k
         Compass = Theta
         for _ in range(20):
-            # if not AbsBallPos() == [1207, 1207]:
-            #     break
-            chassis.AbsTurn(Compass)
+            chassis.TurnTo(Compass)
             time.sleep(0.03)
         peripheral.ShootBall()
         logger.success("Ball is in possession, start shotting.")

@@ -63,6 +63,9 @@ class Preference:
                     "FarPos": [95,75,0], #Bound CheckPoint (Far from [0,0])
                     "Short" : 200, # length of short side
                     "Long" : 260, # length of longer side
+                    "Distance2Bound" : 240,
+                    "restricted_area_x": 400,
+                    "restricted_area_y": 800,
                 },
                 "CheckPoints" : {
                     "Home": [-70,0,0],
@@ -180,6 +183,9 @@ class Prompts(object):
             self.FarPos = [95,75,0]
             self.Short = 200
             self.Long = 250
+            self.Distance2Bound = 240
+            self.restricted_area_x = 400
+            self.restricted_area_y = 800
 
     class _checkpoints(object):
         def __init__(self):
