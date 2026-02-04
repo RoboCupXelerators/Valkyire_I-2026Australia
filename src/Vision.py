@@ -48,8 +48,8 @@ class UnitedVision(Detect_Method):
         P2CVB = self.P2CVB[CamIndex]
         X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[CamIndex])
 
-        X = int(self.P2CK[CamIndex] * X + self.P2CHB[CamIndex])
-        Y = int(-self.P2CK[CamIndex] * Y + self.P2CVB[CamIndex])
+        X = round(self.P2CK[CamIndex] * X + self.P2CHB[CamIndex],2)
+        Y = round(-self.P2CK[CamIndex] * Y + self.P2CVB[CamIndex],2)
 
         return X, Y
  
@@ -96,19 +96,18 @@ class UnitedVision(Detect_Method):
             # Process ChassisList
             for i in range(4):
                 try:
-                    CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
-                    CameraIndex = i
+                    CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    if i == 0:
+                    if CameraIndex == 0:
                         CX = -X
                         CY = Y
-                    elif i == 1:
+                    elif CameraIndex == 1:
                         CX = Y
                         CY = X
-                    elif i == 2:
+                    elif CameraIndex == 2:
                         CX = X
                         CY = Y
-                    elif i == 3:
+                    elif CameraIndex == 3:
                         CX = -Y
                         CY = -X
 
@@ -163,8 +162,8 @@ class UnitedVision(Detect_Method):
                 try:
                     CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = OutputBuffer[i]
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    X -= 15
-                    Y -= 15
+                    X -= 12
+                    Y -= 12
                     # X = int(1.50117*X-5.10171)
                     if CameraIndex == 0:
                         BX = -X
@@ -178,7 +177,7 @@ class UnitedVision(Detect_Method):
                     elif CameraIndex == 3:
                         BX = -Y
                         BY = -X
-                    BallTuple = (BX, BY, BallWidth, BallHeight, Confidence)
+                    BallTuple = (round(BX,2), round(BY,2), BallWidth, BallHeight, Confidence)
                     Balls.append(BallTuple)
                 except:
                     continue
@@ -215,4 +214,4 @@ if __name__ == "__main__":
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
         except Exception as e:
             print(f"Error in vision server: {e}")
-        time.sleep(0.01)  # Adjust sleep time as needed for performance
+        time.sleep(0.02)  # Adjust sleep time as needed for performance

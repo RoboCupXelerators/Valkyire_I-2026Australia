@@ -83,20 +83,19 @@ class LockSeries:
             relBallAngle = int(math.degrees(math.atan2(iBY,iBX)))
             Fangle = relBallAngle
             if iBX > 75 or iBY > 75:
-                Kp = 7
-                KpZ = 0.5
-            elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                Kp = 3
-                KpZ = 0.5
-            else:
-                Kp = 2
+                Kp = 10
                 KpZ = 1
+            elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                Kp = 7
+                KpZ = 1
+            else:
+                Kp = 5
+                KpZ = 1.5
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
-            KpZ = 1
             SpeedX = iBX * Kp
             SpeedY = iBY * Kp
-            Fangle = Fangle * KpZ
+            # Fangle = Fangle * KpZ
             if SpeedX > 300:
                 SpeedX = 300
             if SpeedY > 300:
@@ -106,7 +105,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RelMoveVetor(SpeedX*1.5,SpeedY,relBallAngle,KpZ) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
 
 lockball = LockSeries()

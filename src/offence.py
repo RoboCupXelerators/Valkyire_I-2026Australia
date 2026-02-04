@@ -1,7 +1,7 @@
 from BasicFuc import *
 
 try:
-    # peripheral.Dribble(1)
+    peripheral.Dribble(1)
     # time.sleep(3)
     while(1):
         if UnitedPosition.Restricted_Area():
@@ -13,7 +13,7 @@ try:
             goal_angle_deep = UnitedPosition.Local2Angle([230,0])+180
             goal_angle_home = UnitedPosition.Local2Angle([100,0])
             if BallPosition == [0xfff,0xfff]:
-                # peripheral.Dribble(0.7)
+                peripheral.Dribble(0.7)
                 UnitedPosition.Pos2Pos([Settings.CheckPoints.Home[0]+20,Settings.CheckPoints.Home[1],0],4.5)
             elif BallPosition == [0xddd,0xddd]:
                 if RoboPosition[0] < 70:
@@ -23,6 +23,7 @@ try:
                         logger.warning("Processing :27")
                 else:
                     peripheral.Dribble(0.2)
+                    time.sleep(.2)
                     if TurnTo_with_ball((goal_angle_home)%360,1):
                         peripheral.Dribble(0.2)
                         chassis.RelMoveAngle(0,300)
@@ -36,7 +37,7 @@ try:
                     time.sleep(2)
             else:
                 logger.warning("Processing :44")
-                # peripheral.Dribble(0.7)
+                peripheral.Dribble(0.7)
                 lockball.LockBallSlip()
         time.sleep(.03)
 except Exception as e:
