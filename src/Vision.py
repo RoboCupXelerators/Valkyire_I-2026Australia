@@ -214,4 +214,4 @@ if __name__ == "__main__":
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
         except Exception as e:
             print(f"Error in vision server: {e}")
-        time.sleep(0.02)  # Adjust sleep time as needed for performance
+        time.sleep(0.01)  # Adjust sleep time as needed for performance

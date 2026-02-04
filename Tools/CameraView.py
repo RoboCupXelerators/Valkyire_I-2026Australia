@@ -24,7 +24,7 @@ def find_available_cameras():
     print(f"找到的摄像头: {available_cameras}")
     return available_cameras
 
-def stream_video(camera_index_str ,Width=640, Height=480, AutoExposure=2, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+def stream_video(camera_index_str ,Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
     """
     一个生成器函数，用于从指定的摄像头索引捕获并持续产生（yield）视频帧。
     """

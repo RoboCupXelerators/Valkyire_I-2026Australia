@@ -83,7 +83,7 @@ class VisionPreUntil:
             time.sleep(0.03)
 
 
-    def InitCam(self,CamPorts,Width=640, Height=480, AutoExposure=4, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+    def InitCam(self,CamPorts,Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
         for Port in CamPorts:
             Cam = cv2.VideoCapture(Port,cv2.CAP_V4L2)
             Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
