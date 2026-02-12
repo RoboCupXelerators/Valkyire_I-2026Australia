@@ -83,13 +83,13 @@ class LockSeries:
             else:
                 Fangle = int(math.degrees(math.atan2(iBY,iBX)))
             if iBX > 75 or iBY > 75:
-                Kp = 10
+                Kp = 7
                 KpZ = 1
             elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                Kp = 5
+                Kp = 6
                 KpZ = 1
             else:
-                Kp = 3
+                Kp = 4
                 KpZ = 1.5
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
@@ -248,7 +248,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error >= 180:
             iDirectionFactor = 1
-        if not abs(Aim_Angle-yaw) <= Settings.ExpectedVals.ErrorRange/4:
+        if not abs(Aim_Angle-yaw) <= 10:
             logger.error(Error)
             chassis.SetMotor([
                 iDirectionFactor * 15 * SpeedK *Error/30,
