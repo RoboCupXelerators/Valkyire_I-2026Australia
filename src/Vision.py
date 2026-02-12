@@ -98,8 +98,6 @@ class UnitedVision(Detect_Method):
                 try:
                     CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    X -= 12
-                    Y -= 12
                     if CameraIndex == 0:
                         CX = -X
                         CY = Y

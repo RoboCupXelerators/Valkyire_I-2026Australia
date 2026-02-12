@@ -78,22 +78,21 @@ class LockSeries:
             chassis.stop()
             return True
         else:
-            if iBX == 0:
-                relBallAngle = 0
-            relBallAngle = int(math.degrees(math.atan2(iBY,iBX)))
-            Fangle = relBallAngle
+            if iBY == 0:
+                Fangle = 0
+            else:
+                Fangle = int(math.degrees(math.atan2(iBY,iBX)))
             if iBX > 75 or iBY > 75:
                 Kp = 7
-                KpZ = 0.5
-            elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                Kp = 3
-                KpZ = 0.5
-            else:
-                Kp = 2
                 KpZ = 1
+            elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                Kp = 6
+                KpZ = 1
+            else:
+                Kp = 4
+                KpZ = 1.5
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
-            KpZ = 1
             SpeedX = iBX * Kp
             SpeedY = iBY * Kp
             Fangle = Fangle * KpZ
@@ -106,7 +105,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            chassis.RelMoveVetor(SpeedX*1.3,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RelMoveVetor(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
 
 lockball = LockSeries()
@@ -249,7 +248,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error >= 180:
             iDirectionFactor = 1
-        if not abs(Aim_Angle-yaw) <= Settings.ExpectedVals.ErrorRange/5:
+        if not abs(Aim_Angle-yaw) <= 10:
             logger.error(Error)
             chassis.SetMotor([
                 iDirectionFactor * 15 * SpeedK *Error/30,

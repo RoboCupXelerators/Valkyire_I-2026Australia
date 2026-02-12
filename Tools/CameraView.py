@@ -24,7 +24,7 @@ def find_available_cameras():
     print(f"找到的摄像头: {available_cameras}")
     return available_cameras
 
-def stream_video(camera_index_str):
+def stream_video(camera_index_str ,Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
     """
     一个生成器函数，用于从指定的摄像头索引捕获并持续产生（yield）视频帧。
     """
@@ -51,6 +51,13 @@ def stream_video(camera_index_str):
     try:
         while True:
             # 读取一帧画面
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
+            cap.set(cv2.CAP_PROP_EXPOSURE, Exposure)
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
+            cap.set(cv2.CAP_PROP_CONTRAST, Contrast)
+            cap.set(cv2.CAP_PROP_SATURATION, Saturation)
             ret, frame = cap.read()
             
             # 如果 ret 为 False，表示读取失败（可能摄像头断开）

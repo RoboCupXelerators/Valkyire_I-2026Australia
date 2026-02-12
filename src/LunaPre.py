@@ -143,7 +143,7 @@ class Positions:
         self.ballPos = self.GetBallPos()
         if self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= 0.5:
+        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
@@ -178,9 +178,9 @@ class Positions:
         else:
             if self.WarnedLidarCount:
                 self.WarnedLidarCount = 0
-                logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
             else:
                 pass
+            logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
     def AbsRoboPosition(self,lower:bool|None = False):
@@ -304,10 +304,7 @@ class Positions:
         if ballY == 0:
             relBallAngle = 0
         try:
-            if -int(math.degrees(math.atan2(ballY,ballX))) < 0:
-                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX))) + 360
-            else:
-                relBallAngle = -int(math.degrees(math.atan2(ballY,ballX)))
+            relBallAngle = int(math.degrees(math.atan2(ballX,ballY)))
         except ZeroDivisionError:
             relBallAngle = 0
         return relBallAngle
