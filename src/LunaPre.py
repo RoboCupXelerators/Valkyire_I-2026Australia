@@ -141,9 +141,9 @@ class Positions:
         '''
         # 20251017 already changed X,Y dimension    
         self.ballPos = self.GetBallPos()
-        if self.ballPos == [0,0] or self.ballPos[0] > 300 or self.ballPos[1] > 300:
+        if self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) == 0:
+        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]) <= 0.5:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
@@ -227,6 +227,26 @@ class Positions:
         except:
             pass
         return self.LidarPos
+
+    def RelChassisPos(self):
+        '''
+        `非阻塞函数`
+
+        获取[对方机器人]相对于[场地几何中心]的位置 [[x_forward,y_left],[x_forward,y_left],[x_forward,y_left]]
+
+        ##### retrun a list of the absloute position of all chassis
+        #### Returns:
+            OutputDistanceList: [c1,c2]
+                c1: 
+                    chassis X Position
+                    chassis Y Position
+                    chassis height
+                    chassis weidth
+        '''
+        # 20251017 already changed X,Y dimension
+        ChassisRawList = sorted(self.GetChassisPos(), key=lambda x: x[2])
+        return ChassisRawList
+
 
     def AbsChassisPos(self):
         '''
