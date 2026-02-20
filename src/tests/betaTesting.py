@@ -2,8 +2,8 @@ from LunaPre import *
 #长260
 try:
     while(1):
-        rob = UnitedPosition.Field_Robot_Pos()
-        ball = UnitedPosition.Robot_Ball_Pos()
+        rob = UnitedPosition.FieldRobotPos()
+        ball = UnitedPosition.RobotBallPos()
         time.sleep(0.1)
         # print("rob:",rob,"ball:",ball)
     
@@ -11,7 +11,7 @@ except Exception as e:
     raise e
 
 finally:
-    UnitedPosition.stop()
+    UnitedPosition.Stop()
     chassis.stop()
 
     if Settings.Debug.Beta == True:

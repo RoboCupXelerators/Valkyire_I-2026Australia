@@ -40,7 +40,7 @@ def linear_map(value, input_range, output_range):
     return mapped_value
 
 def ChasingBall():
-    iBX,iBY = UnitedPosition.Robot_Ball_Pos()
+    iBX,iBY = UnitedPosition.RobotBallPos()
     Compass = chassis.GetYaw()
     Angle = (math.degrees(math.atan2(iBX, iBY)) + 360) % 360
     AbsAngle = Angle + Compass
@@ -59,18 +59,18 @@ class LockSeries:
         
         # Compass = chassis.GetYaw()#获取机器人的航向
         # Angle = (math.degrees(math.atan2(iBX, iBY))) % 360
-        Angle = UnitedPosition.RelBallAngle()
+        Angle = UnitedPosition.RobotBallAngle()
         # Fangle = -(Angle - Compass)
         logger.debug("Ball Angle: %f" % Angle)
         chassis.AbsTurn(Angle)
 
     def Lockballmove(self):
-        lBallPos = UnitedPosition.AbsBallPos()
+        lBallPos = UnitedPosition.FieldBallPos()
         iBX,iBY = lBallPos[0],lBallPos[1]
         chassis.AbsMoveVetor(iBX*4,iBY*4,0)
 
     def LockBallSlip(self):
-        iBX,iBY = UnitedPosition.Robot_Ball_Pos()
+        iBX,iBY = UnitedPosition.RobotBallPos()
         if [iBX,iBY] == [0xfff,0xfff]:
             chassis.stop()
             return False
@@ -111,7 +111,7 @@ class LockSeries:
 lockball = LockSeries()
 
 def NormalShoot(x=1):
-    BX, BY = UnitedPosition.Robot_Ball_Pos()
+    BX, BY = UnitedPosition.RobotBallPos()
     logger.debug("Current Position: %s" % [BX, BY])
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
@@ -136,10 +136,10 @@ def NormalShoot(x=1):
         #     break
         peripheral.Dribble(True)
         for _ in range(10):
-            BX,BY = UnitedPosition.Robot_Ball_Pos()
+            BX,BY = UnitedPosition.RobotBallPos()
             if not BX == 0 and BY <= 9:
                 break
-            X,Y,_ = UnitedPosition.Field_Robot_Pos()
+            X,Y,_ = UnitedPosition.FieldRobotPos()
             DeltaY = cfg.read("Position","Height")/2 - Y
             DeltaX = X
             Theta = math.atan2(DeltaY, DeltaX)
@@ -185,7 +185,7 @@ def CircleAround(iAimAngle):
         iDirectionFactor = 1
     else:
         iDirectionFactor = -1
-    lBallPos = UnitedPosition.Robot_Ball_Pos()
+    lBallPos = UnitedPosition.RobotBallPos()
 
     TempBX = -lBallPos[1]
     TempBY = lBallPos[0]
@@ -194,7 +194,7 @@ def CircleAround(iAimAngle):
 
 
     while(1):
-        lBallPos = UnitedPosition.Robot_Ball_Pos()
+        lBallPos = UnitedPosition.RobotBallPos()
 
         TempBX = -lBallPos[1]
         TempBY = lBallPos[0]
@@ -213,7 +213,7 @@ def CircleAround(iAimAngle):
         time.sleep(.03)
     chassis.TurnTo(iAimAngle)
     while(1):
-        lBallPos = UnitedPosition.Robot_Ball_Pos()
+        lBallPos = UnitedPosition.RobotBallPos()
 
         TempBX = -lBallPos[1]
         TempBY = lBallPos[0]
@@ -238,7 +238,7 @@ def CircleAround(iAimAngle):
 
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.Robot_Ball_Pos()
+    ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
     logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
@@ -268,7 +268,7 @@ def GoBack():
 
 
 def NormalShoot(x=1,HomePos=[0,-20,0]):
-    BX, BY = UnitedPosition.Robot_Ball_Pos()
+    BX, BY = UnitedPosition.RobotBallPos()
 
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
@@ -285,10 +285,10 @@ def NormalShoot(x=1,HomePos=[0,-20,0]):
             time.sleep(0.03)
         peripheral.Dribble(True)
         for _ in range(10):
-            BX,BY = UnitedPosition.AbsBallPos()
+            BX,BY = UnitedPosition.FieldBallPos()
             if not BX == 0 and BY <= 9:
                 break
-            X,Y,_ = UnitedPosition.Field_Robot_Pos()()
+            X,Y,_ = UnitedPosition.FieldRobotPos()()
             DeltaY = cfg.Bounds.Long/2 - Y
             DeltaX = X
             Theta = math.atan2(DeltaY, DeltaX)
@@ -320,7 +320,7 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
     ### GoalPos : 球门坐标
     '''
     peripheral.Dribble(True)
-    LocalPos = UnitedPosition.AbsBallPos()
+    LocalPos = UnitedPosition.FieldBallPos()
     LocalX,LocalY,_ = LocalPos
     EnemyX,EnemyY = EnemyPos
     _ , GoalY = GoalPos
@@ -349,11 +349,11 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
 
 def OHMYBACK(HomePos=[0,-20,0]):
     #正常
-    if UnitedPosition.AbsBallPos() == [0xddd,0xddd]:
+    if UnitedPosition.FieldBallPos() == [0xddd,0xddd]:
         peripheral.Dribble(True)
-        iLocX,iLocY,_ = UnitedPosition.Field_Robot_Pos()
+        iLocX,iLocY,_ = UnitedPosition.FieldRobotPos()
         try:
-            Cx ,Cy = UnitedPosition.Field_Chassis_Pos()
+            Cx ,Cy = UnitedPosition.FieldChassisPos()
         except:
             Cx = 0
             Cy = 0
@@ -374,7 +374,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
             ShootY = -65
         if abs(ShootY - iLocX) < 5 :
             if abs(iLocY - 75) < 5:
-                X,Y,_ = UnitedPosition.Field_Robot_Pos()()
+                X,Y,_ = UnitedPosition.FieldRobotPos()()
                 DeltaY = cfg.Bounds.Long/2 - Y
                 DeltaX = X
                 Theta = math.atan2(DeltaY, DeltaX)

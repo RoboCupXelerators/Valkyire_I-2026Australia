@@ -110,14 +110,7 @@ class Positions:
     
     def _get_chassis_pos(self):
         return self.vision_data["chassis_pos"]
-
-    # Backward-compatible aliases
-    def _Get_Ball_Pos(self):
-        return self._get_ball_pos()
-
-    def _Get_Chassis_Pos(self):
-        return self._get_chassis_pos()
-
+    
     def Local2Angle(self, AimPos: list) -> int:
         '''
         `非阻塞函数`
@@ -183,10 +176,6 @@ class Positions:
             logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
 
-    # Backward-compatible alias (old name kept for legacy scripts)
-    def Robot_Ball_Pos(self):
-        return self.RobotBallPos()
-
     def DirectDistance(self):
         '''
         `非阻塞函数`
@@ -218,10 +207,6 @@ class Positions:
                 pass
             logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
-
-    # Backward-compatible alias
-    def direct_distance(self):
-        return self.DirectDistance()
 
     def FieldRobotPos(self, lower: bool | None = False):
         '''
@@ -268,10 +253,6 @@ class Positions:
             pass
         return self.LidarPos
 
-    # Backward-compatible alias
-    def Field_Robot_Pos(self, lower: bool | None = False):
-        return self.FieldRobotPos(lower=lower)
-
     # Documented API: Robot_Chassis_Pos (robot frame)
     def RobotChassisPos(self):
         """获取底盘在机体坐标系下的位置。
@@ -280,9 +261,6 @@ class Positions:
             list: vision server 原始输出（通常为 [[x, y, w, h, conf], ...]）
         """
         return self._get_chassis_pos()
-
-    def Robot_Chassis_Pos(self):
-        return self.RobotChassisPos()
 
     def FieldChassisPos(self):
         '''
@@ -324,13 +302,9 @@ class Positions:
                 ]
             OutputDistanceList.append(AbsChassisCache)
         return OutputDistanceList
-
-    # Backward-compatible alias
-    def Field_Chassis_Pos(self):
-        return self.FieldChassisPos()
-
+    
     # ********* UPPER FUNCTIONS ********
-    def RelBallAngle(self):
+    def RobotBallAngle(self):
         '''
         `非阻塞函数`
 
@@ -349,7 +323,7 @@ class Positions:
             relBallAngle = 0
         return relBallAngle
     
-    def AbsBallAngle(self):
+    def FieldBallAngle(self):
         '''
         `非阻塞函数`
 
@@ -359,10 +333,10 @@ class Positions:
         #### Returns:
             BallAngle: int | absolute ball angle
         '''
-        self.BallAngle = (self.RelBallAngle() + compass())%360
+        self.BallAngle = (self.RobotBallAngle() + compass())%360
         return self.BallAngle
 
-    def AbsBallDistance(self):
+    def RobotBallDistance(self):
         '''
         `非阻塞函数`
 
@@ -388,7 +362,7 @@ class Positions:
             logger.debug("[Absolute] Ball Distance: %s" % self.BallDistance)
         return self.BallDistance
 
-    def AbsBallPos(self):
+    def FieldBallPos(self):
         '''
         `非阻塞函数`
 
@@ -412,7 +386,7 @@ class Positions:
             AbsBallPositon = [SelfX + ballX, SelfY + ballY]
             return AbsBallPositon
 
-    def RelChassisAngle(self):
+    def RobotChassisAngle(self):
         '''
         `非阻塞函数`
 
@@ -436,7 +410,7 @@ class Positions:
                 ChassisAngleList.append(0)
         return ChassisAngleList
 
-    def AbsChassisAngle(self):
+    def FieldChassisAngle(self):
         '''
         `非阻塞函数`
 
@@ -447,7 +421,7 @@ class Positions:
         '''
         OutputAngles = []
         CompassCache = compass()
-        for i in self.RelChassisAngle():
+        for i in self.RobotChassisAngle():
             ChassisAngleCache = i + CompassCache
             if ChassisAngleCache > 360:
                 OutputAngles.append(int(ChassisAngleCache)%360)
@@ -578,12 +552,7 @@ class Positions:
                 return False
             else:
                 return True
-
-    # Backward-compatible alias
-    def Restricted_Area(self):
-        return self.RestrictedArea()
             
-
     def Stop(self):
         '''
         ### Function for stopping the vision data thread
@@ -596,12 +565,7 @@ class Positions:
         if self.vision_process is not None:
             self.vision_process.terminate()
 
-    # Backward-compatible alias
-    def stop(self):
-        return self.Stop()
-
 UnitedPosition = Positions()
-
 
 class Communication:
     def __init__(self):
@@ -622,7 +586,7 @@ class Communication:
         ### function for judging whether catch the ball
         #### no return value, this function will change the global variable `BallFlag`
         '''
-        BallX, BallY = UnitedPosition.AbsBallPos()
+        BallX, BallY = UnitedPosition.FieldBallPos()
         if [BallX,BallY] == [0xddd,0xddd]:
             self.BallFlag[0] = 1
         else:

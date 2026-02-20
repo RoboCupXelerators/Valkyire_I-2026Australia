@@ -4,9 +4,9 @@ try:
     # time.sleep(3)
     # peripheral.Dribble(1.0)
     while(1):
-        if UnitedPosition.Restricted_Area():
-            BallPosition = UnitedPosition.Robot_Ball_Pos()
-            RoboPosition = UnitedPosition.Field_Robot_Pos()
+        if UnitedPosition.RestrictedArea():
+            BallPosition = UnitedPosition.RobotBallPos()
+            RoboPosition = UnitedPosition.FieldRobotPos()
             yaw = chassis.GetYaw()
             # print("BalllPosition:",BalllPosition)
             # time.sleep(1)
@@ -49,4 +49,4 @@ try:
 except Exception as e:
     raise e
 finally:
-    UnitedPosition.stop()
+    UnitedPosition.Stop()

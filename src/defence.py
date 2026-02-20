@@ -3,10 +3,10 @@ from BasicFuc import *
 try:
     # peripheral.Dribble(True)
     while(1):
-        if UnitedPosition.Restricted_Area():
-            BalllPosition = UnitedPosition.Robot_Ball_Pos()
+        if UnitedPosition.RestrictedArea():
+            BalllPosition = UnitedPosition.RobotBallPos()
             Yaw = Bits.GetYaw()
-            BallAngle = UnitedPosition.RelBallAngle()
+            BallAngle = UnitedPosition.RobotBallAngle()
             if BalllPosition == [0xfff,0xfff]:
                 UnitedPosition.Pos2Pos(Settings.CheckPoints.Home,4.5)
             elif BalllPosition == [0xddd,0xddd]:
@@ -19,7 +19,7 @@ try:
                 if 0 < BalllPosition[0] < 30:
                     lockball.LockBallSlip()
                 else:
-                    Distance_cache = UnitedPosition.direct_distance()
+                    Distance_cache = UnitedPosition.DirectDistance()
                     if Distance_cache[1] > Distance_cache[3]:
                         SpeedCache = Distance_cache[1]
                     else:
@@ -33,5 +33,5 @@ except Exception as e:
 finally:
     peripheral.Dribble(False)
     chassis.stop()
-    UnitedPosition.stop()
+    UnitedPosition.Stop()
     chassis.stop()

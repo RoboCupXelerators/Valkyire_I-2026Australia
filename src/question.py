@@ -16,9 +16,9 @@ try:
                    ]
     points_cache = []
     for _ in range(3):
-        print(UnitedPosition.Field_Robot_Pos())
+        print(UnitedPosition.FieldRobotPos())
         time.sleep(1)
-    Position_Point = UnitedPosition.Field_Robot_Pos()
+    Position_Point = UnitedPosition.FieldRobotPos()
     Position_Point = [100,80,0]
     cache = 0
     for i in range(len(points_list)):
@@ -41,5 +41,5 @@ except Exception as e:
 finally:
     peripheral.Dribble(False)
     chassis.stop()
-    UnitedPosition.stop()
+    UnitedPosition.Stop()
     chassis.stop()
