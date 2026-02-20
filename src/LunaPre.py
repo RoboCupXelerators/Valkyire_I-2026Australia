@@ -30,6 +30,11 @@ from Sensor import Lidar
 from chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 
 
+# When runtime objects fall back to MockBits (no hardware), this flag becomes True.
+# It is used to disable heavy subsystems (Vision subprocess, etc.) by default.
+RUNTIME_IS_MOCK = False
+
+
 class _MockBits:
     """在开发机/无外设时用于让模块可导入的 Mock Bits。"""
 
@@ -65,9 +70,10 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     def _use_mock(reason: str) -> None:
         """Switch module-level runtime objects to mock implementations."""
 
-        global Bits, lidar, chassis, compass, peripheral, key, Odometer
+        global Bits, lidar, chassis, compass, peripheral, key, Odometer, RUNTIME_IS_MOCK
 
         logger.warning(f"Using MockBits: {reason}")
+        RUNTIME_IS_MOCK = True
         Bits = _MockBits()
         lidar = Lidar(Bits.GetYaw, auto_start=False)
         chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
@@ -164,6 +170,11 @@ class Positions:
         self.vision_data_stop_event = threading.Event()
         self.get_vision_data_process: threading.Thread | None = None
         self._vision_started = False
+        # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
+        enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
+        self._vision_enabled = True
+        if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
+            self._vision_enabled = enable_vision_env
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -171,6 +182,10 @@ class Positions:
         Importing LunaPre should not start external processes automatically.
         Call this when you really need vision data.
         """
+
+        if not self._vision_enabled:
+            # keep returning default vision_data without starting threads/subprocess
+            return False
 
         if self._vision_started:
             return True
@@ -190,6 +205,11 @@ class Positions:
         return True
         
     def _get_vision_data(self):
+        # Backoff for restarting vision subprocess when it's crashing repeatedly.
+        restart_backoff_s = 0.2
+        last_restart_t = 0.0
+        restart_count = 0
+        max_restart = 3
         while not self.vision_data_stop_event.is_set():
             time.sleep(0.005)
             try:
@@ -199,10 +219,27 @@ class Positions:
                 data, addr = self.sock.recvfrom(4096)
                 self.vision_data = pickle.loads(data)
             except socket.timeout:
+                if not self._vision_enabled:
+                    # vision explicitly disabled
+                    self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+                    time.sleep(0.05)
+                    continue
+
                 if self.vision_process is None or self.vision_process.poll() is not None:
+                    # If it keeps dying, stop respawning (prevents resource_tracker leaked semaphores).
+                    if restart_count >= max_restart:
+                        self._vision_enabled = False
+                        logger.warning("Vision disabled: subprocess crashed too many times (max_restart=%s).", max_restart)
+                        continue
+
+                    now = time.time()
+                    if (now - last_restart_t) < restart_backoff_s:
+                        time.sleep(restart_backoff_s)
+                    last_restart_t = now
                     project_root = os.path.dirname(os.path.dirname(__file__))
                     self.vision_process = subprocess.Popen([sys.executable, "src/Vision.py"], cwd=project_root)
                     logger.info("Started vision server process")
+                    restart_count += 1
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
         
     def GetVisionData(self):
@@ -677,8 +714,26 @@ class Positions:
         lidar.stop()
         chassis.stop()
         self.vision_data_stop_event.set()
+        # close UDP socket
+        try:
+            if self.sock is not None:
+                self.sock.close()
+        except Exception:
+            pass
+
         if self.vision_process is not None:
-            self.vision_process.terminate()
+            try:
+                self.vision_process.terminate()
+                self.vision_process.wait(timeout=1.0)
+            except Exception:
+                pass
+
+        # best-effort join
+        try:
+            if self.get_vision_data_process is not None:
+                self.get_vision_data_process.join(timeout=0.5)
+        except Exception:
+            pass
 
 UnitedPosition = Positions()
 
