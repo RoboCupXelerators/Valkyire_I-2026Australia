@@ -1,8 +1,24 @@
-import math, time, threading, subprocess, os, sys
-import socket
-import pickle
-import time
+"""LunaPre
 
+本文件提供上层策略常用的封装：
+- 🤖 Positions：坐标/目标位置计算（机体坐标系 & 场地坐标系）
+- 📡 Communication：队内通信（Wi-Fi / BLE 等）
+
+命名规范（与 SoccerVisonWiki/ProgramingAdvanced.md 对齐）：
+- ✅ 对外方法：PascalCase（大驼峰）
+- ✅ 变量：snake_case（蛇形）
+
+兼容性：为了不一次性炸掉历史代码，旧接口会保留为“别名/包装”。
+"""
+
+import math
+import os
+import pickle
+import socket
+import subprocess
+import sys
+import threading
+import time
 from ReasonData import logger, Settings
 cfg = Settings
 
@@ -38,12 +54,16 @@ else:
 
 Beta_Func = False
 
+# Thread start flags (avoid NameError)
+SendstatusThreadFuncStarted = False
+PeerstatusThreadFuncStarted = False
+
 class Positions:
     def __init__(self):
         # Values for Setup Position System
-        self.LidarPos = [0xfff,0xfff,0xfff]
-        self.ballPos = [0xfff,0xfff]
-        self.BallDistance = 0xfff
+        self.LidarPos = [0xfff,0xfff,0xfff]  # legacy name
+        self.ballPos = [0xfff,0xfff]         # legacy name
+        self.BallDistance = 0xfff            # legacy name
         # Values for log system
         self.WarnedLidarCount = 0
         # Values for Adjust the scale of Position System
@@ -78,16 +98,27 @@ class Positions:
                     logger.info("Started vision server process")
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
         
-    def get_vision_data(self):
+    def GetVisionData(self):
         return self.vision_data
 
-    def _Get_Ball_Pos(self):
+    # Backward-compatible alias
+    def get_vision_data(self):
+        return self.GetVisionData()
+
+    def _get_ball_pos(self):
         return self.vision_data["ball_pos"]
     
-    def _Get_Chassis_Pos(self):
+    def _get_chassis_pos(self):
         return self.vision_data["chassis_pos"]
 
-    def Local2Angle(self,AimPos:list[int,int]) -> int:
+    # Backward-compatible aliases
+    def _Get_Ball_Pos(self):
+        return self._get_ball_pos()
+
+    def _Get_Chassis_Pos(self):
+        return self._get_chassis_pos()
+
+    def Local2Angle(self, AimPos: list) -> int:
         '''
         `非阻塞函数`
         
@@ -95,7 +126,7 @@ class Positions:
         '''
         iAimX = AimPos[0]
         iAimY = AimPos[1]
-        iLocX,iLocY,_ = self.Field_Robot_Pos()
+        iLocX, iLocY, _ = self.FieldRobotPos()
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         try:
@@ -107,7 +138,7 @@ class Positions:
                 iDeltaAngle = 90
         return int(iDeltaAngle)
 
-    def Pos2Angle(self,lInputPos:list[int,int],lAimPos:list[int,int]) -> int:
+    def Pos2Angle(self, lInputPos: list, lAimPos: list) -> int:
         '''
         `非阻塞函数`
 
@@ -124,7 +155,8 @@ class Positions:
         return int(iDeltaAngle)
 
     # ********* BASIC FUNCTIONS ********
-    def Robot_Ball_Pos(self):
+    # ===== Public API (recommended) =====
+    def RobotBallPos(self):
         '''
         `非阻塞函数`
 
@@ -140,7 +172,7 @@ class Positions:
             `0xddd` stand for `CatchBall`
         '''
         # 20251017 already changed X,Y dimension    
-        self.ballPos = self._Get_Ball_Pos()
+        self.ballPos = self._get_ball_pos()
         if self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
@@ -151,7 +183,11 @@ class Positions:
             logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
 
-    def direct_distance(self):
+    # Backward-compatible alias (old name kept for legacy scripts)
+    def Robot_Ball_Pos(self):
+        return self.RobotBallPos()
+
+    def DirectDistance(self):
         '''
         `非阻塞函数`
         Get the [Direct] Distance From the bound to the Bound
@@ -183,7 +219,11 @@ class Positions:
             logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
-    def Field_Robot_Pos(self,lower:bool|None = False):
+    # Backward-compatible alias
+    def direct_distance(self):
+        return self.DirectDistance()
+
+    def FieldRobotPos(self, lower: bool | None = False):
         '''
         `非阻塞函数`
 
@@ -199,7 +239,7 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
-        _distance = self.direct_distance()
+        _distance = self.DirectDistance()
         if _distance == [0xfff,0xfff,0xfff,0xfff]:
             chassis.stop()
             return [0xfff,0xfff,0xfff]
@@ -228,7 +268,23 @@ class Positions:
             pass
         return self.LidarPos
 
-    def Field_Chassis_Pos(self):
+    # Backward-compatible alias
+    def Field_Robot_Pos(self, lower: bool | None = False):
+        return self.FieldRobotPos(lower=lower)
+
+    # Documented API: Robot_Chassis_Pos (robot frame)
+    def RobotChassisPos(self):
+        """获取底盘在机体坐标系下的位置。
+
+        Returns:
+            list: vision server 原始输出（通常为 [[x, y, w, h, conf], ...]）
+        """
+        return self._get_chassis_pos()
+
+    def Robot_Chassis_Pos(self):
+        return self.RobotChassisPos()
+
+    def FieldChassisPos(self):
         '''
         `非阻塞函数`
 
@@ -244,8 +300,8 @@ class Positions:
                     chassis weidth
         '''
         # 20251017 already changed X,Y dimension
-        ChassisRawList = self._Get_Chassis_Pos()
-        SelfX,SelfY,SelfZ = self.Field_Robot_Pos()
+        ChassisRawList = self._get_chassis_pos()
+        SelfX, SelfY, SelfZ = self.FieldRobotPos()
         OutputDistanceList = []
         for c in ChassisRawList:
             cDistance = math.sqrt(c[0]**2 + c[1]**2)
@@ -269,6 +325,10 @@ class Positions:
             OutputDistanceList.append(AbsChassisCache)
         return OutputDistanceList
 
+    # Backward-compatible alias
+    def Field_Chassis_Pos(self):
+        return self.FieldChassisPos()
+
     # ********* UPPER FUNCTIONS ********
     def RelBallAngle(self):
         '''
@@ -280,7 +340,7 @@ class Positions:
         ### Returns:
             ballangle: int | relative ball angle
         '''
-        ballY,ballX = self._Get_Ball_Pos()
+        ballX, ballY = self._get_ball_pos()
         if ballY == 0:
             relBallAngle = 0
         try:
@@ -316,8 +376,8 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        BallX, BallY = self.Robot_Ball_Pos()
-        x, y, _ = self.Field_Robot_Pos()
+        BallX, BallY = self.RobotBallPos()
+        x, y, _ = self.FieldRobotPos()
         if [BallX, BallY] == [0xfff,0xfff]:
             self.BallDistance = 0xfff
         elif [BallX, BallY] == [0xddd,0xddd]:
@@ -325,7 +385,7 @@ class Positions:
         else:
             self.BallDistance = math.sqrt((BallX - x) ** 2 + (BallY - y) ** 2)
         if self.FullLog:
-            logger.debug("[Absolute] Ball Distance: %s"%self.LidarPos)
+            logger.debug("[Absolute] Ball Distance: %s" % self.BallDistance)
         return self.BallDistance
 
     def AbsBallPos(self):
@@ -342,13 +402,13 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        ballX,ballY = self.Robot_Ball_Pos()
+        ballX, ballY = self.RobotBallPos()
         if [ballX,ballY] == [0xfff,0xfff]:
             return [0xfff,0xfff]
         if [ballX,ballY] == [0xddd,0xddd]:
             return [0xddd,0xddd]
         else:
-            SelfX,SelfY,SelfZ = self.Field_Robot_Pos()
+            SelfX, SelfY, SelfZ = self.FieldRobotPos()
             AbsBallPositon = [SelfX + ballX, SelfY + ballY]
             return AbsBallPositon
 
@@ -361,7 +421,7 @@ class Positions:
         #### Returns:
             [a1,a2,a3,etc]
         '''
-        ChassisRawList = self._Get_Chassis_Pos()
+        ChassisRawList = self._get_chassis_pos()
         ChassisAngleList = []
         for c in ChassisRawList:
             if c[1] == 0:
@@ -395,7 +455,7 @@ class Positions:
                 OutputAngles.append(int(ChassisAngleCache))
         return OutputAngles
 
-    def Pos2Pos(self,AimPos:list, speed_gain:int | None = None) -> int:
+    def Pos2Pos(self, AimPos: list, speed_gain: int | None = None) -> bool:
         '''
         `非阻塞函数`
 
@@ -406,7 +466,7 @@ class Positions:
             True 到达目标值
             False 未到达目标值
         '''
-        iLocX,iLocY,iLocZ = self.Field_Robot_Pos()
+        iLocX, iLocY, iLocZ = self.FieldRobotPos()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
             chassis.stop()
             return False
@@ -450,7 +510,7 @@ class Positions:
                 chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
             return False
 
-    def Move2Path(self,Posistions:list[list[int,int,int],list[int,int,int]],iWaitMs:int):
+    def Move2Path(self, Posistions: list, iWaitMs: float):
         '''
         `阻塞函数`
 
@@ -487,8 +547,8 @@ class Positions:
     def referee2Start(self):
         pass
 
-    def Restricted_Area(self):
-        Distance = self.direct_distance()
+    def RestrictedArea(self):
+        Distance = self.DirectDistance()
         
         # border = 240
         # restricted_area_x = 400
@@ -518,9 +578,13 @@ class Positions:
                 return False
             else:
                 return True
+
+    # Backward-compatible alias
+    def Restricted_Area(self):
+        return self.RestrictedArea()
             
 
-    def stop(self):
+    def Stop(self):
         '''
         ### Function for stopping the vision data thread
         '''
@@ -531,6 +595,10 @@ class Positions:
         self.vision_data_stop_event.set()
         if self.vision_process is not None:
             self.vision_process.terminate()
+
+    # Backward-compatible alias
+    def stop(self):
+        return self.Stop()
 
 UnitedPosition = Positions()
 
@@ -554,7 +622,7 @@ class Communication:
         ### function for judging whether catch the ball
         #### no return value, this function will change the global variable `BallFlag`
         '''
-        BallX, BallY = Positions.AbsBallPos()
+        BallX, BallY = UnitedPosition.AbsBallPos()
         if [BallX,BallY] == [0xddd,0xddd]:
             self.BallFlag[0] = 1
         else:
@@ -570,7 +638,7 @@ class Communication:
         ### use `Sendstatus()` instead
         '''
         while (1):
-            SelfPosition = Positions.Field_Robot_Pos()
+            SelfPosition = UnitedPosition.FieldRobotPos()
             try:
                 # make sure all the values are integer
                 ball_self = int(self.BallFlag[0]) if isinstance(self.BallFlag[0], (int, float, str)) else 0
@@ -614,6 +682,7 @@ class Communication:
                     # setup default val
                     self.PeerPosition = [0xfff,0xfff]
                     self.BallFlag[1] = 0
+                    PeerPositionX, PeerPositionY = 0xfff, 0xfff
                     for part in MessageCache.split(";"):
                         if part.startswith("BS:"):
                             self.BallFlag[1] = int(part.split(":")[1])  # convert into int
