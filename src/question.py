@@ -16,9 +16,9 @@ try:
                    ]
     points_cache = []
     for _ in range(3):
-        print(UnitedPosition.AbsRoboPosition())
+        print(UnitedPosition.Field_Robot_Pos())
         time.sleep(1)
-    Position_Point = UnitedPosition.AbsRoboPosition()
+    Position_Point = UnitedPosition.Field_Robot_Pos()
     Position_Point = [100,80,0]
     cache = 0
     for i in range(len(points_list)):

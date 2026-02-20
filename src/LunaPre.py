@@ -81,10 +81,10 @@ class Positions:
     def get_vision_data(self):
         return self.vision_data
 
-    def GetBallPos(self):
+    def _Get_Ball_Pos(self):
         return self.vision_data["ball_pos"]
     
-    def GetChassisPos(self):
+    def _Get_Chassis_Pos(self):
         return self.vision_data["chassis_pos"]
 
     def Local2Angle(self,AimPos:list[int,int]) -> int:
@@ -95,7 +95,7 @@ class Positions:
         '''
         iAimX = AimPos[0]
         iAimY = AimPos[1]
-        iLocX,iLocY,_ = self.AbsRoboPosition()
+        iLocX,iLocY,_ = self.Field_Robot_Pos()
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         try:
@@ -124,7 +124,7 @@ class Positions:
         return int(iDeltaAngle)
 
     # ********* BASIC FUNCTIONS ********
-    def Relative_Ball_Position(self):
+    def Robot_Ball_Pos(self):
         '''
         `非阻塞函数`
 
@@ -140,7 +140,7 @@ class Positions:
             `0xddd` stand for `CatchBall`
         '''
         # 20251017 already changed X,Y dimension    
-        self.ballPos = self.GetBallPos()
+        self.ballPos = self._Get_Ball_Pos()
         if self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
@@ -183,7 +183,7 @@ class Positions:
             logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
-    def AbsRoboPosition(self,lower:bool|None = False):
+    def Field_Robot_Pos(self,lower:bool|None = False):
         '''
         `非阻塞函数`
 
@@ -228,7 +228,7 @@ class Positions:
             pass
         return self.LidarPos
 
-    def RelChassisPos(self):
+    def Field_Chassis_Pos(self):
         '''
         `非阻塞函数`
 
@@ -244,28 +244,8 @@ class Positions:
                     chassis weidth
         '''
         # 20251017 already changed X,Y dimension
-        ChassisRawList = sorted(self.GetChassisPos(), key=lambda x: x[2])
-        return ChassisRawList
-
-
-    def AbsChassisPos(self):
-        '''
-        `非阻塞函数`
-
-        获取[对方机器人]相对于[场地几何中心]的位置 [[x_forward,y_left],[x_forward,y_left],[x_forward,y_left]]
-
-        ##### retrun a list of the absloute position of all chassis
-        #### Returns:
-            OutputDistanceList: [c1,c2]
-                c1: 
-                    chassis X Position
-                    chassis Y Position
-                    chassis height
-                    chassis weidth
-        '''
-        # 20251017 already changed X,Y dimension
-        ChassisRawList = self.GetChassisPos()
-        SelfX,SelfY,SelfZ = self.AbsRoboPosition()
+        ChassisRawList = self._Get_Chassis_Pos()
+        SelfX,SelfY,SelfZ = self.Field_Robot_Pos()
         OutputDistanceList = []
         for c in ChassisRawList:
             cDistance = math.sqrt(c[0]**2 + c[1]**2)
@@ -300,7 +280,7 @@ class Positions:
         ### Returns:
             ballangle: int | relative ball angle
         '''
-        ballY,ballX = self.GetBallPos()
+        ballY,ballX = self._Get_Ball_Pos()
         if ballY == 0:
             relBallAngle = 0
         try:
@@ -336,8 +316,8 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        BallX, BallY = self.Relative_Ball_Position()
-        x, y, _ = self.AbsRoboPosition()
+        BallX, BallY = self.Robot_Ball_Pos()
+        x, y, _ = self.Field_Robot_Pos()
         if [BallX, BallY] == [0xfff,0xfff]:
             self.BallDistance = 0xfff
         elif [BallX, BallY] == [0xddd,0xddd]:
@@ -362,13 +342,13 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        ballX,ballY = self.Relative_Ball_Position()
+        ballX,ballY = self.Robot_Ball_Pos()
         if [ballX,ballY] == [0xfff,0xfff]:
             return [0xfff,0xfff]
         if [ballX,ballY] == [0xddd,0xddd]:
             return [0xddd,0xddd]
         else:
-            SelfX,SelfY,SelfZ = self.AbsRoboPosition()
+            SelfX,SelfY,SelfZ = self.Field_Robot_Pos()
             AbsBallPositon = [SelfX + ballX, SelfY + ballY]
             return AbsBallPositon
 
@@ -381,7 +361,7 @@ class Positions:
         #### Returns:
             [a1,a2,a3,etc]
         '''
-        ChassisRawList = self.GetChassisPos()
+        ChassisRawList = self._Get_Chassis_Pos()
         ChassisAngleList = []
         for c in ChassisRawList:
             if c[1] == 0:
@@ -426,7 +406,7 @@ class Positions:
             True 到达目标值
             False 未到达目标值
         '''
-        iLocX,iLocY,iLocZ = self.AbsRoboPosition()
+        iLocX,iLocY,iLocZ = self.Field_Robot_Pos()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
             chassis.stop()
             return False
@@ -590,7 +570,7 @@ class Communication:
         ### use `Sendstatus()` instead
         '''
         while (1):
-            SelfPosition = Positions.AbsRoboPosition()
+            SelfPosition = Positions.Field_Robot_Pos()
             try:
                 # make sure all the values are integer
                 ball_self = int(self.BallFlag[0]) if isinstance(self.BallFlag[0], (int, float, str)) else 0

@@ -5,8 +5,8 @@ try:
     # peripheral.Dribble(1.0)
     while(1):
         if UnitedPosition.Restricted_Area():
-            BallPosition = UnitedPosition.Relative_Ball_Position()
-            RoboPosition = UnitedPosition.AbsRoboPosition()
+            BallPosition = UnitedPosition.Robot_Ball_Pos()
+            RoboPosition = UnitedPosition.Field_Robot_Pos()
             yaw = chassis.GetYaw()
             # print("BalllPosition:",BalllPosition)
             # time.sleep(1)

@@ -40,7 +40,7 @@ def linear_map(value, input_range, output_range):
     return mapped_value
 
 def ChasingBall():
-    iBX,iBY = UnitedPosition.Relative_Ball_Position()
+    iBX,iBY = UnitedPosition.Robot_Ball_Pos()
     Compass = chassis.GetYaw()
     Angle = (math.degrees(math.atan2(iBX, iBY)) + 360) % 360
     AbsAngle = Angle + Compass
@@ -70,7 +70,7 @@ class LockSeries:
         chassis.AbsMoveVetor(iBX*4,iBY*4,0)
 
     def LockBallSlip(self):
-        iBX,iBY = UnitedPosition.Relative_Ball_Position()
+        iBX,iBY = UnitedPosition.Robot_Ball_Pos()
         if [iBX,iBY] == [0xfff,0xfff]:
             chassis.stop()
             return False
@@ -111,7 +111,7 @@ class LockSeries:
 lockball = LockSeries()
 
 def NormalShoot(x=1):
-    BX, BY = UnitedPosition.Relative_Ball_Position()
+    BX, BY = UnitedPosition.Robot_Ball_Pos()
     logger.debug("Current Position: %s" % [BX, BY])
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
@@ -136,10 +136,10 @@ def NormalShoot(x=1):
         #     break
         peripheral.Dribble(True)
         for _ in range(10):
-            BX,BY = UnitedPosition.Relative_Ball_Position()
+            BX,BY = UnitedPosition.Robot_Ball_Pos()
             if not BX == 0 and BY <= 9:
                 break
-            X,Y,_ = UnitedPosition.AbsRoboPosition()
+            X,Y,_ = UnitedPosition.Field_Robot_Pos()
             DeltaY = cfg.read("Position","Height")/2 - Y
             DeltaX = X
             Theta = math.atan2(DeltaY, DeltaX)
@@ -185,7 +185,7 @@ def CircleAround(iAimAngle):
         iDirectionFactor = 1
     else:
         iDirectionFactor = -1
-    lBallPos = UnitedPosition.Relative_Ball_Position()
+    lBallPos = UnitedPosition.Robot_Ball_Pos()
 
     TempBX = -lBallPos[1]
     TempBY = lBallPos[0]
@@ -194,7 +194,7 @@ def CircleAround(iAimAngle):
 
 
     while(1):
-        lBallPos = UnitedPosition.Relative_Ball_Position()
+        lBallPos = UnitedPosition.Robot_Ball_Pos()
 
         TempBX = -lBallPos[1]
         TempBY = lBallPos[0]
@@ -213,7 +213,7 @@ def CircleAround(iAimAngle):
         time.sleep(.03)
     chassis.TurnTo(iAimAngle)
     while(1):
-        lBallPos = UnitedPosition.Relative_Ball_Position()
+        lBallPos = UnitedPosition.Robot_Ball_Pos()
 
         TempBX = -lBallPos[1]
         TempBY = lBallPos[0]
@@ -238,7 +238,7 @@ def CircleAround(iAimAngle):
 
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.Relative_Ball_Position()
+    ball = UnitedPosition.Robot_Ball_Pos()
     Aim_Angle = Aim_Angle%360
     logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
@@ -268,7 +268,7 @@ def GoBack():
 
 
 def NormalShoot(x=1,HomePos=[0,-20,0]):
-    BX, BY = UnitedPosition.Relative_Ball_Position()
+    BX, BY = UnitedPosition.Robot_Ball_Pos()
 
     logger.debug("Ball Position: %s" % [BX, BY])
     if BX == 0 and BY == 0:
@@ -288,7 +288,7 @@ def NormalShoot(x=1,HomePos=[0,-20,0]):
             BX,BY = UnitedPosition.AbsBallPos()
             if not BX == 0 and BY <= 9:
                 break
-            X,Y,_ = UnitedPosition.AbsRoboPosition()()
+            X,Y,_ = UnitedPosition.Field_Robot_Pos()()
             DeltaY = cfg.Bounds.Long/2 - Y
             DeltaX = X
             Theta = math.atan2(DeltaY, DeltaX)
@@ -351,9 +351,9 @@ def OHMYBACK(HomePos=[0,-20,0]):
     #正常
     if UnitedPosition.AbsBallPos() == [0xddd,0xddd]:
         peripheral.Dribble(True)
-        iLocX,iLocY,_ = UnitedPosition.AbsRoboPosition()
+        iLocX,iLocY,_ = UnitedPosition.Field_Robot_Pos()
         try:
-            Cx ,Cy = UnitedPosition.AbsChassisPos()
+            Cx ,Cy = UnitedPosition.Field_Chassis_Pos()
         except:
             Cx = 0
             Cy = 0
@@ -374,7 +374,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
             ShootY = -65
         if abs(ShootY - iLocX) < 5 :
             if abs(iLocY - 75) < 5:
-                X,Y,_ = UnitedPosition.AbsRoboPosition()()
+                X,Y,_ = UnitedPosition.Field_Robot_Pos()()
                 DeltaY = cfg.Bounds.Long/2 - Y
                 DeltaX = X
                 Theta = math.atan2(DeltaY, DeltaX)

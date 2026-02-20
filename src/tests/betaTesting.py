@@ -2,8 +2,8 @@ from LunaPre import *
 #长260
 try:
     while(1):
-        rob = UnitedPosition.AbsRoboPosition()
-        ball = UnitedPosition.Relative_Ball_Position()
+        rob = UnitedPosition.Field_Robot_Pos()
+        ball = UnitedPosition.Robot_Ball_Pos()
         time.sleep(0.1)
         # print("rob:",rob,"ball:",ball)
     

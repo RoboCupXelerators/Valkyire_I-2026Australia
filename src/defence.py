@@ -4,7 +4,7 @@ try:
     # peripheral.Dribble(True)
     while(1):
         if UnitedPosition.Restricted_Area():
-            BalllPosition = UnitedPosition.Relative_Ball_Position()
+            BalllPosition = UnitedPosition.Robot_Ball_Pos()
             Yaw = Bits.GetYaw()
             BallAngle = UnitedPosition.RelBallAngle()
             if BalllPosition == [0xfff,0xfff]:
