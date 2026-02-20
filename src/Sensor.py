@@ -1,9 +1,37 @@
-#ROS2 libs
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import LaserScan
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
-from rclpy.signals import SignalHandlerOptions
+"""Sensor
+
+本模块主要用于解析激光雷达（ROS2 sllidar）数据。
+
+兼容性目标：
+- 在没有安装 ROS2 / rclpy 的开发机上也允许 `import Sensor`（不应直接 ImportError）。
+- 当 ROS2 不可用时，`Lidar` 进入 disabled 模式：不会启动子进程/线程，GetDists 返回哨兵值。
+"""
+
+from __future__ import annotations
+
+# ROS2 libs（可选）
+try:
+    import rclpy
+    from rclpy.node import Node
+    from sensor_msgs.msg import LaserScan
+    from rclpy.qos import (
+        QoSProfile,
+        QoSReliabilityPolicy,
+        QoSHistoryPolicy,
+        QoSDurabilityPolicy,
+    )
+    from rclpy.signals import SignalHandlerOptions
+    ROS_AVAILABLE = True
+except Exception:  # pragma: no cover - depends on external ROS2 env
+    rclpy = None
+    Node = object  # type: ignore
+    LaserScan = object  # type: ignore
+    QoSProfile = object  # type: ignore
+    QoSReliabilityPolicy = object  # type: ignore
+    QoSHistoryPolicy = object  # type: ignore
+    QoSDurabilityPolicy = object  # type: ignore
+    SignalHandlerOptions = object  # type: ignore
+    ROS_AVAILABLE = False
 
 from ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV
 from pathlib import Path
@@ -131,13 +159,21 @@ class ROSLidarParser(Node):
         self.Queue.put(self.dirDistance)
 
 class Lidar:
-    def start_sllidar_driver(self, enforce_settings: bool = True, bashrc: str = ROS_ENV):
+    def start_sllidar_driver(self, enforce_settings: bool = True, bashrc: str | None = ROS_ENV):
         """
         使用 subprocess.Popen 启动 sllidar_ros2 驱动并将输出重定向到统一的项目 log 目录
         如果 enforce_settings=True，则强制使用 Settings 中的配置（LidarID、LidarType）
         返回 Popen 对象并更新 self.lidar_process / self.lidar_log_files / self.current_launch / self.current_domain
         """
-        bashrc = os.path.expanduser(bashrc)
+        if not ROS_AVAILABLE:
+            logger.warning("ROS2/rclpy not available, skip starting lidar driver.")
+            return None
+
+        if not bashrc:
+            logger.warning("ROS_ENV is None, skip starting lidar driver.")
+            return None
+
+        bashrc = os.path.expanduser(str(bashrc))
 
         # Read values from Settings (live) when enforcing
         if enforce_settings:
@@ -228,14 +264,33 @@ class Lidar:
                 pass
 
 
-    def __init__(self,GetYaw=None):
+    def __init__(self, GetYaw=None, *, auto_start: bool = True):
+        """Create a lidar instance.
+
+        Args:
+            GetYaw: callable yaw provider
+            auto_start: whether to auto start ROS2 driver & threads.
+                       On dev machines this should typically be False.
+        """
 
         self.GetYaw = GetYaw
         self.domainID = Settings.Ports.LidarID
 
-        self.dirNormalizedDistance = [0,0,0,0]
+        # When disabled, return sentinel to upstream (LunaPre.DirectDistance will treat it as "no position")
+        self.disabled = (not ROS_AVAILABLE) or (ROS_ENV is None) or (not auto_start)
 
+        self.dirNormalizedDistance = [0xfff, 0xfff, 0xfff, 0xfff] if self.disabled else [0, 0, 0, 0]
         self.dirLidarQueue = queue.Queue()
+
+        if self.disabled:
+            logger.warning(
+                "Lidar disabled (ROS_AVAILABLE=%s, ROS_ENV=%s, auto_start=%s)." % (ROS_AVAILABLE, bool(ROS_ENV), auto_start)
+            )
+            self.lidar_process = None
+            self.lidar_log_files = None
+            self.current_launch = None
+            self.current_domain = None
+            return
 
         self.ParseLidarThread = threading.Thread(target=self.ParseLidar)
         self.ParseLidarThread.daemon = True
@@ -251,7 +306,7 @@ class Lidar:
             self.lidar_log_files = None
             # initialize current settings values
             try:
-                self.domainID = int(Preference().read('Ports', 'LidarID'))
+                self.domainID = int(Preference().read("Ports", "LidarID"))
             except Exception:
                 self.domainID = int(Settings.Ports.LidarID)
             self.current_launch = None
@@ -266,11 +321,13 @@ class Lidar:
             self._watcher_thread.daemon = True
             self._watcher_thread.start()
         except Exception as e:
-            raise(f"Exception while starting sllidar driver: {e}")
+            raise RuntimeError(f"Exception while starting sllidar driver: {e}")
 
     def ParseLidar(self):
         try:
             logger.info(f"Initializing ROS parser with domain_id={self.domainID}")
+            if not ROS_AVAILABLE or rclpy is None:
+                return
             rclpy.init(domain_id=self.domainID, signal_handler_options=SignalHandlerOptions(0))
             Parser = ROSLidarParser(self.dirLidarQueue)
             rclpy.spin(Parser)

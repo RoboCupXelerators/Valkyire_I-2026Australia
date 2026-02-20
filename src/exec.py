@@ -1,9 +1,21 @@
+"""exec
+
+临时执行脚本（移动路径测试）。
+避免 import 即执行。
+"""
+
+from __future__ import annotations
+
 from LunaPre import *
 
-try:
-    UnitedPosition.Move2Path([[0,0,90],[-90,50,0],[90,50,0],[90,-50,0],[-90,-50,0]],0.8)
-except Exception as e:
-    raise e
-finally:
-    chassis.stop()
-    UnitedPosition.Stop()
+
+def main():
+    try:
+        UnitedPosition.Move2Path([[0, 0, 90], [-90, 50, 0], [90, 50, 0], [90, -50, 0], [-90, -50, 0]], 0.8)
+    finally:
+        chassis.stop()
+        UnitedPosition.Stop()
+
+
+if __name__ == "__main__":
+    main()

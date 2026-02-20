@@ -1,6 +1,18 @@
+"""BasicFuc
+
+历史策略常用函数集合。
+
+注意：本文件存在大量历史代码。此次改动目标：
+- 修复明显的语法/运行时错误（重复定义、错误调用）
+- 按 README 命名规范补齐 PascalCase 新名称，同时保留旧名称别名
+- 避免把 `from LunaPre import *` 继续扩散到外部：本文件内部仍可使用，但对外建议显式导入
+"""
+
+from __future__ import annotations
+
 from LunaPre import *
 
-def roundThresholdJudger(iValue, iRound, iMiddleValue, iOffset):
+def RoundThresholdJudger(iValue, iRound, iMiddleValue, iOffset):
     iValue = iValue % iRound
     
     iLowerThreshold = (iMiddleValue - iOffset) % iRound
@@ -12,10 +24,10 @@ def roundThresholdJudger(iValue, iRound, iMiddleValue, iOffset):
     else:
         return iValue >= iLowerThreshold or iValue <= iUpperThreshold
 
-def FindNearstAngle(arr, target):
+def FindNearestAngle(arr, target):
     return min(arr, key=lambda x: abs(x - target))
 
-def linear_map(value, input_range, output_range):
+def LinearMap(value, input_range, output_range):
     """
     通用线性映射函数
     
@@ -110,57 +122,62 @@ class LockSeries:
 
 lockball = LockSeries()
 
-def NormalShoot(x=1):
-    BX, BY = UnitedPosition.RobotBallPos()
-    logger.debug("Current Position: %s" % [BX, BY])
-    logger.debug("Ball Position: %s" % [BX, BY])
-    if BX == 0 and BY == 0:
-        logger.info("Ball not found, stopping chassis.")
-        # Pos2Pos([0, -85, 0], False)
-        # chassis.stop()
-        UnitedPosition.Pos2Pos([0, -85, 0])
-        peripheral.Dribble(False)
-    elif BX == 0 and 5 < (BY) <= 9:
-        # for _ in range(3):
-        #     LockBallSlip()
-        #     BX, BY = UnitedPosition.Relative_Ball_Position()
-        #     if not BX == 0 and BY <= 10:
-        #         break
+def NormalShoot(x=1, HomePos=[0, -20, 0]):
+    """兼容版 NormalShoot（保留旧名）。
 
+    说明：历史代码里本函数被定义过两次，且包含明显错误（lockball()、FieldRobotPos()()）。
+    现在统一为一个实现。
+    """
+
+    bx, by = UnitedPosition.RobotBallPos()
+    logger.debug("Ball Position: %s" % [bx, by])
+
+    # No ball
+    if [bx, by] == [0xFFF, 0xFFF] or (bx == 0 and by == 0):
+        logger.info("Ball not found, go home.")
+        UnitedPosition.Pos2Pos(HomePos)
+        peripheral.Dribble(False)
+        return False
+
+    # Catch ball
+    if [bx, by] == [0xDDD, 0xDDD]:
+        # already holding, caller decides what to do
+        return True
+
+    # Ball in front area (legacy heuristic)
+    if bx == 0 and 5 < by <= 9:
         time.sleep(0.03)
-        logger.info("Ball is at front")
+        logger.info("Ball is in front")
         if x == 0:
             return True
-        # BX, BY = UnitedPosition.Relative_Ball_Position()
-        # if not -5 < BX < 5 and 0 < BY < 10:
-        #     break
+
         peripheral.Dribble(True)
         for _ in range(10):
-            BX,BY = UnitedPosition.RobotBallPos()
-            if not BX == 0 and BY <= 9:
+            bx, by = UnitedPosition.RobotBallPos()
+            if not (bx == 0 and by <= 9):
                 break
-            X,Y,_ = UnitedPosition.FieldRobotPos()
-            DeltaY = cfg.read("Position","Height")/2 - Y
-            DeltaX = X
-            Theta = math.atan2(DeltaY, DeltaX)
-            Theta = math.degrees(Theta)
-            Aim = Theta - 90
-            Compass = compass()
-            Delta = abs(Aim - Compass)
-        # while True:
-        #     chassis.GoZ(Compass)
-            if Delta > 60:
-                chassis.AbsTurn(Aim,50)
+
+            x0, y0, _ = UnitedPosition.FieldRobotPos()
+            # fallback: use field center and bounds to compute aim
+            delta_y = cfg.Bounds.Long / 2 - y0
+            delta_x = x0
+            theta = math.degrees(math.atan2(delta_y, delta_x))
+            aim = theta - 90
+            current = compass()
+            delta = abs(aim - current)
+
+            if delta > 60:
+                chassis.AbsTurn(aim, 50)
                 break
             else:
-                chassis.AbsMoveAngle(0,Aim,50)
-            
+                chassis.AbsMoveAngle(0, aim, 50)
             time.sleep(0.03)
-        
+
         peripheral.ShootBall()
-    else:
-        peripheral.Dribble(True)
-        lockball().LockBallSlip()
+        return True
+
+    peripheral.Dribble(True)
+    return lockball.LockBallSlip()
 
 # def CircleAround_old(iAimAngle):
 # #    if abs(compass.read() - iAimAngle) >= 180:
@@ -181,7 +198,7 @@ def NormalShoot(x=1):
 
 def CircleAround(iAimAngle):
     iCompass = int(compass())
-    if roundThresholdJudger(iCompass,360,iAimAngle+90,90):
+    if RoundThresholdJudger(iCompass,360,iAimAngle+90,90):
         iDirectionFactor = 1
     else:
         iDirectionFactor = -1
@@ -206,7 +223,7 @@ def CircleAround(iAimAngle):
         if iY > 0:
             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
         # print(iX,iY,iDeltaAngle,compass())
-        if roundThresholdJudger(compass(), 360, iAimAngle, 3):
+        if RoundThresholdJudger(compass(), 360, iAimAngle, 3):
             break
         else:
             chassis.SetMotor([iDirectionFactor * 15,-iDirectionFactor * (150 - iDeltaAngle),-iDirectionFactor * 15,iDirectionFactor * (150 - iDeltaAngle)])
@@ -264,50 +281,20 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
 
 
 def GoBack():
-    UnitedPosition.Pos2Pos(cfg.read("Position","Home"),False)
+    # config.json currently stores Home under CheckPoints
+    try:
+        home = [cfg.CheckPoints.Home[0], cfg.CheckPoints.Home[1], cfg.CheckPoints.Home[2]]
+    except Exception:
+        home = [0, -20, 0]
+    UnitedPosition.Pos2Pos(home)
 
+# ========= Backward-compatible aliases =========
 
-def NormalShoot(x=1,HomePos=[0,-20,0]):
-    BX, BY = UnitedPosition.RobotBallPos()
+# old names -> new names
+roundThresholdJudger = RoundThresholdJudger
+FindNearstAngle = FindNearestAngle
+linear_map = LinearMap
 
-    logger.debug("Ball Position: %s" % [BX, BY])
-    if BX == 0 and BY == 0:
-        logger.info("Ball not found, stopping chassis.")
-        Positions.Pos2Pos(HomePos)
-        peripheral.Dribble(False)
-    elif BX == 0 and 5 < (BY) <= 9:
-        time.sleep(0.03)
-        logger.info("Ball is in front")
-        if x == 0:
-            return True
-        for _ in range(3):
-            NormalShoot(0)
-            time.sleep(0.03)
-        peripheral.Dribble(True)
-        for _ in range(10):
-            BX,BY = UnitedPosition.FieldBallPos()
-            if not BX == 0 and BY <= 9:
-                break
-            X,Y,_ = UnitedPosition.FieldRobotPos()()
-            DeltaY = cfg.Bounds.Long/2 - Y
-            DeltaX = X
-            Theta = math.atan2(DeltaY, DeltaX)
-            Theta = math.degrees(Theta)
-            Aim = Theta - 90
-            Compass = compass()
-            Delta = abs(Aim - Compass)
-            if Delta > 60:
-                chassis.AbsTurn(Aim,50)
-                break
-            else:
-                chassis.AbsMoveVetor(Aim,0,50,0.8)
-            
-            time.sleep(0.03)
-        
-        peripheral.ShootBall()
-    else:
-        peripheral.Dribble(True)
-        LockSeries().LockBallSlip()
 
 
 def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
@@ -374,7 +361,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
             ShootY = -65
         if abs(ShootY - iLocX) < 5 :
             if abs(iLocY - 75) < 5:
-                X,Y,_ = UnitedPosition.FieldRobotPos()()
+                X,Y,_ = UnitedPosition.FieldRobotPos()
                 DeltaY = cfg.Bounds.Long/2 - Y
                 DeltaX = X
                 Theta = math.atan2(DeltaY, DeltaX)

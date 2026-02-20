@@ -11,6 +11,8 @@
 兼容性：为了不一次性炸掉历史代码，旧接口会保留为“别名/包装”。
 """
 
+from __future__ import annotations
+
 import math
 import os
 import pickle
@@ -19,38 +21,120 @@ import subprocess
 import sys
 import threading
 import time
+
 from ReasonData import logger, Settings
+
 cfg = Settings
 
 from Sensor import Lidar
-from chassis import Car, Peripherals, Key # Universal-Movement-Standard
-if cfg.RoboInfo.Bit == "AB":
-    from utils.ArisuBits import ArisBit
-    Bits = ArisBit()
-    lidar = Lidar(Bits.GetYaw)
-    chassis = Car(Bits.SetMotor,Bits.GetYaw,Bits.get_motor_encoder)
-    compass = Bits.GetYaw
-    peripheral = Peripherals(Bits.SetIO)
-    key = Key(Bits.GetKey)
-    Odometer = None
-    logger.info("Arisu Bit loaded.")
-elif cfg.RoboInfo.Bit == "IL":
-    from utils.IceLoongBits import IceLoongBits
-    Bits = IceLoongBits(port=Settings.Ports.IceLoongPort)
-    lidar = Lidar(Bits.GetYaw)
-    peripheral = Peripherals(Bits.VirtualPorts) #TODO
-    chassis = Car(Bits.SetWheelSpeed,Bits.GetYaw)
-    compass = Bits.GetYaw
-    # key = Key(Bits.GetKey)
-    # Odometer = Bits.Odometer #TODO add odometer support
-    logger.info("IceLoongBits Bit loaded.")
-# elif cfg.RoboInfo.Bit == "3Q":
-#     logger.info("3Q Bit loaded.")
-#     # peripheral = Peripherals(Bits.SetIO) #TODO
-#     logger.info("RoboMaster Bit loaded.")
-else:
-    logger.error("None Bit Model Fetched.")
-    raise ImportError("None Bits Model Set.")
+from chassis import Car, Peripherals, Key  # Universal-Movement-Standard
+
+
+class _MockBits:
+    """在开发机/无外设时用于让模块可导入的 Mock Bits。"""
+
+    def GetYaw(self):
+        return 0
+
+    def SetMotor(self, *args, **kwargs):
+        return None
+
+    def SetWheelSpeed(self, *args, **kwargs):
+        return None
+
+    def VirtualPorts(self, *args, **kwargs):
+        return None
+
+    def SetIO(self, *args, **kwargs):
+        return None
+
+    def GetKey(self):
+        return 0
+
+
+def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
+    """初始化 Bits / chassis / peripheral / lidar 等全局对象。
+
+    目的：
+    - 比赛机：按 Settings 初始化真实硬件。
+    - 开发机：允许用 Mock 初始化，避免 import 直接失败。
+    """
+
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer
+
+    def _use_mock(reason: str) -> None:
+        """Switch module-level runtime objects to mock implementations."""
+
+        global Bits, lidar, chassis, compass, peripheral, key, Odometer
+
+        logger.warning(f"Using MockBits: {reason}")
+        Bits = _MockBits()
+        lidar = Lidar(Bits.GetYaw, auto_start=False)
+        chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
+        compass = Bits.GetYaw
+        peripheral = Peripherals(Bits.VirtualPorts)
+        key = Key(Bits.GetKey)
+        Odometer = None
+        return
+
+    # If running on dev machine, allow user to force mock via env
+    if os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}:
+        _use_mock("ROBOCUPX_USE_MOCK=1")
+        return
+
+    try:
+        if cfg.RoboInfo.Bit == "AB":
+            from utils.ArisuBits import ArisBit
+
+            # avoid starting hardware on dev machines
+            dev_path = getattr(Settings.Ports, "ArisuPort", "/dev/arisbit")
+            if not os.path.exists(str(dev_path)):
+                if allow_mock:
+                    _use_mock(f"Arisu device not found: {dev_path}")
+                    return
+
+            Bits = ArisBit()
+            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
+            chassis = Car(Bits.SetMotor, Bits.GetYaw, Bits.get_motor_encoder)
+            compass = Bits.GetYaw
+            peripheral = Peripherals(Bits.SetIO)
+            key = Key(Bits.GetKey)
+            Odometer = None
+            logger.info("Arisu Bit loaded.")
+            return
+
+        if cfg.RoboInfo.Bit == "IL":
+            from utils.IceLoongBits import IceLoongBits
+
+            dev_path = getattr(Settings.Ports, "IceLoongPort", "/dev/iceloong")
+            if not os.path.exists(str(dev_path)):
+                if allow_mock:
+                    _use_mock(f"IceLoong device not found: {dev_path}")
+                    return
+
+            Bits = IceLoongBits(port=dev_path)
+            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
+            peripheral = Peripherals(Bits.VirtualPorts)  # TODO
+            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
+            compass = Bits.GetYaw
+            # key = Key(Bits.GetKey)
+            # Odometer = Bits.Odometer  # TODO add odometer support
+            logger.info("IceLoongBits Bit loaded.")
+            return
+
+        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}")
+
+    except Exception as e:
+        if not allow_mock:
+            logger.error(f"Failed to init runtime: {e}")
+            raise
+
+        logger.warning(f"Init runtime failed, fallback to MockBits: {e}")
+        _use_mock(str(e))
+
+
+# 默认初始化：开发机可导入（allow_mock=True），且不自动启动 ROS2 lidar（避免无 ROS 环境卡死）
+_init_runtime(allow_mock=True, auto_start_lidar=False)
 
 Beta_Func = False
 
@@ -73,22 +157,45 @@ class Positions:
         self.WaitTime = 3.5
         # Values for configs
         self.FullLog = cfg.Debug.FullLog
-        # Socket for vision data
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", 5005))
-        self.sock.settimeout(0.01)
+        # Vision data (lazy start)
+        self.sock: socket.socket | None = None
         self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
-        # Process management
         self.vision_process = None
         self.vision_data_stop_event = threading.Event()
+        self.get_vision_data_process: threading.Thread | None = None
+        self._vision_started = False
+
+    def StartVision(self) -> bool:
+        """Start UDP receiver + Vision subprocess lazily.
+
+        Importing LunaPre should not start external processes automatically.
+        Call this when you really need vision data.
+        """
+
+        if self._vision_started:
+            return True
+        self._vision_started = True
+
+        # Socket for vision data
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.bind(("127.0.0.1", 5005))
+        except OSError as e:
+            logger.warning(f"Vision UDP bind failed: {e}")
+        self.sock.settimeout(0.01)
+
         self.get_vision_data_process = threading.Thread(target=self._get_vision_data)
         self.get_vision_data_process.daemon = True
         self.get_vision_data_process.start()
+        return True
         
     def _get_vision_data(self):
         while not self.vision_data_stop_event.is_set():
             time.sleep(0.005)
             try:
+                if self.sock is None:
+                    time.sleep(0.05)
+                    continue
                 data, addr = self.sock.recvfrom(4096)
                 self.vision_data = pickle.loads(data)
             except socket.timeout:
@@ -99,6 +206,8 @@ class Positions:
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
         
     def GetVisionData(self):
+        # ensure vision thread is running
+        self.StartVision()
         return self.vision_data
 
     # Backward-compatible alias
@@ -106,9 +215,11 @@ class Positions:
         return self.GetVisionData()
 
     def _get_ball_pos(self):
+        self.StartVision()
         return self.vision_data["ball_pos"]
     
     def _get_chassis_pos(self):
+        self.StartVision()
         return self.vision_data["chassis_pos"]
     
     def Local2Angle(self, AimPos: list) -> int:
@@ -191,6 +302,9 @@ class Positions:
             `0xfff` stand for `NoPosition`
         '''
         self.BoundsDistance = lidar.GetDists()
+        # disabled lidar returns [0xfff,...]
+        if self.BoundsDistance == [0xfff,0xfff,0xfff,0xfff]:
+            return [0xfff,0xfff,0xfff,0xfff]
         if self.BoundsDistance == [0, 0, 0, 0]:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
@@ -205,7 +319,8 @@ class Positions:
                 self.WarnedLidarCount = 0
             else:
                 pass
-            logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
+            if Settings.Debug.FullLog:
+                logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
     def FieldRobotPos(self, lower: bool | None = False):

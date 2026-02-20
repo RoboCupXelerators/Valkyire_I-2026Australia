@@ -218,3 +218,4 @@ TEST.py
 test.py
 
 .DS_Store
+.python-version
