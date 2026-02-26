@@ -51,6 +51,14 @@
 | 参考点 | 以球场中圈圆心为原点 | 以机器人中心为原点 |
 | 参考方向 | 对方球门中心为正方向 | 指南针0˚为正方向 |
 
+同时，需要注意这里的 **坐标轴定义**（非常重要）：
+
+- **X 轴（x_forward）**：机器人“正前方”（对应航向角 `0˚` 的方向）为 **正方向**
+- **Y 轴（y_left）**：机器人“左侧”（对应航向角 `90˚` 的方向）为 **正方向**
+
+换句话说，我们统一使用 `x_forward, y_left` 的约定。
+
+举例：`[x, y] = [10, 5]` 表示目标在机器人 **前方 10cm、左侧 5cm**。
 
 ## 🧱 基础命名规范
 
@@ -84,13 +92,32 @@
 from LunaPre import *
 ```
 
-推荐使用这种方式[**导入模块**](https://www.runoob.com/python3/python3-module.html)，后续写策略会更省事。
+在**策略脚本**里，为了快速写逻辑，允许使用这种方式[**导入模块**](https://www.runoob.com/python3/python3-module.html)，后续写策略会更省事。
 
-### 🤖 机体坐标系（Robot Frame）
+> ⚠️ 但在写「可复用模块/工具代码」时，不推荐 `import *`：
+>
+> - 容易污染命名空间（看不出某个函数/变量从哪来）
+> - 更容易产生“同名覆盖”（例如你自己写了 `logger`、`Settings`，会被导入的同名对象覆盖）
+>
+> 更推荐以下两种显式写法（可读性更好，也更利于 IDE 跳转）：
+>
+> ```python
+> import LunaPre as lp
+> 
+> # 使用：lp.UnitedPosition.xxx()
+> ```
+>
+> 或：
+>
+> ```python
+> from LunaPre import UnitedPosition, Communication
+> ```
+
+### 🤖 机器人坐标系 (Robot Frame)
 
 > 还在为现场题的“走点”而头疼？还在因为场地不同就要重新量距离？还在用 _卷尺_ 去测场地里的点？大人，时代变了。
 >
-> 我们的**集成坐标系统**可以让你用很少的代码完成：定位、换算、移动到指定点等常见操作。
+> 我们的**集成坐标系统(The Automated Position System)**可以让你用很少的代码完成：定位、换算、移动到指定点等常见操作。
 
 ```python
 UnitedPosition = Positions()
@@ -112,6 +139,25 @@ print(UnitedPosition.RobotBallPos())
 
 - **返回**：`int`（单位 °）
 - **含义**：根据视觉的 `ball_pos=[x, y]` 计算角度，常用于“对准球”的控制。
+
+#### 📐⚽ `RobotBallDistance`：球与机器人的距离
+
+- **返回**：`float | int`
+- **哨兵值**：
+  - `0xfff`：没看到球 / 无效
+  - `0xddd`：判断为“已抱球/已抓球”（CatchBall）
+
+示例：
+
+```python
+dist = UnitedPosition.RobotBallDistance()
+if dist == 0xfff:
+    print("No ball")
+elif dist == 0xddd:
+    print("Catch ball")
+else:
+    print(f"Ball distance = {dist:.1f} cm")
+```
 
 ### 🧩 `RobotChassisPos`：获取底盘在 _机体坐标系_ 下的位置
 ```python
@@ -160,26 +206,7 @@ print(UnitedPosition.FieldRobotPos())
 #### 🧭⚽ `FieldBallAngle`：球在场地坐标系下的绝对角度（叠加航向）
 
 - **返回**：`int`（单位 °，范围约 `0~360`）
-- **计算**：`(RelBallAngle() + compass()) % 360`
-
-#### 📐⚽ `FieldBallDistance`：球与机器人的距离
-
-- **返回**：`float | int`
-- **哨兵值**：
-  - `0xfff`：没看到球 / 无效
-  - `0xddd`：判断为“已抱球/已抓球”（CatchBall）
-
-示例：
-
-```python
-dist = UnitedPosition.AbsBallDistance()
-if dist == 0xfff:
-    print("No ball")
-elif dist == 0xddd:
-    print("Catch ball")
-else:
-    print(f"Ball distance = {dist:.1f} cm")
-```
+- **计算**：`(RobotBallAngle() + compass()) % 360`
 
 ### 🧭 `FieldChassisPos`：获取其他底盘在 _场地坐标系_ 下的位置
 获取 `所有底盘（不包含自己）` 在场地坐标系下的位置。输出示例：
@@ -265,8 +292,10 @@ def GetVisionData(self):
 ```
 
 - **注意**：
-  - `Positions()` 初始化时会启动一个后台线程监听 `UDP 127.0.0.1:5005`。
+  - 视觉数据来自 `UDP 127.0.0.1:5005`。
+  - 当前实现里视觉监听线程是**按需启动（lazy start）**的：首次调用 `GetVisionData()` / `RobotBallPos()` / `RobotChassisPos()` 等依赖视觉的数据时才会启动。
   - 若超时收不到数据，会尝试自动拉起 `src/Vision.py` 作为视觉服务。
+  - 在开发机/mock 环境下，通常不会安装 Hailo/相机等依赖；此时建议**禁用自动拉起 Vision**（否则可能频繁重启子进程）。
   - 需要退出程序/重启策略时，建议调用 `UnitedPosition.Stop()` 释放线程与进程。
 
 示例：
@@ -459,3 +488,55 @@ comm.PeerStatus()
 
 ### 🗃️ 数据库
 预留：支援未来。
+
+## 📗 SOP 标准解决方案
+
+### 🧭 航向角突变 / 走最短转向（角度归一化）
+
+#### 现象
+
+用航向角做控制/路径规划时，经常会遇到 **0°/360° 边界跳变** 导致的转向“走反了”。
+
+例如：
+
+- 当前 `yaw = 350°`
+- 目标 `aim = 10°`
+
+直减会得到 `aim - yaw = -340°`，但实际上应该向左转 `+20°`（最短路）。
+
+#### 标准解法（推荐写成工具函数）
+
+把“目标角 - 当前角”的误差归一化到 `[-180°, 180°)`：
+
+```python
+def angle_error_deg(current: float, target: float) -> float:
+    """Return signed shortest angle error in degrees.
+
+    Convention:
+    - Result in [-180, 180)
+    - Positive means CCW (turn left), negative means CW (turn right)
+    """
+    return ((target - current + 180) % 360) - 180
+
+
+yaw = self.GetYaw()                # 当前航向角 [0, 360)
+aim = AimAngle % 360               # 目标航向角 [0, 360)
+error = angle_error_deg(yaw, aim)  # 误差 ∈ [-180, 180)
+
+```
+
+#### 如何判断“左转还是右转”？
+
+- `error > 0`：说明目标在左侧（建议 **逆时针/左转**）
+- `error < 0`：说明目标在右侧（建议 **顺时针/右转**）
+
+举例：
+
+- `yaw=90°`，`aim=0°` → `error=-90°`：右转 90°
+- `yaw=350°`，`aim=10°` → `error=+20°`：左转 20°
+
+#### 常见坑
+
+- 不要直接用 `Yaw - AimAngle` 作为误差（会在 0/360 处跳变）。
+- 注意你的底盘接口对 `speed_z` 的符号约定：
+  - 如果你发现 `error>0` 反而右转，就把 `speed_z = -Kp * error`。
