@@ -32,7 +32,7 @@ class Preference:
                     "number" : 1,
                     "type": "OP", # OffencePlayer/DefencePlayer
                     "Bit" : "AB", # AB(Arisu Bits)/QB (3Q Bits RPI)/ 3Q (3Q Bits) .etc
-                    "Rec" : "AI", # AI(Arisu Intelligence)/TV(Tuna Vision)/BB(Blob Based)
+                    "Rec" : "AI", # AI(Arisu Intelligence)/TI(Tuna Intelligence)/TV(Tuna Vision)/BB(Blob Based)
                 },
                 "VisionVals": {
                     'Front' : 4,

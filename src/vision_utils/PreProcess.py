@@ -12,29 +12,37 @@ MODEL_DIR = APP_DIR / "models"
 
 class VisionPreUntil:
     '''
-    with hailo only
+    Base vision pre-utility.
+
+    Notes
+    -----
+    Historically this class always initialized 4 V4L2 cameras and started
+    background threads immediately. For unit-tests / offline inference we also
+    support disabling camera initialization via `init_cams=False`.
     '''
-    def __init__(self):
+    def __init__(self, init_cams: bool = True, cam_ports=None):
         self.cfg = Settings
         self.logger = logger
 
-        #TODO put into settings
+        # TODO put into settings
         # self.CamPorts = [8,10,1,5]
-        self.CamPorts = [
-                    Settings.VisionVals.Front,
-                    Settings.VisionVals.Right,
-                    Settings.VisionVals.Back,
-                    Settings.VisionVals.Left,
-                    ]
+        self.CamPorts = cam_ports or [
+            Settings.VisionVals.Front,
+            Settings.VisionVals.Right,
+            Settings.VisionVals.Back,
+            Settings.VisionVals.Left,
+        ]
         self.StopRecord = 0
 
         self.Cams = []
-        self.Frames = []
+        # Always keep 4 slots, even when cameras are not initialized.
+        self.Frames = [None, None, None, None]
         self.Videos = []
 
         self.BallPos = [0,0]
 
-        self.InitCam(self.CamPorts)
+        if init_cams:
+            self.InitCam(self.CamPorts)
 
         self.ReadCamTF = 0
         self.PreProcessTF = 0
@@ -42,15 +50,16 @@ class VisionPreUntil:
         self.PostProcessTF = 0
 
 
-        self.ReadCamsThread = threading.Thread(target=self.ReadCams)
-        self.ReadCamsThread.daemon = True
-        self.ReadCamsThread.start()
+        if init_cams:
+            self.ReadCamsThread = threading.Thread(target=self.ReadCams)
+            self.ReadCamsThread.daemon = True
+            self.ReadCamsThread.start()
 
-        time.sleep(3)
+            time.sleep(3)
 
-        self.VideoRecordThread = threading.Thread(target=self.VideoRecord)
-        self.VideoRecordThread.daemon = True
-        self.VideoRecordThread.start()
+            self.VideoRecordThread = threading.Thread(target=self.VideoRecord)
+            self.VideoRecordThread.daemon = True
+            self.VideoRecordThread.start()
 
 
     def InitVideo(self):
