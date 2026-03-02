@@ -36,7 +36,7 @@ class IceLoongBits:
     方法命名使用大驼峰（PascalCase）。
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -64,9 +64,10 @@ class IceLoongBits:
             # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
 
-        self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
-        self.SendUnitedCommandThread.daemon = True
-        self.SendUnitedCommandThread.start()
+        if not testing:
+            self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
+            self.SendUnitedCommandThread.daemon = True
+            self.SendUnitedCommandThread.start()
 
     def SendUnitedCommand(self):
         while (1):

@@ -39,6 +39,9 @@ ExecStart=/usr/bin/bash -c 'source $PROJECT_DIR/src/ROS2_Nodes/sllidarROS/instal
 Restart=always
 RestartSec=5
 
+# Ensure our project sources are importable (so main.py can `import offence`, etc.)
+Environment=PYTHONPATH=$PROJECT_DIR/src
+
 [Install]
 WantedBy=multi-user.target
 EOF

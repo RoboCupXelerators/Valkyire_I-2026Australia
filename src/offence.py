@@ -15,6 +15,7 @@ from BasicFuc import *
 def main():
     try:
         while True:
+            print(UnitedPosition.FieldRobotPos())
             if UnitedPosition.RestrictedArea():
                 ball_position = UnitedPosition.RobotBallPos()
                 robo_position = UnitedPosition.FieldRobotPos()
@@ -43,7 +44,7 @@ def main():
                     else:
                         peripheral.Dribble(0.0)
                         if TurnTo_with_ball((goal_angle_home) % 360, 1):
-                            chassis.RelMoveAngle(0, 300)
+                            chassis.RobotMoveAngle(0, 300)
                             time.sleep(0.2)
                             peripheral.ShootBall()
                             logger.warning("Processing :45")
