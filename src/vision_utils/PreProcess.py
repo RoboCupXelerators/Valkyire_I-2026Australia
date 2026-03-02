@@ -1,4 +1,22 @@
-from .VisionDatas import Settings, logger, Path
+"""Shared vision preprocessing utilities.
+
+This module is used by multiple vision backends (Hailo / BPU / Blob).
+
+Compatibility note:
+- The main system config is `src/ReasonData/data/config.json`.
+- `vision_utils` historically also shipped its own config `vision_utils/VisionDatas/data/vision.json`.
+
+To reduce "config split" issues, we prefer importing `ReasonData.Settings/logger`
+when available, and fallback to `vision_utils.VisionDatas`.
+"""
+
+from pathlib import Path
+
+try:
+    # Prefer the main system config
+    from ReasonData import Settings, logger  # type: ignore
+except Exception:  # pragma: no cover
+    from .VisionDatas import Settings, logger
 import threading
 import queue
 import time
@@ -15,6 +33,11 @@ class VisionPreUntil:
     with hailo only
     '''
     def __init__(self):
+        # Allow subclasses to pre-create a stop event (e.g. ArisuIntelligence).
+        # If not provided, create one so we can shutdown gracefully in tests.
+        if not hasattr(self, "_stop_event"):
+            self._stop_event = threading.Event()
+
         self.cfg = Settings
         self.logger = logger
 
@@ -33,6 +56,10 @@ class VisionPreUntil:
         self.Videos = []
 
         self.BallPos = [0,0]
+
+        # Calibration for Pixel<->CM mapping (used by BlobBased / other detectors).
+        # If calibration files are missing, we fallback to identity mapping.
+        self._init_calibration()
 
         self.InitCam(self.CamPorts)
 
@@ -53,6 +80,93 @@ class VisionPreUntil:
         self.VideoRecordThread.start()
 
 
+    def _init_calibration(self):
+        """Load per-camera calibration used by Pixel2CM/CM2Pixel.
+
+        Expected file: {DATA_DIR}/Calibration/CalibrationData{port}.npz
+        with keys:
+        - matrix: 3x3 perspective transform
+        - p2c: (k, hb, vb)
+        """
+
+        self.PerspectiveMatrices: list[np.ndarray] = []
+        self.P2CK: list[float] = []
+        self.P2CHB: list[float] = []
+        self.P2CVB: list[float] = []
+
+        calib_dir = DATA_DIR / "Calibration"
+        for port in self.CamPorts:
+            npz_path = calib_dir / f"CalibrationData{port}.npz"
+            try:
+                data = np.load(str(npz_path))
+                matrix = data["matrix"]
+                p2c = data["p2c"]
+
+                self.PerspectiveMatrices.append(matrix)
+                # Be tolerant to p2c shape (sometimes it's nested).
+                self.P2CK.append(float(p2c[0]))
+                self.P2CHB.append(float(p2c[1]))
+                self.P2CVB.append(float(p2c[2]))
+            except Exception as e:
+                self.logger.warning(
+                    f"Calibration load failed for camera port {port} ({npz_path}): {e}. "
+                    "Fallback to identity Pixel2CM."
+                )
+                self.PerspectiveMatrices.append(np.eye(3, dtype=np.float64))
+                self.P2CK.append(1.0)
+                self.P2CHB.append(0.0)
+                self.P2CVB.append(0.0)
+
+
+    def ApplyPerspectiveTransform(self, X, Y, Matrix):
+        """Apply a 3x3 perspective matrix on a pixel point."""
+        point = np.array([X, Y, 1], dtype=np.float64)
+        transformed = Matrix @ point
+        transformed /= transformed[2]
+        return int(transformed[1]), int(transformed[0])
+
+
+    def Pixel2CM(self, X, Y, CamIndex: int):
+        """Convert pixel coordinate to cm coordinate for a specific camera.
+
+        Notes:
+        - This is shared by Hailo/BPU/Blob pipelines.
+        - If calibration wasn't loaded, returns (X, Y) as-is.
+        """
+
+        if not getattr(self, "PerspectiveMatrices", None):
+            self._init_calibration()
+
+        try:
+            X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[CamIndex])
+            X = round(self.P2CK[CamIndex] * X + self.P2CHB[CamIndex], 2)
+            Y = round(-self.P2CK[CamIndex] * Y + self.P2CVB[CamIndex], 2)
+            return X, Y
+        except Exception as e:
+            self.logger.warning(f"Pixel2CM failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
+            return X, Y
+
+
+    def CM2Pixel(self, X, Y, CamIndex: int):
+        """Convert cm coordinate back to pixel coordinate for a specific camera."""
+
+        if not getattr(self, "PerspectiveMatrices", None):
+            self._init_calibration()
+
+        try:
+            p2ck = self.P2CK[CamIndex]
+            p2chb = self.P2CHB[CamIndex]
+            p2cvb = self.P2CVB[CamIndex]
+
+            X = (X - p2chb) / p2ck
+            Y = -(Y - p2cvb) / p2ck
+            X, Y = self.ApplyPerspectiveTransform(X, Y, np.linalg.inv(self.PerspectiveMatrices[CamIndex]))
+            return int(X), int(Y)
+        except Exception as e:
+            self.logger.warning(f"CM2Pixel failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
+            return int(X), int(Y)
+
+
     def InitVideo(self):
         Videos = []
         if not self.cfg.VisionVals.Record:
@@ -69,7 +183,7 @@ class VisionPreUntil:
         self.Videos = []
     
     def VideoRecord(self):
-        while True:
+        while not self._stop_event.is_set():
             if not self.Videos:
                 self.InitVideo()
             elif int(time.time()) % 30 == 0:
@@ -99,10 +213,11 @@ class VisionPreUntil:
     def ReadCams(self):
         FrameCount = 0
         LastTime = time.time()
-        while True:
+        while not self._stop_event.is_set():
             Frames = []
             for Cam in self.Cams:
-                Frame = Cam.read()[1]
+                ok, frame = Cam.read()
+                Frame = frame if ok else None
                 Frames.append(Frame)
             self.Frames = Frames
             FrameCount += 1
@@ -129,7 +244,28 @@ class VisionPreUntil:
     #     VisionCornerX, VisionCornerY = self.CM2Pixel(VisionCornerX, VisionCornerY, 0)
     #     print(VisionCornerX, VisionCornerY)
 
-    def __exit__(self):
-        for Cam in self.Cams:
-            Cam.release()
-        self.CloseVideo()
+    def close(self):
+        """Stop threads and release camera/video resources."""
+        try:
+            self._stop_event.set()
+        except Exception:
+            pass
+        for Cam in getattr(self, "Cams", []):
+            try:
+                Cam.release()
+            except Exception:
+                pass
+        try:
+            self.CloseVideo()
+        except Exception:
+            pass
+
+    def __exit__(self, *args, **kwargs):
+        self.close()
+
+    def __del__(self):
+        # Best-effort cleanup for short-lived scripts.
+        try:
+            self.close()
+        except Exception:
+            pass

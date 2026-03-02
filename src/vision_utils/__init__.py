@@ -1,4 +1,16 @@
-from .VisionDatas import Settings
+"""vision_utils package entry.
+
+Detect_Method selection is controlled by Settings.RoboInfo.Rec.
+
+Compatibility note:
+- Prefer the *system* settings from `ReasonData` (src/ReasonData/data/config.json).
+- Fall back to the legacy vision-only config `vision_utils/VisionDatas/data/vision.json`.
+"""
+
+try:
+    from ReasonData import Settings  # type: ignore
+except Exception:  # pragma: no cover
+    from .VisionDatas import Settings
 
 if Settings.RoboInfo.Rec == 'AI':
     from .ArisuIntelligence import ArisuIntelligence as Detect_Method

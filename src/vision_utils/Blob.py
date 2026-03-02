@@ -55,11 +55,13 @@ class BlobBased(VisionPreUntil):
         return Blobs
     
     def FindBall(self):
-        while True:
+        while not getattr(self, "_stop_event", threading.Event()).is_set():
             Balls = []
             for i in range(4):
                 Blobs = []
                 Frame = self.Frames[i]
+                if Frame is None:
+                    continue
                 Blobs = self.FindBlobs(Frame, self.OrangeThreshold)
                 if Blobs:
                     MaxBlob = self.FindMaxBlob(Blobs)
