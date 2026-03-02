@@ -7,10 +7,7 @@ Compatibility note:
 - Fall back to the legacy vision-only config `vision_utils/VisionDatas/data/vision.json`.
 """
 
-try:
-    from ReasonData import Settings  # type: ignore
-except Exception:  # pragma: no cover
-    from .VisionDatas import Settings
+from .merged_settings import Settings
 
 if Settings.RoboInfo.Rec == 'AI':
     from .ArisuIntelligence import ArisuIntelligence as Detect_Method

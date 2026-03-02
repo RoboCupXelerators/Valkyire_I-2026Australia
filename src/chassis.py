@@ -1,5 +1,6 @@
 import math
 from ReasonData.config import Settings
+from ReasonData import logger
 import time, threading
 
 class Car:
@@ -9,13 +10,14 @@ class Car:
         self.MotorEncoder = MotorEncoder
         self.Kp = 1
         self.cfg = Settings
+        # Always use the unified project logger (ReasonData.logger)
+        # to avoid AttributeError when FullLog=False.
+        self.logger = logger
         # TODO Database is ready to archieve
         # if self.cfg.Debug.Database:
         #     from ReasonData.data import Outputs
         #     self.DataBase = Outputs()
-        if self.cfg.Debug.FullLog:
-            from ReasonData import logger
-            self.logger = logger
+        # Note: debug verbosity is still controlled by cfg.Debug.FullLog in calls.
     
     def SetMotor(self,speedCache:list[int,int,int,int]):
         number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
@@ -88,7 +90,9 @@ class Car:
         SpeedZ = Error * Kp
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
-        self.logger.info(f"used AbsMoveVector: {WheelX, WheelY, SpeedZ}")
+        # Only print high-frequency motion logs when FullLog is enabled
+        if getattr(self.cfg.Debug, "FullLog", False):
+            self.logger.info(f"used AbsMoveVector: {WheelX, WheelY, SpeedZ}")
         self.RelMoveVetor(WheelX, WheelY, SpeedZ)
     
     def RelXMove(self,Angle,Speed):
