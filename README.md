@@ -441,6 +441,191 @@ comm.PeerStatus()
 > - 由于采用全局启动标志位（`SendstatusThreadFuncStarted` 等），同一进程里多次创建 `Communication()` 并重复启动线程可能会导致混乱；建议全局只创建一个 `comm` 实例。
 
 
+## 🛞 底盘/外设通用接口（chassis.py）
+
+`src/chassis.py` 提供了三类“硬件抽象层”对象：
+
+- `Car`：四轮底盘运动学封装（支持 **机体坐标系** / **场地坐标系** 的移动，以及航向角闭环）。
+- `Peripherals`：电磁铁（踢球）/ 运球器（dribble）等外设控制。
+- `Key`：按键输入的线程化计数与长按判定。
+
+在 `LunaPre.py` 中，会根据 `ReasonData.config.Settings` 选择不同的 Bits（下位机）实现，并创建全局对象：
+
+```python
+from chassis import Car, Peripherals, Key
+
+chassis = Car(Bits.SetMotor or Bits.SetWheelSpeed, Bits.GetYaw, Bits.get_motor_encoder)
+peripheral = Peripherals(Bits.SetIO or Bits.VirtualPorts)
+key = Key(Bits.GetKey)
+```
+
+> 也就是说：你在策略里经常直接用到的 `chassis / peripheral / key`，底层就是本文件里的类。
+
+### 🤖 `Car`：底盘运动控制
+
+#### 初始化
+
+```python
+from chassis import Car
+
+car = Car(
+    SetMotorFunc=Bits.SetMotor,               # 必填：底层“设置四电机速度”的函数
+    GetYaw=Bits.GetYaw,                       # 可选：获取航向角（°，0~360）
+    MotorEncoder=Bits.get_motor_encoder,      # 可选：用于 FullLog 下打印编码器反馈
+)
+```
+
+**依赖配置**：
+
+- `Settings.Ports.LeftFront/LeftBack/RightFront/RightBack`：电机编号映射（1~4）。
+- `Settings.ExpectedVals.MaxSpeedValue`：速度限幅。
+- `Settings.Debug.FullLog`：是否输出高频调试日志。
+
+#### 约定：坐标系与速度方向
+
+`RobotMoveVetor(SpeedX, SpeedY, SpeedZ)` 中：
+
+- `SpeedX`：机体坐标系 **前后**（x_forward，前为正）
+- `SpeedY`：机体坐标系 **左右**（y_left，左为正）
+- `SpeedZ`：自转角速度（正负号由底盘约定；本项目中用于“航向误差 * Kp”）
+
+#### 🧩 `SetMotor(speed_cache)`：直接设置四个电机速度
+
+```python
+car.SetMotor([s1, s2, s3, s4])
+```
+
+- 内部会按 `MaxSpeedValue` 做限幅，并调用你传入的 `SetMotorFunc(s1, s2, s3, s4)`。
+- 若 `Settings.Debug.FullLog=True`，会打印速度与（可选）编码器反馈。
+
+> 一般策略不建议直接 `SetMotor`，更推荐使用下面的“向量/角度”接口。
+
+#### ➡️ `RobotMoveVetor(SpeedX, SpeedY, SpeedZ, Z_Kp=1)`：机体坐标系向量移动（不做航向闭环）
+
+```python
+car.RobotMoveVetor(SpeedX=200, SpeedY=0, SpeedZ=0)
+```
+
+- 适合：纯手动控制、或你自己在上层做了航向控制。
+- `Z_Kp`：旋转通道增益（代码里是乘在 `SpeedZ` 上）。
+
+#### 🧭 `RobotMoveAngle(Angle, Speed, Kp=1)`：机体坐标系按角度移动（不做航向闭环）
+
+```python
+# Angle=0 -> 正前方；Angle=90 -> 左侧；Angle=180 -> 后方
+car.RobotMoveAngle(Angle=0, Speed=200)
+```
+
+> 注意：这里的 `Angle` 是“相对机器人自身”的角度，不会自动补偿当前航向角。
+
+#### 🌍 `FieldMoveVetor(SpeedX, SpeedY, FacingAngle, Kp=None)`：场地坐标系向量移动（带航向闭环）
+
+```python
+# 以场地坐标系给速度，同时要求车头最终面向 FacingAngle
+car.FieldMoveVetor(SpeedX=150, SpeedY=0, FacingAngle=0)
+```
+
+内部逻辑要点：
+
+- `Error = yaw - FacingAngle` 会被归一化到 `[-180, 180]`，再用 `SpeedZ = Error * Kp` 做航向修正。
+- `Kp` 为空时会使用 `car.Kp`（可用 `SetKp()` 修改）。
+
+#### 🧭🌍 `FieldMoveAngle(FacingAngle, MovingAngle, Speed, Kp=None)`：场地坐标系按角度移动（带航向闭环）
+
+```python
+# MovingAngle：你希望在“场地坐标系”里往哪个方向走
+# FacingAngle：你希望机器人面向哪个绝对角度
+car.FieldMoveAngle(FacingAngle=0, MovingAngle=0, Speed=200)
+```
+
+#### 🔄 `FieldTurn(Angle)`：原地转向到某航向（闭环）
+
+```python
+car.FieldTurn(Angle=90)
+```
+
+等价于给 `FieldMoveVetor(0, 0, FacingAngle)`。
+
+#### 🌀 `RobotTurn(Speed)`：纯自转（不闭环）
+
+```python
+car.RobotTurn(Speed=80)
+```
+
+#### 🎯 `TurnTo(Angle, Kp=None)`：阻塞式转到目标航向
+
+```python
+car.TurnTo(Angle=0)   # 会一直转，直到误差 < 5° 才返回
+```
+
+> ⚠️ 这是阻塞函数：内部 `while True` + `sleep(0.03)`，策略主循环中使用要谨慎。
+
+#### 🛑 `stop()`：底盘停止
+
+```python
+car.stop()
+```
+
+### 🦾 `Peripherals`：运球器/电磁铁
+
+#### 初始化
+
+```python
+from chassis import Peripherals
+
+peripheral = Peripherals(IOFunc=Bits.SetIO)
+```
+
+初始化时会默认将 `Settings.Ports.ElecMagnet` 置为 `1`（上电/保持）。
+
+#### ⚽ `ShootBall()`：踢球（电磁铁脉冲）
+
+行为：
+
+1. 电磁铁端口置 `0`
+2. 等待 `0.3s`
+3. 电磁铁端口恢复为 `1`
+
+#### 🧲 `Dribble(Status)`：设置运球器
+
+```python
+peripheral.Dribble(True)   # 开
+peripheral.Dribble(False)  # 关
+peripheral.Dribble(0.5)    # 也允许传入自定义占空比/强度（取决于下位机实现）
+```
+
+- 会更新 `peripheral.DribbleStatus`，并打印日志。
+
+### ⌨️ `Key`：按键（线程计数）
+
+#### 初始化
+
+```python
+from chassis import Key
+
+key = Key(GetKeyFunc=Bits.GetKey)
+```
+
+初始化后会启动后台线程 `KeyEvent()`（守护线程），以约 `10ms` 周期采样按键状态并计数。
+
+#### `Press()`：当前是否按下
+
+```python
+if key.Press():
+    ...
+```
+
+#### `LongPress()`：是否长按
+
+```python
+if key.LongPress():
+    ...
+```
+
+- 当前实现：`KeyCount >= 500` 判定为长按。
+- 由于采样周期约 `0.01s`，所以 **500 次 ≈ 5 秒**。
+
+
 ## 🗒️ 其他碎碎念
 
 ### 📡 通讯
