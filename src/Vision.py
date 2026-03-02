@@ -212,6 +212,7 @@ if __name__ == "__main__":
             data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
             vision.logger.info(data)
             pickled_data = pickle.dumps(data)
+            print(data)
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
         except Exception as e:
             print(f"Error in vision server: {e}")

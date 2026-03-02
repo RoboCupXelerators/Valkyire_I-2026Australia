@@ -15,6 +15,7 @@ from BasicFuc import *
 def main():
     try:
         while True:
+            print(UnitedPosition.FieldRobotPos())
             if UnitedPosition.RestrictedArea():
                 ball_position = UnitedPosition.RobotBallPos()
                 robo_position = UnitedPosition.FieldRobotPos()

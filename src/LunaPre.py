@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import math
+import errno
 import os
 import pickle
 import socket
@@ -140,7 +141,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
 
 
 # 默认初始化：开发机可导入（allow_mock=True），且不自动启动 ROS2 lidar（避免无 ROS 环境卡死）
-_init_runtime(allow_mock=True, auto_start_lidar=False)
+_init_runtime(allow_mock=False, auto_start_lidar=True)
 
 Beta_Func = False
 
@@ -218,13 +219,18 @@ class Positions:
                     continue
                 data, addr = self.sock.recvfrom(4096)
                 self.vision_data = pickle.loads(data)
-            except socket.timeout:
+                # if we can receive packets, reset restart counter
+                restart_count = 0
+
+            except (socket.timeout, TimeoutError):
                 if not self._vision_enabled:
                     # vision explicitly disabled
                     self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
                     time.sleep(0.05)
                     continue
 
+                # normal timeout: no vision UDP packets this cycle.
+                # Make sure vision subprocess is running.
                 if self.vision_process is None or self.vision_process.poll() is not None:
                     # If it keeps dying, stop respawning (prevents resource_tracker leaked semaphores).
                     if restart_count >= max_restart:
@@ -240,7 +246,24 @@ class Positions:
                     self.vision_process = subprocess.Popen([sys.executable, "src/Vision.py"], cwd=project_root)
                     logger.info("Started vision server process")
                     restart_count += 1
+
                 self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+
+            except OSError as e:
+                # Socket closed while thread is still running (e.g. Stop called).
+                # Exit gracefully to avoid noisy "Bad file descriptor".
+                if self.vision_data_stop_event.is_set():
+                    break
+
+                # Some platforms may raise OSError(ETIMEDOUT) for timeouts. Treat it like a timeout.
+                if getattr(e, "errno", None) == errno.ETIMEDOUT or str(e).lower().strip() == "timed out":
+                    continue
+
+                if getattr(e, "errno", None) == errno.EBADF:
+                    break
+
+                logger.warning(f"Vision socket OSError: {e}")
+                time.sleep(0.05)
         
     def GetVisionData(self):
         # ensure vision thread is running
@@ -714,9 +737,14 @@ class Positions:
         lidar.stop()
         chassis.stop()
         self.vision_data_stop_event.set()
-        # close UDP socket
+        # Close UDP socket after signalling stop. Closing can raise in receiver thread;
+        # _get_vision_data handles it.
         try:
             if self.sock is not None:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 self.sock.close()
         except Exception:
             pass
