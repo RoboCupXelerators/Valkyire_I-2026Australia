@@ -46,7 +46,7 @@ class Car:
     def Compass(self):
         return self.GetYaw()
 
-    def RelMoveVetor(self,SpeedX,SpeedY,SpeedZ,Z_Kp:int| None = 1):
+    def RobotMoveVetor(self,SpeedX,SpeedY,SpeedZ,Z_Kp:int| None = 1):
         '''
         a vector movement (SpeedX,SpeedY,SpeedZ) without YawCorrect
         '''
@@ -57,16 +57,16 @@ class Car:
         output = [Speed1, Speed2, Speed3, Speed4]
         self.SetMotor(output)
     
-    def RelMoveAngle(self,Angle,Speed,Kp:float|None = 1):
+    def RobotMoveAngle(self,Angle,Speed,Kp:float|None = 1):
         '''
         angle movement (Angle,Speed) without YawCorrect
         '''
         rad = math.radians(Angle)
         SpeedX = int(math.sin(rad) * Speed)
         SpeedY = int(math.cos(rad) * Speed)
-        self.RelMoveVetor(SpeedY,SpeedX,0,Kp)
+        self.RobotMoveVetor(SpeedY,SpeedX,0,Kp)
 
-    def AbsMoveAngle(self,FacingAngle,MovingAngle,Speed,Kp:float|None = None):
+    def FieldMoveAngle(self,FacingAngle,MovingAngle,Speed,Kp:float|None = None):
         '''
         angle movement (FacingAngle,MovingAngle,speed) with YawCorrect
         '''
@@ -74,9 +74,9 @@ class Car:
         rad = math.radians((MovingAngle-Yaw+FacingAngle))
         SpeedX = int(math.cos(rad) * Speed)
         SpeedY = int(math.sin(rad) * Speed)
-        self.AbsMoveVetor(SpeedX,SpeedY,FacingAngle,Kp)
+        self.FieldMoveVetor(SpeedX,SpeedY,FacingAngle,Kp)
         
-    def AbsMoveVetor(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
+    def FieldMoveVetor(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
         '''
         vector movement (SpeedX,SpeedY,AngleZ˚,Angle_Gain) with YawCorrect
         '''
@@ -92,28 +92,28 @@ class Car:
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
         # Only print high-frequency motion logs when FullLog is enabled
         if getattr(self.cfg.Debug, "FullLog", False):
-            self.logger.info(f"used AbsMoveVector: {WheelX, WheelY, SpeedZ}")
-        self.RelMoveVetor(WheelX, WheelY, SpeedZ)
+            self.logger.info(f"used FieldMoveVector: {WheelX, WheelY, SpeedZ}")
+        self.RobotMoveVetor(WheelX, WheelY, SpeedZ)
     
-    def RelXMove(self,Angle,Speed):
-        self.RelMoveVetor(90,Angle,Speed)
+    def RobotXMove(self,Angle,Speed):
+        self.RobotMoveVetor(90,Angle,Speed)
    
-    def RelYMove(self,Angle,Speed,Kp=None):
-        self.RelMoveVetor(0,Angle,Speed,Kp)
+    def RobotYMove(self,Angle,Speed,Kp=None):
+        self.RobotMoveVetor(0,Angle,Speed,Kp)
 
-    def AbsTurn(self,Angle):
+    def FieldTurn(self,Angle):
         if self.GetYaw is None:
             return False
-        self.AbsMoveVetor(0,0,Angle)
+        self.FieldMoveVetor(0,0,Angle)
 
-    def RelTurn(self,Speed): #自转
-        self.RelMoveVetor(0,0,Speed)
+    def RobotTurn(self,Speed): #自转
+        self.RobotMoveVetor(0,0,Speed)
     
     def TurnTo(self,Angle,Kp=None):
         while True:
             Error = self.GetYaw() - Angle
             if not abs(Error) < 5:
-                self.AbsMoveVetor(0,0,Angle)
+                self.FieldMoveVetor(0,0,Angle)
             else:
                 self.stop()
                 break

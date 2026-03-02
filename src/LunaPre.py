@@ -650,13 +650,13 @@ class Positions:
             chassis.stop()
             return True
         elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
-            chassis.AbsTurn(iAimZ)
+            chassis.FieldTurn(iAimZ)
         else:
             if speed_gain:
-                chassis.AbsMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
+                chassis.FieldMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
                 # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                chassis.AbsMoveVetor(iDeltaX,iDeltaY,iAimZ)
+                chassis.FieldMoveVetor(iDeltaX,iDeltaY,iAimZ)
             return False
 
     def Move2Path(self, Posistions: list, iWaitMs: float):
@@ -708,22 +708,22 @@ class Positions:
         else:
             if abs(Distance[1] - Distance[3])<Settings.Bounds.restricted_area_y:
                 if Distance[0]<Settings.Bounds.restricted_area_x:
-                    chassis.AbsMoveAngle(0,180,300)
+                    chassis.FieldMoveAngle(0,180,300)
                     return False
                 elif Distance[2]<Settings.Bounds.restricted_area_x:
-                    chassis.AbsMoveAngle(0,0,300)
+                    chassis.FieldMoveAngle(0,0,300)
                     return False
             if Distance[0]<Settings.Bounds.Distance2Bound:
-                chassis.AbsMoveAngle(0,180,300)
+                chassis.FieldMoveAngle(0,180,300)
                 return False
             if Distance[2]<Settings.Bounds.Distance2Bound:
-                chassis.AbsMoveAngle(0,0,300)
+                chassis.FieldMoveAngle(0,0,300)
                 return False
             if Distance[1]<Settings.Bounds.Distance2Bound:
-                chassis.AbsMoveAngle(0,270,-300)
+                chassis.FieldMoveAngle(0,270,-300)
                 return False
             if Distance[3]<Settings.Bounds.Distance2Bound:
-                chassis.AbsMoveAngle(0,90,-300)
+                chassis.FieldMoveAngle(0,90,-300)
                 return False
             else:
                 return True
@@ -762,6 +762,10 @@ class Positions:
                 self.get_vision_data_process.join(timeout=0.5)
         except Exception:
             pass
+
+    # Backward-compatible alias (legacy code used lower-case stop())
+    def stop(self):
+        return self.Stop()
 
 UnitedPosition = Positions()
 

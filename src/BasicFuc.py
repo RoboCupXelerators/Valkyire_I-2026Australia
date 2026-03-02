@@ -59,7 +59,7 @@ def ChasingBall():
     Kp = 1.5
     SpeedX = iBX * Kp
     SpeedY = iBY * Kp
-    chassis.AbsMoveVetor(SpeedX,SpeedY,AbsAngle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+    chassis.FieldMoveVetor(SpeedX,SpeedY,AbsAngle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
 
 class LockSeries:
     def __init__(self):
@@ -74,12 +74,12 @@ class LockSeries:
         Angle = UnitedPosition.RobotBallAngle()
         # Fangle = -(Angle - Compass)
         logger.debug("Ball Angle: %f" % Angle)
-        chassis.AbsTurn(Angle)
+        chassis.FieldTurn(Angle)
 
     def Lockballmove(self):
         lBallPos = UnitedPosition.FieldBallPos()
         iBX,iBY = lBallPos[0],lBallPos[1]
-        chassis.AbsMoveVetor(iBX*4,iBY*4,0)
+        chassis.FieldMoveVetor(iBX*4,iBY*4,0)
 
     def LockBallSlip(self):
         iBX,iBY = UnitedPosition.RobotBallPos()
@@ -117,7 +117,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            chassis.RelMoveVetor(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RobotMoveVetor(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
 
 lockball = LockSeries()
@@ -167,10 +167,10 @@ def NormalShoot(x=1, HomePos=[0, -20, 0]):
             delta = abs(aim - current)
 
             if delta > 60:
-                chassis.AbsTurn(aim, 50)
+                chassis.FieldTurn(aim)
                 break
             else:
-                chassis.AbsMoveAngle(0, aim, 50)
+                chassis.FieldMoveAngle(0, aim, 50)
             time.sleep(0.03)
 
         peripheral.ShootBall()
@@ -242,10 +242,10 @@ def CircleAround(iAimAngle):
             break
         if iBX <= -Settings.ExpectedVals.ErrorRange/3:
             logger.debug('atleft')
-            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,40)
+            chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,40)
         elif iBX >= Settings.ExpectedVals.ErrorRange/3:
             logger.debug('atright')
-            chassis.AbsMoveAngle(iAimAngle,iAimAngle + 90,-40)
+            chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,-40)
         else:
             for _ in range(3):
                 chassis.stop()
@@ -329,7 +329,7 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
         for _ in range(20):
             # if not AbsBallPos() == [1207, 1207]:
             #     break
-            chassis.AbsTurn(Compass)
+            chassis.FieldTurn(Compass)
             time.sleep(0.03)
         peripheral.ShootBall()
         logger.success("Ball is in possession, start shotting.")
@@ -374,7 +374,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
                 else:
                     chassis.stop()
                     time.sleep(0.5)
-                    chassis.AbsTurn(Aim,50)
+                    chassis.FieldTurn(Aim)
                     peripheral.ShootBall()
                 
             else:
