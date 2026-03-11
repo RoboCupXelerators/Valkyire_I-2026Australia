@@ -12,12 +12,25 @@ when available, and fallback to `vision_utils.VisionDatas`.
 
 from pathlib import Path
 
+# Settings/logger import order:
+#  1) ReasonData (installed package usage)
+#  2) src.ReasonData (running from repo root, imports as "src.*")
+#  3) merged_settings (vision-only merged config; always provides VisionVals defaults)
+#  4) legacy VisionDatas (vision-only config)
 try:
-    # Prefer the main system config
     from ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
 except Exception:  # pragma: no cover
-    from .VisionDatas import Settings, logger
-    REASON_DATA_DIR = None  # type: ignore
+    try:
+        from src.ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+    except Exception:  # pragma: no cover
+        try:
+            # merged_settings does not expose logger; keep legacy logger
+            from .merged_settings import Settings  # type: ignore
+            from .VisionDatas import logger
+            REASON_DATA_DIR = None  # type: ignore
+        except Exception:  # pragma: no cover
+            from .VisionDatas import Settings, logger
+            REASON_DATA_DIR = None  # type: ignore
 import threading
 import queue
 import time
@@ -246,9 +259,18 @@ class SegmentedMultiCamRecorder:
                 self.logger.warning(
                     f"VideoWriter open failed: {tmp_path} codec={self.cfg.codec} fps={self.cfg.fps} size={frame_size}"
                 )
-            self._writers[cam_index] = writer
-            self._current_paths_tmp[cam_index] = tmp_path
-            self._current_paths_final[cam_index] = final_path
+                # IMPORTANT: store None so `any(self._writers)` reflects actual availability.
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+                self._writers[cam_index] = None
+                self._current_paths_tmp[cam_index] = None
+                self._current_paths_final[cam_index] = None
+            else:
+                self._writers[cam_index] = writer
+                self._current_paths_tmp[cam_index] = tmp_path
+                self._current_paths_final[cam_index] = final_path
         self._segment_start_ts = time.time()
         self.logger.info(
             f"Recording started: dir={self.cfg.record_dir} segment={self.cfg.segment_seconds}s codec={self.cfg.codec} ext={self.cfg.ext}"
@@ -352,9 +374,9 @@ class VisionPreUntil:
     support disabling camera initialization via `init_cams=False`.
     '''
     def __init__(self, init_cams: bool = True, cam_ports=None):
-        # Allow subclasses to pre-create a stop event (e.g. ArisuIntelligence).
+        # Allow subclasses to pre-create a stop event.
         # If not provided, create one so we can shutdown gracefully in tests.
-        if not hasattr(self, "_stop_event"):
+        if not hasattr(self, "_stop_event") or self._stop_event is None:
             self._stop_event = threading.Event()
 
         self.cfg = Settings
@@ -378,9 +400,11 @@ class VisionPreUntil:
         self.BallPos = [0,0]
 
         # thread lifecycle (for clean shutdown)
-        self._stop_event = threading.Event()
         self.ReadCamsThread = None
         self.VideoRecordThread = None
+
+        # recorder (optional)
+        self._recorder: SegmentedMultiCamRecorder | None = None
 
         if init_cams:
             self.InitCam(self.CamPorts)
@@ -396,70 +420,23 @@ class VisionPreUntil:
             self.ReadCamsThread.daemon = True
             self.ReadCamsThread.start()
 
-            time.sleep(3)
-
-            self.VideoRecordThread = threading.Thread(target=self.VideoRecord)
-            self.VideoRecordThread.daemon = True
-            self.VideoRecordThread.start()
-
-
-    def close(self, join_timeout: float = 1.0):
-        """Stop background threads and release camera/video resources."""
-        try:
-            self._stop_event.set()
-        except Exception:
-            pass
-
-        for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
-            try:
-                if t is not None and t.is_alive():
-                    t.join(timeout=join_timeout)
-            except Exception:
-                pass
-
-        # release cameras
-        try:
-            for Cam in getattr(self, "Cams", []):
-                try:
-                    Cam.release()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # release videos
-        try:
-            self.CloseVideo()
-        except Exception:
-            pass
-
-
-        # Start recording thread only when enabled (zero overhead otherwise).
-        self._recorder: SegmentedMultiCamRecorder | None = None
+        # Recording initialization (isolated; does not affect non-record runs)
         if getattr(self.cfg.VisionVals, "Record", False):
-            # Ensure we finalize mp4/avi headers on exit.
-            # Without a clean release(), mp4 often becomes "moov atom not found" and unplayable.
+            # Ensure mp4/avi headers are finalized on exit.
             atexit.register(self.close)
             try:
-                # Important: do not swallow Ctrl+C.
-                # We cleanup, then delegate to Python's default handlers
-                # so the process can actually exit.
+                # Cleanup on SIGINT/SIGTERM (best effort)
                 def _sig_cleanup_and_exit(signum, frame):
                     try:
-                        # Keep the signal handler lightweight to avoid deadlocks
-                        # (e.g. releasing VideoCapture while another thread is blocking on read()).
                         self.stop()
-                        # Finalize current segment so MP4 is playable.
                         try:
                             self.CloseVideo()
                         except Exception:
                             pass
                     finally:
                         if signum == signal.SIGINT:
-                            # Default behavior: raise KeyboardInterrupt
                             signal.default_int_handler(signum, frame)
                         else:
-                            # For SIGTERM: exit cleanly
                             raise SystemExit(0)
 
                 signal.signal(signal.SIGINT, _sig_cleanup_and_exit)
@@ -469,8 +446,6 @@ class VisionPreUntil:
                 pass
 
             # Default: store recordings next to ReasonData log file (ReasonData/data).
-            # If user provides an absolute path, use it. If it's relative (including ./Records),
-            # treat it as relative to ReasonData's DATA_DIR, not current working directory.
             record_dir_val = str(getattr(self.cfg.VisionVals, "RecordDir", "./Records"))
             record_dir_path = Path(record_dir_val)
             if not record_dir_path.is_absolute() and REASON_DATA_DIR is not None:
@@ -500,6 +475,34 @@ class VisionPreUntil:
             self.VideoRecordThread = threading.Thread(target=self.VideoRecord)
             self.VideoRecordThread.daemon = True
             self.VideoRecordThread.start()
+
+
+    def close(self, join_timeout: float = 1.0):
+        """Stop background threads and release camera/video resources."""
+        self.stop()
+
+        for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
+            try:
+                if t is not None and t.is_alive():
+                    t.join(timeout=join_timeout)
+            except Exception:
+                pass
+
+        # release cameras
+        try:
+            for Cam in getattr(self, "Cams", []):
+                try:
+                    Cam.release()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # release videos
+        try:
+            self.CloseVideo()
+        except Exception:
+            pass
 
             
     def __del__(self):
@@ -612,18 +615,23 @@ class VisionPreUntil:
                 pass
     
     def VideoRecord(self):
+        """Recording loop.
+
+        The actual file writing is handled by `SegmentedMultiCamRecorder`.
+        We keep this thread separate from camera reading/inference to avoid
+        blocking the pipeline when filesystem is slow.
+        """
+        fps = int(getattr(self.cfg.VisionVals, "RecordFPS", 30))
+        period = 1.0 / float(max(1, fps))
         while not self._stop_event.is_set():
-            if not self.Videos:
-                self.InitVideo()
-            elif int(time.time()) % 30 == 0:
-                self.CloseVideo()
-            
-            for i in range(4):
-                if self.Videos:
-                    Frame = self.Frames[i]
-                    if Frame is not None:
-                        self.Videos[i].write(Frame)
-            time.sleep(0.03)
+            if getattr(self, "_recorder", None) is not None:
+                try:
+                    # copy to avoid race with ReadCams updating the list
+                    frames = list(getattr(self, "Frames", []))
+                    self._recorder.write_frames(frames)
+                except Exception as e:
+                    self.logger.warning(f"Recorder write_frames failed: {e}")
+            time.sleep(period)
 
 
     def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
@@ -742,19 +750,6 @@ class VisionPreUntil:
     #     VisionCornerX, VisionCornerY = self.CM2Pixel(VisionCornerX, VisionCornerY, 0)
     #     print(VisionCornerX, VisionCornerY)
 
-    def close(self):
-        """Stop threads and release camera/video resources."""
-        self.stop()
-        for Cam in getattr(self, "Cams", []):
-            try:
-                Cam.release()
-            except Exception:
-                pass
-        try:
-            self.CloseVideo()
-        except Exception:
-            pass
-
     def stop(self):
         """Request background threads to stop (non-blocking)."""
         try:
@@ -763,11 +758,5 @@ class VisionPreUntil:
             pass
 
     def __exit__(self, *args, **kwargs):
-        self.close()
+        self.close(join_timeout=0.5)
 
-    def __del__(self):
-        # Best-effort cleanup for short-lived scripts.
-        try:
-            self.close()
-        except Exception:
-            pass

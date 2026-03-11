@@ -9,6 +9,17 @@ Compatibility note:
 
 from .merged_settings import Settings
 
+# logger is optional: prefer ReasonData logger if present, otherwise fallback to vision_utils logger
+try:
+    from ReasonData import logger as logger  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from .VisionDatas import logger as logger
+    except Exception:  # pragma: no cover
+        import logging
+
+        logger = logging.getLogger(__name__)
+
 
 def _safe_import(path: str, name: str):
     """Import helper to avoid hard-crash when optional accelerators are absent."""
