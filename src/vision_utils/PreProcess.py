@@ -10,6 +10,89 @@ APP_DIR = Path(__file__).parent
 DATA_DIR = APP_DIR / "VisionDatas" / "data"
 MODEL_DIR = APP_DIR / "models"
 
+
+def _is_jetson_nano() -> bool:
+    """Best-effort detection of Jetson Nano.
+
+    We *intentionally* only auto-enable hwaccel for Nano because other platforms
+    may not have the same GStreamer elements or behave differently.
+    """
+    try:
+        import os
+
+        if os.path.exists("/etc/nv_tegra_release"):
+            # All Jetsons have this, but we only enable for Nano.
+            # Try model file first.
+            model_paths = [
+                "/proc/device-tree/model",
+                "/sys/firmware/devicetree/base/model",
+            ]
+            for p in model_paths:
+                try:
+                    if os.path.exists(p):
+                        s = open(p, "rb").read().decode("utf-8", errors="ignore").lower()
+                        if "jetson nano" in s:
+                            return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _build_gst_v4l2_pipelines(
+    dev_index: int,
+    width: int,
+    height: int,
+    fps: int,
+    codec: str = "mjpg",
+) -> list[str]:
+    """Build candidate gstreamer pipeline strings for Jetson Nano.
+
+    Notes:
+      - For USB MJPEG cameras, `v4l2src ! image/jpeg ! jpegdec` is CPU.
+        Some systems have `nvjpegdec`/`nvv4l2decoder mjpeg=1`, but availability
+        depends on JetPack build.
+      - We keep this conservative: try a Nano-friendly path first, and rely on
+        runtime fallback to legacy V4L2 if it fails.
+    """
+    codec = (codec or "mjpg").lower()
+    if codec in ("mjpg", "mjpeg", "jpeg"):
+        # MJPEG cameras: different JetPack images may provide different decoders.
+        # Try in order:
+        #   1) nvv4l2decoder mjpeg=1 (V4L2 HW decode, best when available)
+        #   2) nvjpegdec (NVJPEG HW decode, often available)
+        #   3) jpegdec (CPU fallback but still via gstreamer; may still help piping)
+        base = f"v4l2src device=/dev/video{dev_index} ! image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+        tail = " nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+        return [
+            base + "nvv4l2decoder mjpeg=1 !" + tail,
+            base + "nvjpegdec !" + tail,
+            base + "jpegdec !" + tail,
+        ]
+    else:
+        # Raw YUYV (no decode step)
+        return [
+            (
+                f"v4l2src device=/dev/video{dev_index} ! "
+                f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
+                "nvvidconv ! video/x-raw,format=BGRx ! "
+                "videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+            )
+        ]
+
+
+def _try_open_gstreamer(dev_index: int, width: int, height: int, fps: int, codec: str, logger):
+    """Try to open a camera with multiple gstreamer pipelines, return (cap, pipeline) or (None, None)."""
+    for pipeline in _build_gst_v4l2_pipelines(dev_index, width, height, fps, codec=codec):
+        try:
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if cap is not None and cap.isOpened():
+                return cap, pipeline
+        except Exception:
+            pass
+    return None, None
+
 class VisionPreUntil:
     '''
     Base vision pre-utility.
@@ -135,19 +218,72 @@ class VisionPreUntil:
             time.sleep(0.03)
 
 
-    def InitCam(self,CamPorts,Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+    def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+        """Initialize cameras.
+
+        Backward compatible behavior:
+          - still exposes `self.Cams` as a list of cv2.VideoCapture
+          - still supports all existing callers without changes
+
+        New behavior (isolated by platform/config):
+          - When Settings.VisionVals.CaptureBackend == 'auto' and device is Jetson Nano,
+            try to open cameras via GStreamer pipeline (hw accel).
+          - If GStreamer fails, fallback to legacy V4L2 VideoCapture.
+        """
+
+        # Read config with safe defaults (old configs won't have these keys)
+        backend = getattr(getattr(self.cfg, "VisionVals", object()), "CaptureBackend", "auto")
+        codec = getattr(getattr(self.cfg, "VisionVals", object()), "CaptureCodec", "mjpg")
+        Width = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamWidth", Width))
+        Height = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamHeight", Height))
+        fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamFps", 30))
+
+        use_gst = False
+        if isinstance(backend, str):
+            b = backend.lower()
+            if b == "gstreamer":
+                use_gst = True
+            elif b == "v4l2":
+                use_gst = False
+            else:  # auto
+                use_gst = _is_jetson_nano()
+
         for Port in CamPorts:
-            Cam = cv2.VideoCapture(Port,cv2.CAP_V4L2)
-            Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
-            Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
-            Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
-            Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
-            Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
-            Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
-            Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
-            if not Cam.isOpened():
-                self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
+            Cam = None
+
+            # Try gstreamer first (Jetson Nano only by default)
+            if use_gst:
+                try:
+                    Cam, pipeline = _try_open_gstreamer(Port, Width, Height, fps, codec=codec, logger=self.logger)
+                    if Cam is None:
+                        self.logger.warning(
+                            f"GStreamer open failed for /dev/video{Port} codec={codec}, fallback to V4L2"
+                        )
+                    else:
+                        self.logger.info(
+                            f"Camera opened with GStreamer: /dev/video{Port} codec={codec} {Width}x{Height}@{fps}"
+                        )
+                        if pipeline:
+                            self.logger.debug(f"GStreamer pipeline: {pipeline}")
+                except Exception as e:
+                    self.logger.warning(f"GStreamer init exception for /dev/video{Port}: {e}. Fallback to V4L2")
+                    Cam = None
+
+            # Legacy V4L2 backend
+            if Cam is None:
+                Cam = cv2.VideoCapture(Port, cv2.CAP_V4L2)
+                Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
+                Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
+                # Exposure controls may not be supported on all cameras.
+                Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
+                Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
+                Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
+                Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
+                Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
+                if not Cam.isOpened():
+                    self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
+
             self.Cams.append(Cam)
     
     def ReadCams(self):

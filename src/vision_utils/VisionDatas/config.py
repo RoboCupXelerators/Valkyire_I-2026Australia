@@ -42,6 +42,18 @@ class Preference:
                     "Record" : False, # False to Disable Record video
                     "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
+                    # Camera capture backend selection.
+                    #   "auto": enable Jetson-Nano-specific hw accel when detected, otherwise fallback
+                    #   "v4l2": force legacy cv2.VideoCapture(V4L2)
+                    #   "gstreamer": force gstreamer pipeline (requires gstreamer on system)
+                    "CaptureBackend": "auto",
+                    # Optional hint for gstreamer pipeline on Jetson Nano
+                    #   "mjpg" for USB MJPEG cameras, "yuyv" for raw.
+                    "CaptureCodec": "mjpg",
+                    # Camera output size/fps request (driver may clamp)
+                    "CamWidth": 640,
+                    "CamHeight": 480,
+                    "CamFps": 30,
                     "CalibrationFolder": '/Calibration/',
                     "HailoModelPath": '/yoloV8_Weighs/',
                 },

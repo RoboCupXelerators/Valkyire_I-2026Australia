@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 from pathlib import Path
 
 
@@ -61,10 +62,12 @@ def main():
 
     exported = Path(str(exported))
     if exported.resolve() != engine.resolve():
-        # Ultralytics exports next to weights by default
+        # Ultralytics exports next to weights by default.
+        # IMPORTANT: use copy (not move) to avoid deleting an existing *.engine
+        # that other code paths expect (e.g. yolov8nForX5.engine).
         if exported.exists():
-            os.replace(exported, engine)
-            print("Moved exported engine to:", engine)
+            shutil.copy2(exported, engine)
+            print("Copied exported engine to:", engine)
         else:
             print("WARNING: exporter returned path but file not found:", exported)
 
