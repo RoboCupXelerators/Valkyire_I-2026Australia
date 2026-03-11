@@ -24,30 +24,47 @@ class UnitedVision(Detect_Method):
         # when the detector occasionally misses 1-2 frames.
         self.ball_hold_seconds = 0.25
 
+        # BlobBased backend does not provide chassis/ball queues.
+        # In that mode, BlobBased updates self.BallPos directly in its own thread.
+        self._queue_backend = hasattr(self, "BallQueue") and hasattr(self, "ChassisQueue")
+
+        # Calibration for Pixel2CM/CM2Pixel. BlobBased already loads calibration
+        # via VisionPreUntil, but AI/TV pipelines historically relied on this class.
         self.PerspectiveMatrices = []
         self.P2CK = []
         self.P2CHB = []
         self.P2CVB = []
 
         for i in range(4):
-            NumpyData = np.load(str(DATA_DIR)+"/Calibration/CalibrationData"+ str(self.CamPorts[i]) +".npz")
-            PerspectiveMatrix = NumpyData['matrix']
-            self.PerspectiveMatrices.append(PerspectiveMatrix)
-            P2CK = NumpyData['p2c'][0]
-            self.P2CK.append(P2CK)
-            P2CHB = NumpyData['p2c'][1]
-            self.P2CHB.append(P2CHB)
-            P2CVB = NumpyData['p2c'][2]
-            self.P2CVB.append(P2CVB)
+            npz = str(DATA_DIR) + "/Calibration/CalibrationData" + str(self.CamPorts[i]) + ".npz"
+            try:
+                NumpyData = np.load(npz)
+                PerspectiveMatrix = NumpyData['matrix']
+                self.PerspectiveMatrices.append(PerspectiveMatrix)
+                self.P2CK.append(float(NumpyData['p2c'][0]))
+                self.P2CHB.append(float(NumpyData['p2c'][1]))
+                self.P2CVB.append(float(NumpyData['p2c'][2]))
+            except Exception as e:
+                # Don't crash vision server if calibration is missing.
+                # Pixel2CM will fall back (or behave as identity).
+                self.logger.warning(f"UnitedVision: calibration load failed: {npz}: {e}")
+                self.PerspectiveMatrices.append(np.eye(3, dtype=np.float64))
+                self.P2CK.append(1.0)
+                self.P2CHB.append(0.0)
+                self.P2CVB.append(0.0)
 
 
-        self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
-        self.ChassisDetectionThread.daemon = True
-        self.ChassisDetectionThread.start()
+        # For AI/TV backends, run queue consumers to compute robot-frame positions.
+        # For BlobBased, its own FindBall thread updates self.BallPos directly.
+        self.MergedChassisList = []
+        if self._queue_backend:
+            self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
+            self.ChassisDetectionThread.daemon = True
+            self.ChassisDetectionThread.start()
 
-        self.BallDetectionThread = threading.Thread(target=self.BallDetection)
-        self.BallDetectionThread.daemon = True
-        self.BallDetectionThread.start()
+            self.BallDetectionThread = threading.Thread(target=self.BallDetection)
+            self.BallDetectionThread.daemon = True
+            self.BallDetectionThread.start()
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -328,6 +345,7 @@ if __name__ == "__main__":
             data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
             vision.logger.info(data)
             pickled_data = pickle.dumps(data)
+            print(data)
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
         except Exception as e:
             print(f"Error in vision server: {e}")

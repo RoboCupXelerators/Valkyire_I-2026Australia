@@ -1,4 +1,13 @@
-from .VisionDatas import Settings, logger
+"""vision_utils package entry.
+
+Detect_Method selection is controlled by Settings.RoboInfo.Rec.
+
+Compatibility note:
+- Prefer the *system* settings from `ReasonData` (src/ReasonData/data/config.json).
+- Fall back to the legacy vision-only config `vision_utils/VisionDatas/data/vision.json`.
+"""
+
+from .merged_settings import Settings
 
 
 def _safe_import(path: str, name: str):

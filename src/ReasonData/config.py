@@ -53,6 +53,14 @@ class Preference:
                     'Back' : 0,
                     'Left' : 2,
                     "Record" : False, # False to Disable Record video
+                    "RecordDir": "./Records", # where to save recordings (relative to run cwd)
+                    "RecordCams": [0, 1, 2, 3], # which camera indices to record (0:Front,1:Right,2:Back,3:Left)
+                    "RecordWidth": 320, # recording output width (writer size)
+                    "RecordHeight": 320, # recording output height (writer size)
+                    "RecordSegmentSeconds": 60, # split video into segments (seconds)
+                    "RecordFPS": 30, # writer fps (not necessarily camera fps)
+                    "RecordCodec": "mp4v", # mp4 codec: mp4v is widely supported; h264 may require extra deps
+                    "RecordExt": "mp4", # file extension
                     "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
                     "CalibrationFolder": '/Calibration/',
@@ -172,6 +180,14 @@ class Prompts(object):
             self.Back = 0,
             self.Left = 2,
             self.Record = False
+            self.RecordDir = "./Records"
+            self.RecordCams = [0, 1, 2, 3]
+            self.RecordWidth = 320
+            self.RecordHeight = 320
+            self.RecordSegmentSeconds = 60
+            self.RecordFPS = 30
+            self.RecordCodec = "mp4v"
+            self.RecordExt = "mp4"
             self.ExposeVal = 100
             self.AutoExpose = 0
             self.CalibrationFolder = '/Calibration/'

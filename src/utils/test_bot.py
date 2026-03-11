@@ -6,9 +6,9 @@ from IceLoongBits import IceLoongBits, Commands
 
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    PORT = "/dev/ttyUSB0"
+    PORT = "/dev/iceloong"
     
-    with IceLoongBits(port=PORT) as bot:
+    with IceLoongBits(port=PORT,testing=True) as bot:
         # 测试1：单命令 - 握手
         print("\n=== 测试1: 单命令 (HAND_SHAKE) ===")
         resp1 = bot.ExecuteCommands([(Commands.HAND_SHAKE,)])
@@ -16,18 +16,18 @@ def main():
         time.sleep(1)
 
         # 测试2：复合命令 - 握手 + 获取传感器数据
-        print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_BMI088_DATA) ===")
-        resp2 = bot.ExecuteCommands([
-            (Commands.HAND_SHAKE,),
-            (Commands.GET_BMI088_DATA,)
-        ])
-        print("响应:", resp2)
-        time.sleep(1)
+        # print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_BMI088_DATA) ===")
+        # resp2 = bot.ExecuteCommands([
+        #     (Commands.HAND_SHAKE,),
+        #     (Commands.GET_BMI088_DATA,)
+        # ])
+        # print("响应:", resp2)
+        # time.sleep(1)
 
         # 测试3：带参数命令 - 设置轮速
         print("\n=== 测试3: 带参数命令 (SET_WHEELS_SPEED) ===")
         resp3 = bot.ExecuteCommands([
-            (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0)  # 四轮速度
+            (Commands.SET_WHEELS_SPEED, 100, 0, 0, 0)  # 四轮速度
         ])
         print("响应:", resp3)
         time.sleep(1)
@@ -39,8 +39,8 @@ def main():
             (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
             (Commands.GET_BMI088_DATA,), 
             (Commands.KICK,), 
-            (Commands.SET_DRIBBLE_PWM, 1), 
-            (Commands.SET_RYB_LIGHTS, 1, 1, 1), 
+            (Commands.SET_DRIBBLE_PWM, 0), 
+            (Commands.SET_RYB_LIGHTS, 0, 0, 1), 
             (Commands.GET_RUN_KEY_DELTA,)
         ])
         print("响应:", resp4)

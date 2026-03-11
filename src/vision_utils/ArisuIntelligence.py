@@ -18,6 +18,11 @@ class ArisuIntelligence(VisionPreUntil):
         self.HailoParams = VDevice.create_params()
         self.HailoParams.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
 
+        # Runtime flags
+        self._stop_event = threading.Event()
+        self._model_ready = threading.Event()
+        self._hailo_init_error: str | None = None
+
         self.YOLOQueue = queue.Queue(maxsize=1)
 
         self.MergedChassisList = []
@@ -29,10 +34,6 @@ class ArisuIntelligence(VisionPreUntil):
         self.InitConfiguredModelThread = threading.Thread(target=self.InitConfiguredModel)
         self.InitConfiguredModelThread.daemon = True
         self.InitConfiguredModelThread.start()
-
-        # 报错会阻塞程序 try&except
-        time.sleep(2)
-
 
         self.ModelPreProcessThread = threading.Thread(target=self.ModelPreProcess)
         self.ModelPreProcessThread.daemon = True
@@ -65,15 +66,44 @@ class ArisuIntelligence(VisionPreUntil):
    
 
     def InitConfiguredModel(self):
-        with VDevice(self.HailoParams) as Hat:
-            InferModel = Hat.create_infer_model(str(MODEL_DIR)+"/yolov8s.hef")
-            InferModel.set_batch_size(4)
-            logger.success("InferModel created")
-            self.InputShape = InferModel.input().shape
-            self.OutputShape = InferModel.output().shape
-            with InferModel.configure() as ConfiguredInferModel:
-                self.ConfiguredInferModel = ConfiguredInferModel
-                time.sleep(114514)
+        """Init hailo model.
+
+        Important:
+        - Hailo device may be occupied by another process.
+        - If init fails, DO NOT crash the whole vision server; retry with backoff.
+        - Keep the VDevice/ConfiguredInferModel contexts alive while other threads use it.
+        """
+
+        backoff_s = 1.0
+        while not self._stop_event.is_set():
+            try:
+                self._model_ready.clear()
+                self._hailo_init_error = None
+
+                with VDevice(self.HailoParams) as hat:
+                    infer_model = hat.create_infer_model(str(MODEL_DIR) + "/yolov8s.hef")
+                    infer_model.set_batch_size(4)
+                    self.InputShape = infer_model.input().shape
+                    self.OutputShape = infer_model.output().shape
+
+                    logger.success("Hailo InferModel created")
+
+                    with infer_model.configure() as configured:
+                        self.ConfiguredInferModel = configured
+                        self._model_ready.set()
+
+                        # Hold context until stop requested; if device is lost, an exception
+                        # may propagate to inference thread; we'll re-init there.
+                        while not self._stop_event.is_set():
+                            time.sleep(0.5)
+
+            except Exception as e:
+                # Device busy / out of devices are common in field.
+                self._hailo_init_error = str(e)
+                self._model_ready.clear()
+                logger.warning(f"Hailo init failed: {e} (will retry in {backoff_s:.1f}s)")
+                time.sleep(backoff_s)
+                backoff_s = min(backoff_s * 1.5, 10.0)
 
     def ModelPreProcess(self):
         '''
@@ -81,9 +111,24 @@ class ArisuIntelligence(VisionPreUntil):
         output: float32
         '''
         while(1):
+            # Wait until model is ready; if Hailo is busy, InitConfiguredModel will retry.
+            if not self._model_ready.wait(timeout=0.5):
+                time.sleep(0.05)
+                continue
+
             BindingsList = []
             for i in range(4):
-                Bindings = self.ConfiguredInferModel.create_bindings()
+                try:
+                    configured = getattr(self, "ConfiguredInferModel", None)
+                    if configured is None:
+                        continue
+                    Bindings = configured.create_bindings()
+                except Exception as e:
+                    # Model got invalidated (device reset, etc.). Force re-init.
+                    logger.warning(f"create_bindings failed: {e}. Will re-init hailo model")
+                    self._model_ready.clear()
+                    time.sleep(0.2)
+                    continue
                 OutputBuffer = np.empty(self.OutputShape, dtype=np.float32)
                 Frame = self.Frames[i]
                 if Frame is not None:
@@ -110,6 +155,10 @@ class ArisuIntelligence(VisionPreUntil):
         FrameCount = 0
         LastTime = time.time()
         while(1):
+            if not self._model_ready.wait(timeout=0.5):
+                time.sleep(0.05)
+                continue
+
             FrameCount += 1
             CurrentTime = time.time()
             if Settings.Debug.FullLog:
@@ -121,10 +170,16 @@ class ArisuIntelligence(VisionPreUntil):
             self.InferTF = self.InferTF + 1
             # 确保在传递给 BindingsList 之前执行此操作
             try:
-                self.ConfiguredInferModel.run(BindingsList, 2000)
+                configured = getattr(self, "ConfiguredInferModel", None)
+                if configured is None:
+                    continue
+                configured.run(BindingsList, 2000)
             except Exception as e:
-                self.logger.error(f"Hailo Inference Error: {e}, automatically restarting inference thread.")
-                self.ModelInfer()
+                # DO NOT recurse (will explode the stack). Mark model not-ready so init thread re-acquires device.
+                self.logger.error(f"Hailo inference error: {e}. Marking model as not-ready and waiting for re-init.")
+                self._model_ready.clear()
+                time.sleep(0.2)
+                continue
             BallOutputs = []
             ChassisOutputs = []
             CameraIndex = 0

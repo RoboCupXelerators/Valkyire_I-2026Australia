@@ -18,7 +18,7 @@ class Commands(IntEnum):
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:        1 + 1, 
-    Commands.GET_BMI088_DATA:   1 + 3 * 4, 
+    Commands.GET_BMI088_DATA:   1 + 3 * 4 + 4, 
     Commands.SET_WHEELS_SPEED:  1, 
     Commands.KICK:              1, 
     Commands.SET_DRIBBLE_PWM:   1, 
@@ -36,7 +36,7 @@ class IceLoongBits:
     方法命名使用大驼峰（PascalCase）。
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -64,9 +64,10 @@ class IceLoongBits:
             # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
 
-        self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
-        self.SendUnitedCommandThread.daemon = True
-        self.SendUnitedCommandThread.start()
+        if not testing:
+            self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
+            self.SendUnitedCommandThread.daemon = True
+            self.SendUnitedCommandThread.start()
 
     def SendUnitedCommand(self):
         while (1):
@@ -98,7 +99,7 @@ class IceLoongBits:
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, yaw, pitch, roll = i
+                        _, yaw, pitch, roll, timestamp = i
                         self.yaw = round(yaw % 360,2)
                     case Commands.SET_WHEELS_SPEED:
                         pass
@@ -235,7 +236,7 @@ class IceLoongBits:
                     case Commands.HAND_SHAKE:
                         rx_data.append((resp[i], resp[i+1]))
                     case Commands.GET_BMI088_DATA:
-                        rx_data.append((resp[i], *struct.unpack('<fff', resp[i+1:i+13])))
+                        rx_data.append((resp[i], *struct.unpack('<fffI', resp[i+1:i+17])))
                     case Commands.SET_WHEELS_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
