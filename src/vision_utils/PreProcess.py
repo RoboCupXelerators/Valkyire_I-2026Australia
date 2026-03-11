@@ -12,12 +12,25 @@ when available, and fallback to `vision_utils.VisionDatas`.
 
 from pathlib import Path
 
+# Settings/logger import order:
+#  1) ReasonData (installed package usage)
+#  2) src.ReasonData (running from repo root, imports as "src.*")
+#  3) merged_settings (vision-only merged config; always provides VisionVals defaults)
+#  4) legacy VisionDatas (vision-only config)
 try:
-    # Prefer the main system config
     from ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
 except Exception:  # pragma: no cover
-    from .VisionDatas import Settings, logger
-    REASON_DATA_DIR = None  # type: ignore
+    try:
+        from src.ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+    except Exception:  # pragma: no cover
+        try:
+            # merged_settings does not expose logger; keep legacy logger
+            from .merged_settings import Settings  # type: ignore
+            from .VisionDatas import logger
+            REASON_DATA_DIR = None  # type: ignore
+        except Exception:  # pragma: no cover
+            from .VisionDatas import Settings, logger
+            REASON_DATA_DIR = None  # type: ignore
 import threading
 import queue
 import time
@@ -34,6 +47,87 @@ DATA_DIR = APP_DIR / "VisionDatas" / "data"
 MODEL_DIR = APP_DIR / "models"
 
 
+def _is_jetson_nano() -> bool:
+    """Best-effort detection of Jetson Nano.
+
+    We *intentionally* only auto-enable hwaccel for Nano because other platforms
+    may not have the same GStreamer elements or behave differently.
+    """
+    try:
+        import os
+
+        if os.path.exists("/etc/nv_tegra_release"):
+            # All Jetsons have this, but we only enable for Nano.
+            # Try model file first.
+            model_paths = [
+                "/proc/device-tree/model",
+                "/sys/firmware/devicetree/base/model",
+            ]
+            for p in model_paths:
+                try:
+                    if os.path.exists(p):
+                        s = open(p, "rb").read().decode("utf-8", errors="ignore").lower()
+                        if "jetson nano" in s:
+                            return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+
+def _build_gst_v4l2_pipelines(
+    dev_index: int,
+    width: int,
+    height: int,
+    fps: int,
+    codec: str = "mjpg",
+) -> list[str]:
+    """Build candidate gstreamer pipeline strings for Jetson Nano.
+
+    Notes:
+      - For USB MJPEG cameras, `v4l2src ! image/jpeg ! jpegdec` is CPU.
+        Some systems have `nvjpegdec`/`nvv4l2decoder mjpeg=1`, but availability
+        depends on JetPack build.
+      - We keep this conservative: try a Nano-friendly path first, and rely on
+        runtime fallback to legacy V4L2 if it fails.
+    """
+    codec = (codec or "mjpg").lower()
+    if codec in ("mjpg", "mjpeg", "jpeg"):
+        # MJPEG cameras: different JetPack images may provide different decoders.
+        # Try in order:
+        #   1) nvv4l2decoder mjpeg=1 (V4L2 HW decode, best when available)
+        #   2) nvjpegdec (NVJPEG HW decode, often available)
+        #   3) jpegdec (CPU fallback but still via gstreamer; may still help piping)
+        base = f"v4l2src device=/dev/video{dev_index} ! image/jpeg,width={width},height={height},framerate={fps}/1 ! "
+        tail = " nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+        return [
+            base + "nvv4l2decoder mjpeg=1 !" + tail,
+            base + "nvjpegdec !" + tail,
+            base + "jpegdec !" + tail,
+        ]
+    else:
+        # Raw YUYV (no decode step)
+        return [
+            (
+                f"v4l2src device=/dev/video{dev_index} ! "
+                f"video/x-raw,format=YUY2,width={width},height={height},framerate={fps}/1 ! "
+                "nvvidconv ! video/x-raw,format=BGRx ! "
+                "videoconvert ! video/x-raw,format=BGR ! appsink drop=1 sync=false"
+            )
+        ]
+
+
+def _try_open_gstreamer(dev_index: int, width: int, height: int, fps: int, codec: str, logger):
+    """Try to open a camera with multiple gstreamer pipelines, return (cap, pipeline) or (None, None)."""
+    for pipeline in _build_gst_v4l2_pipelines(dev_index, width, height, fps, codec=codec):
+        try:
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if cap is not None and cap.isOpened():
+                return cap, pipeline
+        except Exception:
+            pass
+    return None, None
 @dataclass
 class _RecordConfig:
     enabled: bool
@@ -165,9 +259,18 @@ class SegmentedMultiCamRecorder:
                 self.logger.warning(
                     f"VideoWriter open failed: {tmp_path} codec={self.cfg.codec} fps={self.cfg.fps} size={frame_size}"
                 )
-            self._writers[cam_index] = writer
-            self._current_paths_tmp[cam_index] = tmp_path
-            self._current_paths_final[cam_index] = final_path
+                # IMPORTANT: store None so `any(self._writers)` reflects actual availability.
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+                self._writers[cam_index] = None
+                self._current_paths_tmp[cam_index] = None
+                self._current_paths_final[cam_index] = None
+            else:
+                self._writers[cam_index] = writer
+                self._current_paths_tmp[cam_index] = tmp_path
+                self._current_paths_final[cam_index] = final_path
         self._segment_start_ts = time.time()
         self.logger.info(
             f"Recording started: dir={self.cfg.record_dir} segment={self.cfg.segment_seconds}s codec={self.cfg.codec} ext={self.cfg.ext}"
@@ -262,38 +365,49 @@ class SegmentedMultiCamRecorder:
 
 class VisionPreUntil:
     '''
-    with hailo only
+    Base vision pre-utility.
+
+    Notes
+    -----
+    Historically this class always initialized 4 V4L2 cameras and started
+    background threads immediately. For unit-tests / offline inference we also
+    support disabling camera initialization via `init_cams=False`.
     '''
-    def __init__(self):
-        # Allow subclasses to pre-create a stop event (e.g. ArisuIntelligence).
+    def __init__(self, init_cams: bool = True, cam_ports=None):
+        # Allow subclasses to pre-create a stop event.
         # If not provided, create one so we can shutdown gracefully in tests.
-        if not hasattr(self, "_stop_event"):
+        if not hasattr(self, "_stop_event") or self._stop_event is None:
             self._stop_event = threading.Event()
 
         self.cfg = Settings
         self.logger = logger
 
-        #TODO put into settings
+        # TODO put into settings
         # self.CamPorts = [8,10,1,5]
-        self.CamPorts = [
-                    Settings.VisionVals.Front,
-                    Settings.VisionVals.Right,
-                    Settings.VisionVals.Back,
-                    Settings.VisionVals.Left,
-                    ]
+        self.CamPorts = cam_ports or [
+            Settings.VisionVals.Front,
+            Settings.VisionVals.Right,
+            Settings.VisionVals.Back,
+            Settings.VisionVals.Left,
+        ]
         self.StopRecord = 0
 
         self.Cams = []
-        self.Frames = []
+        # Always keep 4 slots, even when cameras are not initialized.
+        self.Frames = [None, None, None, None]
         self.Videos = []
 
         self.BallPos = [0,0]
 
-        # Calibration for Pixel<->CM mapping (used by BlobBased / other detectors).
-        # If calibration files are missing, we fallback to identity mapping.
-        self._init_calibration()
+        # thread lifecycle (for clean shutdown)
+        self.ReadCamsThread = None
+        self.VideoRecordThread = None
 
-        self.InitCam(self.CamPorts)
+        # recorder (optional)
+        self._recorder: SegmentedMultiCamRecorder | None = None
+
+        if init_cams:
+            self.InitCam(self.CamPorts)
 
         self.ReadCamTF = 0
         self.PreProcessTF = 0
@@ -301,38 +415,28 @@ class VisionPreUntil:
         self.PostProcessTF = 0
 
 
-        self.ReadCamsThread = threading.Thread(target=self.ReadCams)
-        self.ReadCamsThread.daemon = True
-        self.ReadCamsThread.start()
+        if init_cams:
+            self.ReadCamsThread = threading.Thread(target=self.ReadCams)
+            self.ReadCamsThread.daemon = True
+            self.ReadCamsThread.start()
 
-        time.sleep(3)
-
-        # Start recording thread only when enabled (zero overhead otherwise).
-        self._recorder: SegmentedMultiCamRecorder | None = None
+        # Recording initialization (isolated; does not affect non-record runs)
         if getattr(self.cfg.VisionVals, "Record", False):
-            # Ensure we finalize mp4/avi headers on exit.
-            # Without a clean release(), mp4 often becomes "moov atom not found" and unplayable.
+            # Ensure mp4/avi headers are finalized on exit.
             atexit.register(self.close)
             try:
-                # Important: do not swallow Ctrl+C.
-                # We cleanup, then delegate to Python's default handlers
-                # so the process can actually exit.
+                # Cleanup on SIGINT/SIGTERM (best effort)
                 def _sig_cleanup_and_exit(signum, frame):
                     try:
-                        # Keep the signal handler lightweight to avoid deadlocks
-                        # (e.g. releasing VideoCapture while another thread is blocking on read()).
                         self.stop()
-                        # Finalize current segment so MP4 is playable.
                         try:
                             self.CloseVideo()
                         except Exception:
                             pass
                     finally:
                         if signum == signal.SIGINT:
-                            # Default behavior: raise KeyboardInterrupt
                             signal.default_int_handler(signum, frame)
                         else:
-                            # For SIGTERM: exit cleanly
                             raise SystemExit(0)
 
                 signal.signal(signal.SIGINT, _sig_cleanup_and_exit)
@@ -342,8 +446,6 @@ class VisionPreUntil:
                 pass
 
             # Default: store recordings next to ReasonData log file (ReasonData/data).
-            # If user provides an absolute path, use it. If it's relative (including ./Records),
-            # treat it as relative to ReasonData's DATA_DIR, not current working directory.
             record_dir_val = str(getattr(self.cfg.VisionVals, "RecordDir", "./Records"))
             record_dir_path = Path(record_dir_val)
             if not record_dir_path.is_absolute() and REASON_DATA_DIR is not None:
@@ -374,6 +476,40 @@ class VisionPreUntil:
             self.VideoRecordThread.daemon = True
             self.VideoRecordThread.start()
 
+
+    def close(self, join_timeout: float = 1.0):
+        """Stop background threads and release camera/video resources."""
+        self.stop()
+
+        for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
+            try:
+                if t is not None and t.is_alive():
+                    t.join(timeout=join_timeout)
+            except Exception:
+                pass
+
+        # release cameras
+        try:
+            for Cam in getattr(self, "Cams", []):
+                try:
+                    Cam.release()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # release videos
+        try:
+            self.CloseVideo()
+        except Exception:
+            pass
+
+            
+    def __del__(self):
+        try:
+            self.close(join_timeout=0.2)
+        except Exception:
+            pass
 
     def _init_calibration(self):
         """Load per-camera calibration used by Pixel2CM/CM2Pixel.
@@ -479,46 +615,111 @@ class VisionPreUntil:
                 pass
     
     def VideoRecord(self):
-        """Continuously write frames to segmented video files."""
+        """Recording loop.
 
-        # If recording is disabled, the thread should never be started, but keep safe.
-        if getattr(self, "_recorder", None) is None:
-            return
-
-        # Aim for ~30 fps write loop by default.
-        loop_sleep = 1.0 / max(1, int(getattr(self.cfg.VisionVals, "RecordFPS", 30)))
+        The actual file writing is handled by `SegmentedMultiCamRecorder`.
+        We keep this thread separate from camera reading/inference to avoid
+        blocking the pipeline when filesystem is slow.
+        """
+        fps = int(getattr(self.cfg.VisionVals, "RecordFPS", 30))
+        period = 1.0 / float(max(1, fps))
         while not self._stop_event.is_set():
-            frames = getattr(self, "Frames", [])
-            if frames:
+            if getattr(self, "_recorder", None) is not None:
                 try:
+                    # copy to avoid race with ReadCams updating the list
+                    frames = list(getattr(self, "Frames", []))
                     self._recorder.write_frames(frames)
                 except Exception as e:
-                    self.logger.warning(f"Recorder error: {e}")
-            time.sleep(loop_sleep)
+                    self.logger.warning(f"Recorder write_frames failed: {e}")
+            time.sleep(period)
 
 
-    def InitCam(self,CamPorts,Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+    def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+        """Initialize cameras.
+
+        Backward compatible behavior:
+          - still exposes `self.Cams` as a list of cv2.VideoCapture
+          - still supports all existing callers without changes
+
+        New behavior (isolated by platform/config):
+          - When Settings.VisionVals.CaptureBackend == 'auto' and device is Jetson Nano,
+            try to open cameras via GStreamer pipeline (hw accel).
+          - If GStreamer fails, fallback to legacy V4L2 VideoCapture.
+        """
+
+        # Read config with safe defaults (old configs won't have these keys)
+        backend = getattr(getattr(self.cfg, "VisionVals", object()), "CaptureBackend", "auto")
+        codec = getattr(getattr(self.cfg, "VisionVals", object()), "CaptureCodec", "mjpg")
+        Width = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamWidth", Width))
+        Height = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamHeight", Height))
+        fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamFps", 30))
+
+        use_gst = False
+        if isinstance(backend, str):
+            b = backend.lower()
+            if b == "gstreamer":
+                use_gst = True
+            elif b == "v4l2":
+                use_gst = False
+            else:  # auto
+                use_gst = _is_jetson_nano()
+
         for Port in CamPorts:
-            Cam = cv2.VideoCapture(Port,cv2.CAP_V4L2)
-            Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
-            Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
-            Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
-            Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
-            Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
-            Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
-            Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
+            Cam = None
+
+            # Try gstreamer first (Jetson Nano only by default)
+            if use_gst:
+                try:
+                    Cam, pipeline = _try_open_gstreamer(Port, Width, Height, fps, codec=codec, logger=self.logger)
+                    if Cam is None:
+                        self.logger.warning(
+                            f"GStreamer open failed for /dev/video{Port} codec={codec}, fallback to V4L2"
+                        )
+                    else:
+                        self.logger.info(
+                            f"Camera opened with GStreamer: /dev/video{Port} codec={codec} {Width}x{Height}@{fps}"
+                        )
+                        if pipeline:
+                            self.logger.debug(f"GStreamer pipeline: {pipeline}")
+                except Exception as e:
+                    self.logger.warning(f"GStreamer init exception for /dev/video{Port}: {e}. Fallback to V4L2")
+                    Cam = None
+
+            # Legacy V4L2 backend
+            if Cam is None:
+                Cam = cv2.VideoCapture(Port, cv2.CAP_V4L2)
+                Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
+                Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
+                # Exposure controls may not be supported on all cameras.
+                Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
+                Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
+                Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
+                Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
+                Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
+                if not Cam.isOpened():
+                    self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
+
             self.Cams.append(Cam)
     
     def ReadCams(self):
         FrameCount = 0
         LastTime = time.time()
+        fail_counts = [0] * len(self.Cams)
         while not self._stop_event.is_set():
             Frames = []
-            for Cam in self.Cams:
-                ok, frame = Cam.read()
-                Frame = frame if ok else None
-                Frames.append(Frame)
+            any_ok = False
+            for idx, Cam in enumerate(self.Cams):
+                ret, Frame = Cam.read()
+                if (not ret) or Frame is None:
+                    fail_counts[idx] += 1
+                    Frames.append(None)
+                    if fail_counts[idx] in (10, 30, 100):
+                        self.logger.warning(f"Camera read failed /dev/video{self.CamPorts[idx]} count={fail_counts[idx]}")
+                else:
+                    any_ok = True
+                    fail_counts[idx] = 0
+                    Frames.append(Frame)
             self.Frames = Frames
             FrameCount += 1
             CurrentTime = time.time()
@@ -528,6 +729,11 @@ class VisionPreUntil:
                 FrameCount = 0
                 LastTime = CurrentTime
             self.ReadCamTF = self.ReadCamTF + 1
+
+            # If all cameras are failing, avoid a busy-loop that will eat CPU and
+            # starve inference threads.
+            if not any_ok:
+                time.sleep(0.01)
         
 
 
@@ -544,19 +750,6 @@ class VisionPreUntil:
     #     VisionCornerX, VisionCornerY = self.CM2Pixel(VisionCornerX, VisionCornerY, 0)
     #     print(VisionCornerX, VisionCornerY)
 
-    def close(self):
-        """Stop threads and release camera/video resources."""
-        self.stop()
-        for Cam in getattr(self, "Cams", []):
-            try:
-                Cam.release()
-            except Exception:
-                pass
-        try:
-            self.CloseVideo()
-        except Exception:
-            pass
-
     def stop(self):
         """Request background threads to stop (non-blocking)."""
         try:
@@ -565,11 +758,5 @@ class VisionPreUntil:
             pass
 
     def __exit__(self, *args, **kwargs):
-        self.close()
+        self.close(join_timeout=0.5)
 
-    def __del__(self):
-        # Best-effort cleanup for short-lived scripts.
-        try:
-            self.close()
-        except Exception:
-            pass

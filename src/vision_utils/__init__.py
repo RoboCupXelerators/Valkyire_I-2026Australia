@@ -9,11 +9,40 @@ Compatibility note:
 
 from .merged_settings import Settings
 
+# logger is optional: prefer ReasonData logger if present, otherwise fallback to vision_utils logger
+try:
+    from ReasonData import logger as logger  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from .VisionDatas import logger as logger
+    except Exception:  # pragma: no cover
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+
+def _safe_import(path: str, name: str):
+    """Import helper to avoid hard-crash when optional accelerators are absent."""
+    try:
+        mod = __import__(path, fromlist=[name])
+        return getattr(mod, name)
+    except Exception as e:
+        logger.warning(f"vision_utils: failed to import {path}.{name}: {e}")
+        return None
+
+
+# Select backend by config, but tolerate missing optional dependencies.
+Detect_Method = None
+_PKG = __name__  # could be 'vision_utils' or 'src.vision_utils'
 if Settings.RoboInfo.Rec == 'AI':
-    from .ArisuIntelligence import ArisuIntelligence as Detect_Method
+    Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
+elif Settings.RoboInfo.Rec == 'TI':
+    Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
 elif Settings.RoboInfo.Rec == 'TV':
-    from .TunaVision import TunaVision as Detect_Method
-else:
+    Detect_Method = _safe_import(f'{_PKG}.TunaVision', 'TunaVision')
+
+if Detect_Method is None:
+    # Fallback to pure OpenCV blob detection.
     from .Blob import BlobBased as Detect_Method
 
 from .PreProcess import DATA_DIR
@@ -22,4 +51,4 @@ __version__ = '0.2.0'
 # ReasonData 0.2.0(20250722A) Updated Preference instead QKjson
 
 
-__all__ = ['ArisuIntelligence','TunaVision','BlobBased','Detect_Method','DATA_DIR']
+__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'TunaVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']

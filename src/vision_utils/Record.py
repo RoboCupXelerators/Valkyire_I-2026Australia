@@ -1,6 +1,14 @@
 import cv2
 import time
 
+# NOTE:
+# This script is a standalone demo utility and is NOT used by the main vision
+# pipeline (VisionPreUntil/TunaIntelligence). It intentionally keeps the simple
+# OpenCV VideoCapture usage.
+#
+# If you want Jetson hardware accelerated capture, use the main pipeline which
+# supports Settings.VisionVals.CaptureBackend (auto/gstreamer/v4l2).
+
 def record_video():
     # 1. 打开摄像头 (0 通常是默认摄像头)
     # 如果你有多个摄像头，尝试改为 1 或 2

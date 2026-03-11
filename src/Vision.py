@@ -1,6 +1,7 @@
 import threading
 import numpy as np
 import cv2
+import time
 
 from ReasonData import Settings
 from vision_utils import Detect_Method, DATA_DIR
@@ -9,6 +10,19 @@ class UnitedVision(Detect_Method):
     def __init__(self):
 
         super().__init__()
+
+        # ---- Runtime caches/params (must be set before starting threads) ----
+        # Ball bbox (xyxy in 640x640 resized space from detector)
+        self._ball_bbox = None  # (cam, x1,y1,x2,y2,conf)
+        self._ball_bbox_ts = 0.0
+        self._ball_bboxes = None  # list[ (cam,x1,y1,x2,y2,conf) | None ] length=4
+        self._ball_bboxes_ts = 0.0
+
+        # Ball position timestamp
+        self._ball_pos_ts = 0.0
+        # Hold last seen ball for a short time to avoid flickering to [0,0]
+        # when the detector occasionally misses 1-2 frames.
+        self.ball_hold_seconds = 0.25
 
         # BlobBased backend does not provide chassis/ball queues.
         # In that mode, BlobBased updates self.BallPos directly in its own thread.
@@ -51,6 +65,22 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread = threading.Thread(target=self.BallDetection)
             self.BallDetectionThread.daemon = True
             self.BallDetectionThread.start()
+
+    def close(self, join_timeout: float = 1.0):
+        """Stop all background threads and release resources."""
+        try:
+            # stop detector/camera threads (from base class)
+            super().close(join_timeout=join_timeout)
+        except Exception:
+            pass
+
+        # join our postprocess threads (they should exit once stop_event is set)
+        for t in (getattr(self, "ChassisDetectionThread", None), getattr(self, "BallDetectionThread", None)):
+            try:
+                if t is not None and t.is_alive():
+                    t.join(timeout=join_timeout)
+            except Exception:
+                pass
 
     def ApplyPerspectiveTransform(self,X, Y, Matrix):
         # 应用透视矩阵
@@ -104,8 +134,11 @@ class UnitedVision(Detect_Method):
     
 
     def ChassisDetection(self):
-        while True:
-            OutputBuffer = self.ChassisQueue.get()
+        while not getattr(self, "_stop_event", threading.Event()).is_set():
+            try:
+                OutputBuffer = self.ChassisQueue.get(timeout=0.1)
+            except Exception:
+                continue
             # print(OutputBuffer)
             self.PostProcessTF = self.PostProcessTF + 1
             self.MergedChassisList = []
@@ -114,6 +147,9 @@ class UnitedVision(Detect_Method):
             for i in range(4):
                 try:
                     CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
+                    # Ignore padded/dummy outputs
+                    if Confidence is None or Confidence <= 0:
+                        continue
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     if CameraIndex == 0:
                         CX = -X
@@ -172,12 +208,22 @@ class UnitedVision(Detect_Method):
         return self.MergedChassisList
     
     def BallDetection(self):
-        while True:
-            OutputBuffer = self.BallQueue.get()
+        while not getattr(self, "_stop_event", threading.Event()).is_set():
+            try:
+                OutputBuffer = self.BallQueue.get(timeout=0.1)
+            except Exception:
+                continue
+
+            # Update bbox cache if backend provides it (TunaIntelligence)
+            self.BallBBoxUpdate()
+
             Balls = []
             for i in range(4):
                 try:
                     CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = OutputBuffer[i]
+                    # Ignore padded/dummy outputs
+                    if Confidence is None or Confidence <= 0:
+                        continue
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     X -= 12
                     Y -= 12
@@ -199,29 +245,99 @@ class UnitedVision(Detect_Method):
                 except:
                     continue
             if Balls:
+                # pick the most confident one
+                Balls = sorted(Balls, key=lambda x: x[4], reverse=True)
                 Ball = Balls[0]
                 BX = Ball[0]
                 BY = Ball[1]
                 self.BallPos = [BX, BY]
+                self._ball_pos_ts = time.time()
             else:
-                self.BallPos = [0, 0]       
+                # hold last position briefly to reduce flicker
+                if (time.time() - getattr(self, "_ball_pos_ts", 0.0)) > self.ball_hold_seconds:
+                    self.BallPos = [0, 0]
             time.sleep(0.01)
 
     def GetBallPos(self):
         return self.BallPos
+
+    def BallBBoxUpdate(self):
+        """Read TunaIntelligence.BallBBoxQueue if available and keep latest bbox."""
+        q = getattr(self, "BallBBoxQueue", None)
+        if q is None:
+            return
+        try:
+            out = q.get_nowait()
+        except Exception:
+            return
+
+        # store per-cam
+        bboxes = [None, None, None, None]
+        for i in range(4):
+            try:
+                cam, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                bboxes[int(cam)] = (int(cam), int(x1), int(y1), int(x2), int(y2), float(conf))
+            except Exception:
+                continue
+        self._ball_bboxes = bboxes
+        self._ball_bboxes_ts = time.time()
+
+        # pick best conf bbox among 4 cams
+        best = None
+        for i in range(4):
+            try:
+                cam, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                cand = (int(cam), int(x1), int(y1), int(x2), int(y2), float(conf))
+                if best is None or cand[5] > best[5]:
+                    best = cand
+            except Exception:
+                continue
+        if best is not None:
+            self._ball_bbox = best
+            self._ball_bbox_ts = time.time()
+
+    def GetBallBBox(self, hold_seconds: float | None = None):
+        """Return last ball bbox (cam,x1,y1,x2,y2,conf).
+
+        Note: bbox is in 640x640 resized space (same as detector input).
+        """
+        self.BallBBoxUpdate()
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._ball_bbox is None:
+            return None
+        if (time.time() - self._ball_bbox_ts) > hs:
+            return None
+        return self._ball_bbox
+
+    def GetBallBBoxes(self, hold_seconds: float | None = None):
+        """Return last per-camera ball bbox list.
+
+        Returns:
+            list of length 4: each is None or (cam,x1,y1,x2,y2,conf)
+        """
+        self.BallBBoxUpdate()
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._ball_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._ball_bboxes_ts) > hs:
+            return [None, None, None, None]
+        return self._ball_bboxes
     
-import socket
-import pickle
-import time
-
-# UDP socket setup
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5005
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-vision = UnitedVision()
-
 if __name__ == "__main__":
+    import socket
+    import pickle
+    import time
+
+    # UDP socket setup
+    UDP_IP = "127.0.0.1"
+    UDP_PORT = 5005
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    vision = UnitedVision()
     while(1):
         try:
             ball_pos = vision.GetBallPos()
