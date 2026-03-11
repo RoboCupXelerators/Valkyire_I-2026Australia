@@ -41,6 +41,11 @@ class VisionPreUntil:
 
         self.BallPos = [0,0]
 
+        # thread lifecycle (for clean shutdown)
+        self._stop_event = threading.Event()
+        self.ReadCamsThread = None
+        self.VideoRecordThread = None
+
         if init_cams:
             self.InitCam(self.CamPorts)
 
@@ -62,6 +67,44 @@ class VisionPreUntil:
             self.VideoRecordThread.start()
 
 
+    def close(self, join_timeout: float = 1.0):
+        """Stop background threads and release camera/video resources."""
+        try:
+            self._stop_event.set()
+        except Exception:
+            pass
+
+        for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
+            try:
+                if t is not None and t.is_alive():
+                    t.join(timeout=join_timeout)
+            except Exception:
+                pass
+
+        # release cameras
+        try:
+            for Cam in getattr(self, "Cams", []):
+                try:
+                    Cam.release()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # release videos
+        try:
+            self.CloseVideo()
+        except Exception:
+            pass
+
+
+    def __del__(self):
+        try:
+            self.close(join_timeout=0.2)
+        except Exception:
+            pass
+
+
     def InitVideo(self):
         Videos = []
         if not self.cfg.VisionVals.Record:
@@ -78,7 +121,7 @@ class VisionPreUntil:
         self.Videos = []
     
     def VideoRecord(self):
-        while True:
+        while not self._stop_event.is_set():
             if not self.Videos:
                 self.InitVideo()
             elif int(time.time()) % 30 == 0:
@@ -103,16 +146,28 @@ class VisionPreUntil:
             Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
             Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
             Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
+            if not Cam.isOpened():
+                self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
             self.Cams.append(Cam)
     
     def ReadCams(self):
         FrameCount = 0
         LastTime = time.time()
-        while True:
+        fail_counts = [0] * len(self.Cams)
+        while not self._stop_event.is_set():
             Frames = []
-            for Cam in self.Cams:
-                Frame = Cam.read()[1]
-                Frames.append(Frame)
+            any_ok = False
+            for idx, Cam in enumerate(self.Cams):
+                ret, Frame = Cam.read()
+                if (not ret) or Frame is None:
+                    fail_counts[idx] += 1
+                    Frames.append(None)
+                    if fail_counts[idx] in (10, 30, 100):
+                        self.logger.warning(f"Camera read failed /dev/video{self.CamPorts[idx]} count={fail_counts[idx]}")
+                else:
+                    any_ok = True
+                    fail_counts[idx] = 0
+                    Frames.append(Frame)
             self.Frames = Frames
             FrameCount += 1
             CurrentTime = time.time()
@@ -122,6 +177,11 @@ class VisionPreUntil:
                 FrameCount = 0
                 LastTime = CurrentTime
             self.ReadCamTF = self.ReadCamTF + 1
+
+            # If all cameras are failing, avoid a busy-loop that will eat CPU and
+            # starve inference threads.
+            if not any_ok:
+                time.sleep(0.01)
         
 
 

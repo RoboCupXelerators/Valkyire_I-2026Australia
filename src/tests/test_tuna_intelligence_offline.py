@@ -66,6 +66,9 @@ def main():
 
     print("OK")
 
+    # Stop background threads before interpreter shutdown (avoids abort on some builds)
+    det.close(join_timeout=2.0)
+
 
 if __name__ == "__main__":
     main()
