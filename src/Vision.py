@@ -3,8 +3,18 @@ import numpy as np
 import cv2
 import time
 
-from ReasonData import Settings
-from vision_utils import Detect_Method, DATA_DIR
+# Import order is made robust so that this module can be executed either:
+# - from an installed package layout (ReasonData/vision_utils are top-level)
+# - directly from this repo (modules live under ./src)
+try:
+    from ReasonData import Settings  # type: ignore
+except Exception:  # pragma: no cover
+    from src.ReasonData import Settings  # type: ignore
+
+try:
+    from vision_utils import Detect_Method, DATA_DIR  # type: ignore
+except Exception:  # pragma: no cover
+    from src.vision_utils import Detect_Method, DATA_DIR  # type: ignore
 
 class UnitedVision(Detect_Method):
     def __init__(self):
@@ -17,6 +27,12 @@ class UnitedVision(Detect_Method):
         self._ball_bbox_ts = 0.0
         self._ball_bboxes = None  # list[ (cam,x1,y1,x2,y2,conf) | None ] length=4
         self._ball_bboxes_ts = 0.0
+
+        # Chassis bbox (xyxy in 640x640 resized space from detector)
+        self._chassis_bbox = None  # (cam, x1,y1,x2,y2,conf)
+        self._chassis_bbox_ts = 0.0
+        self._chassis_bboxes = None  # list len=4
+        self._chassis_bboxes_ts = 0.0
 
         # Ball position timestamp
         self._ball_pos_ts = 0.0
@@ -57,6 +73,7 @@ class UnitedVision(Detect_Method):
         # For AI/TV backends, run queue consumers to compute robot-frame positions.
         # For BlobBased, its own FindBall thread updates self.BallPos directly.
         self.MergedChassisList = []
+        self.MergedGoalList = []  # list of {type,x,y,conf} in cm (robot frame)
         if self._queue_backend:
             self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
             self.ChassisDetectionThread.daemon = True
@@ -65,6 +82,13 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread = threading.Thread(target=self.BallDetection)
             self.BallDetectionThread.daemon = True
             self.BallDetectionThread.start()
+
+        # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
+        self._goal_backend = hasattr(self, "GoalQueue")
+        if self._goal_backend:
+            self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+            self.GoalDetectionThread.daemon = True
+            self.GoalDetectionThread.start()
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -75,7 +99,11 @@ class UnitedVision(Detect_Method):
             pass
 
         # join our postprocess threads (they should exit once stop_event is set)
-        for t in (getattr(self, "ChassisDetectionThread", None), getattr(self, "BallDetectionThread", None)):
+        for t in (
+            getattr(self, "ChassisDetectionThread", None),
+            getattr(self, "BallDetectionThread", None),
+            getattr(self, "GoalDetectionThread", None),
+        ):
             try:
                 if t is not None and t.is_alive():
                     t.join(timeout=join_timeout)
@@ -206,6 +234,72 @@ class UnitedVision(Detect_Method):
     def GetChassisPos(self):
         # 20251118 already changed X,Y dimension
         return self.MergedChassisList
+
+    def GoalDetection(self):
+        """Consume GoalQueue and compute goal positions in robot frame.
+
+        GoalQueue item formats supported:
+        - TunaIntelligence: list length=4, each entry: [cam, cls, cx, bottom_y, w, h, conf]
+        - ArisuIntelligence: list variable length, each entry: [cam, cls, cx, bottom_y, w, h, conf]
+        """
+        q = getattr(self, "GoalQueue", None)
+        if q is None:
+            return
+        while not getattr(self, "_stop_event", threading.Event()).is_set():
+            try:
+                out = q.get(timeout=0.1)
+            except Exception:
+                continue
+
+            goals = []
+            # out is list of detections
+            for item in (out or []):
+                try:
+                    if item is None:
+                        continue
+                    CameraIndex, cls_id, CenterX, BottomY, W, H, Confidence = item
+                    if Confidence is None or Confidence <= 0:
+                        continue
+                    if cls_id is None or int(cls_id) < 0:
+                        continue
+                    X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
+
+                    # Match BallDetection axis conventions (x forward, y left)
+                    if CameraIndex == 0:
+                        GX = -X
+                        GY = Y
+                    elif CameraIndex == 1:
+                        GX = Y
+                        GY = X
+                    elif CameraIndex == 2:
+                        GX = X
+                        GY = -Y
+                    elif CameraIndex == 3:
+                        GX = -Y
+                        GY = -X
+                    else:
+                        GX = X
+                        GY = Y
+
+                    t = "unknown"
+                    if int(cls_id) == 1:
+                        t = "blue"
+                    elif int(cls_id) == 2:
+                        t = "yellow"
+
+                    goals.append({"type": t, "x": round(GX, 2), "y": round(GY, 2), "conf": float(Confidence)})
+                except Exception:
+                    continue
+
+            self.MergedGoalList = goals
+            time.sleep(0.01)
+
+    def GetGoalsPos(self):
+        """Return last goals list.
+
+        Returns: list[dict] each dict: {type:'blue'|'yellow'|'unknown', x:cm, y:cm, conf:float}
+        """
+        return getattr(self, "MergedGoalList", [])
     
     def BallDetection(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
@@ -299,6 +393,63 @@ class UnitedVision(Detect_Method):
         if best is not None:
             self._ball_bbox = best
             self._ball_bbox_ts = time.time()
+
+    def ChassisBBoxUpdate(self):
+        """Read TunaIntelligence.ChassisBBoxQueue if available and keep latest bbox."""
+        q = getattr(self, "ChassisBBoxQueue", None)
+        if q is None:
+            return
+        try:
+            out = q.get_nowait()
+        except Exception:
+            return
+
+        bboxes = [None, None, None, None]
+        for i in range(4):
+            try:
+                cam, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                bboxes[int(cam)] = (int(cam), int(x1), int(y1), int(x2), int(y2), float(conf))
+            except Exception:
+                continue
+        self._chassis_bboxes = bboxes
+        self._chassis_bboxes_ts = time.time()
+
+        best = None
+        for i in range(4):
+            try:
+                cam, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                cand = (int(cam), int(x1), int(y1), int(x2), int(y2), float(conf))
+                if best is None or cand[5] > best[5]:
+                    best = cand
+            except Exception:
+                continue
+        if best is not None:
+            self._chassis_bbox = best
+            self._chassis_bbox_ts = time.time()
+
+    def GetChassisBBox(self, hold_seconds: float | None = None):
+        """Return last chassis bbox (cam,x1,y1,x2,y2,conf)."""
+        self.ChassisBBoxUpdate()
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._chassis_bbox is None:
+            return None
+        if (time.time() - self._chassis_bbox_ts) > hs:
+            return None
+        return self._chassis_bbox
+
+    def GetChassisBBoxes(self, hold_seconds: float | None = None):
+        """Return last per-camera chassis bbox list."""
+        self.ChassisBBoxUpdate()
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._chassis_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._chassis_bboxes_ts) > hs:
+            return [None, None, None, None]
+        return self._chassis_bboxes
 
     def GetBallBBox(self, hold_seconds: float | None = None):
         """Return last ball bbox (cam,x1,y1,x2,y2,conf).
