@@ -87,10 +87,16 @@ class TunaIntelligence(VisionPreUntil):
         # Init cameras/record threads from base class (can be disabled for tests)
         super().__init__(init_cams=init_cams)
 
-        # Default to our 4-class custom model: Ball / BlueGoal / YellowGoal / Chassis
-        # (see src/vision_utils/models/yolov8nForX5.pt)
-        self.model_path = model_path or str(MODEL_DIR / "yolov8nForX5.pt")
-        self.engine_path = engine_path or str(MODEL_DIR / "yolov8nForX5.engine")
+        # Model paths (config-driven)
+        # Priority:
+        #   1) explicit args: model_path/engine_path
+        #   2) config: Settings.VisionVals.TunaModelPath / TunaEnginePath
+        #   3) fallback: repo default yolov8nForX5
+        cfg_model = getattr(getattr(Settings, "VisionVals", object()), "TunaModelPath", None)
+        cfg_engine = getattr(getattr(Settings, "VisionVals", object()), "TunaEnginePath", None)
+
+        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / "yolov8nForX5.pt"))
+        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / "yolov8nForX5.engine"))
         self.device = device  # None => auto
         # Default behavior: prefer TensorRT engine if present (Jetson-oriented).
         # Set prefer_engine=False in offline CPU tests.
