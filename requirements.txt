@@ -6,9 +6,3 @@ uvicorn
 gradio==6.4.0
 numpy==1.26.4
 simple_pid
-# ./hailort-4.23.0-cp312-cp312-linux_aarch64.whl
-
-# Jetson Nano / TunaIntelligence (YOLOv8 .pt) runtime dependencies
-# NOTE: torch on Jetson should be installed from NVIDIA/JetPack compatible wheels.
-# torch
-# ultralytics
