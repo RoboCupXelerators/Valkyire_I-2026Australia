@@ -32,8 +32,11 @@ except Exception:  # pragma: no cover - depends on external ROS2 env
     QoSDurabilityPolicy = object  # type: ignore
     SignalHandlerOptions = object  # type: ignore
     ROS_AVAILABLE = False
-
-from ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV
+import math
+try:
+    from .ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV  # type: ignore
+except ImportError:
+    from ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV  # type: ignore
 from pathlib import Path
 import time, math, queue, threading, os, signal, subprocess
 

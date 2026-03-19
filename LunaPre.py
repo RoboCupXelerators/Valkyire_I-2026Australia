@@ -23,12 +23,21 @@ import sys
 import threading
 import time
 
-from ReasonData import logger, Settings
+try:
+    # Package usage: `python -m SoccerSoftware.offence`
+    from .ReasonData import logger, Settings  # type: ignore
+except ImportError:
+    # Legacy script usage
+    from ReasonData import logger, Settings  # type: ignore
 
 cfg = Settings
 
-from Sensor import Lidar
-from chassis import Car, Peripherals, Key  # Universal-Movement-Standard
+try:
+    from .Sensor import Lidar  # type: ignore
+    from .chassis import Car, Peripherals, Key  # type: ignore
+except ImportError:
+    from Sensor import Lidar  # type: ignore
+    from chassis import Car, Peripherals, Key  # type: ignore  # Universal-Movement-Standard
 
 
 # When runtime objects fall back to MockBits (no hardware), this flag becomes True.
@@ -101,9 +110,14 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
                 pass
 
         if str(cfg.RoboInfo.Bit).upper() == "SIM":
-            from utils.XeleratorSimBits import XeleratorSimBits
-            from utils.XeleratorSimBits import Lidar as SimLidar
-            from vision_utils.XeleratorVision import XeleratorVision
+            try:
+                from .utils.XeleratorSimBits import XeleratorSimBits  # type: ignore
+                from .utils.XeleratorSimBits import Lidar as SimLidar  # type: ignore
+                from .vision_utils.XeleratorVision import XeleratorVision  # type: ignore
+            except ImportError:
+                from utils.XeleratorSimBits import XeleratorSimBits  # type: ignore
+                from utils.XeleratorSimBits import Lidar as SimLidar  # type: ignore
+                from vision_utils.XeleratorVision import XeleratorVision  # type: ignore
 
             unity_ip = os.environ.get("XEL_UNITY_IP", "127.0.0.1")
             cmd_port = int(os.environ.get("XEL_CMD_PORT", "20001"))
@@ -155,7 +169,10 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             return
 
         if cfg.RoboInfo.Bit == "AB":
-            from utils.ArisuBits import ArisBit
+            try:
+                from .utils.ArisuBits import ArisBit  # type: ignore
+            except ImportError:
+                from utils.ArisuBits import ArisBit  # type: ignore
 
             # avoid starting hardware on dev machines
             dev_path = getattr(Settings.Ports, "ArisuPort", "/dev/arisbit")
@@ -175,7 +192,10 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             return
 
         if cfg.RoboInfo.Bit == "IL":
-            from utils.IceLoongBits import IceLoongBits
+            try:
+                from .utils.IceLoongBits import IceLoongBits  # type: ignore
+            except ImportError:
+                from utils.IceLoongBits import IceLoongBits  # type: ignore
 
             dev_path = getattr(Settings.Ports, "IceLoongPort", "/dev/iceloong")
             if not os.path.exists(str(dev_path)):
@@ -431,8 +451,9 @@ class Positions:
         # do not rely on Vision UDP server.
         try:
             if hasattr(Bits, "GetBallPos") and callable(getattr(Bits, "GetBallPos")):
-                self.ballPos[0] = Bits.GetBallPos()[0] - Bits.GetPose()[0]
-                self.ballPos[1] = Bits.GetBallPos()[1] - Bits.GetPose()[1]
+                # SIM Bits already returns ball position in *robot frame* (x_forward,y_left)
+                # or sentinel values ([0xFFF,0xFFF]/[0xDDD,0xDDD]). Do NOT subtract pose here.
+                self.ballPos = list(Bits.GetBallPos())
             else:
                 # 20251017 already changed X,Y dimension
                 self.ballPos = self._get_ball_pos()
@@ -509,11 +530,12 @@ class Positions:
                 x, y, yaw = Bits.GetPose()
                 # keep same semantics: [x_forward, y_left, yaw_deg]
                 # IMPORTANT: Bits.GetPose() already returns field-center based coordinates (cm)
-                # after applying Unity origin shift. Do NOT add extra offsets here, otherwise
-                # strategy logic (RestrictedArea/CheckPoints/etc.) will be inconsistent.
-                self.LidarPos = [round(x, 2)+220, round(y, 2)+120, float(yaw)]
+                # after applying Unity origin shift.
+                # Do not change the "-10" and "+10" here without checking the Unity setup, as it may break the pose estimation.
+                self.LidarPos = [round(float(x), 2)-10, round(float(y), 2)+10, float(yaw)]
                 return self.LidarPos
         except Exception:
+            raise
             pass
 
         _distance = self.DirectDistance()
@@ -901,7 +923,10 @@ UnitedPosition = Positions()
 class Communication:
     def __init__(self):
         if cfg.Transimission.Method == "WIFI":
-            from utils.ReasonBeacon import MisakaNetwork
+            try:
+                from .utils.ReasonBeacon import MisakaNetwork  # type: ignore
+            except ImportError:
+                from utils.ReasonBeacon import MisakaNetwork  # type: ignore
             self.transimission = MisakaNetwork()
         elif cfg.Transimission.Method == "BLE":
             pass

@@ -134,6 +134,16 @@ class XeleratorSimBits:
             # This makes simulator pose align with SoccerSoftware's expectation that field center is (0,0).
             self._origin_x_cm, self._origin_y_cm = self._try_guess_origin_from_unity_scene()
 
+        # If we still don't know origin (parsing failed), we can auto-calibrate from the
+        # first valid status packet: treat current pose as (0,0).
+        # This is extremely convenient for strategy debugging: initial robot spawn becomes origin.
+        self._auto_origin_from_first_status = str(
+            # Default OFF: in RoboCup field coordinates, (0,0) should be the field center.
+            # Auto-origin is convenient but makes pose depend on spawn point.
+            os.environ.get("XEL_AUTO_ORIGIN_FROM_FIRST_STATUS", "0")
+        ).lower() in {"1", "true", "yes"}
+        self._origin_calibrated = (abs(float(self._origin_x_cm)) + abs(float(self._origin_y_cm))) > 1e-6
+
         # optional additional scale (rare): apply after origin shift
         self._pose_scale = float(os.environ.get("XEL_POSE_SCALE", "1"))
 
@@ -182,6 +192,11 @@ class XeleratorSimBits:
             w2 = float(w2)
             w3 = float(w3)
             w4 = float(w4)
+            # NOTE (strategy compatibility):
+            # `chassis.py` passes logical wheel speeds into Bits.SetWheelSpeed().
+            # The *hardware* driver later flips right wheels, but in SIM we are already
+            # at the logical level. Therefore DO NOT flip w3/w4 here, otherwise pure turn
+            # commands become wz≈0 and the robot won't rotate.
 
             sx = (w1 + w2 + w3 + w4) * 0.25
             sy = (-w1 + w2 + w3 - w4) * 0.25
@@ -276,18 +291,30 @@ class XeleratorSimBits:
                 return (0.0, 0.0)
             gid = m.group("gid")
 
-            # Find its Transform block
+            # Find Transform id for this GameObject (we will then slice the full Transform block)
             mt = re.search(
-                rf"--- !u!4 &(?P<tid>\d+)\nTransform:\n(?:(?!\n--- !u!).)*?\n\s*m_GameObject:\s*\{{fileID:\s*{gid}\}}\s*$" ,
+                rf"--- !u!4 &(?P<tid>\d+)\nTransform:\n(?:(?!\n--- !u!).)*?\n\s*m_GameObject:\s*\{{fileID:\s*{gid}\}}\s*$",
                 txt,
                 re.S | re.M,
             )
             if not mt:
                 return (0.0, 0.0)
+            tid = mt.group("tid")
 
-            # Extract localPosition {x:..., y:..., z:...}
-            block = mt.group(0)
-            mp = re.search(r"m_LocalPosition:\s*\{x:\s*([\-0-9.eE]+),\s*y:\s*([\-0-9.eE]+),\s*z:\s*([\-0-9.eE]+)\}", block)
+            # Slice the complete Transform block by its header. This block contains m_LocalPosition.
+            mblock = re.search(
+                rf"--- !u!4 &{tid}\nTransform:\n(?P<body>.*?)(?=\n--- !u!|\Z)",
+                txt,
+                re.S,
+            )
+            if not mblock:
+                return (0.0, 0.0)
+
+            block = mblock.group(0)
+            mp = re.search(
+                r"m_LocalPosition:\s*\{x:\s*([\-0-9.eE]+),\s*y:\s*([\-0-9.eE]+),\s*z:\s*([\-0-9.eE]+)\}",
+                block,
+            )
             if not mp:
                 return (0.0, 0.0)
 
@@ -424,6 +451,20 @@ class XeleratorSimBits:
                 self._status.wz_rps = float(wz)
                 self._status.ball_x_m = ball_x
                 self._status.ball_y_m = ball_y
+
+            # Auto-calibrate origin from first status if origin is still unset.
+            if self._auto_origin_from_first_status and not self._origin_calibrated:
+                try:
+                    # status x/y are in meters already; convert to cm and use as origin.
+                    self._origin_x_cm = float(x) * self._unity_to_cm
+                    self._origin_y_cm = float(y) * self._unity_to_cm
+                    self._origin_calibrated = True
+                    if self._debug:
+                        print(
+                            f"[XEL_DEBUG] auto origin calibrated: origin_cm=({self._origin_x_cm:.1f},{self._origin_y_cm:.1f})"
+                        )
+                except Exception:
+                    pass
 
             self._rx_count += 1
 
