@@ -263,10 +263,17 @@ class XeleratorSimBits:
 
         try:
             # repo layout: <root>/SoccerSimulator/Assets/Scenes/SampleScene.unity
-            soccer_software_dir = Path(__file__).resolve().parents[1]  # .../SoccerSoftware
-            repo_root = soccer_software_dir.parent  # .../SoccerSimulatorForXels
-            scene = repo_root / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity"
-            if not scene.exists():
+            soccer_software_dir = Path(__file__).resolve().parents[1]  # .../Software
+            repo_root = soccer_software_dir.parent  # .../<repo>
+
+            # Support both old and new Unity project folder names.
+            # Current repo uses: SoccerSimulatorForXels/Assets/Scenes/SampleScene.unity
+            candidates = [
+                repo_root / "SoccerSimulatorForXels" / "Assets" / "Scenes" / "SampleScene.unity",
+                repo_root / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity",
+            ]
+            scene = next((p for p in candidates if p.exists()), None)
+            if scene is None:
                 return (0.0, 0.0)
             txt = scene.read_text(encoding="utf-8", errors="ignore")
 
@@ -276,17 +283,18 @@ class XeleratorSimBits:
                 return (0.0, 0.0)
             gid = m.group("gid")
 
-            # Find its Transform block
-            mt = re.search(
-                rf"--- !u!4 &(?P<tid>\d+)\nTransform:\n(?:(?!\n--- !u!).)*?\n\s*m_GameObject:\s*\{{fileID:\s*{gid}\}}\s*$" ,
-                txt,
-                re.S | re.M,
-            )
-            if not mt:
+            # Find its Transform block by scanning all Transform blocks.
+            # (The previous regex required m_GameObject to be the last line, which is not true in Unity YAML.)
+            block = None
+            for b in re.finditer(r"--- !u!4 &(?P<tid>\d+)\nTransform:\n(?:(?!\n--- !u!).)*", txt, re.S):
+                bb = b.group(0)
+                if f"m_GameObject: {{fileID: {gid}}}" in bb:
+                    block = bb
+                    break
+            if block is None:
                 return (0.0, 0.0)
 
             # Extract localPosition {x:..., y:..., z:...}
-            block = mt.group(0)
             mp = re.search(r"m_LocalPosition:\s*\{x:\s*([\-0-9.eE]+),\s*y:\s*([\-0-9.eE]+),\s*z:\s*([\-0-9.eE]+)\}", block)
             if not mp:
                 return (0.0, 0.0)

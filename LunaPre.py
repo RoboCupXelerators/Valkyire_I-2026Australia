@@ -431,8 +431,9 @@ class Positions:
         # do not rely on Vision UDP server.
         try:
             if hasattr(Bits, "GetBallPos") and callable(getattr(Bits, "GetBallPos")):
-                self.ballPos[0] = Bits.GetBallPos()[0] - Bits.GetPose()[0]
-                self.ballPos[1] = Bits.GetBallPos()[1] - Bits.GetPose()[1]
+                # NOTE: SIM Bits.GetBallPos() is already the robot-frame relative position in cm
+                # (x_forward, y_left). Do NOT subtract pose here.
+                self.ballPos = Bits.GetBallPos()
             else:
                 # 20251017 already changed X,Y dimension
                 self.ballPos = self._get_ball_pos()
@@ -511,7 +512,7 @@ class Positions:
                 # IMPORTANT: Bits.GetPose() already returns field-center based coordinates (cm)
                 # after applying Unity origin shift. Do NOT add extra offsets here, otherwise
                 # strategy logic (RestrictedArea/CheckPoints/etc.) will be inconsistent.
-                self.LidarPos = [round(x, 2)+220, round(y, 2)+120, float(yaw)]
+                self.LidarPos = [round(x, 2), round(y, 2), float(yaw)]
                 return self.LidarPos
         except Exception:
             pass
