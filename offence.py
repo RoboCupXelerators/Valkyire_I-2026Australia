@@ -9,12 +9,7 @@
 
 from __future__ import annotations
 
-try:
-    # When executed as a module: `python -m SoccerSoftware.offence`
-    from .BasicFuc import *  # type: ignore
-except ImportError:
-    # When executed as a script from repo root: `python SoccerSoftware/offence.py`
-    from BasicFuc import *  # type: ignore
+from BasicFuc import *
 
 
 def main():

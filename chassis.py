@@ -1,10 +1,6 @@
 import math
-try:
-    from .ReasonData.config import Settings  # type: ignore
-    from .ReasonData import logger  # type: ignore
-except ImportError:
-    from ReasonData.config import Settings  # type: ignore
-    from ReasonData import logger  # type: ignore
+from ReasonData.config import Settings
+from ReasonData import logger
 import time, threading
 
 class Car:
@@ -131,12 +127,10 @@ class Car:
 class Peripherals:
     def __init__(self,IOFunc):
         self.SetIO = IOFunc
-        try:
-            from .ReasonData import Settings as _Settings, logger as _logger  # type: ignore
-        except ImportError:
-            from ReasonData import Settings as _Settings, logger as _logger  # type: ignore
-        self.cfg = _Settings
-        self.logger = _logger
+        from ReasonData import Settings
+        self.cfg = Settings
+        from ReasonData import logger
+        self.logger = logger
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.DribbleStatus = False
 
