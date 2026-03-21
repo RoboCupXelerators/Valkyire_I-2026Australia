@@ -442,7 +442,8 @@ class Positions:
         # If SIM Bits returns sentinel values, keep them.
         if self.ballPos == [0xDDD, 0xDDD] or self.ballPos == [0xFFF, 0xFFF]:
             self.ballPosOut = self.ballPos
-        elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
+        # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
+        elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
             self.ballPosOut = [0xddd,0xddd]
@@ -797,10 +798,10 @@ class Positions:
         for i in Posistions:
             while (1):
                 if self.Pos2Pos(i):
+                    time.sleep(iWaitMs)
                     if i == Posistions[-1]:
                         return True
                     else:
-                        time.sleep(iWaitMs)
                         break
                 else:
                     pass

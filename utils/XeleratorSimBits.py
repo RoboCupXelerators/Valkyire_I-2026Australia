@@ -247,7 +247,7 @@ class XeleratorSimBits:
             # Ball relative position is robot-frame; do NOT apply origin shift.
             bx = float(self._status.ball_x_m) * self._unity_to_cm * self._pose_scale
             by = float(self._status.ball_y_m) * self._unity_to_cm * self._pose_scale
-            return [bx, by]
+            return [by, -bx]
 
     # ===== scene-origin guesser (SIM convenience) =====
 
