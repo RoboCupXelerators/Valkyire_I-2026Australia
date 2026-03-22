@@ -105,10 +105,36 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             from utils.XeleratorSimBits import Lidar as SimLidar
             from vision_utils.XeleratorVision import XeleratorVision
 
-            unity_ip = os.environ.get("XEL_UNITY_IP", "127.0.0.1")
-            cmd_port = int(os.environ.get("XEL_CMD_PORT", "20001"))
-            status_port = int(os.environ.get("XEL_STATUS_PORT", "20002"))
-            robot_id = int(os.environ.get("XEL_ROBOT_ID", str(getattr(cfg.RoboInfo, "number", 1))))
+            # Prefer config-driven settings (ReasonData/data/config.json -> Settings.Sim.*)
+            # Env vars remain supported as overrides for quick debugging.
+            sim_cfg = getattr(cfg, "Sim", None)
+            unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", "127.0.0.1"))
+
+            # robot id: env override -> Settings.Sim.RobotId -> Settings.RoboInfo.number
+            robot_id = int(
+                os.environ.get(
+                    "XEL_ROBOT_ID",
+                    str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", 1))),
+                )
+            )
+
+            # Multi-robot port mapping:
+            # per_port mode: each robot has dedicated cmd/status ports.
+            # Default mapping: base + (robot_id-1)*stride.
+            multi_mode = str(getattr(sim_cfg, "MultiRobotMode", "per_port")).lower()
+            if multi_mode == "per_port":
+                cmd_base = int(getattr(sim_cfg, "CmdPortBase", 20001))
+                st_base = int(getattr(sim_cfg, "StatusPortBase", 20002))
+                stride = int(getattr(sim_cfg, "PortStride", 10))
+                default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
+                default_status_port = st_base + (max(robot_id, 1) - 1) * stride
+            else:
+                # single-port / future hub mode
+                default_cmd_port = int(getattr(sim_cfg, "CmdPort", 20001))
+                default_status_port = int(getattr(sim_cfg, "StatusPort", 20002))
+
+            cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
+            status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
 
             # Simulator tuning (prefer config Debug section, allow env override in CI/dev)
             try:

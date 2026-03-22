@@ -113,6 +113,17 @@ class Preference:
                     "FullLog": False,
                     "Beta": False,
                 }
+                ,
+                "Sim": {
+                    "UnityIP": "127.0.0.1",
+                    "CmdPort": 20001,
+                    "StatusPort": 20002,
+                    "RobotId": 1,
+                    "CmdPortBase": 20001,
+                    "StatusPortBase": 20002,
+                    "PortStride": 10,
+                    "MultiRobotMode": "per_port"
+                }
             }
         try:
             os.stat(CONFIG_FILE)
@@ -247,6 +258,25 @@ class Prompts(object):
             self.FullLog = False
             self.Beta = False
 
+    class _sim(object):
+        def __init__(self):
+            # Simulator (Unity) connection settings
+            self.UnityIP = "127.0.0.1"
+            # Single-robot explicit ports
+            self.CmdPort = 20001
+            self.StatusPort = 20002
+            # If 0/None, will fallback to RoboInfo.number
+            self.RobotId = 1
+            # Multi-robot helpers (per-robot port mapping)
+            # robotId -> cmdPort = CmdPortBase + (robotId-1)*PortStride
+            # robotId -> statusPort = StatusPortBase + (robotId-1)*PortStride
+            self.CmdPortBase = 20001
+            self.StatusPortBase = 20002
+            self.PortStride = 10
+            # per_port: each robot listens on its own command port
+            # hub: (future) all robots share one command port via a Unity hub component
+            self.MultiRobotMode = "per_port"
+
     def __init__(self):
         self.RoboInfo = self._roboinfo()
         self.Ports = self._ports()
@@ -258,6 +288,7 @@ class Prompts(object):
         self.BLE = self._ble()
         self.WIFI = self._wifi()
         self.Debug = self._debug()
+        self.Sim = self._sim()
 
 
 Settings: Prompts = ParseJsonToObj()
