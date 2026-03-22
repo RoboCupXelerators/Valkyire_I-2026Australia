@@ -100,7 +100,10 @@ class XeleratorSimBits:
         self._vy = 0.0
         self._wz = 0.0
         self._w = (0.0, 0.0, 0.0, 0.0)
-        self._kick_strength = 0.0
+        self._kick_strength = float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0"))
+        self._kick_strength = max(0.0, self._kick_strength)
+        self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", "1.0"))
+        self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
         self._send_period = 1.0 / float(hz)
 
@@ -109,6 +112,9 @@ class XeleratorSimBits:
         # map strategy wheel units to simulator SI
         self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", "0.008"))
         self._wheel_to_wz = float(os.environ.get("XEL_WHEEL_TO_WZ", "0.02"))
+        # Scale planar translation in simulator to reduce overshoot during chase behaviors
+        self._planar_move_scale = float(os.environ.get("XEL_SIM_PLANAR_MOVE_SCALE", "1.0"))
+        self._planar_move_scale = max(0.0, self._planar_move_scale)
 
         self._debug = str(os.environ.get("XEL_DEBUG", "")).lower() in {"1", "true", "yes"}
         self._tx_count = 0
@@ -196,20 +202,28 @@ class XeleratorSimBits:
 
     def SetTwist(self, vx: float, vy: float, wz: float):
         self._flags &= ~self.FLAG_USE_WHEELS
-        self._vx = float(vx)
-        self._vy = float(vy)
+        self._vx = float(vx) * self._planar_move_scale
+        self._vy = float(vy) * self._planar_move_scale
         self._wz = float(wz)
 
     def VirtualPorts(self, port, status):
         # port=3: kick, port=4: dribble strength
         if int(port) == 3:
+            # Kick strength is fixed by config and does not change per call.
+            # Any kick command is treated as a one-shot trigger.
             self._flags |= self.FLAG_KICK
-            try:
-                self._kick_strength = float(status) if status else 1.0
-            except Exception:
-                self._kick_strength = 1.0
+            # Restore the configured kick strength every time a kick is triggered.
+            # Do NOT depend on the previous command packet value; peripheral.ShootBall()
+            # only toggles the port, it does not continuously stream strength.
+            self._kick_strength = max(0.0, float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0")))
         elif int(port) == 4:
-            self._dribble_strength = float(status)
+            # Dribble strength = config coefficient * command value [0.0, 1.0]
+            try:
+                raw = float(status)
+            except Exception:
+                raw = 0.0
+            raw = max(0.0, min(1.0, raw))
+            self._dribble_strength = max(0.0, min(1.0, raw * self._dribble_scale))
             if self._dribble_strength > 0:
                 self._flags |= self.FLAG_DRIBBLE
             else:
@@ -247,7 +261,7 @@ class XeleratorSimBits:
             # Ball relative position is robot-frame; do NOT apply origin shift.
             bx = float(self._status.ball_x_m) * self._unity_to_cm * self._pose_scale
             by = float(self._status.ball_y_m) * self._unity_to_cm * self._pose_scale
-            return [by, -bx]
+            return [bx, by]
 
     # ===== scene-origin guesser (SIM convenience) =====
 
@@ -372,7 +386,8 @@ class XeleratorSimBits:
             # kick is one-shot
             if (flags & self.FLAG_KICK) != 0:
                 self._flags &= ~self.FLAG_KICK
-                self._kick_strength = 0.0
+                # keep configured kick strength available for the next trigger
+                self._kick_strength = max(0.0, float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0")))
 
     def _rx_loop(self):
         while self._running:

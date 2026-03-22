@@ -53,13 +53,20 @@ def LinearMap(value, input_range, output_range):
 
 def ChasingBall():
     iBX,iBY = UnitedPosition.RobotBallPos()
-    Compass = chassis.GetYaw()
-    Angle = (math.degrees(math.atan2(iBX, iBY)) + 360) % 360
-    AbsAngle = Angle + Compass
+    # Robot-frame pursuit: RobotBallPos() already returns (x_forward, y_left).
+    # Use robot-series motion only to avoid mixing field-frame yaw compensation.
+    if [iBX, iBY] == [0xfff, 0xfff]:
+        chassis.stop()
+        return
+    if [iBX, iBY] == [0xddd, 0xddd]:
+        peripheral.Dribble(True)
+        return
+
     Kp = 1.5
-    SpeedX = iBX * Kp
-    SpeedY = iBY * Kp
-    chassis.FieldMoveVetor(SpeedX,SpeedY,AbsAngle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+    # 0°=forward, 90°=left, 180°=back, 270°=right
+    ball_angle = (math.degrees(math.atan2(iBY, iBX)) + 360) % 360
+    speed = min(300, int(math.sqrt(iBX * iBX + iBY * iBY) * Kp))
+    chassis.RobotMoveAngle(ball_angle, speed)
 
 class LockSeries:
     def __init__(self):
@@ -72,14 +79,18 @@ class LockSeries:
         # Compass = chassis.GetYaw()#获取机器人的航向
         # Angle = (math.degrees(math.atan2(iBX, iBY))) % 360
         Angle = UnitedPosition.RobotBallAngle()
-        # Fangle = -(Angle - Compass)
         logger.debug("Ball Angle: %f" % Angle)
-        chassis.FieldTurn(Angle)
+        # Robot-frame turn only; do not apply field yaw correction here.
+        chassis.RobotTurn((Angle - 180) / 2)
 
     def Lockballmove(self):
         lBallPos = UnitedPosition.FieldBallPos()
         iBX,iBY = lBallPos[0],lBallPos[1]
-        chassis.FieldMoveVetor(iBX*4,iBY*4,0)
+        # Convert to robot-frame pursuit to avoid field/robot mixing.
+        rBX, rBY = UnitedPosition.RobotBallPos()
+        if [rBX, rBY] in ([0xfff, 0xfff], [0xddd, 0xddd]):
+            return
+        chassis.RobotMoveAngle((math.degrees(math.atan2(rBY, rBX)) + 360) % 360, min(300, int(math.hypot(rBX, rBY) * 4)))
 
     def LockBallSlip(self):
         iBX,iBY = UnitedPosition.RobotBallPos()
@@ -117,6 +128,7 @@ class LockSeries:
             if SpeedY < -300:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            # Keep the entire slip logic in robot-frame motion.
             chassis.RobotMoveVetor(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
 
@@ -259,7 +271,8 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     Aim_Angle = Aim_Angle%360
     logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
-        iDeltaAngle = -int(math.degrees(math.atan2(ball[0], ball[1])) - 90)
+        # Robot-frame ball angle (0=forward)
+        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
         Error = ( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if Error < 180:
             iDirectionFactor = -1

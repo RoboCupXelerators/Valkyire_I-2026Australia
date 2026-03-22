@@ -119,6 +119,9 @@ class Preference:
                     "CmdPort": 20001,
                     "StatusPort": 20002,
                     "RobotId": 1,
+                    "KickStrength": 1.0,
+                    "DribbleStrengthScale": 1.0,
+                    "PlanarMoveSpeedScale": 1.0,
                     "CmdPortBase": 20001,
                     "StatusPortBase": 20002,
                     "PortStride": 10,
@@ -267,6 +270,12 @@ class Prompts(object):
             self.StatusPort = 20002
             # If 0/None, will fallback to RoboInfo.number
             self.RobotId = 1
+            # Kick strength is fixed per simulator config (triggered by any non-zero kick command)
+            self.KickStrength = 1.0
+            # Dribble strength = config scale * incoming 0..1 command
+            self.DribbleStrengthScale = 1.0
+            # Scale planar movement commands (vx, vy) in SIM to tame chasing overshoot
+            self.PlanarMoveSpeedScale = 1.0
             # Multi-robot helpers (per-robot port mapping)
             # robotId -> cmdPort = CmdPortBase + (robotId-1)*PortStride
             # robotId -> statusPort = StatusPortBase + (robotId-1)*PortStride

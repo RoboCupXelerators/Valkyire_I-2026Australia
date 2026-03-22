@@ -143,12 +143,18 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
                 sim_wheel_to_wz = float(getattr(cfg.Debug, "SimWheelToWz", 0.02))
                 sim_yaw_offset_deg = float(getattr(cfg.Debug, "SimYawOffsetDeg", 0.0))
                 sim_yaw_zero_at_start = bool(getattr(cfg.Debug, "SimYawZeroAtStart", False))
+                sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
+                sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
+                sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
             except Exception:
                 sim_twist_from_wheels = True
                 sim_wheel_to_v = 0.008
                 sim_wheel_to_wz = 0.02
                 sim_yaw_offset_deg = 0.0
                 sim_yaw_zero_at_start = False
+                sim_kick_strength = 1.0
+                sim_dribble_scale = 1.0
+                sim_planar_move_scale = 1.0
 
             # Env overrides (optional)
             if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
@@ -157,6 +163,9 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             os.environ.setdefault("XEL_WHEEL_TO_WZ", str(sim_wheel_to_wz))
             os.environ.setdefault("XEL_YAW_OFFSET_DEG", str(sim_yaw_offset_deg))
             os.environ.setdefault("XEL_YAW_ZERO_AT_START", "1" if sim_yaw_zero_at_start else "0")
+            os.environ.setdefault("XEL_SIM_KICK_STRENGTH", str(sim_kick_strength))
+            os.environ.setdefault("XEL_SIM_DRIBBLE_SCALE", str(sim_dribble_scale))
+            os.environ.setdefault("XEL_SIM_PLANAR_MOVE_SCALE", str(sim_planar_move_scale))
 
             Bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
             # Simulator lidar: compute wall distances from pose
