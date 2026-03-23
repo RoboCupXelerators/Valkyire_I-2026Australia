@@ -11,14 +11,14 @@ from BasicFuc import *
 def main():
     try:
         points_list = [
-            [0, -80, 0],
-            [-100, -80, 0],
-            [-80, 0, 0],
-            [-100, 80, 0],
-            [0, 80, 0],
-            [100, 80, 0],
-            [80, 0, 0],
-            [100, -80, 0],
+            [0, -40, 0],
+            [-60, -40, 0],
+            [-40, 0, 0],
+            [-60, 40, 0],
+            [0, 40, 0],
+            [60, 40, 0],
+            [40, 0, 0],
+            [60, -40, 0],
         ]
 
         points_cache = []
@@ -27,7 +27,7 @@ def main():
             time.sleep(1)
 
         position_point = UnitedPosition.FieldRobotPos()
-        # position_point = [100, 80, 0]  # force start point for debugging
+        # position_point = [60, 40, 0]  # force start point for debugging
 
         start_idx = 0
         for i in range(len(points_list)):

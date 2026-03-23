@@ -90,6 +90,105 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         return
 
     try:
+        # Simulator runtime: UDP bridge to Unity (SoccerSimulatorForXels)
+        # Enable via config: Settings.RoboInfo.Bit == "SIM"
+        # Or env override: ROBOCUPX_BITS=SIM
+        bits_override = os.environ.get("ROBOCUPX_BITS", "").strip().upper()
+        if bits_override:
+            try:
+                cfg.RoboInfo.Bit = bits_override
+            except Exception:
+                pass
+
+        if str(cfg.RoboInfo.Bit).upper() == "SIM":
+            from utils.XeleratorSimBits import XeleratorSimBits
+            from utils.XeleratorSimBits import Lidar as SimLidar
+            from vision_utils.XeleratorVision import XeleratorVision
+
+            # Prefer config-driven settings (ReasonData/data/config.json -> Settings.Sim.*)
+            # Env vars remain supported as overrides for quick debugging.
+            sim_cfg = getattr(cfg, "Sim", None)
+            unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", "127.0.0.1"))
+
+            # robot id: env override -> Settings.Sim.RobotId -> Settings.RoboInfo.number
+            robot_id = int(
+                os.environ.get(
+                    "XEL_ROBOT_ID",
+                    str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", 1))),
+                )
+            )
+
+            # Multi-robot port mapping:
+            # per_port mode: each robot has dedicated cmd/status ports.
+            # Default mapping: base + (robot_id-1)*stride.
+            multi_mode = str(getattr(sim_cfg, "MultiRobotMode", "per_port")).lower()
+            if multi_mode == "per_port":
+                cmd_base = int(getattr(sim_cfg, "CmdPortBase", 20001))
+                st_base = int(getattr(sim_cfg, "StatusPortBase", 20002))
+                stride = int(getattr(sim_cfg, "PortStride", 10))
+                default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
+                default_status_port = st_base + (max(robot_id, 1) - 1) * stride
+            else:
+                # single-port / future hub mode
+                default_cmd_port = int(getattr(sim_cfg, "CmdPort", 20001))
+                default_status_port = int(getattr(sim_cfg, "StatusPort", 20002))
+
+            cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
+            status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
+
+            # Simulator tuning (prefer config Debug section, allow env override in CI/dev)
+            try:
+                sim_twist_from_wheels = bool(getattr(cfg.Debug, "SimTwistFromWheels", True))
+                sim_wheel_to_v = float(getattr(cfg.Debug, "SimWheelToV", 0.008))
+                sim_wheel_to_wz = float(getattr(cfg.Debug, "SimWheelToWz", 0.02))
+                sim_yaw_offset_deg = float(getattr(cfg.Debug, "SimYawOffsetDeg", 0.0))
+                sim_yaw_zero_at_start = bool(getattr(cfg.Debug, "SimYawZeroAtStart", False))
+                sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
+                sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
+                sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
+            except Exception:
+                sim_twist_from_wheels = True
+                sim_wheel_to_v = 0.008
+                sim_wheel_to_wz = 0.02
+                sim_yaw_offset_deg = 0.0
+                sim_yaw_zero_at_start = False
+                sim_kick_strength = 1.0
+                sim_dribble_scale = 1.0
+                sim_planar_move_scale = 1.0
+
+            # Env overrides (optional)
+            if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
+                os.environ["XEL_TWIST_FROM_WHEELS"] = "1" if sim_twist_from_wheels else "0"
+            os.environ.setdefault("XEL_WHEEL_TO_V", str(sim_wheel_to_v))
+            os.environ.setdefault("XEL_WHEEL_TO_WZ", str(sim_wheel_to_wz))
+            os.environ.setdefault("XEL_YAW_OFFSET_DEG", str(sim_yaw_offset_deg))
+            os.environ.setdefault("XEL_YAW_ZERO_AT_START", "1" if sim_yaw_zero_at_start else "0")
+            os.environ.setdefault("XEL_SIM_KICK_STRENGTH", str(sim_kick_strength))
+            os.environ.setdefault("XEL_SIM_DRIBBLE_SCALE", str(sim_dribble_scale))
+            os.environ.setdefault("XEL_SIM_PLANAR_MOVE_SCALE", str(sim_planar_move_scale))
+
+            Bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
+            # Simulator lidar: compute wall distances from pose
+            lidar = SimLidar(
+                Bits.GetYaw,
+                get_pose_callable=Bits.GetPose,
+                bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260)),
+                bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200)),
+                auto_start=True,
+            )
+            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
+            compass = Bits.GetYaw
+            peripheral = Peripherals(Bits.VirtualPorts)
+            key = Key(Bits.GetKey)
+            Odometer = None
+            # Provide a lightweight vision provider in SIM (no subprocess)
+            try:
+                globals()["vision"] = XeleratorVision(bits=Bits)
+            except Exception:
+                globals()["vision"] = None
+            logger.info(f"Simulator Bits loaded: unity={unity_ip}:{cmd_port}, status_port={status_port}, robot_id={robot_id}")
+            return
+
         if cfg.RoboInfo.Bit == "AB":
             from utils.ArisuBits import ArisBit
 
@@ -184,6 +283,12 @@ class Positions:
         Call this when you really need vision data.
         """
 
+        # Simulator fast-path: use lightweight vision adapter (no socket/subprocess)
+        v = globals().get("vision", None)
+        if v is not None:
+            self._vision_started = True
+            return True
+
         if not self._vision_enabled:
             # keep returning default vision_data without starting threads/subprocess
             return False
@@ -266,6 +371,14 @@ class Positions:
                 time.sleep(0.05)
         
     def GetVisionData(self):
+        # Simulator fast-path
+        v = globals().get("vision", None)
+        if v is not None:
+            try:
+                return v.get_vision_data()
+            except Exception:
+                return {"ball_pos": [0, 0], "chassis_pos": []}
+
         # ensure vision thread is running
         self.StartVision()
         return self.vision_data
@@ -275,10 +388,24 @@ class Positions:
         return self.GetVisionData()
 
     def _get_ball_pos(self):
+        v = globals().get("vision", None)
+        if v is not None:
+            try:
+                return v.get_ball_pos()
+            except Exception:
+                return [0, 0]
+
         self.StartVision()
         return self.vision_data["ball_pos"]
     
     def _get_chassis_pos(self):
+        v = globals().get("vision", None)
+        if v is not None:
+            try:
+                return v.get_chassis_pos()
+            except Exception:
+                return []
+
         self.StartVision()
         return self.vision_data["chassis_pos"]
     
@@ -335,9 +462,23 @@ class Positions:
             `0xfff` stand for `NoBallFounded`
             `0xddd` stand for `CatchBall`
         '''
-        # 20251017 already changed X,Y dimension    
-        self.ballPos = self._get_ball_pos()
-        if self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
+        # Simulator fast-path: if Bits can provide relative ball position directly,
+        # do not rely on Vision UDP server.
+        try:
+            if hasattr(Bits, "GetBallPos") and callable(getattr(Bits, "GetBallPos")):
+                # NOTE: SIM Bits.GetBallPos() is already the robot-frame relative position in cm
+                # (x_forward, y_left). Do NOT subtract pose here.
+                self.ballPos = Bits.GetBallPos()
+            else:
+                # 20251017 already changed X,Y dimension
+                self.ballPos = self._get_ball_pos()
+        except Exception:
+            self.ballPos = self._get_ball_pos()
+        # If SIM Bits returns sentinel values, keep them.
+        if self.ballPos == [0xDDD, 0xDDD] or self.ballPos == [0xFFF, 0xFFF]:
+            self.ballPosOut = self.ballPos
+        # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
+        elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
         elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
             self.ballPosOut = [0xddd,0xddd]
@@ -399,6 +540,19 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
+        # Simulator fast-path: if Bits can provide pose, use it.
+        try:
+            if hasattr(Bits, "GetPose") and callable(getattr(Bits, "GetPose")):
+                x, y, yaw = Bits.GetPose()
+                # keep same semantics: [x_forward, y_left, yaw_deg]
+                # IMPORTANT: Bits.GetPose() already returns field-center based coordinates (cm)
+                # after applying Unity origin shift. Do NOT add extra offsets here, otherwise
+                # strategy logic (RestrictedArea/CheckPoints/etc.) will be inconsistent.
+                self.LidarPos = [round(x, 2), round(y, 2), float(yaw)]
+                return self.LidarPos
+        except Exception:
+            pass
+
         _distance = self.DirectDistance()
         if _distance == [0xfff,0xfff,0xfff,0xfff]:
             chassis.stop()
@@ -526,13 +680,14 @@ class Positions:
             `0xddd` stand for `CatchBall`
         '''
         BallX, BallY = self.RobotBallPos()
-        x, y, _ = self.FieldRobotPos()
         if [BallX, BallY] == [0xfff,0xfff]:
             self.BallDistance = 0xfff
         elif [BallX, BallY] == [0xddd,0xddd]:
             self.BallDistance = 0xddd
         else:
-            self.BallDistance = math.sqrt((BallX - x) ** 2 + (BallY - y) ** 2)
+            # RobotBallPos is *relative* to robot center in robot frame (cm), so distance
+            # is just the norm of that vector (do NOT mix with field pose).
+            self.BallDistance = math.sqrt((BallX) ** 2 + (BallY) ** 2)
         if self.FullLog:
             logger.debug("[Absolute] Ball Distance: %s" % self.BallDistance)
         return self.BallDistance
@@ -558,8 +713,14 @@ class Positions:
             return [0xddd,0xddd]
         else:
             SelfX, SelfY, SelfZ = self.FieldRobotPos()
-            AbsBallPositon = [SelfX + ballX, SelfY + ballY]
-            return AbsBallPositon
+            # Convert robot-frame relative (x_forward, y_left) into field-frame delta using yaw.
+            # yaw=0 => robot forward aligns with +x_forward.
+            th = math.radians(float(SelfZ))
+            c = math.cos(th)
+            s = math.sin(th)
+            dx = float(ballX) * c - float(ballY) * s
+            dy = float(ballX) * s + float(ballY) * c
+            return [SelfX + dx, SelfY + dy]
 
     def RobotChassisAngle(self):
         '''
@@ -672,10 +833,10 @@ class Positions:
         for i in Posistions:
             while (1):
                 if self.Pos2Pos(i):
+                    time.sleep(iWaitMs)
                     if i == Posistions[-1]:
                         return True
                     else:
-                        time.sleep(iWaitMs)
                         break
                 else:
                     pass
@@ -698,6 +859,11 @@ class Positions:
 
     def RestrictedArea(self):
         Distance = self.DirectDistance()
+
+        # Simulator / no-lidar fallback: if we don't have valid wall distances,
+        # do not run boundary-avoidance logic (it would generate bogus commands).
+        if Distance == [0xfff, 0xfff, 0xfff, 0xfff]:
+            return True
         
         # border = 240
         # restricted_area_x = 400

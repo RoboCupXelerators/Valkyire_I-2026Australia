@@ -37,7 +37,13 @@ from ReasonData import Settings, logger, LOG_FILE, Preference, DATA_DIR, ROS_ENV
 from pathlib import Path
 import time, math, queue, threading, os, signal, subprocess
 
-import numpy as np
+try:
+    import numpy as np  # type: ignore
+    NUMPY_AVAILABLE = True
+except ModuleNotFoundError:
+    np = None  # type: ignore
+    NUMPY_AVAILABLE = False
+    logger.warning("numpy not installed; Sensor/Lidar will run in reduced mode.")
 
 def GetLineStandardEquation(Line):
 
@@ -99,7 +105,8 @@ class ROSLidarParser(Node):
         '''
         解析sllidar_ros2的雷达数据
         '''
-        if Settings.Debug.Beta == True:
+        # Beta path uses numpy arrays heavily; require numpy.
+        if Settings.Debug.Beta == True and NUMPY_AVAILABLE:
             if Settings.RoboInfo.LidarType == 's1':
                 NumRanges = 1080
             elif Settings.RoboInfo.LidarType == 's2':
@@ -117,7 +124,7 @@ class ROSLidarParser(Node):
             durability=QoSDurabilityPolicy.VOLATILE
         )
         
-        if Settings.Debug.Beta == True:
+        if Settings.Debug.Beta == True and NUMPY_AVAILABLE:
             self.subscription = self.create_subscription(
                 LaserScan,
                 '/scan',
@@ -132,6 +139,9 @@ class ROSLidarParser(Node):
 
     # TODO beta
     def _scanCallback_beta(self, msg):
+        if not NUMPY_AVAILABLE:
+            # Should never happen because we guard beta path, but keep safe.
+            return
         AngleMin = msg.angle_min
         AngleIncrement = msg.angle_increment
         Ranges = np.array(msg.ranges, dtype=np.float32)
@@ -277,7 +287,12 @@ class Lidar:
         self.domainID = Settings.Ports.LidarID
 
         # When disabled, return sentinel to upstream (LunaPre.DirectDistance will treat it as "no position")
+        # When numpy is missing, we can still run the non-beta logic, but since
+        # many environments use Beta for performance, default to disabling lidar
+        # entirely to avoid surprising runtime errors.
         self.disabled = (not ROS_AVAILABLE) or (ROS_ENV is None) or (not auto_start)
+        if not NUMPY_AVAILABLE and getattr(Settings.Debug, 'Beta', False):
+            self.disabled = True
 
         self.dirNormalizedDistance = [0xfff, 0xfff, 0xfff, 0xfff] if self.disabled else [0, 0, 0, 0]
         self.dirLidarQueue = queue.Queue()

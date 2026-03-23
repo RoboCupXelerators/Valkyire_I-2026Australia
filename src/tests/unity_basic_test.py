@@ -1,0 +1,108 @@
+"""offence
+
+注意：原始版本在 import 时就会启动 while(1) 控制循环，这会导致：
+- 任何地方只要 import offence 就会直接占用硬件/启动子进程
+- 单元测试/静态检查难以进行
+
+现在改为显式 main() 入口：只有 `python -m offence` 或直接运行脚本时才执行。
+"""
+
+from __future__ import annotations
+
+import os
+import time
+
+from BasicFuc import *
+
+
+def main():
+    """Offence main loop.
+
+    为了避免刷屏/占满 CPU：
+    - 默认 30Hz 循环（OFFENCE_DT 可调）
+    - 状态日志节流（OFFENCE_LOG_EVERY 秒）
+    - Ctrl+C 退出时保证 stop/dribble off
+    """
+
+    loop_dt = float(os.environ.get("OFFENCE_DT", "0.03"))
+    log_every = float(os.environ.get("OFFENCE_LOG_EVERY", "0.5"))
+    print_pose = os.environ.get("OFFENCE_PRINT_POSE", "0") == "1"
+
+    last_log_ts = 0.0
+    last_state: str | None = None
+    last_pose_ts = 0.0
+
+    def _log_state(state: str):
+        nonlocal last_log_ts, last_state
+        now = time.time()
+        if state != last_state or (now - last_log_ts) >= log_every:
+            # loguru uses `{}` formatting; printf-style `%s` won't be substituted.
+            logger.info("[offence] state={}", state)
+            last_state = state
+            last_log_ts = now
+
+    try:
+            while True:
+                t0 = time.time()
+
+                ####
+                points_list = [
+                    [0, -75, 0],
+                    [-110, -75, 0],
+                    [-75, 0, 0],
+                    [-110, 75, 0],
+                    [0, 75, 0],
+                    [110, 75, 0],
+                    [75, 0, 0],
+                    [110, -75, 0],
+                ]
+
+                points_cache = []
+                for _ in range(3):
+                    print(UnitedPosition.FieldRobotPos())
+                    time.sleep(1)
+
+                position_point = UnitedPosition.FieldRobotPos()
+                # position_point = [110, 80, 0]  # force start point for debugging
+
+                start_idx = 0
+                for i in range(len(points_list)):
+                    if (abs(position_point[0] - points_list[i][0]) < 10) and (abs(position_point[1] - points_list[i][1]) < 10):
+                        start_idx = i
+                        break
+
+                i = start_idx
+                for _ in range(int(len(points_list) / 2) + 1):
+                    points_cache.append(points_list[i % len(points_list)])
+                    i += 1
+
+                points_cache.append([0, 0, 0])
+                UnitedPosition.Move2Path(points_cache, 7)
+                print(points_cache)
+                ####
+
+                # loop rate limit
+                dt = time.time() - t0
+                if loop_dt > 0 and dt < loop_dt:
+                    time.sleep(loop_dt - dt)
+
+    except KeyboardInterrupt:
+        logger.info("[offence] KeyboardInterrupt, stopping...")
+    finally:
+        # safety stop
+        try:
+            peripheral.Dribble(False)
+        except Exception:
+            pass
+        try:
+            chassis.stop()
+        except Exception:
+            pass
+        try:
+            UnitedPosition.Stop()
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    main()

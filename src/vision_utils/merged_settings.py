@@ -22,7 +22,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict
 
-import ujson
+# ujson is optional on dev machines; fall back to stdlib json.
+try:
+    import ujson as _json  # type: ignore
+except ModuleNotFoundError:
+    import json as _json
 
 
 class ConfigSection:
@@ -49,7 +53,7 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
 def _load_json(path: Path) -> Dict[str, Any]:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = ujson.load(f)
+            data = _json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
