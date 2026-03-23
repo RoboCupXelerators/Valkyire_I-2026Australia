@@ -80,12 +80,17 @@ class LockSeries:
         # Angle = (math.degrees(math.atan2(iBX, iBY))) % 360
         Angle = UnitedPosition.RobotBallAngle()
         logger.debug("Ball Angle: %f" % Angle)
-        chassis.AbsTurn(Angle)
+        # Robot-frame turn only; do not apply field yaw correction here.
+        chassis.RobotTurn((Angle - 180) / 2)
 
     def Lockballmove(self):
         lBallPos = UnitedPosition.FieldBallPos()
         iBX,iBY = lBallPos[0],lBallPos[1]
-        chassis.AbsMoveVetor(iBX*4,iBY*4,0)
+        # Convert to robot-frame pursuit to avoid field/robot mixing.
+        rBX, rBY = UnitedPosition.RobotBallPos()
+        if [rBX, rBY] in ([0xfff, 0xfff], [0xddd, 0xddd]):
+            return
+        chassis.RobotMoveAngle((math.degrees(math.atan2(rBY, rBX)) + 360) % 360, min(300, int(math.hypot(rBX, rBY) * 4)))
 
     def LockBallSlip(self):
         iBX,iBY = UnitedPosition.RobotBallPos()
@@ -175,7 +180,6 @@ def NormalShoot(x=1, HomePos=[0, -20, 0]):
 
             if delta > 60:
                 chassis.FieldTurn(aim)
-                chassis.FieldTurn(aim)
                 break
             else:
                 chassis.FieldMoveAngle(0, aim, 50)
@@ -251,10 +255,8 @@ def CircleAround(iAimAngle):
         if iBX <= -Settings.ExpectedVals.ErrorRange/3:
             logger.debug('atleft')
             chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,40)
-            chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,40)
         elif iBX >= Settings.ExpectedVals.ErrorRange/3:
             logger.debug('atright')
-            chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,-40)
             chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,-40)
         else:
             for _ in range(3):
