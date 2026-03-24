@@ -276,17 +276,21 @@ class XeleratorSimBits:
         """
 
         try:
-            # repo layout: <root>/SoccerSimulator/Assets/Scenes/SampleScene.unity
-            soccer_software_dir = Path(__file__).resolve().parents[1]  # .../Software
-            repo_root = soccer_software_dir.parent  # .../<repo>
-
-            # Support both old and new Unity project folder names.
-            # Current repo uses: SoccerSimulatorForXels/Assets/Scenes/SampleScene.unity
-            candidates = [
-                repo_root / "SoccerSimulatorForXels" / "Assets" / "Scenes" / "SampleScene.unity",
-                repo_root / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity",
-            ]
-            scene = next((p for p in candidates if p.exists()), None)
+            # Find repo root robustly instead of assuming a fixed parent depth.
+            # This script may live under either:
+            #   <repo>/Software/src/utils/XeleratorSimBits.py
+            # or a copied tree with a different nesting level.
+            # We walk upward and look for a parent that contains the Unity project.
+            here = Path(__file__).resolve()
+            scene = None
+            for parent in here.parents:
+                candidates = [
+                    parent / "SoccerSimulatorForXels" / "Assets" / "Scenes" / "SampleScene.unity",
+                    parent / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity",
+                ]
+                scene = next((p for p in candidates if p.exists()), None)
+                if scene is not None:
+                    break
             if scene is None:
                 return (0.0, 0.0)
             txt = scene.read_text(encoding="utf-8", errors="ignore")
