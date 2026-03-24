@@ -27,6 +27,7 @@ Status 扩展：如果 status 包长度 > 32 bytes，则在尾部额外携带 2 
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import struct
@@ -276,17 +277,31 @@ class XeleratorSimBits:
         """
 
         try:
-            # repo layout: <root>/SoccerSimulator/Assets/Scenes/SampleScene.unity
-            soccer_software_dir = Path(__file__).resolve().parents[1]  # .../Software
-            repo_root = soccer_software_dir.parent  # .../<repo>
+            saved = XeleratorSimBits._load_saved_origin_calibration()
+            if saved is not None:
+                return saved
 
-            # Support both old and new Unity project folder names.
-            # Current repo uses: SoccerSimulatorForXels/Assets/Scenes/SampleScene.unity
-            candidates = [
-                repo_root / "SoccerSimulatorForXels" / "Assets" / "Scenes" / "SampleScene.unity",
-                repo_root / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity",
-            ]
-            scene = next((p for p in candidates if p.exists()), None)
+            # If Unity scene is not available and no saved calibration exists,
+            # fall back to zero origin rather than failing startup.
+            # This keeps communication and wheel control usable even on machines
+            # that only have the Python side or only the Unity binary.
+            # The calibration can be filled in later when Unity becomes available.
+
+            # Find repo root robustly instead of assuming a fixed parent depth.
+            # This script may live under either:
+            #   <repo>/Software/src/utils/XeleratorSimBits.py
+            # or a copied tree with a different nesting level.
+            # We walk upward and look for a parent that contains the Unity project.
+            here = Path(__file__).resolve()
+            scene = None
+            for parent in here.parents:
+                candidates = [
+                    parent / "SoccerSimulatorForXels" / "Assets" / "Scenes" / "SampleScene.unity",
+                    parent / "SoccerSimulator" / "Assets" / "Scenes" / "SampleScene.unity",
+                ]
+                scene = next((p for p in candidates if p.exists()), None)
+                if scene is not None:
+                    break
             if scene is None:
                 return (0.0, 0.0)
             txt = scene.read_text(encoding="utf-8", errors="ignore")
@@ -321,9 +336,51 @@ class XeleratorSimBits:
             # status.y = YLeft    = -pos.x
             origin_x_forward_cm = z_u * 100.0
             origin_y_left_cm = (-x_u) * 100.0
+
+            # Persist the calibration so future runs don't need Unity present.
+            XeleratorSimBits._save_origin_calibration(origin_x_forward_cm, origin_y_left_cm)
             return (origin_x_forward_cm, origin_y_left_cm)
         except Exception:
             return (0.0, 0.0)
+
+    @staticmethod
+    def _calibration_file() -> Path:
+        """Calibration file path stored inside the Python package tree."""
+
+        base_dir = Path(__file__).resolve().parents[1]  # .../Software/src
+        return base_dir / "ReasonData" / "data" / "sim_origin_calibration.json"
+
+    @staticmethod
+    def _load_saved_origin_calibration() -> tuple[float, float] | None:
+        """Load persisted origin calibration if available."""
+
+        path = XeleratorSimBits._calibration_file()
+        try:
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ox = float(data.get("origin_x_forward_cm", 0.0))
+            oy = float(data.get("origin_y_left_cm", 0.0))
+            return (ox, oy)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _save_origin_calibration(origin_x_forward_cm: float, origin_y_left_cm: float) -> None:
+        """Persist origin calibration for Unity-less startup."""
+
+        path = XeleratorSimBits._calibration_file()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "origin_x_forward_cm": float(origin_x_forward_cm),
+                "origin_y_left_cm": float(origin_y_left_cm),
+                "source": "unity_scene",
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime()),
+            }
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def Close(self):
         self._running = False

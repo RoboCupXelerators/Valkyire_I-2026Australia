@@ -47,41 +47,39 @@ def main():
                 ball_position = UnitedPosition.RobotBallPos()
                 robo_position = UnitedPosition.FieldRobotPos()
 
-            goal_angle_deep = UnitedPosition.Local2Angle([230, 0]) + 180
-            goal_angle_home = UnitedPosition.Local2Angle([100, 0])
+                goal_angle_deep = UnitedPosition.Local2Angle([230, 0]) + 180
+                goal_angle_home = UnitedPosition.Local2Angle([100, 0])
 
-            if ball_position == [0xFFF, 0xFFF]:
-                UnitedPosition.Pos2Pos(
-                    [Settings.CheckPoints.Home[0] + 20, Settings.CheckPoints.Home[1], 0],
-                    4.5,
-                )
-            elif ball_position == [0xDDD, 0xDDD]:
-                if robo_position[0] < -30:
-                    peripheral.Dribble(0.7)
-                    if TurnTo_with_ball((goal_angle_deep) % 360, 0.6):
-                        chassis.stop()
-                        time.sleep(2)
-                        chassis.stop()
-                        peripheral.ShootBall()
-                        logger.warning("Processing :27")
+                if ball_position == [0xFFF, 0xFFF]:
+                    UnitedPosition.Pos2Pos(
+                        [Settings.CheckPoints.Home[0] + 20, Settings.CheckPoints.Home[1], 0],
+                        4.5,
+                    )
+                elif ball_position == [0xDDD, 0xDDD]:
+                    if robo_position[0] < -30:
+                        peripheral.Dribble(0.7)
+                        if TurnTo_with_ball((goal_angle_deep) % 360, 0.6):
+                            chassis.stop()
+                            time.sleep(2)
+                            chassis.stop()
+                            peripheral.ShootBall()
+                            logger.warning("Processing :27")
+                            peripheral.Dribble(0.0)
+                            time.sleep(2)
+                        else:
+                            logger.warning("Processing :30")
+                    else:
                         peripheral.Dribble(0.0)
-                        time.sleep(2)
-                    else:
-                        logger.warning("Processing :30")
+                        if TurnTo_with_ball((goal_angle_home) % 360, 1):
+                            peripheral.ShootBall()
+                            logger.warning("Processing :45")
+                            chassis.stop()
+                            time.sleep(1)
+                        else:
+                            logger.warning("Processing :47")
                 else:
-                    peripheral.Dribble(0.0)
-                    if TurnTo_with_ball((goal_angle_home) % 360, 1):
-                        chassis.RelMoveAngle(0, 300)
-                        time.sleep(0.2)
-                        peripheral.ShootBall()
-                        logger.warning("Processing :45")
-                        chassis.stop()
-                        time.sleep(1)
-                    else:
-                        logger.warning("Processing :47")
-            else:
-                logger.warning("Processing :44")
-                lockball.LockBallSlip()
+                    logger.warning("Processing :44")
+                    lockball.LockBallSlip()
             time.sleep(0.03)
     finally:
         # safety stop

@@ -886,10 +886,10 @@ class Positions:
                 chassis.FieldMoveAngle(0,0,300)
                 return False
             if Distance[1]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,270,-300)
+                chassis.FieldMoveAngle(0,270,300)
                 return False
             if Distance[3]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,90,-300)
+                chassis.FieldMoveAngle(0,90,300)
                 return False
             else:
                 return True
