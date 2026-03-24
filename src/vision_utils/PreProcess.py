@@ -43,8 +43,36 @@ import signal
 import datetime
 
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "VisionDatas" / "data"
+
+# Local (legacy) data dir shipped with vision_utils.
+_VISION_LOCAL_DATA_DIR = APP_DIR / "VisionDatas" / "data"
+
+# Prefer ReasonData's runtime data dir when available, so calibration/config/logs
+# live under ONE source of truth: `src/ReasonData/data`.
+#
+# This fixes a long-standing issue where calibration was accidentally read from:
+#   /Software/src/vision_utils/VisionDatas/data/Calibration/
+# instead of:
+#   /Software/src/ReasonData/data/Calibration/
+DATA_DIR = Path(REASON_DATA_DIR) if REASON_DATA_DIR is not None else _VISION_LOCAL_DATA_DIR
+
 MODEL_DIR = APP_DIR / "models"
+
+
+def _norm_rel_folder(folder: str | None, default: str) -> str:
+    """Normalize a folder configured like '/Calibration/' to a relative name.
+
+    Many legacy configs include leading/trailing slashes. When using pathlib,
+    a leading '/' would turn it into an absolute path, so we must strip it.
+    """
+
+    s = (folder or default).strip()
+    # turn '', '/', '////' into default
+    if not s or set(s) == {"/"}:
+        s = default
+    # '/Calibration/' -> 'Calibration'
+    s = s.strip("/")
+    return s or default.strip("/")
 
 
 def _is_jetson_nano() -> bool:
@@ -525,7 +553,8 @@ class VisionPreUntil:
         self.P2CHB: list[float] = []
         self.P2CVB: list[float] = []
 
-        calib_dir = DATA_DIR / "Calibration"
+        calib_sub = _norm_rel_folder(getattr(self.cfg.VisionVals, "CalibrationFolder", None), "Calibration")
+        calib_dir = DATA_DIR / calib_sub
         for port in self.CamPorts:
             npz_path = calib_dir / f"CalibrationData{port}.npz"
             try:

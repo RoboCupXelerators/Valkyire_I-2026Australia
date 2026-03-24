@@ -74,18 +74,15 @@ if Settings.RoboInfo.Rec == 'AI':
     Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
 elif Settings.RoboInfo.Rec == 'TI':
     Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
-    Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
-elif Settings.RoboInfo.Rec == 'TI':
-    Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
 elif Settings.RoboInfo.Rec == 'TV':
     Detect_Method = _safe_import(f'{_PKG}.TunaVision', 'TunaVision')
+elif Settings.RoboInfo.Rec == 'XV':
+    Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
 
 if Detect_Method is None:
     # Fallback to pure OpenCV blob detection.
     from .Blob import BlobBased as Detect_Method
     Detect_Method = _safe_import(f'{_PKG}.TunaVision', 'TunaVision')
-elif Settings.RoboInfo.Rec == 'XV':
-    Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
 
 if Detect_Method is None:
     # Fallback to pure OpenCV blob detection (optional).

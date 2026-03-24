@@ -16,6 +16,14 @@ try:
 except Exception:  # pragma: no cover
     from src.vision_utils import Detect_Method, DATA_DIR  # type: ignore
 
+
+def _norm_rel_folder(folder: str | None, default: str) -> str:
+    """Normalize a folder configured like '/Calibration/' to a relative name."""
+    s = (folder or default).strip()
+    if not s or set(s) == {"/"}:
+        s = default
+    return s.strip("/") or default.strip("/")
+
 class UnitedVision(Detect_Method):
     def __init__(self):
 
@@ -51,8 +59,24 @@ class UnitedVision(Detect_Method):
         self.P2CHB = []
         self.P2CVB = []
 
+        # Use config folder name if provided; strip leading '/' to avoid
+        # accidentally turning it into an absolute path.
+        calib_sub = _norm_rel_folder(getattr(Settings.VisionVals, "CalibrationFolder", None), "Calibration")
+        calib_dir = None
+        try:
+            if DATA_DIR is not None:
+                from pathlib import Path
+
+                calib_dir = Path(str(DATA_DIR)) / calib_sub
+        except Exception:
+            calib_dir = None
+
         for i in range(4):
-            npz = str(DATA_DIR) + "/Calibration/CalibrationData" + str(self.CamPorts[i]) + ".npz"
+            # Backward compatible path build.
+            if calib_dir is not None:
+                npz = str(calib_dir / f"CalibrationData{self.CamPorts[i]}.npz")
+            else:
+                npz = str(DATA_DIR) + "/" + calib_sub + "/CalibrationData" + str(self.CamPorts[i]) + ".npz"
             try:
                 NumpyData = np.load(npz)
                 PerspectiveMatrix = NumpyData['matrix']

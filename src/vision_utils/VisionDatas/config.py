@@ -21,7 +21,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-import ujson
+try:
+    import ujson  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    import json as ujson  # type: ignore
 
 APP_DIR = Path(__file__).parent
 DATA_DIR = APP_DIR / "data"

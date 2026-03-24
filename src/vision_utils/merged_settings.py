@@ -63,11 +63,18 @@ def get_settings_dict() -> Dict[str, Any]:
     # Base from ReasonData when available
     base: Dict[str, Any] = {}
     try:
+        # Installed package layout
         from ReasonData.config import Preference as SysPreference  # type: ignore
 
         base = SysPreference().cfg
     except Exception:
-        base = {}
+        # Repo layout (modules under ./src)
+        try:
+            from src.ReasonData.config import Preference as SysPreference  # type: ignore
+
+            base = SysPreference().cfg
+        except Exception:
+            base = {}
 
     # Overlay from vision override config
     app_dir = Path(__file__).parent
