@@ -3,6 +3,6 @@ opencv-python
 pyserial
 ujson
 uvicorn
-gradio==6.4.0
-numpy==1.26.4
+gradio
+numpy
 simple_pid
