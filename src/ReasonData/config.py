@@ -75,6 +75,11 @@ class Preference:
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
                     "CalibrationFolder": '/Calibration/',
                     "HailoModelPath": '/yoloV8_Weighs/',
+                    # TunaIntelligence (Ultralytics/TensorRT) model paths
+                    # - Use absolute path or path relative to repo root / working directory.
+                    # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
+                    "TunaModelPath": "src/vision_utils/models/yolov8nForX5.pt",
+                    "TunaEnginePath": "src/vision_utils/models/yolov8nForX5.engine",
                 },
                 "Bounds" : {
                     "ClsPos": [85,35,0], #Bound CheckPoint (Close to [0,0])
@@ -228,6 +233,9 @@ class Prompts(object):
             self.AutoExpose = 0
             self.CalibrationFolder = '/Calibration/'
             self.ModelPath = '/yoloV8_Weighs/'
+            # TunaIntelligence model paths
+            self.TunaModelPath = "src/vision_utils/models/yolov8nForX5.pt"
+            self.TunaEnginePath = "src/vision_utils/models/yolov8nForX5.engine"
 
     class _bounds(object):
         def __init__(self):

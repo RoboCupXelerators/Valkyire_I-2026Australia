@@ -28,6 +28,10 @@ class ArisuIntelligence(VisionPreUntil):
         self.MergedChassisList = []
         self.ChassisQueue = queue.Queue(maxsize=1)
         self.BallQueue = queue.Queue(maxsize=1)
+        # Goals: keep interface compatible with TunaIntelligence for dashboard.
+        # Format: [[cam, cls, center_x, bottom_y, w, h, conf], ...]
+        # cls: 1 BlueGoal, 2 YellowGoal
+        self.GoalQueue = queue.Queue(maxsize=1)
 
         super().__init__()
 
@@ -182,6 +186,7 @@ class ArisuIntelligence(VisionPreUntil):
                 continue
             BallOutputs = []
             ChassisOutputs = []
+            GoalOutputs = []
             CameraIndex = 0
             for Bindings in BindingsList:
                 OutputBuffer = Bindings.output().get_buffer()
@@ -225,9 +230,72 @@ class ArisuIntelligence(VisionPreUntil):
                             Chassis_Width, 
                             Chassis_Height, 
                             Chassis_Confidence])
+
+                # Goals: OutputBuffer[1] -> BlueGoal, OutputBuffer[2] -> YellowGoal
+                # Keep top-1 (by conf) for each cam; if both exist, pick higher.
+                best_goal = None
+                try:
+                    if OutputBuffer[1].shape[0] > 0:
+                        for g in OutputBuffer[1]:
+                            if g[4] < 0.4:
+                                continue
+                            # g: [ymin,xmin,ymax,xmax,conf] normalized
+                            y1 = int(g[0] * 640) - 80
+                            x1 = int(g[1] * 640)
+                            y2 = int(g[2] * 640) - 80
+                            x2 = int(g[3] * 640)
+                            conf = float(g[4])
+                            cx = int((x1 + x2) / 2)
+                            bottom_y = int(y2)
+                            w = int(x2 - x1)
+                            h = int(y2 - y1)
+                            cand = [CameraIndex, 1, cx, bottom_y, w, h, conf]
+                            if best_goal is None or conf > best_goal[6]:
+                                best_goal = cand
+                except Exception:
+                    pass
+                try:
+                    if OutputBuffer[2].shape[0] > 0:
+                        for g in OutputBuffer[2]:
+                            if g[4] < 0.4:
+                                continue
+                            y1 = int(g[0] * 640) - 80
+                            x1 = int(g[1] * 640)
+                            y2 = int(g[2] * 640) - 80
+                            x2 = int(g[3] * 640)
+                            conf = float(g[4])
+                            cx = int((x1 + x2) / 2)
+                            bottom_y = int(y2)
+                            w = int(x2 - x1)
+                            h = int(y2 - y1)
+                            cand = [CameraIndex, 2, cx, bottom_y, w, h, conf]
+                            if best_goal is None or conf > best_goal[6]:
+                                best_goal = cand
+                except Exception:
+                    pass
+                if best_goal is not None:
+                    GoalOutputs.append(best_goal)
                 CameraIndex += 1
+                # Keep latest in size=1 queues
+                if self.ChassisQueue.full():
+                    try:
+                        _ = self.ChassisQueue.get_nowait()
+                    except Exception:
+                        pass
+                if self.BallQueue.full():
+                    try:
+                        _ = self.BallQueue.get_nowait()
+                    except Exception:
+                        pass
+                if self.GoalQueue.full():
+                    try:
+                        _ = self.GoalQueue.get_nowait()
+                    except Exception:
+                        pass
+
                 self.ChassisQueue.put(ChassisOutputs)
                 self.BallQueue.put(BallOutputs)
+                self.GoalQueue.put(GoalOutputs)
             # print(ChassisList)
         
             # print(Output0)

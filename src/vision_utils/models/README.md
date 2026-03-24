@@ -26,6 +26,80 @@ python scripts/export_tuna_engine.py \
   --imgsz 640 --batch 4 --half
 ```
 
+## INT8 量化（TensorRT）
+
+我们使用 **Ultralytics 自带的 TensorRT INT8 导出**（会走校准流程）。
+
+### 重要前提
+
+- **必须提供校准数据集 `data.yaml`**（Ultralytics 用它构建 INT8 calibration dataloader）。
+- TensorRT `.engine` **强依赖硬件**，请尽量在目标机（Jetson）上导出。
+- `int8=True` 与 `half=True` **互斥**（Ultralytics 会强制关闭 half）。
+- 校准集图片数量：
+  - Ultralytics 提示 **建议 >300 张**（少了也能做，但精度更不稳定）。
+
+### 导出 INT8 engine（推荐：用你训练时的数据集 yaml）
+
+假设你训练好的权重是 `yolov8s.pt`，并且你有训练/验证数据集 yaml：`/path/to/data.yaml`
+
+```bash
+source venv/bin/activate
+
+python scripts/export_tuna_engine_int8.py \
+  --pt src/vision_utils/models/yolov8s.pt \
+  --engine src/vision_utils/models/yolov8s_int8.engine \
+  --data /path/to/data.yaml \
+  --imgsz 640 --batch 4 --device 0
+```
+
+### 让 TunaIntelligence 使用你自己的模型（写进 config）
+
+在 `src/ReasonData/data/config.json` 里配置：
+
+```json
+"VisionVals": {
+  "TunaModelPath": "src/vision_utils/models/yolov8s.pt",
+  "TunaEnginePath": "src/vision_utils/models/yolov8s_int8.engine"
+}
+```
+
+然后 TunaIntelligence 默认会优先读取这两个路径（除非你在构造函数里显式传入 model_path/engine_path）。
+
+### 只有图片、没有标注怎么办？（可用，但不如带标注的数据可靠）
+
+如果你只有一堆“真实相机图片”（没有 labels），也可以用于校准：
+
+```bash
+source venv/bin/activate
+
+python scripts/export_tuna_engine_int8.py \
+  --pt src/vision_utils/models/yolov8s.pt \
+  --engine src/vision_utils/models/yolov8s_int8.engine \
+  --calib-dir /path/to/calib_images \
+  --imgsz 640 --batch 4 --device 0
+```
+
+脚本会自动生成一个临时 YOLO 数据集结构，并为每张图创建空 label（背景图），以满足 Ultralytics 的 dataloader。
+
+### 导出后验证（快速 sanity-check）
+
+```bash
+python - <<"PY"
+from ultralytics import YOLO
+m = YOLO("src/vision_utils/models/yolov8s_int8.engine", task="detect")
+r = m.predict("src/vision_utils/test1.jpg", imgsz=640, device=0, verbose=False)
+print("OK, got", len(r), "result(s)")
+PY
+
+```
+
+### 常见坑
+
+1) **batch 大于校准图片数量会直接报错**：校准集至少要 >= batch。
+2) **跨设备 engine**：在 PC 上导出的 engine 拿到 Jetson 上可能报错或性能很差。
+3) **动态 shape**：如需动态输入（不固定 640），可以加 `--dynamic`，但一般会牺牲一些性能。
+4) **NMS end2end**：加 `--nms` 会把 NMS 融进 engine（便于部署），但导出更慢、也可能受版本影响。
+
 > 备注：如果你想达到类似 Hailo8 的 4x30FPS（=120FPS 总吞吐），通常需要更低 CPU 开销的解码/预处理流水线（NVDEC + NVMM 零拷贝）以及更紧凑的 TensorRT 推理路径。
 
 ### 2) COCO 80 类通用模型（不是本项目 4 类自训）

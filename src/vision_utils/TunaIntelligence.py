@@ -81,16 +81,27 @@ class TunaIntelligence(VisionPreUntil):
         self.MergedChassisList = []
         self.ChassisQueue = queue.Queue(maxsize=1)
         self.BallQueue = queue.Queue(maxsize=1)
+        # Goal outputs: per-camera top1 for blue/yellow goal.
+        # Format: [[cam, cls, center_x, bottom_y, w, h, conf], ...] padded to 4.
+        # cls: 1 BlueGoal, 2 YellowGoal (matches model class IDs / mapping).
+        self.GoalQueue = queue.Queue(maxsize=1)
         # Optional: bbox outputs (xyxy in 640x640 resized space)
         self.BallBBoxQueue = queue.Queue(maxsize=1)
+        self.ChassisBBoxQueue = queue.Queue(maxsize=1)
 
         # Init cameras/record threads from base class (can be disabled for tests)
         super().__init__(init_cams=init_cams)
 
-        # Default to our 4-class custom model: Ball / BlueGoal / YellowGoal / Chassis
-        # (see src/vision_utils/models/yolov8nForX5.pt)
-        self.model_path = model_path or str(MODEL_DIR / "yolov8nForX5.pt")
-        self.engine_path = engine_path or str(MODEL_DIR / "yolov8nForX5.engine")
+        # Model paths (config-driven)
+        # Priority:
+        #   1) explicit args: model_path/engine_path
+        #   2) config: Settings.VisionVals.TunaModelPath / TunaEnginePath
+        #   3) fallback: repo default yolov8nForX5
+        cfg_model = getattr(getattr(Settings, "VisionVals", object()), "TunaModelPath", None)
+        cfg_engine = getattr(getattr(Settings, "VisionVals", object()), "TunaEnginePath", None)
+
+        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / "yolov8nForX5.pt"))
+        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / "yolov8nForX5.engine"))
         self.device = device  # None => auto
         # Default behavior: prefer TensorRT engine if present (Jetson-oriented).
         # Set prefer_engine=False in offline CPU tests.
@@ -108,6 +119,8 @@ class TunaIntelligence(VisionPreUntil):
         self._names = None  # class-id -> name
         self._cls_ball = 0
         self._cls_chassis = 3
+        self._cls_blue_goal = 1
+        self._cls_yellow_goal = 2
 
         # thread lifecycle
         # NOTE: VisionPreUntil already defines self._stop_event for camera threads.
@@ -288,8 +301,20 @@ class TunaIntelligence(VisionPreUntil):
                     self._cls_chassis = inv[key]
                     break
 
+            # goals
+            for key in ("bluegoal", "blue goal"):
+                if key in inv:
+                    self._cls_blue_goal = inv[key]
+                    break
+            for key in ("yellowgoal", "yellow goal"):
+                if key in inv:
+                    self._cls_yellow_goal = inv[key]
+                    break
+
             self.logger.info(
-                f"TunaIntelligence class map: ball={self._cls_ball} chassis={self._cls_chassis} names={self._names}"
+                "TunaIntelligence class map: "
+                f"ball={self._cls_ball} chassis={self._cls_chassis} "
+                f"blue_goal={self._cls_blue_goal} yellow_goal={self._cls_yellow_goal} names={self._names}"
             )
         except Exception as e:
             self.logger.warning(f"TunaIntelligence: failed to init class mapping: {e}")
@@ -407,6 +432,9 @@ class TunaIntelligence(VisionPreUntil):
             ball_out = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]
             chassis_out = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]
             ball_bbox_out = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam,x1,y1,x2,y2,conf]
+            chassis_bbox_out = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam,x1,y1,x2,y2,conf]
+            # goals: [cam, cls, cx, bottom_y, w, h, conf]
+            goal_out = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
 
             if imgs:
                 try:
@@ -435,6 +463,7 @@ class TunaIntelligence(VisionPreUntil):
                     )
                     if chassis_candidate is not None:
                         x1, y1, x2, y2 = chassis_candidate.xyxy
+                        chassis_bbox_out[cam_i] = [cam_i, int(x1), int(y1), int(x2), int(y2), float(chassis_candidate.conf)]
                         cx = int((x1 + x2) / 2)
                         bottom_y = int(y2)
                         w = int(x2 - x1)
@@ -460,6 +489,24 @@ class TunaIntelligence(VisionPreUntil):
                         cx = int((ball_x_min + ball_x_max) / 2)
                         ball_out[cam_i] = [cam_i, cx, bottom_y, w, h, float(ball_candidate.conf)]
 
+                    # Choose goal (prefer the more confident between blue/yellow)
+                    goal_candidate = next(
+                        (
+                            d
+                            for d in dets_sorted
+                            if d.cls in (self._cls_blue_goal, self._cls_yellow_goal)
+                            and d.conf >= 0.40
+                        ),
+                        None,
+                    )
+                    if goal_candidate is not None:
+                        x1, y1, x2, y2 = goal_candidate.xyxy
+                        cx = int((x1 + x2) / 2)
+                        bottom_y = int(y2)
+                        w = int(x2 - x1)
+                        h = int(y2 - y1)
+                        goal_out[cam_i] = [cam_i, int(goal_candidate.cls), cx, bottom_y, w, h, float(goal_candidate.conf)]
+
             # Queues are size=1, keep latest
             if self.ChassisQueue.full():
                 try:
@@ -476,10 +523,22 @@ class TunaIntelligence(VisionPreUntil):
                     _ = self.BallBBoxQueue.get_nowait()
                 except Exception:
                     pass
+            if self.ChassisBBoxQueue.full():
+                try:
+                    _ = self.ChassisBBoxQueue.get_nowait()
+                except Exception:
+                    pass
+            if self.GoalQueue.full():
+                try:
+                    _ = self.GoalQueue.get_nowait()
+                except Exception:
+                    pass
 
             self.ChassisQueue.put(chassis_out)
             self.BallQueue.put(ball_out)
             self.BallBBoxQueue.put(ball_bbox_out)
+            self.ChassisBBoxQueue.put(chassis_bbox_out)
+            self.GoalQueue.put(goal_out)
 
             time.sleep(0.001)
 

@@ -42,18 +42,49 @@ def main():
             last_log_ts = now
 
     try:
-        while True:
-            t0 = time.time()
+            while True:
+                t0 = time.time()
 
-            ####
-            
+                ####
+                points_list = [
+                    [0, -75, 0],
+                    [-110, -75, 0],
+                    [-75, 0, 0],
+                    [-110, 75, 0],
+                    [0, 75, 0],
+                    [110, 75, 0],
+                    [75, 0, 0],
+                    [110, -75, 0],
+                ]
 
-            ####
+                points_cache = []
+                for _ in range(3):
+                    print(UnitedPosition.FieldRobotPos())
+                    time.sleep(1)
 
-            # loop rate limit
-            dt = time.time() - t0
-            if loop_dt > 0 and dt < loop_dt:
-                time.sleep(loop_dt - dt)
+                position_point = UnitedPosition.FieldRobotPos()
+                # position_point = [110, 80, 0]  # force start point for debugging
+
+                start_idx = 0
+                for i in range(len(points_list)):
+                    if (abs(position_point[0] - points_list[i][0]) < 10) and (abs(position_point[1] - points_list[i][1]) < 10):
+                        start_idx = i
+                        break
+
+                i = start_idx
+                for _ in range(int(len(points_list) / 2) + 1):
+                    points_cache.append(points_list[i % len(points_list)])
+                    i += 1
+
+                points_cache.append([0, 0, 0])
+                UnitedPosition.Move2Path(points_cache, 7)
+                print(points_cache)
+                ####
+
+                # loop rate limit
+                dt = time.time() - t0
+                if loop_dt > 0 and dt < loop_dt:
+                    time.sleep(loop_dt - dt)
 
     except KeyboardInterrupt:
         logger.info("[offence] KeyboardInterrupt, stopping...")
