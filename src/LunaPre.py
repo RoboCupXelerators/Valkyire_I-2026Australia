@@ -265,7 +265,7 @@ class Positions:
         self.FullLog = cfg.Debug.FullLog
         # Vision data (lazy start)
         self.sock: socket.socket | None = None
-        self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+        self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
         self.vision_process = None
         self.vision_data_stop_event = threading.Event()
         self.get_vision_data_process: threading.Thread | None = None
@@ -324,13 +324,18 @@ class Positions:
                     continue
                 data, addr = self.sock.recvfrom(4096)
                 self.vision_data = pickle.loads(data)
+                if isinstance(self.vision_data, dict):
+                    self.vision_data.setdefault("ball_pos", [0, 0])
+                    self.vision_data.setdefault("chassis_pos", [])
+                    self.vision_data.setdefault("blue_goal", None)
+                    self.vision_data.setdefault("yellow_goal", None)
                 # if we can receive packets, reset restart counter
                 restart_count = 0
 
             except (socket.timeout, TimeoutError):
                 if not self._vision_enabled:
                     # vision explicitly disabled
-                    self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+                    self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
                     time.sleep(0.05)
                     continue
 
@@ -352,7 +357,7 @@ class Positions:
                     logger.info("Started vision server process")
                     restart_count += 1
 
-                self.vision_data = {"ball_pos": [0, 0], "chassis_pos": []}
+                self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
 
             except OSError as e:
                 # Socket closed while thread is still running (e.g. Stop called).
@@ -377,7 +382,7 @@ class Positions:
             try:
                 return v.get_vision_data()
             except Exception:
-                return {"ball_pos": [0, 0], "chassis_pos": []}
+                return {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
 
         # ensure vision thread is running
         self.StartVision()
@@ -408,6 +413,20 @@ class Positions:
 
         self.StartVision()
         return self.vision_data["chassis_pos"]
+
+    def _get_goals_pos(self):
+        v = globals().get("vision", None)
+        if v is not None:
+            try:
+                return v.get_goals_pos()
+            except Exception:
+                return []
+
+        self.StartVision()
+        return {
+            "blue_goal": self.vision_data.get("blue_goal", None),
+            "yellow_goal": self.vision_data.get("yellow_goal", None),
+        }
     
     def Local2Angle(self, AimPos: list) -> int:
         '''
@@ -590,6 +609,16 @@ class Positions:
             list: vision server 原始输出（通常为 [[x, y, w, h, conf], ...]）
         """
         return self._get_chassis_pos()
+
+    def RobotGoalsPos(self):
+        """获取球门检测结果（蓝/黄球门）。"""
+        return self._get_goals_pos()
+
+    def GetGoalsPos(self):
+        return self._get_goals_pos()
+
+    def get_goals_pos(self):
+        return self._get_goals_pos()
 
     def FieldChassisPos(self):
         '''

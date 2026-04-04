@@ -4,6 +4,9 @@ const rctx = radar.getContext('2d');
 
 const ballPosEl = document.getElementById('ballPos');
 const ballBBoxEl = document.getElementById('ballBBox');
+const blueGoalPosEl = document.getElementById('blueGoalPos');
+const yellowGoalPosEl = document.getElementById('yellowGoalPos');
+const goalBBoxEl = document.getElementById('goalBBox');
 const chassisBody = document.querySelector('#chassisTable tbody');
 const countersEl = document.getElementById('counters');
 
@@ -26,6 +29,11 @@ function fmt(v, digits=2){
   return String(v);
 }
 
+function goalXY(goal){
+  if (!goal || !Array.isArray(goal) || goal.length < 2) return null;
+  return {x: goal[0], y: goal[1], conf: goal.length >= 3 ? goal[2] : null};
+}
+
 function _computeDesiredRange(state){
   // Fit all targets (ball + chassis) into view.
   let maxAbs = 0;
@@ -39,7 +47,7 @@ function _computeDesiredRange(state){
     if (!c || c.length < 2) continue;
     maxAbs = Math.max(maxAbs, Math.abs(c[0]), Math.abs(c[1]));
   }
-  const gl = state.goals_list_cm || [];
+  const gl = [goalXY(state.blue_goal_cm), goalXY(state.yellow_goal_cm)];
   for (let i=0; i<gl.length; i++){
     const g = gl[i];
     if (!g) continue;
@@ -130,13 +138,16 @@ function drawRadar(state){
   }
 
   // goals (if provided)
-  const gl = state.goals_list_cm || [];
-  for (let i=0; i<gl.length; i++){
-    const g = gl[i];
-    // g: {type:'blue'|'yellow', x,y, conf}
+  const blueGoal = goalXY(state.blue_goal_cm);
+  const yellowGoal = goalXY(state.yellow_goal_cm);
+  const goals = [
+    ['blue', blueGoal],
+    ['yellow', yellowGoal],
+  ];
+  for (const [kind, g] of goals){
     if (!g) continue;
     const [x,y] = toCanvas(g.x, g.y);
-    if (g.type === 'blue'){
+    if (kind === 'blue'){
       rctx.strokeStyle = 'rgba(59,130,246,0.95)';
       rctx.fillStyle = 'rgba(59,130,246,0.65)';
     }else{
@@ -149,7 +160,7 @@ function drawRadar(state){
     rctx.fill();
     rctx.stroke();
     rctx.fillStyle = 'rgba(233,238,252,0.85)';
-    rctx.fillText(`${g.type.toUpperCase()} ${Number(g.conf||0).toFixed(2)}`, x+8, y+12);
+    rctx.fillText(`${kind.toUpperCase()} ${Number(g.conf||0).toFixed(2)}`, x+8, y+12);
   }
 }
 
@@ -163,6 +174,21 @@ function updateTable(state){
   }
   const bb = state.ball_bbox_640;
   ballBBoxEl.textContent = bb ? `cam=${bb[0]} [${bb[1]},${bb[2]},${bb[3]},${bb[4]}] conf=${fmt(bb[5],3)}` : '-';
+
+  // goals
+  const blueGoal = goalXY(state.blue_goal_cm);
+  const yellowGoal = goalXY(state.yellow_goal_cm);
+  blueGoalPosEl.textContent = blueGoal
+    ? `x=${fmt(blueGoal.x)}, y=${fmt(blueGoal.y)}, conf=${fmt(blueGoal.conf, 2)}`
+    : '-';
+  yellowGoalPosEl.textContent = yellowGoal
+    ? `x=${fmt(yellowGoal.x)}, y=${fmt(yellowGoal.y)}, conf=${fmt(yellowGoal.conf, 2)}`
+    : '-';
+
+  const gb = state.goal_bbox_640;
+  goalBBoxEl.textContent = gb
+    ? `cam=${gb[0]} cls=${gb[1]} [${gb[2]},${gb[3]},${gb[4]},${gb[5]}] conf=${fmt(gb[6],3)}`
+    : '-';
 
   // chassis
   chassisBody.innerHTML = '';
@@ -196,6 +222,7 @@ function updateTable(state){
 function drawOverlays(state){
   const ballPerCam = state.ball_bboxes_640 || [null,null,null,null];
   const chassisPerCam = state.chassis_bboxes_640 || [null,null,null,null];
+    const goalPerCam = state.goal_bboxes_640 || [null,null,null,null];
   for (let i=0; i<4; i++){
     const img = camImgs[i];
     const ov = overlays[i];
@@ -240,6 +267,32 @@ function drawOverlays(state){
       ctx.fillStyle = 'rgba(76,201,240,0.9)';
       ctx.font = '14px ui-monospace, monospace';
       ctx.fillText(`chassis ${conf.toFixed(2)}`, x1*sx+6, Math.min(ov.height-4, y2*sy+16));
+    }
+
+    // goal bbox
+    const gb = goalPerCam[i];
+    if (gb){
+      const clsId = gb[1];
+      const x1 = gb[2], y1 = gb[3], x2 = gb[4], y2 = gb[5];
+      const conf = gb[6];
+      const isBlue = Number(clsId) === 1;
+      if (isBlue){
+        ctx.strokeStyle = 'rgba(59,130,246,0.98)';
+        ctx.fillStyle = 'rgba(59,130,246,0.18)';
+      }else if (Number(clsId) === 2){
+        ctx.strokeStyle = 'rgba(250,204,21,0.98)';
+        ctx.fillStyle = 'rgba(250,204,21,0.18)';
+      }else{
+        ctx.strokeStyle = 'rgba(167,139,250,0.98)';
+        ctx.fillStyle = 'rgba(167,139,250,0.18)';
+      }
+      ctx.lineWidth = 3;
+      ctx.strokeRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
+      ctx.fillRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
+      ctx.fillStyle = 'rgba(233,238,252,0.95)';
+      ctx.font = '14px ui-monospace, monospace';
+      const label = isBlue ? 'blue_goal' : (Number(clsId) === 2 ? 'yellow_goal' : 'goal');
+      ctx.fillText(`${label} ${conf.toFixed(2)}`, x1*sx+6, Math.max(16, y1*sy-6));
     }
   }
 }

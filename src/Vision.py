@@ -42,6 +42,13 @@ class UnitedVision(Detect_Method):
         self._chassis_bboxes = None  # list len=4
         self._chassis_bboxes_ts = 0.0
 
+        # Goal bbox (xyxy in 640x640 resized space from detector)
+        # Store both the best overall bbox and per-camera top1 bbox.
+        self._goal_bbox = None  # (cam, cls, x1,y1,x2,y2,conf)
+        self._goal_bbox_ts = 0.0
+        self._goal_bboxes = None  # list len=4 of (cam, cls, x1,y1,x2,y2,conf) | None
+        self._goal_bboxes_ts = 0.0
+
         # Ball position timestamp
         self._ball_pos_ts = 0.0
         # Hold last seen ball for a short time to avoid flickering to [0,0]
@@ -97,7 +104,9 @@ class UnitedVision(Detect_Method):
         # For AI/TV backends, run queue consumers to compute robot-frame positions.
         # For BlobBased, its own FindBall thread updates self.BallPos directly.
         self.MergedChassisList = []
-        self.MergedGoalList = []  # list of {type,x,y,conf} in cm (robot frame)
+        self.MergedGoalList = []  # list of all goal detections
+        self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
+        self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
         if self._queue_backend:
             self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
             self.ChassisDetectionThread.daemon = True
@@ -276,6 +285,10 @@ class UnitedVision(Detect_Method):
                 continue
 
             goals = []
+            blue_goal = None
+            yellow_goal = None
+            goal_bboxes = [None, None, None, None]
+            best_goal = None
             # out is list of detections
             for item in (out or []):
                 try:
@@ -286,44 +299,100 @@ class UnitedVision(Detect_Method):
                         continue
                     if cls_id is None or int(cls_id) < 0:
                         continue
+                    cam_i = int(CameraIndex)
+                    cls_i = int(cls_id)
+
+                    # Cache bbox for dashboard overlay.
+                    x1 = int(round(float(CenterX) - float(W) / 2.0))
+                    y1 = int(round(float(BottomY) - float(H)))
+                    x2 = int(round(float(CenterX) + float(W) / 2.0))
+                    y2 = int(round(float(BottomY)))
+                    bbox = (cam_i, cls_i, x1, y1, x2, y2, float(Confidence))
+                    # Keep the best bbox per camera.
+                    if goal_bboxes[cam_i] is None or bbox[6] > goal_bboxes[cam_i][6]:
+                        goal_bboxes[cam_i] = bbox
+                    if best_goal is None or bbox[6] > best_goal[6]:
+                        best_goal = bbox
+
                     X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
 
                     # Match BallDetection axis conventions (x forward, y left)
-                    if CameraIndex == 0:
+                    if cam_i == 0:
                         GX = -X
                         GY = Y
-                    elif CameraIndex == 1:
+                    elif cam_i == 1:
                         GX = Y
                         GY = X
-                    elif CameraIndex == 2:
+                    elif cam_i == 2:
                         GX = X
                         GY = -Y
-                    elif CameraIndex == 3:
+                    elif cam_i == 3:
                         GX = -Y
                         GY = -X
                     else:
                         GX = X
                         GY = Y
 
-                    t = "unknown"
+                    goal_item = [round(GX, 2), round(GY, 2), float(Confidence)]
+                    goals.append(goal_item)
                     if int(cls_id) == 1:
-                        t = "blue"
+                        if blue_goal is None or goal_item[2] > blue_goal[2]:
+                            blue_goal = goal_item
                     elif int(cls_id) == 2:
-                        t = "yellow"
-
-                    goals.append({"type": t, "x": round(GX, 2), "y": round(GY, 2), "conf": float(Confidence)})
+                        if yellow_goal is None or goal_item[2] > yellow_goal[2]:
+                            yellow_goal = goal_item
                 except Exception:
                     continue
 
             self.MergedGoalList = goals
+            self.BlueGoalPos = blue_goal
+            self.YellowGoalPos = yellow_goal
+            self._goal_bboxes = goal_bboxes
+            self._goal_bboxes_ts = time.time()
+            if best_goal is not None:
+                self._goal_bbox = best_goal
+                self._goal_bbox_ts = time.time()
             time.sleep(0.01)
 
     def GetGoalsPos(self):
-        """Return last goals list.
+        """Return last blue/yellow goal positions as a list.
 
-        Returns: list[dict] each dict: {type:'blue'|'yellow'|'unknown', x:cm, y:cm, conf:float}
+        Returns:
+            list: [blue_goal, yellow_goal]
+                  where each item is [x, y, conf] or None
         """
-        return getattr(self, "MergedGoalList", [])
+        return [
+            getattr(self, "BlueGoalPos", None),
+            getattr(self, "YellowGoalPos", None),
+        ]
+
+    def GetBlueGoalPos(self):
+        return getattr(self, "BlueGoalPos", None)
+
+    def GetYellowGoalPos(self):
+        return getattr(self, "YellowGoalPos", None)
+
+    def GetGoalBBoxes(self, hold_seconds: float | None = None):
+        """Return last per-camera goal bboxes.
+
+        Returns:
+            list of length 4: each is None or (cam, cls, x1, y1, x2, y2, conf)
+        """
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._goal_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._goal_bboxes_ts) > hs:
+            return [None, None, None, None]
+        return self._goal_bboxes
+
+    def GetGoalBBox(self, hold_seconds: float | None = None):
+        """Return last best goal bbox (cam, cls, x1, y1, x2, y2, conf)."""
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._goal_bbox is None:
+            return None
+        if (time.time() - self._goal_bbox_ts) > hs:
+            return None
+        return self._goal_bbox
     
     def BallDetection(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
@@ -517,7 +586,28 @@ if __name__ == "__main__":
         try:
             ball_pos = vision.GetBallPos()
             chassis_pos = vision.GetChassisPos()
-            data = {"ball_pos": ball_pos, "chassis_pos": chassis_pos}
+            blue_goal = None
+            yellow_goal = None
+            try:
+                goals_pos = vision.GetGoalsPos()
+                if isinstance(goals_pos, (list, tuple)):
+                    if len(goals_pos) >= 1:
+                        blue_goal = goals_pos[0]
+                    if len(goals_pos) >= 2:
+                        yellow_goal = goals_pos[1]
+                elif isinstance(goals_pos, dict):
+                    # backward compatibility for older dict payloads
+                    blue_goal = goals_pos.get("blue_goal")
+                    yellow_goal = goals_pos.get("yellow_goal")
+            except Exception:
+                blue_goal = None
+                yellow_goal = None
+            data = {
+                "ball_pos": ball_pos,
+                "chassis_pos": chassis_pos,
+                "blue_goal": blue_goal,
+                "yellow_goal": yellow_goal,
+            }
             vision.logger.info(data)
             pickled_data = pickle.dumps(data)
             print(data)

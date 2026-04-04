@@ -26,9 +26,17 @@ class VisionData:
     # list of detections, keep same semantic as existing vision server
     # each item typically: [x, y, w, h, conf]
     chassis_pos: list[list[float]]
+    # goal detections, direct one-blue/one-yellow output
+    blue_goal: list[float] | list[int] | None
+    yellow_goal: list[float] | list[int] | None
 
     def as_dict(self) -> dict[str, Any]:
-        return {"ball_pos": self.ball_pos, "chassis_pos": self.chassis_pos}
+        return {
+            "ball_pos": self.ball_pos,
+            "chassis_pos": self.chassis_pos,
+            "blue_goal": self.blue_goal,
+            "yellow_goal": self.yellow_goal,
+        }
 
 
 class XeleratorVision:
@@ -59,8 +67,17 @@ class XeleratorVision:
         # Unity simulator currently doesn't provide opponent detections.
         return []
 
+    def get_goals_pos(self):
+        # Unity simulator currently doesn't provide goal detections.
+        return {"blue_goal": None, "yellow_goal": None}
+
     def get_vision_data(self) -> dict[str, Any]:
-        return VisionData(ball_pos=self.get_ball_pos(), chassis_pos=self.get_chassis_pos()).as_dict()
+        return VisionData(
+            ball_pos=self.get_ball_pos(),
+            chassis_pos=self.get_chassis_pos(),
+            blue_goal=None,
+            yellow_goal=None,
+        ).as_dict()
 
     # ===== Future hooks (OpenCV + PT inference) =====
     def open_camera(self, index: int = 0, width: int | None = None, height: int | None = None) -> None:

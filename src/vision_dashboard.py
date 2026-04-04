@@ -85,12 +85,34 @@ class _App:
         except Exception:
             chassis_bboxes = [None, None, None, None]
 
-        # Optional goals (Blue/Yellow)
-        goals = []
+        goal_bbox = None
+        goal_bboxes = None
+        try:
+            goal_bbox = vision.GetGoalBBox()
+        except Exception:
+            goal_bbox = None
+        try:
+            goal_bboxes = vision.GetGoalBBoxes()
+        except Exception:
+            goal_bboxes = [None, None, None, None]
+
+        # Optional goals (Blue/Yellow), list format: [blue_goal, yellow_goal]
+        blue_goal = None
+        yellow_goal = None
         try:
             goals = vision.GetGoalsPos()
+            if isinstance(goals, (list, tuple)):
+                if len(goals) >= 1:
+                    blue_goal = goals[0]
+                if len(goals) >= 2:
+                    yellow_goal = goals[1]
+            elif isinstance(goals, dict):
+                # backward compatibility
+                blue_goal = goals.get("blue_goal")
+                yellow_goal = goals.get("yellow_goal")
         except Exception:
-            goals = []
+            blue_goal = None
+            yellow_goal = None
 
         # Provide some basic counters if present
         counters = {}
@@ -106,11 +128,14 @@ class _App:
             "uptime_s": round(time.time() - self.start_ts, 3),
             "ball_pos_cm": ball_pos,
             "chassis_list_cm": chassis_pos,
-            "goals_list_cm": goals,
+            "blue_goal_cm": blue_goal,
+            "yellow_goal_cm": yellow_goal,
             "ball_bbox_640": ball_bbox,  # (cam,x1,y1,x2,y2,conf) | null
             "ball_bboxes_640": ball_bboxes,  # list len=4
             "chassis_bbox_640": chassis_bbox,
             "chassis_bboxes_640": chassis_bboxes,
+            "goal_bbox_640": goal_bbox,
+            "goal_bboxes_640": goal_bboxes,
             "counters": counters,
         }
 
