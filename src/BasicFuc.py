@@ -113,7 +113,7 @@ class LockSeries:
                 KpZ = 1
             else:
                 Kp = 4
-                KpZ = 1.5
+                KpZ = 3
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
             SpeedX = iBX * Kp
