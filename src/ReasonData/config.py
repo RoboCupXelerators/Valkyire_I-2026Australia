@@ -80,6 +80,18 @@ class Preference:
                     # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
                     "TunaModelPath": "src/vision_utils/models/yolov8nForX5.pt",
                     "TunaEnginePath": "src/vision_utils/models/yolov8nForX5.engine",
+
+                    # Bounding-box based distance estimation (cm).
+                    # These are fallback physical sizes used with camera intrinsics.
+                    # Tune them for your robot/model if you want better range estimates.
+                    "EnableBBoxDistanceEstimate": True,
+                    "BallDiameterCM": 18.0,
+                    "ChassisWidthCM": 18.0,
+                    "ChassisHeightCM": 18.0,
+                    "BlueGoalWidthCM": 45.0,
+                    "BlueGoalHeightCM": 18.0,
+                    "YellowGoalWidthCM": 45.0,
+                    "YellowGoalHeightCM": 18.0,
                 },
                 "Bounds" : {
                     "ClsPos": [85,35,0], #Bound CheckPoint (Close to [0,0])

@@ -35,12 +35,18 @@ class UnitedVision(Detect_Method):
         self._ball_bbox_ts = 0.0
         self._ball_bboxes = None  # list[ (cam,x1,y1,x2,y2,conf) | None ] length=4
         self._ball_bboxes_ts = 0.0
+        self._ball_distance_bbox = None  # best bbox-based distance estimate in cm
+        self._ball_distance_bboxes = None  # per-camera bbox distance estimates in cm
+        self._ball_distance_ts = 0.0
 
         # Chassis bbox (xyxy in 640x640 resized space from detector)
         self._chassis_bbox = None  # (cam, x1,y1,x2,y2,conf)
         self._chassis_bbox_ts = 0.0
         self._chassis_bboxes = None  # list len=4
         self._chassis_bboxes_ts = 0.0
+        self._chassis_distance_bbox = None
+        self._chassis_distance_bboxes = None
+        self._chassis_distance_ts = 0.0
 
         # Goal bbox (xyxy in 640x640 resized space from detector)
         # Store both the best overall bbox and per-camera top1 bbox.
@@ -48,6 +54,9 @@ class UnitedVision(Detect_Method):
         self._goal_bbox_ts = 0.0
         self._goal_bboxes = None  # list len=4 of (cam, cls, x1,y1,x2,y2,conf) | None
         self._goal_bboxes_ts = 0.0
+        self._goal_distance_bbox = None
+        self._goal_distance_bboxes = None
+        self._goal_distance_ts = 0.0
 
         # Ball position timestamp
         self._ball_pos_ts = 0.0
@@ -65,6 +74,19 @@ class UnitedVision(Detect_Method):
         self.P2CK = []
         self.P2CHB = []
         self.P2CVB = []
+        self.CalibrationKs = []
+        self.CalibrationDists = []
+        self.CalibrationModes = []
+        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", True))
+        self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
+        self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
+        self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
+        self.BBoxFusionStrength = float(getattr(Settings.VisionVals, "BBoxFusionStrength", 0.5))
+        self.BBoxLegacyReferenceAreaPx = float(getattr(Settings.VisionVals, "BBoxLegacyReferenceAreaPx", 12000.0))
+        self.BlueGoalWidthCM = float(getattr(Settings.VisionVals, "BlueGoalWidthCM", 900.0))
+        self.BlueGoalHeightCM = float(getattr(Settings.VisionVals, "BlueGoalHeightCM", 180.0))
+        self.YellowGoalWidthCM = float(getattr(Settings.VisionVals, "YellowGoalWidthCM", 90.0))
+        self.YellowGoalHeightCM = float(getattr(Settings.VisionVals, "YellowGoalHeightCM", 18.0))
 
         # Use config folder name if provided; strip leading '/' to avoid
         # accidentally turning it into an absolute path.
@@ -85,12 +107,22 @@ class UnitedVision(Detect_Method):
             else:
                 npz = str(DATA_DIR) + "/" + calib_sub + "/CalibrationData" + str(self.CamPorts[i]) + ".npz"
             try:
-                NumpyData = np.load(npz)
+                NumpyData = np.load(npz, allow_pickle=True)
                 PerspectiveMatrix = NumpyData['matrix']
                 self.PerspectiveMatrices.append(PerspectiveMatrix)
                 self.P2CK.append(float(NumpyData['p2c'][0]))
                 self.P2CHB.append(float(NumpyData['p2c'][1]))
                 self.P2CVB.append(float(NumpyData['p2c'][2]))
+
+                # New calibration metadata (optional, modern web calibrator)
+                if 'K' in NumpyData.files:
+                    self.CalibrationKs.append(np.asarray(NumpyData['K'], dtype=np.float64))
+                    self.CalibrationDists.append(np.asarray(NumpyData['dist'], dtype=np.float64) if 'dist' in NumpyData.files else None)
+                    self.CalibrationModes.append('modern')
+                else:
+                    self.CalibrationKs.append(None)
+                    self.CalibrationDists.append(None)
+                    self.CalibrationModes.append('legacy')
             except Exception as e:
                 # Don't crash vision server if calibration is missing.
                 # Pixel2CM will fall back (or behave as identity).
@@ -99,6 +131,9 @@ class UnitedVision(Detect_Method):
                 self.P2CK.append(1.0)
                 self.P2CHB.append(0.0)
                 self.P2CVB.append(0.0)
+                self.CalibrationKs.append(None)
+                self.CalibrationDists.append(None)
+                self.CalibrationModes.append('missing')
 
 
         # For AI/TV backends, run queue consumers to compute robot-frame positions.
@@ -107,6 +142,10 @@ class UnitedVision(Detect_Method):
         self.MergedGoalList = []  # list of all goal detections
         self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
         self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
+        self.BallPosRaw = [0, 0]
+        self.ChassisPosRaw = []
+        self.BlueGoalPosRaw = None
+        self.YellowGoalPosRaw = None
         if self._queue_backend:
             self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
             self.ChassisDetectionThread.daemon = True
@@ -173,6 +212,177 @@ class UnitedVision(Detect_Method):
 
         return int(X), int(Y)
 
+    @staticmethod
+    def _bbox_distance_from_sizes(real_w_cm: float | None, real_h_cm: float | None, bbox_w_px: float, bbox_h_px: float, K: np.ndarray | None):
+        """Estimate target distance from bbox size using pinhole model.
+
+        Returns distance in cm, or None if inputs are insufficient.
+        """
+        if K is None:
+            return None
+        try:
+            fx = float(K[0, 0])
+            fy = float(K[1, 1])
+        except Exception:
+            return None
+        if fx <= 0 or fy <= 0:
+            return None
+
+        candidates = []
+        if real_w_cm is not None and real_w_cm > 0 and bbox_w_px and bbox_w_px > 1:
+            candidates.append(float(real_w_cm) * fx / float(bbox_w_px))
+        if real_h_cm is not None and real_h_cm > 0 and bbox_h_px and bbox_h_px > 1:
+            candidates.append(float(real_h_cm) * fy / float(bbox_h_px))
+        if not candidates:
+            return None
+        return float(sum(candidates) / len(candidates))
+
+    def _bbox_distance_legacy(self, bbox_w_px: float, bbox_h_px: float, real_scale_cm: float | None):
+        """Fallback distance estimate when intrinsics are unavailable.
+
+        This uses bbox area as a monotonic proxy for range. It is not metrically
+        exact, but it guarantees the fusion layer still has a visible effect on
+        legacy calibration files (matrix/p2c only).
+        """
+        try:
+            area = float(max(1.0, bbox_w_px * bbox_h_px))
+            ref = float(max(1.0, self.BBoxLegacyReferenceAreaPx))
+            # farther -> smaller bbox -> larger distance
+            scale = float(np.sqrt(ref / area))
+            if real_scale_cm is not None and real_scale_cm > 0:
+                return float(real_scale_cm * scale)
+            return float(100.0 * scale)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_robot_frame(x_cm: float, y_cm: float, cam_index: int) -> tuple[float, float]:
+        """Convert camera-frame ground-plane coordinates into robot frame."""
+        if cam_index == 0:
+            return -x_cm, y_cm
+        if cam_index == 1:
+            return y_cm, x_cm
+        if cam_index == 2:
+            return x_cm, y_cm
+        if cam_index == 3:
+            return -y_cm, -x_cm
+        return x_cm, y_cm
+
+    @staticmethod
+    def _blend_planar_with_range(planar_xy: tuple[float, float], range_cm: float | None, confidence: float, strength: float = 0.35):
+        """Fuse pixel2cm planar estimate with bbox-derived range.
+
+        The direction comes from the plane estimate, while the magnitude is softly
+        pulled toward the bbox-based range. This helps reduce long-distance drift
+        without destroying the existing coordinate semantics.
+        """
+        if range_cm is None or range_cm <= 0:
+            return planar_xy
+
+        x_cm, y_cm = float(planar_xy[0]), float(planar_xy[1])
+        r_plane = float(np.hypot(x_cm, y_cm))
+        if r_plane <= 1e-6:
+            return planar_xy
+
+        conf = float(np.clip(confidence, 0.0, 1.0))
+        strength = float(np.clip(strength, 0.0, 1.0))
+        alpha = float(np.clip(0.15 + 0.55 * conf + 0.30 * strength, 0.20, 0.85))
+        r_fused = alpha * r_plane + (1.0 - alpha) * float(range_cm)
+        scale = r_fused / r_plane
+        return x_cm * scale, y_cm * scale
+
+    def _fuse_detection_position(
+        self,
+        planar_xy: tuple[float, float],
+        cam_index: int,
+        conf: float,
+        bbox_w_px: float,
+        bbox_h_px: float,
+        real_w_cm: float | None,
+        real_h_cm: float | None,
+        strength: float = 0.35,
+    ):
+        """Fuse pixel2cm planar result with bbox-size range estimate."""
+        if not self.EnableBBoxDistanceEstimate:
+            return planar_xy, None
+        rng = None
+        if 0 <= cam_index < len(self.CalibrationKs):
+            rng = self._bbox_distance_from_sizes(real_w_cm, real_h_cm, bbox_w_px, bbox_h_px, self.CalibrationKs[cam_index])
+        if rng is None:
+            # Legacy fallback: still produce a usable correction from bbox area.
+            real_scale = None
+            if real_w_cm is not None and real_h_cm is not None and real_w_cm > 0 and real_h_cm > 0:
+                real_scale = float(np.sqrt(float(real_w_cm) * float(real_h_cm)))
+            rng = self._bbox_distance_legacy(bbox_w_px, bbox_h_px, real_scale)
+        fused = self._blend_planar_with_range(planar_xy, rng, conf, strength=strength)
+        return fused, rng
+
+    def _update_bbox_distance_caches(self):
+        """Compute per-camera and best bbox-based distance estimates from latest bboxes."""
+        ball_bboxes = getattr(self, "_ball_bboxes", None)
+        chassis_bboxes = getattr(self, "_chassis_bboxes", None)
+        goal_bboxes = getattr(self, "_goal_bboxes", None)
+
+        ball_dist = [None, None, None, None]
+        chassis_dist = [None, None, None, None]
+        goal_dist = [None, None, None, None]
+
+        def _pick_best(current, candidate):
+            if candidate is None:
+                return current
+            if current is None:
+                return candidate
+            return candidate if candidate[1] > current[1] else current
+
+        best_ball = None
+        best_chassis = None
+        best_goal = None
+
+        for i in range(4):
+            try:
+                if ball_bboxes is not None and ball_bboxes[i] is not None:
+                    cam, x1, y1, x2, y2, conf = ball_bboxes[i]
+                    d = self._bbox_distance_from_sizes(self.BallDiameterCM, self.BallDiameterCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
+                    if d is None:
+                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, self.BallDiameterCM)
+                    ball_dist[i] = d
+                    if d is not None:
+                        best_ball = _pick_best(best_ball, (d, conf, i))
+                if chassis_bboxes is not None and chassis_bboxes[i] is not None:
+                    cam, x1, y1, x2, y2, conf = chassis_bboxes[i]
+                    d = self._bbox_distance_from_sizes(self.ChassisWidthCM, self.ChassisHeightCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
+                    if d is None:
+                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(self.ChassisWidthCM * self.ChassisHeightCM)))
+                    chassis_dist[i] = d
+                    if d is not None:
+                        best_chassis = _pick_best(best_chassis, (d, conf, i))
+                if goal_bboxes is not None and goal_bboxes[i] is not None:
+                    cam, cls_id, x1, y1, x2, y2, conf = goal_bboxes[i]
+                    if int(cls_id) == 1:
+                        rw, rh = self.BlueGoalWidthCM, self.BlueGoalHeightCM
+                    elif int(cls_id) == 2:
+                        rw, rh = self.YellowGoalWidthCM, self.YellowGoalHeightCM
+                    else:
+                        rw, rh = self.BlueGoalWidthCM, self.BlueGoalHeightCM
+                    d = self._bbox_distance_from_sizes(rw, rh, x2 - x1, y2 - y1, self.CalibrationKs[i])
+                    if d is None:
+                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(rw * rh)))
+                    goal_dist[i] = d
+                    if d is not None:
+                        best_goal = _pick_best(best_goal, (d, conf, i))
+            except Exception:
+                continue
+
+        self._ball_distance_bboxes = ball_dist
+        self._chassis_distance_bboxes = chassis_dist
+        self._goal_distance_bboxes = goal_dist
+        self._ball_distance_bbox = None if best_ball is None else (best_ball[2], float(best_ball[0]), float(best_ball[1]))
+        self._chassis_distance_bbox = None if best_chassis is None else (best_chassis[2], float(best_chassis[0]), float(best_chassis[1]))
+        self._goal_distance_bbox = None if best_goal is None else (best_goal[2], float(best_goal[0]), float(best_goal[1]))
+        self._ball_distance_ts = time.time()
+        self._chassis_distance_ts = time.time()
+        self._goal_distance_ts = time.time()
+
     def Resize(self,Frame, TargetSize=(640, 640)):
         Height, Width = Frame.shape[:2]
         TargetHeight, TargetWidth = TargetSize
@@ -212,18 +422,16 @@ class UnitedVision(Detect_Method):
                     if Confidence is None or Confidence <= 0:
                         continue
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    if CameraIndex == 0:
-                        CX = -X
-                        CY = Y
-                    elif CameraIndex == 1:
-                        CX = Y
-                        CY = X
-                    elif CameraIndex == 2:
-                        CX = X
-                        CY = Y
-                    elif CameraIndex == 3:
-                        CX = -Y
-                        CY = -X
+                    (CX, CY), _ = self._fuse_detection_position(
+                        self._to_robot_frame(X, Y, CameraIndex),
+                        int(CameraIndex),
+                        float(Confidence),
+                        float(ChassisWidth),
+                        float(ChassisHeight),
+                        self.ChassisWidthCM,
+                        self.ChassisHeightCM,
+                        strength=0.45,
+                    )
 
                     ChassisTuple = (CX, CY, ChassisWidth, ChassisHeight, Confidence)
                     # 20251118 already changed X forward,Y left dimension
@@ -315,23 +523,19 @@ class UnitedVision(Detect_Method):
                         best_goal = bbox
 
                     X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
-
                     # Match BallDetection axis conventions (x forward, y left)
-                    if cam_i == 0:
-                        GX = -X
-                        GY = Y
-                    elif cam_i == 1:
-                        GX = Y
-                        GY = X
-                    elif cam_i == 2:
-                        GX = X
-                        GY = -Y
-                    elif cam_i == 3:
-                        GX = -Y
-                        GY = -X
-                    else:
-                        GX = X
-                        GY = Y
+                    planar = self._to_robot_frame(X, Y, cam_i)
+                    fused, _ = self._fuse_detection_position(
+                        planar,
+                        cam_i,
+                        float(Confidence),
+                        float(W),
+                        float(H),
+                        self.BlueGoalWidthCM if cls_i == 1 else self.YellowGoalWidthCM,
+                        self.BlueGoalHeightCM if cls_i == 1 else self.YellowGoalHeightCM,
+                        strength=0.40,
+                    )
+                    GX, GY = fused
 
                     goal_item = [round(GX, 2), round(GY, 2), float(Confidence)]
                     goals.append(goal_item)
@@ -347,11 +551,14 @@ class UnitedVision(Detect_Method):
             self.MergedGoalList = goals
             self.BlueGoalPos = blue_goal
             self.YellowGoalPos = yellow_goal
+            self.BlueGoalPosRaw = blue_goal
+            self.YellowGoalPosRaw = yellow_goal
             self._goal_bboxes = goal_bboxes
             self._goal_bboxes_ts = time.time()
             if best_goal is not None:
                 self._goal_bbox = best_goal
                 self._goal_bbox_ts = time.time()
+            self._update_bbox_distance_caches()
             time.sleep(0.01)
 
     def GetGoalsPos(self):
@@ -437,7 +644,31 @@ class UnitedVision(Detect_Method):
                 Ball = Balls[0]
                 BX = Ball[0]
                 BY = Ball[1]
-                self.BallPos = [BX, BY]
+                self.BallPosRaw = [BX, BY]
+                # Pull the position slightly toward the bbox-derived distance.
+                # This keeps the direction from pixel2cm while correcting long-range drift.
+                best_idx = 0
+                for idx, item in enumerate(OutputBuffer):
+                    try:
+                        if item[4] == Ball[2] and item[5] == Ball[3] and item[6] == Ball[4]:
+                            best_idx = idx
+                            break
+                    except Exception:
+                        continue
+                cam = int(OutputBuffer[best_idx][0]) if len(OutputBuffer) > best_idx else 0
+                bbox_w = float(Ball[2])
+                bbox_h = float(Ball[3])
+                fused, _ = self._fuse_detection_position(
+                    (BX, BY),
+                    cam,
+                    float(Ball[4]),
+                    bbox_w,
+                    bbox_h,
+                    self.BallDiameterCM,
+                    self.BallDiameterCM,
+                    strength=max(0.55, self.BBoxFusionStrength),
+                )
+                self.BallPos = [round(fused[0], 2), round(fused[1], 2)]
                 self._ball_pos_ts = time.time()
             else:
                 # hold last position briefly to reduce flicker
@@ -486,6 +717,7 @@ class UnitedVision(Detect_Method):
         if best is not None:
             self._ball_bbox = best
             self._ball_bbox_ts = time.time()
+        self._update_bbox_distance_caches()
 
     def ChassisBBoxUpdate(self):
         """Read TunaIntelligence.ChassisBBoxQueue if available and keep latest bbox."""
@@ -523,6 +755,7 @@ class UnitedVision(Detect_Method):
         if best is not None:
             self._chassis_bbox = best
             self._chassis_bbox_ts = time.time()
+        self._update_bbox_distance_caches()
 
     def GetChassisBBox(self, hold_seconds: float | None = None):
         """Return last chassis bbox (cam,x1,y1,x2,y2,conf)."""
@@ -570,6 +803,71 @@ class UnitedVision(Detect_Method):
         if (time.time() - self._ball_bboxes_ts) > hs:
             return [None, None, None, None]
         return self._ball_bboxes
+
+    def GetBallDistanceEstimate(self, hold_seconds: float | None = None):
+        """Return best ball distance estimate in cm using bbox size + calibration intrinsics."""
+        self.BallBBoxUpdate()
+        if not self.EnableBBoxDistanceEstimate:
+            return None
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._ball_distance_bbox is None:
+            return None
+        if (time.time() - self._ball_distance_ts) > hs:
+            return None
+        return self._ball_distance_bbox
+
+    def GetBallDistanceEstimates(self, hold_seconds: float | None = None):
+        self.BallBBoxUpdate()
+        if not self.EnableBBoxDistanceEstimate:
+            return [None, None, None, None]
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._ball_distance_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._ball_distance_ts) > hs:
+            return [None, None, None, None]
+        return self._ball_distance_bboxes
+
+    def GetChassisDistanceEstimate(self, hold_seconds: float | None = None):
+        self.ChassisBBoxUpdate()
+        if not self.EnableBBoxDistanceEstimate:
+            return None
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._chassis_distance_bbox is None:
+            return None
+        if (time.time() - self._chassis_distance_ts) > hs:
+            return None
+        return self._chassis_distance_bbox
+
+    def GetChassisDistanceEstimates(self, hold_seconds: float | None = None):
+        self.ChassisBBoxUpdate()
+        if not self.EnableBBoxDistanceEstimate:
+            return [None, None, None, None]
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._chassis_distance_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._chassis_distance_ts) > hs:
+            return [None, None, None, None]
+        return self._chassis_distance_bboxes
+
+    def GetGoalDistanceEstimate(self, hold_seconds: float | None = None):
+        if not self.EnableBBoxDistanceEstimate:
+            return None
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._goal_distance_bbox is None:
+            return None
+        if (time.time() - self._goal_distance_ts) > hs:
+            return None
+        return self._goal_distance_bbox
+
+    def GetGoalDistanceEstimates(self, hold_seconds: float | None = None):
+        if not self.EnableBBoxDistanceEstimate:
+            return [None, None, None, None]
+        hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
+        if self._goal_distance_bboxes is None:
+            return [None, None, None, None]
+        if (time.time() - self._goal_distance_ts) > hs:
+            return [None, None, None, None]
+        return self._goal_distance_bboxes
     
 if __name__ == "__main__":
     import socket
