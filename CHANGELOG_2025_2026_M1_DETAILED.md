@@ -63,22 +63,6 @@
   
 选择了**方案 B**。
 
-#### 1.1 通信协议驱动实现（1 月 24 日）
-
-**代码变更详情**：
-- 在 `src/utils/IceLoongBits.py` 中添加了盘球控制指令
-- 新增命令类型 `Commands.SET_DRIBBLE_SPEED = 0x05`
-- 实现了盘球速度设置的发送和接收处理逻辑
-- 完善了命令响应长度定义表
-
-```python
-# 新增的盘球控制命令
-case Commands.SET_DRIBBLE_SPEED:
-    tx_bytes += bytes([cmd[0]]) + struct.pack('<B', cmd[1])
-case Commands.SET_DRIBBLE_SPEED:
-    rx_data.append((resp[i], ))
-```
-
 #### 🧠 阶段一思考总结
 
 我们在这个阶段深入思考了几个关键问题：
@@ -97,6 +81,22 @@ case Commands.SET_DRIBBLE_SPEED:
    - 思考：需要编写专门的测试脚本验证所有功能
    - 方案：创建循环测试脚本，覆盖所有功能场景
    - 决策：编写 `test.py`，在循环中测试所有功能
+
+#### 1.1 通信协议驱动实现（1 月 24 日）
+
+**代码变更详情**：
+- 在 `src/utils/IceLoongBits.py` 中添加了盘球控制指令
+- 新增命令类型 `Commands.SET_DRIBBLE_SPEED = 0x05`
+- 实现了盘球速度设置的发送和接收处理逻辑
+- 完善了命令响应长度定义表
+
+```python
+# 新增的盘球控制命令
+case Commands.SET_DRIBBLE_SPEED:
+    tx_bytes += bytes([cmd[0]]) + struct.pack('<B', cmd[1])
+case Commands.SET_DRIBBLE_SPEED:
+    rx_data.append((resp[i], ))
+```
 
 #### 1.2 轮子运动学计算修正（1 月 25 日）
 
@@ -171,7 +171,7 @@ def GoBack():
 
 ---
 
-#### 🧠 阶段二思考过程
+#### 🧠 第二阶段思考过程
 
 **背景与核心挑战**：
 阶段二的核心任务是解决"盘球状态下如何精确转向"的问题。这是一个相当困难的技术挑战，因为：

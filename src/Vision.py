@@ -77,6 +77,14 @@ class UnitedVision(Detect_Method):
         self.CalibrationKs = []
         self.CalibrationDists = []
         self.CalibrationModes = []
+        # Camera slot order used by calibration files and per-camera processing.
+        # Keep the historical four-camera layout: Back, Left, Front, Right.
+        self.CamPorts = [
+            int(getattr(Settings.VisionVals, "Back", 0)),
+            int(getattr(Settings.VisionVals, "Left", 2)),
+            int(getattr(Settings.VisionVals, "Front", 4)),
+            int(getattr(Settings.VisionVals, "Right", 6)),
+        ]
         self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", True))
         self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
         self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
