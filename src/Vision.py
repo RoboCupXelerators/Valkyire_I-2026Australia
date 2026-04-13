@@ -77,7 +77,7 @@ class UnitedVision(Detect_Method):
         self.CalibrationKs = []
         self.CalibrationDists = []
         self.CalibrationModes = []
-        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", True))
+        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", False))
         self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
         self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
         self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
@@ -255,6 +255,23 @@ class UnitedVision(Detect_Method):
         except Exception:
             return None
 
+    def _estimate_range_from_bbox(self, cam_index: int, bbox_w_px: float, bbox_h_px: float, real_w_cm: float | None, real_h_cm: float | None):
+        """Estimate target range from bbox size before doing Pixel2CM.
+
+        This is the part you want to tune when adjusting W/H conversion:
+        the final pixel-to-cm projection can remain unchanged, while the range
+        prior directly influences the fused output.
+        """
+        rng = None
+        if 0 <= cam_index < len(self.CalibrationKs):
+            rng = self._bbox_distance_from_sizes(real_w_cm, real_h_cm, bbox_w_px, bbox_h_px, self.CalibrationKs[cam_index])
+        if rng is None:
+            real_scale = None
+            if real_w_cm is not None and real_h_cm is not None and real_w_cm > 0 and real_h_cm > 0:
+                real_scale = float(np.sqrt(float(real_w_cm) * float(real_h_cm)))
+            rng = self._bbox_distance_legacy(bbox_w_px, bbox_h_px, real_scale)
+        return rng
+
     @staticmethod
     def _to_robot_frame(x_cm: float, y_cm: float, cam_index: int) -> tuple[float, float]:
         """Convert camera-frame ground-plane coordinates into robot frame."""
@@ -305,15 +322,7 @@ class UnitedVision(Detect_Method):
         """Fuse pixel2cm planar result with bbox-size range estimate."""
         if not self.EnableBBoxDistanceEstimate:
             return planar_xy, None
-        rng = None
-        if 0 <= cam_index < len(self.CalibrationKs):
-            rng = self._bbox_distance_from_sizes(real_w_cm, real_h_cm, bbox_w_px, bbox_h_px, self.CalibrationKs[cam_index])
-        if rng is None:
-            # Legacy fallback: still produce a usable correction from bbox area.
-            real_scale = None
-            if real_w_cm is not None and real_h_cm is not None and real_w_cm > 0 and real_h_cm > 0:
-                real_scale = float(np.sqrt(float(real_w_cm) * float(real_h_cm)))
-            rng = self._bbox_distance_legacy(bbox_w_px, bbox_h_px, real_scale)
+        rng = self._estimate_range_from_bbox(cam_index, bbox_w_px, bbox_h_px, real_w_cm, real_h_cm)
         fused = self._blend_planar_with_range(planar_xy, rng, conf, strength=strength)
         return fused, rng
 
@@ -342,17 +351,13 @@ class UnitedVision(Detect_Method):
             try:
                 if ball_bboxes is not None and ball_bboxes[i] is not None:
                     cam, x1, y1, x2, y2, conf = ball_bboxes[i]
-                    d = self._bbox_distance_from_sizes(self.BallDiameterCM, self.BallDiameterCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, self.BallDiameterCM)
+                    d = self._estimate_range_from_bbox(i, x2 - x1, y2 - y1, self.BallDiameterCM, self.BallDiameterCM)
                     ball_dist[i] = d
                     if d is not None:
                         best_ball = _pick_best(best_ball, (d, conf, i))
                 if chassis_bboxes is not None and chassis_bboxes[i] is not None:
                     cam, x1, y1, x2, y2, conf = chassis_bboxes[i]
-                    d = self._bbox_distance_from_sizes(self.ChassisWidthCM, self.ChassisHeightCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(self.ChassisWidthCM * self.ChassisHeightCM)))
+                    d = self._estimate_range_from_bbox(i, x2 - x1, y2 - y1, self.ChassisWidthCM, self.ChassisHeightCM)
                     chassis_dist[i] = d
                     if d is not None:
                         best_chassis = _pick_best(best_chassis, (d, conf, i))
@@ -364,9 +369,7 @@ class UnitedVision(Detect_Method):
                         rw, rh = self.YellowGoalWidthCM, self.YellowGoalHeightCM
                     else:
                         rw, rh = self.BlueGoalWidthCM, self.BlueGoalHeightCM
-                    d = self._bbox_distance_from_sizes(rw, rh, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(rw * rh)))
+                    d = self._estimate_range_from_bbox(i, x2 - x1, y2 - y1, rw, rh)
                     goal_dist[i] = d
                     if d is not None:
                         best_goal = _pick_best(best_goal, (d, conf, i))
@@ -421,17 +424,10 @@ class UnitedVision(Detect_Method):
                     # Ignore padded/dummy outputs
                     if Confidence is None or Confidence <= 0:
                         continue
+                    bbox_range_cm = self._estimate_range_from_bbox(int(CameraIndex), float(ChassisWidth), float(ChassisHeight), self.ChassisWidthCM, self.ChassisHeightCM)
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    (CX, CY), _ = self._fuse_detection_position(
-                        self._to_robot_frame(X, Y, CameraIndex),
-                        int(CameraIndex),
-                        float(Confidence),
-                        float(ChassisWidth),
-                        float(ChassisHeight),
-                        self.ChassisWidthCM,
-                        self.ChassisHeightCM,
-                        strength=0.45,
-                    )
+                    planar = self._to_robot_frame(X, Y, CameraIndex)
+                    (CX, CY) = self._blend_planar_with_range(planar, bbox_range_cm, float(Confidence), strength=self.BBoxFusionStrength)
 
                     ChassisTuple = (CX, CY, ChassisWidth, ChassisHeight, Confidence)
                     # 20251118 already changed X forward,Y left dimension
@@ -509,6 +505,13 @@ class UnitedVision(Detect_Method):
                         continue
                     cam_i = int(CameraIndex)
                     cls_i = int(cls_id)
+                    bbox_range_cm = self._estimate_range_from_bbox(
+                        cam_i,
+                        float(W),
+                        float(H),
+                        self.BlueGoalWidthCM if cls_i == 1 else self.YellowGoalWidthCM,
+                        self.BlueGoalHeightCM if cls_i == 1 else self.YellowGoalHeightCM,
+                    )
 
                     # Cache bbox for dashboard overlay.
                     x1 = int(round(float(CenterX) - float(W) / 2.0))
@@ -525,17 +528,7 @@ class UnitedVision(Detect_Method):
                     X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
                     # Match BallDetection axis conventions (x forward, y left)
                     planar = self._to_robot_frame(X, Y, cam_i)
-                    fused, _ = self._fuse_detection_position(
-                        planar,
-                        cam_i,
-                        float(Confidence),
-                        float(W),
-                        float(H),
-                        self.BlueGoalWidthCM if cls_i == 1 else self.YellowGoalWidthCM,
-                        self.BlueGoalHeightCM if cls_i == 1 else self.YellowGoalHeightCM,
-                        strength=0.40,
-                    )
-                    GX, GY = fused
+                    GX, GY = self._blend_planar_with_range(planar, bbox_range_cm, float(Confidence), strength=self.BBoxFusionStrength)
 
                     goal_item = [round(GX, 2), round(GY, 2), float(Confidence)]
                     goals.append(goal_item)
@@ -645,8 +638,6 @@ class UnitedVision(Detect_Method):
                 BX = Ball[0]
                 BY = Ball[1]
                 self.BallPosRaw = [BX, BY]
-                # Pull the position slightly toward the bbox-derived distance.
-                # This keeps the direction from pixel2cm while correcting long-range drift.
                 best_idx = 0
                 for idx, item in enumerate(OutputBuffer):
                     try:
@@ -658,16 +649,8 @@ class UnitedVision(Detect_Method):
                 cam = int(OutputBuffer[best_idx][0]) if len(OutputBuffer) > best_idx else 0
                 bbox_w = float(Ball[2])
                 bbox_h = float(Ball[3])
-                fused, _ = self._fuse_detection_position(
-                    (BX, BY),
-                    cam,
-                    float(Ball[4]),
-                    bbox_w,
-                    bbox_h,
-                    self.BallDiameterCM,
-                    self.BallDiameterCM,
-                    strength=max(0.55, self.BBoxFusionStrength),
-                )
+                bbox_range_cm = self._estimate_range_from_bbox(cam, bbox_w, bbox_h, self.BallDiameterCM, self.BallDiameterCM)
+                fused = self._blend_planar_with_range((BX, BY), bbox_range_cm, float(Ball[4]), strength=self.BBoxFusionStrength)
                 self.BallPos = [round(fused[0], 2), round(fused[1], 2)]
                 self._ball_pos_ts = time.time()
             else:
