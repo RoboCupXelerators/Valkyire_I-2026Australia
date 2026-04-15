@@ -26,7 +26,7 @@ import cv2
 
 
 def open_capture():
-    cam_id = os.environ.get("XEL_CAM_ID", "robot1").strip()
+    cam_id = os.environ.get("XEL_CAM_ID", "robot2").strip()
     base_url = os.environ.get("XEL_CAM_URL", "http://127.0.0.1:20801/stream")
     cam_index = os.environ.get("XEL_CAM_INDEX", "0").strip()
 

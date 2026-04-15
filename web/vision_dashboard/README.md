@@ -31,3 +31,5 @@ http://127.0.0.1:8080/
 
 - 画面刷新用轮询 jpg 的方式实现（轻量、零依赖）。
 - bbox 坐标来自 640x640 推理输入空间，因此叠加时按显示尺寸缩放。
+- Dashboard 顶部提供 `Run OpenCV cam workflow` 开关：默认关闭，只有开启后才会请求 `/api/cam/*`。
+- 如果你看不到图像，先确认 Unity 的 `XelCameraStream` 已启动，其 streamId 通常是 `robot{robotId}_{cameraSlot}`，例如 `robot1_0`。
