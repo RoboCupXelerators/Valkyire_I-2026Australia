@@ -1,441 +1,501 @@
+"""Web-based chessboard calibration for Pixel2CM.
+
+This tool replaces the old single-frame heuristic with a proper calibration
+pipeline:
+
+1. Stream the camera in a browser.
+2. Capture multiple chessboard views.
+3. Estimate intrinsics + distortion from all samples.
+4. Estimate the final board pose / homography from a selected sample.
+5. Save a modern calibration file that pixel2cm.py can use directly.
+
+Recommended chessboard settings:
+- inner corners: 9 x 9
+- square size: 15 mm
+
+That means the distance between the first and last inner corner in either
+direction is 8 * 15 mm = 120 mm = 12 cm.
 """
-Gradio Camera Calibrator with Full Calibration & Real-time Mapping
 
-功能：
-- 实时摄像头预览（支持 V4L2）
-- 采集棋盘图像用于标定
-- 执行完整相机标定（内参 + 畸变）
-- 实时去畸变 + 计算 Homography（像素 → 世界坐标 cm）
-- 显示每个角点在机器人坐标系下的 (X, Y) 位置
-- 保存/加载标定结果到 ./Calibration/
+from __future__ import annotations
 
-坐标系定义：
-- 棋盘左下角 = (0, 0) mm
-- X 轴向右，Y 轴向前
-- 机器人位于 (0, -Intercept_cm)，即棋盘前方 Intercept_cm 处
-- 因此：机器人坐标系中，点 P 的位置为：
-    robot_x = world_x_mm / 10.0          # cm
-    robot_y = Intercept_cm + world_y_mm / 10.0  # cm
-
-依赖：opencv-python, numpy, gradio
-"""
+import math
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 import cv2
-import numpy as np
-import math
-import time
-from pathlib import Path
 import gradio as gr
-import threading
-import os
-import time
+import numpy as np
 
-# ================== 配置 ==================
-DEFAULT_CAM_INDEX = 0
-DEFAULT_INTERCEPT_CM = 15.0  # 机器人到棋盘第一个内角点的距离（cm）
-CHESSBOARD_SIZE = (9, 9)     # 内部角点数 (10x10 格子)
-SQUARE_SIZE_MM = 15.0        # 每格 15mm
-
-# ================== 全局状态 ==================
-running = False
-cap = None
-calibration_data = None  # {'K': ..., 'dist': ..., 'H': ..., 'intercept': ...}
-capture_buffer = []      # 存储用于标定的图像
-Date = time.strftime("%Y%m", time.localtime())
 APP_DIR = Path(__file__).parent
-CALIB_DIR = APP_DIR / f"Calibration{Date}"
-CALIB_DIR.mkdir(exist_ok=True)
+CALIB_DIR = APP_DIR / "Calibration"
+CALIB_DIR.mkdir(parents=True, exist_ok=True)
 
-# ================== 工具函数 ==================
+DEFAULT_CAM_INDEX = 0
+DEFAULT_BOARD_W = 9
+DEFAULT_BOARD_H = 9
+DEFAULT_SQUARE_MM = 15.0
+DEFAULT_WIDTH = 640
+DEFAULT_HEIGHT = 480
 
-def pixel_to_robot_coord(x, y, H, intercept_cm):
-    """将像素点 (x,y) 映射到机器人坐标系 (X_cm, Y_cm)"""
-    if H is None:
-        return None, None
-    pt = np.array([[[x, y]]], dtype=np.float32)
-    world_mm = cv2.perspectiveTransform(pt, H)
-    wx, wy = world_mm[0][0]
-    robot_x = wx / 10.0  # mm -> cm
-    robot_y = intercept_cm + wy / 10.0
-    return robot_x, robot_y
 
-def draw_robot_coords(img, corners, H, intercept_cm):
-    """在图像上绘制机器人坐标"""
-    out = img.copy()
-    if corners is None or H is None:
-        return out
-    for i, corner in enumerate(corners):
-        x, y = int(corner[0][0]), int(corner[0][1])
-        rx, ry = pixel_to_robot_coord(x, y, H, intercept_cm)
-        if rx is not None:
-            label = f"({rx:.1f}, {ry:.1f})"
-            cv2.putText(out, label, (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+@dataclass
+class Sample:
+    frame: np.ndarray
+    corners: np.ndarray
+    image_size: tuple[int, int]
+    area: float
+    ts: float = field(default_factory=time.time)
+
+
+@dataclass
+class CalibrationResult:
+    ok: bool = False
+    K: Optional[np.ndarray] = None
+    dist: Optional[np.ndarray] = None
+    rvec: Optional[np.ndarray] = None
+    tvec: Optional[np.ndarray] = None
+    H: Optional[np.ndarray] = None
+    rmse: float = 0.0
+    board_size: tuple[int, int] = (DEFAULT_BOARD_W, DEFAULT_BOARD_H)
+    square_size_mm: float = DEFAULT_SQUARE_MM
+    origin: str = "bottom_left_inner_corner"
+    image_size: tuple[int, int] = (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+
+
+class CalibrationSession:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.latest_frame: Optional[np.ndarray] = None
+        self.latest_corners: Optional[np.ndarray] = None
+        self.latest_score: float = 0.0
+        self.latest_found: bool = False
+        self.latest_size: tuple[int, int] = (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+        self.samples: list[Sample] = []
+        self.result = CalibrationResult()
+        self.status = "Idle"
+
+    def reset_samples(self):
+        with self.lock:
+            self.samples.clear()
+
+
+SESSION = CalibrationSession()
+
+
+def find_available_cameras(max_index: int = 20) -> list[str]:
+    out = []
+    try:
+        cv2.setLogLevel(0)
+    except Exception:
+        pass
+    for i in range(max_index):
+        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        ret, _ = cap.read()
+        cap.release()
+        if ret:
+            out.append(str(i))
+    try:
+        cv2.setLogLevel(3)
+    except Exception:
+        pass
+    return out or ["0"]
+
+
+def board_object_points(board_w: int, board_h: int, square_mm: float) -> np.ndarray:
+    """Return chessboard object points with origin at bottom-left inner corner.
+
+    The detected image points are ordered row-major from top-left to bottom-right.
+    We map them to a board coordinate system where:
+      - X goes to the right
+      - Y goes upward (bottom-left corner is the origin)
+      - Z is 0 on the board plane
+    """
+    objp = np.zeros((board_w * board_h, 3), np.float32)
+    for row in range(board_h):
+        for col in range(board_w):
+            idx = row * board_w + col
+            objp[idx, 0] = col * square_mm
+            objp[idx, 1] = (board_h - 1 - row) * square_mm
+    return objp
+
+
+def detect_chessboard(frame_bgr: np.ndarray, board_size: tuple[int, int]):
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    found, corners = cv2.findChessboardCornersSB(gray, board_size, None)
+    if not found or corners is None:
+        return False, None
+    return True, corners.astype(np.float32)
+
+
+def corners_area(corners: np.ndarray, board_w: int, board_h: int) -> float:
+    if corners is None or corners.shape[0] < board_w * board_h:
+        return 0.0
+    tl = corners[0, 0]
+    tr = corners[board_w - 1, 0]
+    bl = corners[board_w * (board_h - 1), 0]
+    br = corners[-1, 0]
+    quad = np.array([tl, tr, br, bl], dtype=np.float32)
+    return float(abs(cv2.contourArea(quad.reshape(-1, 1, 2))))
+
+
+def draw_overlay(frame_bgr: np.ndarray, corners: Optional[np.ndarray], text: str):
+    out = frame_bgr.copy()
+    if corners is not None:
+        for i, c in enumerate(corners.reshape(-1, 2)):
+            x, y = int(round(c[0])), int(round(c[1]))
+            cv2.circle(out, (x, y), 3, (0, 255, 0), -1)
+            if i % 10 == 0:
+                cv2.putText(out, str(i), (x + 4, y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+
+    if text:
+        y0 = 25
+        for line in text.splitlines()[:6]:
+            cv2.putText(out, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(out, line, (10, y0), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            y0 += 24
     return out
 
-def format_robot_coords(corners, H, intercept_cm, max_points=50):
-    lines = []
-    if corners is None or H is None:
-        return "No valid homography"
-    for i, corner in enumerate(corners):
-        x, y = corner[0]
-        rx, ry = pixel_to_robot_coord(x, y, H, intercept_cm)
-        if rx is not None:
-            lines.append(f"#{i:02d}: px=({x:.0f},{y:.0f}) → robot=({rx:.2f}cm, {ry:.2f}cm)")
-        if i >= max_points:
-            lines.append("... truncated ...")
-            break
-    return "\n".join(lines)
 
-# ================== 标定逻辑 ==================
+def _open_camera(cam_index: int, width: int, height: int):
+    cap = cv2.VideoCapture(cam_index, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(cam_index)
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        except Exception:
+            pass
+        try:
+            cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3)
+            cap.set(cv2.CAP_PROP_EXPOSURE, 157)
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, 0)
+            cap.set(cv2.CAP_PROP_CONTRAST, 32)
+            cap.set(cv2.CAP_PROP_SATURATION, 64)
+        except Exception:
+            pass
+    return cap
 
-def perform_calibration(images, board_w, board_h, square_size_mm):
-    objp = np.zeros((board_w * board_h, 3), np.float32)
-    objp[:, :2] = np.mgrid[0:board_w, 0:board_h].T.reshape(-1, 2)
-    objp *= square_size_mm
 
-    objpoints = []
-    imgpoints = []
+def start_stream(cam_index, width, height, board_w, board_h):
+    cam_index = int(cam_index)
+    width = int(width)
+    height = int(height)
+    board_w = int(board_w)
+    board_h = int(board_h)
 
-    for img in images:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        ret, corners = cv2.findChessboardCornersSB(gray, (board_w, board_h), None)
-        if ret:
-            objpoints.append(objp)
-            imgpoints.append(corners)
+    SESSION.cap = _open_camera(cam_index, width, height)
+    if not SESSION.cap or not SESSION.cap.isOpened():
+        SESSION.status = f"无法打开摄像头 {cam_index}"
+        placeholder = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.putText(placeholder, SESSION.status, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+        yield cv2.cvtColor(placeholder, cv2.COLOR_BGR2RGB), SESSION.status
+        return
 
-    if len(objpoints) < 3:
-        return None, "Need at least 3 valid images"
-
-    try:
-        ret, K, dist, rvecs, tvecs = cv2.calibrateCamera(
-            objpoints, imgpoints, gray.shape[::-1], None, None
-        )
-        return {"K": K, "dist": dist}, "Success"
-    except Exception as e:
-        return None, f"Calibration failed: {str(e)}"
-
-def compute_homography_from_frame(frame, K, dist, board_w, board_h, square_size_mm):
-    h, w = frame.shape[:2]
-    new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), 1, (w, h))
-    undistorted = cv2.undistort(frame, K, dist, None, new_K)
-
-    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
-    ret, corners = cv2.findChessboardCornersSB(gray, (board_w, board_h), None)
-    if not ret or corners is None:
-        return undistorted, None
-
-    # 构建真实世界坐标 (mm)
-    obj_2d = np.zeros((board_w * board_h, 2), np.float32)
-    for i in range(board_h):
-        for j in range(board_w):
-            idx = i * board_w + j
-            obj_2d[idx] = [j * square_size_mm, i * square_size_mm]
-
-    img_points = corners.reshape(-1, 2)
-    H, _ = cv2.findHomography(img_points, obj_2d)
-    return undistorted, H
-
-# ================== 视频流 ==================
-
-def video_generator(cam_index, intercept_cm):
-    global running, cap, calibration_data
-    cap = cv2.VideoCapture(int(cam_index), cv2.CAP_V4L2)
-    try:
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        cap.set(cv2.CAP_PROP_BRIGHTNESS, -64)
-        cap.set(cv2.CAP_PROP_CONTRAST, 32)
-        cap.set(cv2.CAP_PROP_SATURATION, 64)
-        cap.set(cv2.CAP_PROP_SHARPNESS, 2)
-    except:
-        pass
-
-    running = True
-    while running:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.05)
+    SESSION.running = True
+    SESSION.status = "Streaming"
+    while SESSION.running:
+        ret, frame = SESSION.cap.read()
+        if not ret or frame is None:
+            time.sleep(0.03)
             continue
 
-        display_img = frame.copy()
-        info_text = "No calibration loaded"
+        found, corners = detect_chessboard(frame, (board_w, board_h))
+        score = corners_area(corners, board_w, board_h) if found else 0.0
 
-        if calibration_data is not None:
-            K = calibration_data['K']
-            dist = calibration_data['dist']
-            intercept = calibration_data['intercept']
+        with SESSION.lock:
+            SESSION.latest_frame = frame.copy()
+            SESSION.latest_corners = corners.copy() if corners is not None else None
+            SESSION.latest_score = score
+            SESSION.latest_found = found
+            SESSION.latest_size = (frame.shape[1], frame.shape[0])
 
-            h, w = frame.shape[:2]
-            new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), 1, (w, h))
-            undistorted = cv2.undistort(frame, K, dist, None, new_K)
+        lines = [
+            f"Camera={cam_index} | frame={frame.shape[1]}x{frame.shape[0]}",
+            f"board={board_w}x{board_h} inner corners | square={DEFAULT_SQUARE_MM:.1f}mm",
+            f"found={found} | samples={len(SESSION.samples)}",
+        ]
+        if SESSION.result.ok:
+            lines.append(f"rmse={SESSION.result.rmse:.3f}px")
 
-            gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
-            ret, corners = cv2.findChessboardCornersSB(gray, CHESSBOARD_SIZE, None)
+        preview = draw_overlay(frame, corners, "\n".join(lines))
+        yield cv2.cvtColor(preview, cv2.COLOR_BGR2RGB), "\n".join(lines)
 
-            if ret and corners is not None:
-                # 计算当前 Homography
-                obj_2d = np.zeros((CHESSBOARD_SIZE[0] * CHESSBOARD_SIZE[1], 2), np.float32)
-                for i in range(CHESSBOARD_SIZE[1]):
-                    for j in range(CHESSBOARD_SIZE[0]):
-                        idx = i * CHESSBOARD_SIZE[0] + j
-                        obj_2d[idx] = [j * SQUARE_SIZE_MM, i * SQUARE_SIZE_MM]
-                img_points = corners.reshape(-1, 2)
-                H, _ = cv2.findHomography(img_points, obj_2d)
+    if SESSION.cap is not None:
+        SESSION.cap.release()
+        SESSION.cap = None
 
-                # 绘制坐标
-                display_img = draw_robot_coords(undistorted, corners, H, intercept)
-                info_text = format_robot_coords(corners, H, intercept)
-            else:
-                display_img = undistorted
-                cv2.putText(display_img, "No chessboard", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-        else:
-            cv2.putText(display_img, "Load calibration first", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
-        rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
-        yield rgb, info_text
-
-    cap.release()
-
-# ================== Gradio 回调 ==================
-
-def start_stream(cam_index, intercept_cm):
-    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(placeholder, "Starting...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    yield placeholder, "Starting"
-    yield from video_generator(cam_index, intercept_cm)
 
 def stop_stream():
-    global running
-    running = False
+    SESSION.running = False
+    if SESSION.cap is not None:
+        try:
+            SESSION.cap.release()
+        except Exception:
+            pass
+        SESSION.cap = None
     return "Stopped"
 
-def capture_frame():
-    global cap, capture_buffer
-    if cap is None or not cap.isOpened():
-        return "Start stream first"
-    ret, frame = cap.read()
-    if ret:
-        capture_buffer.append(frame.copy())
-        return f"Captured! Total: {len(capture_buffer)}"
-    return "Failed to capture"
 
-def calibrate_now():
-    global capture_buffer, calibration_data
-    if len(capture_buffer) < 3:
-        return f"Need ≥3 images, got {len(capture_buffer)}"
-    
-    params, msg = perform_calibration(
-        capture_buffer,
-        CHESSBOARD_SIZE[0],
-        CHESSBOARD_SIZE[1],
-        SQUARE_SIZE_MM
-    )
-    if params is None:
-        return msg
-    
-    # 保存到全局
-    calibration_data = {
-        'K': params['K'],
-        'dist': params['dist'],
-        'intercept': DEFAULT_INTERCEPT_CM  # 可后续调整
-    }
-    
-    # 保存到文件
-    np.savez(CALIB_DIR / "camera_calibration.npz", 
-             K=params['K'], 
-             dist=params['dist'],
-             intercept=DEFAULT_INTERCEPT_CM)
-    return f"✅ Calibration success! Saved to {CALIB_DIR}/camera_calibration.npz"
+def capture_sample():
+    with SESSION.lock:
+        frame = None if SESSION.latest_frame is None else SESSION.latest_frame.copy()
+        corners = None if SESSION.latest_corners is None else SESSION.latest_corners.copy()
+        size = SESSION.latest_size
+        score = SESSION.latest_score
+        found = SESSION.latest_found
 
-def apply_perspective_transform_to_point(x, y, matrix):
-    pt = np.array([x, y, 1.0], dtype=np.float64)
-    res = matrix @ pt
-    if res[2] == 0:
-        return None
-    res = res / res[2]
-    return float(res[0]), float(res[1])
+    if frame is None or corners is None or not found:
+        return "No chessboard detected — cannot capture sample yet."
 
-def compute_calibration_from_corners(corners, board_w, board_h, intercept):
-    """
-    给定找到的角点（N x 1 x 2），计算透视变换矩阵和像素->厘米系数
-    返回 (matrix, p2c) 或 (None, None) 当失败
-    p2c = [fPixelToCM, fHorizontalB, fVerticalB]
-    """
-    # corners 的排列：从 (0,0) 到 (w-1,h-1) 行优先
-    n = corners.shape[0]
-    if n < 4:
-        return None, None
+    sample = Sample(frame=frame, corners=corners, image_size=size, area=score)
+    with SESSION.lock:
+        SESSION.samples.append(sample)
 
-    # 取四个角：top-left, top-right, bottom-left, bottom-right
-    tl = corners[0][0]
-    tr = corners[board_w - 1][0]
-    bl = corners[board_w * (board_h - 1)][0]
-    br = corners[-1][0]
-
-    # 根据原脚本的计算，使用左侧两个点与右侧两个点来估计像素间距
-    # 选择左一和右一作为基线
-    # 保证顺序：左-右
-    lCorners = [tuple(bl), tuple(tl), tuple(br), tuple(tr)]
-    # 以 x 排序（左到右），以恢复原算法的形式
-    lCorners.sort(key=lambda item: item[0])
-
-    # bottom y 平均
-    fBottomY = (lCorners[0][1] + lCorners[3][1]) / 2.0
-
-    fDistance = math.hypot(lCorners[0][0] - lCorners[3][0], lCorners[0][1] - lCorners[3][1])
-    if fDistance == 0:
-        return None, None
-    # 原脚本假定两个格子为12cm
-    fPixelToCM = 12.0 / fDistance
-
-    fHorizontalSlope = (lCorners[0][1] - lCorners[3][1]) / (lCorners[0][0] - lCorners[3][0])
-    # 防止除0
-    if fHorizontalSlope == 0:
-        fVerticalSlope = 0
-    else:
-        fVerticalSlope = -1.0 / fHorizontalSlope
-
-    if fVerticalSlope > 0:
-        iTheta = math.atan(fVerticalSlope)
-    else:
-        iTheta = math.atan(fVerticalSlope) + math.pi
-
-    fDeltaX = math.cos(iTheta) * fDistance
-    fDeltaY = math.sin(iTheta) * fDistance
-
-    fCorrectedLFX = lCorners[0][0] + fDeltaX
-    fCorrectedLFY = lCorners[0][1] - fDeltaY
-    fCorrectedRFX = lCorners[3][0] + fDeltaX
-    fCorrectedRFY = lCorners[3][1] - fDeltaY
-
-    lSRCPoints = np.float32(lCorners)
-    lDSTPoints = np.float32([lCorners[0], (fCorrectedLFX, fCorrectedLFY), (fCorrectedRFX, fCorrectedRFY), lCorners[3]])
-
-    try:
-        aPerspectiveMatrix = cv2.getPerspectiveTransform(lSRCPoints, lDSTPoints)
-    except Exception as e:
-        return None, None
-
-    # 应用与原脚本相同的像素->厘米关系
-    iX, iY = apply_perspective_transform_to_point(320, fBottomY, aPerspectiveMatrix)
-    fHorizontalB = -fPixelToCM * iX
-    fVerticalB = intercept + fPixelToCM * iY
-
-    aPixelToCM = np.array([fPixelToCM, fHorizontalB, fVerticalB], dtype=np.float64)
-
-    return aPerspectiveMatrix, aPixelToCM
+    return f"Captured sample #{len(SESSION.samples)} | area={score:.0f}"
 
 
-def save_compatible_calibration(cam_index, intercept_cm):
-    """
-    保存与你原始程序完全兼容的 CalibrationData{cam}.npz
-    内部使用去畸变图像计算，但输出格式不变
-    """
-    global capture_buffer, calibration_data
-    if len(capture_buffer) == 0:
-        return "No frames captured"
+def clear_samples():
+    SESSION.reset_samples()
+    SESSION.result = CalibrationResult()
+    return "Cleared all samples"
 
-    # 第一步：先做完整标定（用于去畸变）
-    params, msg = perform_calibration(
-        capture_buffer,
-        CHESSBOARD_SIZE[0],
-        CHESSBOARD_SIZE[1],
-        SQUARE_SIZE_MM
-    )
-    if params is None:
+
+def add_uploaded_image(file_obj, board_w, board_h):
+    if file_obj is None:
+        return "Please choose an image first"
+    path = Path(file_obj.name if hasattr(file_obj, "name") else str(file_obj))
+    img = cv2.imread(str(path))
+    if img is None:
+        return f"Failed to read {path}"
+
+    found, corners = detect_chessboard(img, (int(board_w), int(board_h)))
+    if not found or corners is None:
+        return f"No chessboard found in {path.name}"
+
+    sample = Sample(frame=img, corners=corners, image_size=(img.shape[1], img.shape[0]), area=corners_area(corners, int(board_w), int(board_h)))
+    with SESSION.lock:
+        SESSION.samples.append(sample)
+    return f"Imported {path.name} as sample #{len(SESSION.samples)}"
+
+
+def _calibrate_intrinsics(samples: list[Sample], board_w: int, board_h: int, square_mm: float):
+    if len(samples) < 3:
+        return None, None, None, "Need at least 3 valid samples"
+
+    objp = board_object_points(board_w, board_h, square_mm)
+    objpoints = []
+    imgpoints = []
+    image_size = samples[0].image_size
+
+    for s in samples:
+        if s.corners is None:
+            continue
+        objpoints.append(objp)
+        imgpoints.append(s.corners)
+
+    if len(objpoints) < 3:
+        return None, None, None, "Need at least 3 valid detected samples"
+
+    rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, image_size, None, None)
+
+    # Reprojection RMSE
+    sq_err = 0.0
+    n_pts = 0
+    for obj, img, rv, tv in zip(objpoints, imgpoints, rvecs, tvecs):
+        proj, _ = cv2.projectPoints(obj, rv, tv, K, dist)
+        err = proj.reshape(-1, 2) - img.reshape(-1, 2)
+        sq_err += float(np.sum(err * err))
+        n_pts += int(obj.shape[0])
+    rmse = math.sqrt(sq_err / max(1, n_pts))
+    return K, dist, rmse, "OK"
+
+
+def _solve_pose_from_sample(sample: Sample, K: np.ndarray, dist: np.ndarray, board_w: int, board_h: int, square_mm: float):
+    objp = board_object_points(board_w, board_h, square_mm)
+    ok, rvec, tvec = cv2.solvePnP(objp, sample.corners, K, dist, flags=cv2.SOLVEPNP_ITERATIVE)
+    if not ok:
+        return None, None, None
+    R, _ = cv2.Rodrigues(rvec)
+    H = K @ np.column_stack((R[:, 0], R[:, 1], tvec.reshape(3)))
+    return rvec, tvec, H
+
+
+def calibrate_now(board_w, board_h, square_mm):
+    board_w = int(board_w)
+    board_h = int(board_h)
+    square_mm = float(square_mm)
+
+    with SESSION.lock:
+        samples = list(SESSION.samples)
+
+    K, dist, rmse, msg = _calibrate_intrinsics(samples, board_w, board_h, square_mm)
+    if K is None:
         return msg
 
-    K = params['K']
-    dist = params['dist']
+    # Choose the best-quality sample to estimate the chessboard pose.
+    best = max(samples, key=lambda s: s.area)
+    rvec, tvec, H = _solve_pose_from_sample(best, K, dist, board_w, board_h, square_mm)
+    if rvec is None or tvec is None or H is None:
+        return "Intrinsic calibration succeeded, but pose estimation failed on the selected sample."
 
-    # 第二步：用最后一张图（或最佳图）计算兼容的 matrix 和 p2c
-    frame = capture_buffer[-1]  # 或选一张清晰的
-    h, w = frame.shape[:2]
-    new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist, (w, h), 1, (w, h))
-    undistorted = cv2.undistort(frame, K, dist, None, new_K)
-
-    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
-    ret, corners = cv2.findChessboardCornersSB(gray, CHESSBOARD_SIZE, None)
-    if not ret or corners is None:
-        return "No chessboard in last frame"
-
-    # ⭐ 关键：使用去畸变后的角点，调用你原来的函数！
-    matrix, p2c = compute_calibration_from_corners(
-        corners,
-        CHESSBOARD_SIZE[0],
-        CHESSBOARD_SIZE[1],
-        float(intercept_cm)
+    SESSION.result = CalibrationResult(
+        ok=True,
+        K=K,
+        dist=dist,
+        rvec=rvec,
+        tvec=tvec,
+        H=H,
+        rmse=float(rmse),
+        board_size=(board_w, board_h),
+        square_size_mm=square_mm,
+        origin="bottom_left_inner_corner",
+        image_size=best.image_size,
     )
 
-    if matrix is None or p2c is None:
-        return "Failed to compute compatible calibration"
-
-    # 保存为原始格式
-    file_path = CALIB_DIR / f"CalibrationData{int(cam_index)}.npz"
-    np.savez(file_path, matrix=matrix, p2c=p2c)
-
-    # 同时保存完整参数（供未来升级用）
-    np.savez(CALIB_DIR / "camera_calibration_full.npz", 
-             K=K, dist=dist, intercept=intercept_cm)
-
-    return f"✅ Compatible calibration saved to {file_path} (original format preserved)"
-
-def load_calibration():
-    global calibration_data
-    path = CALIB_DIR / "camera_calibration.npz"
-    if not path.exists():
-        return "No saved calibration"
-    data = np.load(path)
-    calibration_data = {
-        'K': data['K'],
-        'dist': data['dist'],
-        'intercept': float(data['intercept'])
-    }
-    return f"✅ Loaded calibration from {path}"
-
-def save_intercept(intercept_cm):
-    global calibration_data
-    if calibration_data is None:
-        return "Load calibration first"
-    calibration_data['intercept'] = float(intercept_cm)
-    # 更新文件
-    path = CALIB_DIR / "camera_calibration.npz"
-    data = np.load(path)
-    np.savez(path, K=data['K'], dist=data['dist'], intercept=float(intercept_cm))
-    return f"Intercept updated to {intercept_cm} cm"
-
-def calibrate_compatible(cam_index, intercept_cm):
-    return save_compatible_calibration(cam_index, intercept_cm)
+    return f"Calibration OK | rmse={rmse:.3f}px | samples={len(samples)}"
 
 
-# ================== Gradio UI ==================
+def _legacy_compat_fields(result: CalibrationResult):
+    # Keep legacy keys present so older readers can at least load the file.
+    # They will not be as accurate as the new path, but the file remains usable.
+    if result.H is None:
+        legacy_matrix = np.eye(3, dtype=np.float64)
+    else:
+        # Map board-mm directly (with Y flipped) into the legacy matrix slot.
+        flip = np.diag([1.0, -1.0, 1.0])
+        legacy_matrix = flip @ np.linalg.inv(result.H)
+    legacy_p2c = np.array([0.1, 0.0, 0.0], dtype=np.float64)
+    return legacy_matrix, legacy_p2c
 
-with gr.Blocks(title="RCJ Camera Calibrator") as demo:
-    gr.Markdown("## 🤖 RCJ Camera Calibrator - Full Calibration + Real-time Mapping")
-    
+
+def save_calibration(cam_index, board_w, board_h, square_mm):
+    cam_index = int(cam_index)
+    board_w = int(board_w)
+    board_h = int(board_h)
+    square_mm = float(square_mm)
+
+    if not SESSION.result.ok:
+        return "Please calibrate first"
+
+    result = SESSION.result
+    legacy_matrix, legacy_p2c = _legacy_compat_fields(result)
+
+    out_path = CALIB_DIR / f"CalibrationData{cam_index}.npz"
+    np.savez(
+        out_path,
+        version=np.array([2], dtype=np.int32),
+        format="pixel2cm_v2",
+        camera_index=np.array([cam_index], dtype=np.int32),
+        board_size=np.array([board_w, board_h], dtype=np.int32),
+        square_size_mm=np.array([square_mm], dtype=np.float32),
+        origin=np.array([result.origin]),
+        image_size=np.array(result.image_size, dtype=np.int32),
+        K=result.K,
+        dist=result.dist,
+        rvec=result.rvec,
+        tvec=result.tvec,
+        H=result.H,
+        rmse=np.array([result.rmse], dtype=np.float32),
+        samples_used=np.array([len(SESSION.samples)], dtype=np.int32),
+        # legacy compatibility keys
+        matrix=legacy_matrix,
+        p2c=legacy_p2c,
+    )
+
+    return f"Saved calibration to {out_path}"
+
+
+def status_text():
+    with SESSION.lock:
+        samples = len(SESSION.samples)
+        found = SESSION.latest_found
+        score = SESSION.latest_score
+        result = SESSION.result
+    lines = [
+        f"streaming={SESSION.running}",
+        f"samples={samples}",
+        f"found={found}",
+        f"latest_area={score:.0f}",
+    ]
+    if result.ok:
+        lines.append(f"calibrated rmse={result.rmse:.3f}px")
+    return "\n".join(lines)
+
+
+with gr.Blocks(title="Pixel2CM Web Calibrator") as demo:
+    gr.Markdown(
+        """
+        # Pixel2CM Web Calibrator
+        这个页面替代了旧的单帧经验式标定。建议使用 **9×9 内角点、15mm 格子** 的棋盘格。
+
+        核心变化：
+        - 先做 **相机内参 + 畸变** 标定
+        - 再用棋盘平面求 **棋盘姿态 / 单应矩阵**
+        - 输出的新 `.npz` 会被 `pixel2cm.py` 直接读取
+        """
+    )
+
     with gr.Row():
         with gr.Column(scale=3):
-            image_out = gr.Image(label="Camera Preview (Undistorted)", type="numpy")
+            preview = gr.Image(label="Camera Preview", type="numpy")
+            info_box = gr.Textbox(label="Status", lines=10, interactive=False)
         with gr.Column(scale=2):
             cam_index = gr.Number(value=DEFAULT_CAM_INDEX, label="Camera Index", precision=0)
-            intercept_input = gr.Number(value=DEFAULT_INTERCEPT_CM, label="Intercept (cm)", info="Robot to front edge of board")
+            width = gr.Number(value=DEFAULT_WIDTH, label="Frame Width", precision=0)
+            height = gr.Number(value=DEFAULT_HEIGHT, label="Frame Height", precision=0)
+            board_w = gr.Number(value=DEFAULT_BOARD_W, label="Chessboard Width (inner corners)", precision=0)
+            board_h = gr.Number(value=DEFAULT_BOARD_H, label="Chessboard Height (inner corners)", precision=0)
+            square_mm = gr.Number(value=DEFAULT_SQUARE_MM, label="Square Size (mm)")
+
             with gr.Row():
-                start_btn = gr.Button("▶️ Start Stream")
-                stop_btn = gr.Button("⏹️ Stop")
+                start_btn = gr.Button("Start Stream", variant="primary")
+                stop_btn = gr.Button("Stop")
+
             with gr.Row():
-                capture_btn = gr.Button("📸 Capture Frame")
-                calibrate_btn = gr.Button("🎯 Calibrate Now")
-            load_btn = gr.Button("📂 Load Calibration")
-            save_intercept_btn = gr.Button("💾 Save Intercept")
-            status = gr.Textbox(label="Status", value="Idle")
+                capture_btn = gr.Button("Capture Sample")
+                clear_btn = gr.Button("Clear Samples")
 
-    info_out = gr.Textbox(label="Robot Coordinates (X_cm, Y_cm)", lines=10)
+            calibrate_btn = gr.Button("Calibrate Intrinsics + Pose", variant="primary")
+            save_btn = gr.Button("Save Calibration")
+            refresh_btn = gr.Button("Refresh Status")
 
-    start_btn.click(start_stream, inputs=[cam_index, intercept_input], outputs=[image_out, info_out])
-    stop_btn.click(stop_stream, outputs=status)
-    calibrate_btn.click(calibrate_compatible, inputs=[cam_index, intercept_input], outputs=status)
-    capture_btn.click(capture_frame, outputs=status)
-    load_btn.click(load_calibration, outputs=status)
-    save_intercept_btn.click(save_intercept, inputs=intercept_input, outputs=status)
+            upload = gr.File(label="Or upload chessboard image", file_count="single", file_types=["image"])
+            upload_btn = gr.Button("Import Uploaded Image")
 
-if __name__ == '__main__':
-    demo.launch(server_name="0.0.0.0", server_port=7863)
+            result_box = gr.Textbox(label="Result", lines=6, interactive=False)
+
+    def _stream_wrapper(cam_index, width, height, board_w, board_h):
+        placeholder = np.zeros((int(height), int(width), 3), dtype=np.uint8)
+        cv2.putText(placeholder, "Starting...", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        yield placeholder, "Starting..."
+        yield from start_stream(cam_index, width, height, board_w, board_h)
+
+    start_evt = start_btn.click(
+        _stream_wrapper,
+        inputs=[cam_index, width, height, board_w, board_h],
+        outputs=[preview, info_box],
+    )
+    stop_btn.click(fn=stop_stream, outputs=result_box, cancels=[start_evt])
+
+    capture_btn.click(fn=capture_sample, outputs=result_box)
+    clear_btn.click(fn=clear_samples, outputs=result_box)
+    calibrate_btn.click(fn=calibrate_now, inputs=[board_w, board_h, square_mm], outputs=result_box)
+    save_btn.click(fn=save_calibration, inputs=[cam_index, board_w, board_h, square_mm], outputs=result_box)
+    refresh_btn.click(fn=status_text, outputs=info_box)
+    upload_btn.click(fn=add_uploaded_image, inputs=[upload, board_w, board_h], outputs=result_box)
+
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=7863, share=False)

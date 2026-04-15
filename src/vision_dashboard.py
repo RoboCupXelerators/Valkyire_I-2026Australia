@@ -29,19 +29,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
 import cv2
-import numpy as np
-
-try:
-    from vision_utils.XeleratorVision import XeleratorVision  # type: ignore
-except Exception:  # pragma: no cover
-    from src.vision_utils.XeleratorVision import XeleratorVision  # type: ignore
 
 
 def _repo_root() -> Path:
@@ -55,40 +48,17 @@ class _App:
         self.web_dir = web_dir
         self.jpeg_quality = int(jpeg_quality)
         self.start_ts = time.time()
-        self._unity_vision = XeleratorVision(bits=getattr(vision, "bits", None))
-        self._unity_streams = None
-        self._unity_urls = None
-        self._unity_last_jpegs: dict[int, bytes] = {}
-        self._camera_lock = threading.Lock()
-
-        # Try to keep OpenCV quiet if the current build exposes a logging API.
-        try:
-            if hasattr(cv2, "setLogLevel"):
-                cv2.setLogLevel(3)
-            elif hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
-                cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
-        except Exception:
-            pass
 
     def state_dict(self) -> dict:
         vision = self.vision
-        def _call_vision(*names, default=None):
-            for name in names:
-                if hasattr(vision, name):
-                    try:
-                        return getattr(vision, name)()
-                    except Exception:
-                        continue
-            return default
-
         ball_pos = None
         chassis_pos = None
         try:
-            ball_pos = _call_vision("GetBallPos", "get_ball_pos", default=[0, 0])
+            ball_pos = vision.GetBallPos()
         except Exception:
             ball_pos = [0, 0]
         try:
-            chassis_pos = _call_vision("GetChassisPos", "get_chassis_pos", default=[])
+            chassis_pos = vision.GetChassisPos()
         except Exception:
             chassis_pos = []
 
@@ -130,7 +100,7 @@ class _App:
         blue_goal = None
         yellow_goal = None
         try:
-            goals = _call_vision("GetGoalsPos", "get_goals_pos", default={"blue_goal": None, "yellow_goal": None})
+            goals = vision.GetGoalsPos()
             if isinstance(goals, (list, tuple)):
                 if len(goals) >= 1:
                     blue_goal = goals[0]
@@ -173,10 +143,10 @@ class _App:
         try:
             frames = getattr(self.vision, "Frames", None)
             if frames is None or cam_index < 0 or cam_index >= len(frames):
-                return self._cam_jpeg_from_unity(cam_index, resize_to=resize_to)
+                return None
             fr = frames[cam_index]
             if fr is None:
-                return self._cam_jpeg_from_unity(cam_index, resize_to=resize_to)
+                return None
             img = fr
             if resize_to is not None:
                 # keep aspect ratio, set long side=resize_to
@@ -198,118 +168,7 @@ class _App:
                 return None
             return bytes(buf)
         except Exception:
-            return self._cam_jpeg_from_unity(cam_index, resize_to=resize_to)
-
-    def _ensure_unity_cameras(self):
-        if self._unity_streams is not None and len(self._unity_streams) > 0:
-            return self._unity_streams
-
-        with self._camera_lock:
-            if self._unity_streams is not None and len(self._unity_streams) > 0:
-                return self._unity_streams
-
-            robot_id = None
-            try:
-                if hasattr(self.vision, "bits") and getattr(self.vision, "bits", None) is not None:
-                    robot_id = int(getattr(self.vision.bits, "robot_id", 1))
-            except Exception:
-                robot_id = None
-
-            if robot_id is None:
-                try:
-                    from ReasonData import Settings  # type: ignore
-                    robot_id = int(getattr(Settings.RoboInfo, "number", 1))
-                except Exception:
-                    robot_id = 1
-
-            try:
-                self._unity_urls = list(getattr(self._unity_vision, "_camera_urls", []) or [])
-                if not self._unity_urls:
-                    self._unity_urls = self._unity_vision.build_camera_urls(robot_id=robot_id)
-                self._unity_streams = [self._open_video_capture(url) for url in self._unity_urls]
-            except Exception:
-                self._unity_streams = []
-                self._unity_urls = []
-
-            return self._unity_streams
-
-    @staticmethod
-    def _open_video_capture(url: str):
-        # OpenCV's VideoCapture is the most reliable path for Unity MJPEG streams
-        # in this project because it matches the already verified smoke test.
-        cap = cv2.VideoCapture(url)
-        if not cap.isOpened():
-            cap.release()
             return None
-        return cap
-
-    def _placeholder_jpeg(self, text: str, width: int = 960, height: int = 540) -> bytes | None:
-        img = np.zeros((height, width, 3), dtype=np.uint8)
-        img[:] = (24, 24, 24)
-        cv2.putText(img, text, (30, height // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (240, 240, 240), 2, cv2.LINE_AA)
-        ok, buf = cv2.imencode(
-            ".jpg",
-            img,
-            [int(cv2.IMWRITE_JPEG_QUALITY), int(self.jpeg_quality)],
-        )
-        return bytes(buf) if ok else None
-
-    def _cam_jpeg_from_unity(self, cam_index: int, resize_to: int | None = None) -> bytes | None:
-        try:
-            streams = self._ensure_unity_cameras()
-            if not streams or cam_index < 0 or cam_index >= len(streams):
-                return None
-
-            stream_obj = streams[cam_index]
-            if stream_obj is None:
-                self._unity_streams = None
-                return self._unity_last_jpegs.get(cam_index) or self._placeholder_jpeg(f"camera {cam_index}: stream unavailable")
-
-            ret = False
-            img = None
-            for _ in range(3):
-                with self._camera_lock:
-                    ret, img = stream_obj.read()
-                if ret and img is not None:
-                    break
-                time.sleep(0.03)
-
-            if not ret or img is None:
-                cached = self._unity_last_jpegs.get(cam_index)
-                if cached:
-                    return cached
-                return self._placeholder_jpeg(f"camera {cam_index}: waiting for frame")
-
-            if resize_to is not None:
-                h, w = img.shape[:2]
-                if max(h, w) > int(resize_to):
-                    if h >= w:
-                        nh = int(resize_to)
-                        nw = int(w * (nh / h))
-                    else:
-                        nw = int(resize_to)
-                        nh = int(h * (nw / w))
-                    img = cv2.resize(img, (nw, nh))
-                    ok, buf = cv2.imencode(
-                        ".jpg",
-                        img,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), int(self.jpeg_quality)],
-                    )
-                    if ok:
-                        return bytes(buf)
-            ok, buf = cv2.imencode(
-                ".jpg",
-                img,
-                [int(cv2.IMWRITE_JPEG_QUALITY), int(self.jpeg_quality)],
-            )
-            if not ok:
-                return None
-            jpg = bytes(buf)
-            self._unity_last_jpegs[cam_index] = jpg
-            return jpg
-
-        except Exception:
-            return self._unity_last_jpegs.get(cam_index) or self._placeholder_jpeg(f"camera {cam_index}: error")
 
 
 def _guess_content_type(p: Path) -> str:
@@ -346,12 +205,7 @@ def make_handler(app: _App):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            if body:
-                try:
-                    self.wfile.write(body)
-                except BrokenPipeError:
-                    # Client disconnected while we were responding; ignore.
-                    pass
+            self.wfile.write(body)
 
         def do_GET(self):
             u = urlparse(self.path)
@@ -392,11 +246,7 @@ def make_handler(app: _App):
                         resize_to = None
                 jpg = app.cam_jpeg(cam_i, resize_to=resize_to)
                 if jpg is None:
-                    self.send_response(204)
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return None
+                    return self._send(204, "text/plain; charset=utf-8", b"")
                 return self._send(200, "image/jpeg", jpg)
 
             return self._send(404, "text/plain; charset=utf-8", b"not found")
@@ -424,21 +274,9 @@ def main():
     if root not in sys.path:
         sys.path.insert(0, root)
 
-    vision = None
-    if os.environ.get("ROBOCUPX_BITS", "").strip().upper() == "SIM":
-        try:
-            from src.LunaPre import vision as sim_vision  # noqa
-            vision = sim_vision
-        except Exception:
-            try:
-                from LunaPre import vision as sim_vision  # type: ignore
-                vision = sim_vision
-            except Exception:
-                vision = None
+    from src.Vision import UnitedVision  # noqa
 
-    if vision is None:
-        from src.Vision import UnitedVision  # noqa
-        vision = UnitedVision()
+    vision = UnitedVision()
 
     web_dir = Path(args.web_dir).resolve()
     if not (web_dir / "index.html").exists():
