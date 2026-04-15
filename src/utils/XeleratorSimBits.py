@@ -196,6 +196,14 @@ class XeleratorSimBits:
         self._yaw_zero_at_start = str(os.environ.get("XEL_YAW_ZERO_AT_START", "0")).lower() in {"1", "true", "yes"}
         self._yaw_zero_deg: float | None = None
 
+        # In this simulator layout, robotId 3/4 are spawned on the opposite half
+        # of the field from robotId 1/2. To keep the strategy-side yaw convention
+        # consistent across both team sides, add a default 180° readback offset
+        # for enemy-side robots. This affects GetYaw()/GetPose() only; Unity physics
+        # and command execution are unchanged.
+        side_default_offset = "180" if self.robot_id >= 3 else "0"
+        self._side_yaw_offset_deg = float(os.environ.get("XEL_SIDE_YAW_OFFSET_DEG", side_default_offset))
+
         # NOTE: start threads AFTER calibration attributes are ready.
         # Otherwise debug printing in _tx_loop may call GetPose() before these exist.
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
@@ -219,6 +227,7 @@ class XeleratorSimBits:
             yaw = yaw - self._yaw_zero_deg
 
         yaw = yaw + self._yaw_offset_deg
+        yaw = yaw + self._side_yaw_offset_deg
         # normalize [0, 360)
         yaw = yaw % 360.0
         return yaw

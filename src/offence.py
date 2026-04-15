@@ -71,7 +71,7 @@ def main():
                             peripheral.ShootBall()
                             logger.warning("Processing :45")
                             chassis.stop()
-                            time.sleep(1)
+                            # time.sleep(1)
                         else:
                             logger.warning("Processing :47")
                 else:

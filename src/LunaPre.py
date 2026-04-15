@@ -138,11 +138,17 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
 
             # Simulator tuning (prefer config Debug section, allow env override in CI/dev)
             try:
-                sim_twist_from_wheels = bool(getattr(cfg.Debug, "SimTwistFromWheels", True))
-                sim_wheel_to_v = float(getattr(cfg.Debug, "SimWheelToV", 0.008))
-                sim_wheel_to_wz = float(getattr(cfg.Debug, "SimWheelToWz", 0.02))
-                sim_yaw_offset_deg = float(getattr(cfg.Debug, "SimYawOffsetDeg", 0.0))
-                sim_yaw_zero_at_start = bool(getattr(cfg.Debug, "SimYawZeroAtStart", False))
+                # New SIM config lives under Settings.Sim.*.
+                # Keep Debug.* fallback for older configs so existing deployments still work.
+                sim_twist_from_wheels = bool(
+                    getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", True))
+                )
+                sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.008)))
+                sim_wheel_to_wz = float(getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", 0.02)))
+                sim_yaw_offset_deg = float(getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", 0.0)))
+                sim_yaw_zero_at_start = bool(
+                    getattr(sim_cfg, "YawZeroAtStart", getattr(cfg.Debug, "SimYawZeroAtStart", False))
+                )
                 sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
                 sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
                 sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
