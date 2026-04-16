@@ -6,7 +6,7 @@ from IceLoongBits import IceLoongBits, Commands
 
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    PORT = "/dev/iceloong"
+    PORT = "/dev/ttyUSB0"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
         # 测试1：单命令 - 握手
@@ -15,43 +15,44 @@ def main():
         print("响应:", resp1)
         time.sleep(1)
 
-        # 测试2：复合命令 - 握手 + 获取传感器数据
-        # print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_BMI088_DATA) ===")
-        # resp2 = bot.ExecuteCommands([
-        #     (Commands.HAND_SHAKE,),
-        #     (Commands.GET_BMI088_DATA,)
-        # ])
-        # print("响应:", resp2)
-        # time.sleep(1)
-
-        # 测试3：带参数命令 - 设置轮速
-        print("\n=== 测试3: 带参数命令 (SET_WHEELS_SPEED) ===")
-        resp3 = bot.ExecuteCommands([
-            (Commands.SET_WHEELS_SPEED, 100, 0, 0, 0)  # 四轮速度
+        # 测试2：复合命令 - 握手 + 获取传感器数据 + 弹射
+        print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_BMI088_DATA) ===")
+        resp2 = bot.ExecuteCommands([
+            (Commands.HAND_SHAKE,),
+            (Commands.GET_BMI088_DATA,), 
+            (Commands.KICK,)
         ])
-        print("响应:", resp3)
+        print("响应:", resp2)
         time.sleep(1)
 
-        # 测试4：混合复合命令
-        print("\n=== 测试4: 混合复合命令 ===")
-        resp4 = bot.ExecuteCommands([
-            (Commands.HAND_SHAKE,), 
-            (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
-            (Commands.GET_BMI088_DATA,), 
-            (Commands.KICK,), 
-            (Commands.SET_DRIBBLE_PWM, 0), 
-            (Commands.SET_RYB_LIGHTS, 0, 0, 1), 
-            (Commands.GET_RUN_KEY_DELTA,)
-        ])
-        print("响应:", resp4)
-        time.sleep(2)
+        # # 测试3：带参数命令 - 设置轮速
+        # print("\n=== 测试3: 带参数命令 (SET_WHEELS_SPEED) ===")
+        # resp3 = bot.ExecuteCommands([
+        #     (Commands.SET_WHEELS_SPEED, 100, 100, 100, 100)  # 四轮速度
+        # ])
+        # print("响应:", resp3)
+        # time.sleep(1)
 
-        # 测试5：盘球降速
-        print("\n=== 测试5：盘球降速 ===")
-        resp4 = bot.ExecuteCommands([
-            (Commands.SET_DRIBBLE_PWM, 0.5)
-        ])
-        print("响应:", resp4)
+        # # 测试4：混合复合命令
+        # print("\n=== 测试4: 混合复合命令 ===")
+        # resp4 = bot.ExecuteCommands([
+        #     (Commands.HAND_SHAKE,), 
+        #     (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
+        #     (Commands.GET_BMI088_DATA,), 
+        #     (Commands.KICK,), 
+        #     (Commands.SET_DRIBBLE_PWM, 0), 
+        #     (Commands.SET_RYB_LIGHTS, 0, 0, 1), 
+        #     (Commands.GET_RUN_KEY_DELTA,)
+        # ])
+        # print("响应:", resp4)
+        # time.sleep(2)
+
+        # # 测试5：盘球降速
+        # print("\n=== 测试5：盘球降速 ===")
+        # resp4 = bot.ExecuteCommands([
+        #     (Commands.SET_DRIBBLE_PWM, 0.5)
+        # ])
+        # print("响应:", resp4)
 
 if __name__ == "__main__":
     try:

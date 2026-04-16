@@ -17,8 +17,8 @@ class Commands(IntEnum):
     GET_RUN_KEY_DELTA = 0x07
 
 COMMAND_RESPONSE_LENGTHS = {
-    Commands.HAND_SHAKE:        1 + 1, 
-    Commands.GET_BMI088_DATA:   1 + 3 * 4 + 4, 
+    Commands.HAND_SHAKE:        1, 
+    Commands.GET_BMI088_DATA:   1 + 3 * 4, 
     Commands.SET_WHEELS_SPEED:  1, 
     Commands.KICK:              1, 
     Commands.SET_DRIBBLE_PWM:   1, 
@@ -99,7 +99,7 @@ class IceLoongBits:
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, yaw, pitch, roll, timestamp = i
+                        _, yaw, pitch, roll = i
                         self.yaw = round(yaw % 360,2)
                     case Commands.SET_WHEELS_SPEED:
                         pass
@@ -234,9 +234,9 @@ class IceLoongBits:
                         i += 1
                         continue
                     case Commands.HAND_SHAKE:
-                        rx_data.append((resp[i], resp[i+1]))
+                        rx_data.append((resp[i],))
                     case Commands.GET_BMI088_DATA:
-                        rx_data.append((resp[i], *struct.unpack('<fffI', resp[i+1:i+17])))
+                        rx_data.append((resp[i], *struct.unpack('<fff', resp[i+1:i+13])))
                     case Commands.SET_WHEELS_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
