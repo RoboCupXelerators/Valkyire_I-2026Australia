@@ -248,7 +248,7 @@ class IceLoongBits:
                     case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
                     case _:
-                        continue
+                        rx_data.append((resp[i],))
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
         return rx_data
 
