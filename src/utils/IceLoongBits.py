@@ -36,7 +36,7 @@ class IceLoongBits:
     方法命名使用大驼峰（PascalCase）。
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.05, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -94,13 +94,11 @@ class IceLoongBits:
             for i in response:
                 match i[0] ^ 0x80:
                     case 0x00:
-                        i+=1
                         continue
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, yaw, pitch, roll = i
-                        self.yaw = round(yaw % 360,2)
+                        _, self.yaw, pitch, roll = i
                     case Commands.SET_WHEELS_SPEED:
                         pass
                     case Commands.KICK:
@@ -223,7 +221,7 @@ class IceLoongBits:
             resp_len += 1
 
         # 发送帧，返回接收帧
-        resp = self.SendHex(tx_bytes, True, resp_len, 0.01)
+        resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
 
         rx_data = []
         if resp and len(resp) == resp_len:
@@ -248,7 +246,7 @@ class IceLoongBits:
                     case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
                     case _:
-                        rx_data.append((resp[i],))
+                        break
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
         return rx_data
 
