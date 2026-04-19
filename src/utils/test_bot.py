@@ -22,7 +22,8 @@ def main():
             (Commands.HAND_SHAKE,),
             (Commands.GET_BMI088_DATA,), 
             (Commands.KICK,), 
-            (Commands.GET_REFEREE_UNLOCK_PIN,)
+            (Commands.GET_REFEREE_UNLOCK_PIN,), 
+            (Commands.GET_RUN_KEY_DELTA,)
         ])
         print("响应:", resp2)
         time.sleep(1)
@@ -43,7 +44,7 @@ def main():
         #     (Commands.GET_BMI088_DATA,), 
         #     (Commands.KICK,), 
         #     (Commands.SET_DRIBBLE_PWM, 0), 
-        #     (Commands.SET_RYB_LIGHTS, 0, 0, 1), 
+        #     (Commands.GET_REFEREE_UNLOCK_PIN,), 
         #     (Commands.GET_RUN_KEY_DELTA,)
         # ])
         # print("响应:", resp4)
