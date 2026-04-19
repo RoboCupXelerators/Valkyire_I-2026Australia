@@ -6,8 +6,8 @@ from IceLoongBits import IceLoongBits, Commands
 
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    PORT = "/dev/ttyTHS1"
-    # PORT = "/dev/ttyUSB0"
+    # PORT = "/dev/ttyTHS1"
+    PORT = "/dev/ttyUSB0"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
         # 测试1：单命令 - 握手
@@ -21,7 +21,8 @@ def main():
         resp2 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,),
             (Commands.GET_BMI088_DATA,), 
-            (Commands.KICK,)
+            (Commands.KICK,), 
+            (Commands.GET_REFEREE_UNLOCK_PIN,)
         ])
         print("响应:", resp2)
         time.sleep(1)

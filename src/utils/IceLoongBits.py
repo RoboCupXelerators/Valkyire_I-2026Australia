@@ -13,7 +13,7 @@ class Commands(IntEnum):
     SET_WHEELS_SPEED  = 0x03
     KICK              = 0x04
     SET_DRIBBLE_PWM   = 0x05
-    SET_RYB_LIGHTS    = 0x06
+    GET_REFEREE_UNLOCK_PIN = 0x06
     GET_RUN_KEY_DELTA = 0x07
 
 COMMAND_RESPONSE_LENGTHS = {
@@ -22,7 +22,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.SET_WHEELS_SPEED:  1, 
     Commands.KICK:              1, 
     Commands.SET_DRIBBLE_PWM:   1, 
-    Commands.SET_RYB_LIGHTS:    1, 
+    Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
     Commands.GET_RUN_KEY_DELTA: 1 + 1, 
 }
 
@@ -98,7 +98,8 @@ class IceLoongBits:
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, self.yaw, pitch, roll = i
+                        _, yaw, pitch, roll = i
+                        self.yaw = yaw % 360
                     case Commands.SET_WHEELS_SPEED:
                         pass
                     case Commands.KICK:
@@ -208,8 +209,8 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_DRIBBLE_PWM:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<f', cmd[1])
-                case Commands.SET_RYB_LIGHTS:
-                    tx_bytes += bytes([cmd[0]]) + bytes([((cmd[1] & 1) << 0) | ((cmd[2] & 1) << 1) | ((cmd[3] & 1) << 2)])
+                case Commands.GET_REFEREE_UNLOCK_PIN:
+                    tx_bytes += bytes([cmd[0]])
                 case Commands.GET_RUN_KEY_DELTA:
                     tx_bytes += bytes([cmd[0]])
                 case _:
@@ -241,8 +242,8 @@ class IceLoongBits:
                         rx_data.append((resp[i],))
                     case Commands.SET_DRIBBLE_PWM:
                         rx_data.append((resp[i],))
-                    case Commands.SET_RYB_LIGHTS:
-                        rx_data.append((resp[i],))
+                    case Commands.GET_REFEREE_UNLOCK_PIN:
+                        rx_data.append((resp[i], resp[i+1]))
                     case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
                     case _:
