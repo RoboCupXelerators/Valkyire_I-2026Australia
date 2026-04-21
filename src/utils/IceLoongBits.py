@@ -12,7 +12,7 @@ class Commands(IntEnum):
     GET_BMI088_DATA   = 0x02
     SET_WHEELS_SPEED  = 0x03
     KICK              = 0x04
-    SET_DRIBBLE_PWM   = 0x05
+    SET_DRIBBLE_SPEED   = 0x05
     GET_REFEREE_UNLOCK_PIN = 0x06
     GET_RUN_KEY_DELTA = 0x07
 
@@ -21,7 +21,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.GET_BMI088_DATA:   1 + 3 * 4, 
     Commands.SET_WHEELS_SPEED:  1, 
     Commands.KICK:              1, 
-    Commands.SET_DRIBBLE_PWM:   1, 
+    Commands.SET_DRIBBLE_SPEED:   1, 
     Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
     Commands.GET_RUN_KEY_DELTA: 1 + 1, 
 }
@@ -52,7 +52,7 @@ class IceLoongBits:
             'HAND_SHAKE': True,
             'GET_BMI088_DATA': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_PWM': 0,
+            'SET_DRIBBLE_SPEED': 0,
             'KICK': 0,
         }
 
@@ -83,9 +83,9 @@ class IceLoongBits:
                     case 'SET_WHEELS_SPEED':
                         Speed1,Speed2,Speed3,Speed4 = self.CommandLine[i]
                         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1,Speed2,Speed3,Speed4)])
-                    case 'SET_DRIBBLE_PWM':
+                    case 'SET_DRIBBLE_SPEED':
                         Speed = self.CommandLine[i]
-                        self.ExecuteCommands([(Commands.SET_DRIBBLE_PWM, Speed)])
+                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed)])
                     case 'KICK':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
@@ -104,7 +104,7 @@ class IceLoongBits:
                         pass
                     case Commands.KICK:
                         pass
-                    case Commands.SET_DRIBBLE_PWM:
+                    case Commands.SET_DRIBBLE_SPEED:
                         pass
             time.sleep(0.02)
 
@@ -207,8 +207,8 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
                     tx_bytes += bytes([cmd[0]])
-                case Commands.SET_DRIBBLE_PWM:
-                    tx_bytes += bytes([cmd[0]]) + struct.pack('<f', cmd[1])
+                case Commands.SET_DRIBBLE_SPEED:
+                    tx_bytes += bytes([cmd[0]]) + struct.pack('<ff', cmd[1], cmd[2])
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.GET_RUN_KEY_DELTA:
@@ -240,7 +240,7 @@ class IceLoongBits:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
                         rx_data.append((resp[i],))
-                    case Commands.SET_DRIBBLE_PWM:
+                    case Commands.SET_DRIBBLE_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.GET_REFEREE_UNLOCK_PIN:
                         rx_data.append((resp[i], resp[i+1]))
@@ -264,7 +264,7 @@ class IceLoongBits:
                 else:
                     self.CommandLine['KICK'] = False
             case 4:
-                self.CommandLine['SET_DRIBBLE_PWM'] = status
+                self.CommandLine['SET_DRIBBLE_SPEED'] = status
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
