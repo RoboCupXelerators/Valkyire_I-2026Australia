@@ -8,22 +8,22 @@ import time
 import threading
 
 class Commands(IntEnum):
-    HAND_SHAKE        = 0x01
-    GET_BMI088_DATA   = 0x02
-    SET_WHEELS_SPEED  = 0x03
-    KICK              = 0x04
-    SET_DRIBBLE_SPEED   = 0x05
+    HAND_SHAKE             = 0x01
+    GET_BMI088_DATA        = 0x02
+    SET_WHEELS_SPEED       = 0x03
+    KICK                   = 0x04
+    SET_DRIBBLE_SPEED      = 0x05
     GET_REFEREE_UNLOCK_PIN = 0x06
-    GET_RUN_KEY_DELTA = 0x07
+    GET_RUN_KEY_DELTA      = 0x07
 
 COMMAND_RESPONSE_LENGTHS = {
-    Commands.HAND_SHAKE:        1, 
-    Commands.GET_BMI088_DATA:   1 + 3 * 4, 
-    Commands.SET_WHEELS_SPEED:  1, 
-    Commands.KICK:              1, 
-    Commands.SET_DRIBBLE_SPEED:   1, 
+    Commands.HAND_SHAKE:             1, 
+    Commands.GET_BMI088_DATA:        1 + 3 * 4, 
+    Commands.SET_WHEELS_SPEED:       1, 
+    Commands.KICK:                   1, 
+    Commands.SET_DRIBBLE_SPEED:      1, 
     Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
-    Commands.GET_RUN_KEY_DELTA: 1 + 1, 
+    Commands.GET_RUN_KEY_DELTA:      1 + 1, 
 }
 
 try:
