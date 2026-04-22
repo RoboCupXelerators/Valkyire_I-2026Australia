@@ -10,6 +10,33 @@ def main():
     PORT = "/dev/ttyUSB0"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
+
+        a = 0
+        # 测试5：盘球降速
+        while True:
+            if a % 20:
+                resp4 = bot.ExecuteCommands([
+                    (Commands.HAND_SHAKE,), 
+                    (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
+                    (Commands.GET_BMI088_DATA,), 
+                    (Commands.GET_REFEREE_UNLOCK_PIN,), 
+                    (Commands.GET_RUN_KEY_DELTA,), 
+                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0), 
+                ])
+            else:
+                resp4 = bot.ExecuteCommands([
+                    (Commands.HAND_SHAKE,), 
+                    (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
+                    (Commands.GET_BMI088_DATA,), 
+                    (Commands.GET_REFEREE_UNLOCK_PIN,), 
+                    (Commands.GET_RUN_KEY_DELTA,), 
+                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0), 
+                    (Commands.KICK,), 
+                ])
+            print("响应:", resp4)
+            time.sleep(0.05)
+            a += 1
+
         # 测试1：单命令 - 握手
         print("\n=== 测试1: 单命令 (HAND_SHAKE) ===")
         resp1 = bot.ExecuteCommands([(Commands.HAND_SHAKE,)])
@@ -31,7 +58,8 @@ def main():
         # 测试3：带参数命令 - 设置轮速
         print("\n=== 测试3: 带参数命令 (SET_WHEELS_SPEED) ===")
         resp3 = bot.ExecuteCommands([
-            (Commands.SET_WHEELS_SPEED, -1000, -1000, -1000, -1000)  # 四轮速度
+            # (Commands.SET_WHEELS_SPEED, -1000, -1000, -1000, -1000)  # 四轮速度
+            (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
         ])
         print("响应:", resp3)
         time.sleep(1)
@@ -40,7 +68,6 @@ def main():
         print("\n=== 测试4: 混合复合命令 ===")
         resp4 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,), 
-            (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
             (Commands.GET_BMI088_DATA,), 
             (Commands.KICK,), 
             (Commands.SET_DRIBBLE_SPEED, 1, 0), 
@@ -50,12 +77,41 @@ def main():
         print("响应:", resp4)
         time.sleep(2)
 
+        a = 0
         # 测试5：盘球降速
+        while True:
+            if a % 10 == 0:
+                resp4 = bot.ExecuteCommands([
+                    (Commands.HAND_SHAKE,), 
+                    (Commands.GET_BMI088_DATA,), 
+                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
+                ])
+            else:
+                resp4 = bot.ExecuteCommands([
+                    (Commands.HAND_SHAKE,), 
+                    (Commands.GET_BMI088_DATA,), 
+                    (Commands.KICK,),
+                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
+                ])
+            print("响应:", resp4)
+            time.sleep(0.1)
+            a += 1
+
         print("\n=== 测试5：盘球降速 ===")
         resp4 = bot.ExecuteCommands([
-            (Commands.SET_DRIBBLE_SPEED, 0.5, 0)
+            (Commands.KICK,), 
+            (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
         ])
         print("响应:", resp4)
+        time.sleep(2)
+        
+        print("\n=== 测试5：盘球降速 ===")
+        resp4 = bot.ExecuteCommands([
+            (Commands.KICK,), 
+            (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
+        ])
+        print("响应:", resp4)
+        time.sleep(2)
 
 if __name__ == "__main__":
     try:

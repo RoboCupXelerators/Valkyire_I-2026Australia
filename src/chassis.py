@@ -136,8 +136,6 @@ class Peripherals:
 
     def ShootBall(self):
         self.SetIO(self.cfg.Ports.ElecMagnet,0)
-        time.sleep(0.3)
-        self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.logger.info("Used ElecMagnet")
 
     def Dribble(self,Status):

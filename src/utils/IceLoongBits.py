@@ -52,9 +52,10 @@ class IceLoongBits:
             'HAND_SHAKE': True,
             'GET_BMI088_DATA': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_SPEED': 0,
-            'KICK': 0,
+            'SET_DRIBBLE_SPEED': (0,0),
+            'KICK': False,
         }
+
 
         self.yaw = 0.0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
@@ -85,11 +86,12 @@ class IceLoongBits:
                         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1,Speed2,Speed3,Speed4)])
                     case 'SET_DRIBBLE_SPEED':
                         Speed = self.CommandLine[i]
-                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed)])
+                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed[0], Speed[1])])
                     case 'KICK':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
-                            self.CommandLine['KICK'] = False
+                        self.CommandLine['KICK'] = False
+            print(_CommandList)
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
@@ -106,7 +108,7 @@ class IceLoongBits:
                         pass
                     case Commands.SET_DRIBBLE_SPEED:
                         pass
-            time.sleep(0.02)
+            time.sleep(0.09)
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -259,12 +261,11 @@ class IceLoongBits:
         """设置虚拟端口状态"""
         match port:
             case 3:
-                if not status:
-                    self.CommandLine['KICK'] = True
-                else:
-                    self.CommandLine['KICK'] = False
+                self.CommandLine['KICK'] = True
             case 4:
-                self.CommandLine['SET_DRIBBLE_SPEED'] = status
+                self.CommandLine['SET_DRIBBLE_SPEED'][0] = status
+            case 5:
+                self.CommandLine['SET_DRIBBLE_SPEED'][1] = status
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
