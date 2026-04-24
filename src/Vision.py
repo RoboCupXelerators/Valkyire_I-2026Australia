@@ -156,11 +156,11 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread.start()
 
         # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
-        self._goal_backend = hasattr(self, "GoalQueue")
-        if self._goal_backend:
-            self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
-            self.GoalDetectionThread.daemon = True
-            self.GoalDetectionThread.start()
+        # self._goal_backend = hasattr(self, "GoalQueue")
+        # if self._goal_backend:
+        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+        #     self.GoalDetectionThread.daemon = True
+        #     self.GoalDetectionThread.start()
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -873,7 +873,6 @@ class UnitedVision(Detect_Method):
 if __name__ == "__main__":
     import socket
     import pickle
-    import time
 
     # UDP socket setup
     UDP_IP = "127.0.0.1"
@@ -881,7 +880,7 @@ if __name__ == "__main__":
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     vision = UnitedVision()
-    while(1):
+    while True:
         try:
             ball_pos = vision.GetBallPos()
             chassis_pos = vision.GetChassisPos()
@@ -895,7 +894,6 @@ if __name__ == "__main__":
                     if len(goals_pos) >= 2:
                         yellow_goal = goals_pos[1]
                 elif isinstance(goals_pos, dict):
-                    # backward compatibility for older dict payloads
                     blue_goal = goals_pos.get("blue_goal")
                     yellow_goal = goals_pos.get("yellow_goal")
             except Exception:

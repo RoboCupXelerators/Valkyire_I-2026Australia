@@ -217,6 +217,7 @@ main.py
 TEST.py
 test.py
 ./venv
+Software.backup/
 ROS2_Nodes/
 
 .DS_Store
