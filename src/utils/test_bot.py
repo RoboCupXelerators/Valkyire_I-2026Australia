@@ -14,7 +14,7 @@ def main():
         a = 0
         # 测试5：盘球降速
         while True:
-            if a % 20:
+            if a % 100:
                 resp4 = bot.ExecuteCommands([
                     (Commands.HAND_SHAKE,), 
                     (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
@@ -34,7 +34,7 @@ def main():
                     (Commands.KICK,), 
                 ])
             print("响应:", resp4)
-            time.sleep(0.05)
+            time.sleep(0.01)
             a += 1
 
         # 测试1：单命令 - 握手
@@ -76,26 +76,6 @@ def main():
         ])
         print("响应:", resp4)
         time.sleep(2)
-
-        a = 0
-        # 测试5：盘球降速
-        while True:
-            if a % 10 == 0:
-                resp4 = bot.ExecuteCommands([
-                    (Commands.HAND_SHAKE,), 
-                    (Commands.GET_BMI088_DATA,), 
-                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
-                ])
-            else:
-                resp4 = bot.ExecuteCommands([
-                    (Commands.HAND_SHAKE,), 
-                    (Commands.GET_BMI088_DATA,), 
-                    (Commands.KICK,),
-                    (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
-                ])
-            print("响应:", resp4)
-            time.sleep(0.1)
-            a += 1
 
         print("\n=== 测试5：盘球降速 ===")
         resp4 = bot.ExecuteCommands([
