@@ -80,7 +80,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
         compass = Bits.GetYaw
         peripheral = Peripherals(Bits.VirtualPorts)
-        key = Key(Bits.GetKey)
+        # key = Key(Bits.GetKey)
         Odometer = None
         return
 
@@ -230,6 +230,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
             compass = Bits.GetYaw
             # key = Key(Bits.GetKey)
+            key = Bits.GetKey
             # Odometer = Bits.Odometer  # TODO add odometer support
             logger.info("IceLoongBits Bit loaded.")
             return

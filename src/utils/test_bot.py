@@ -34,6 +34,25 @@ def main():
                     (Commands.KICK,), 
                 ])
             print("响应:", resp4)
+            for i in resp4:
+                match i[0] ^ 0x80:
+                    case 0x00:
+                        continue
+                    case Commands.HAND_SHAKE:
+                        pass
+                    case Commands.GET_BMI088_DATA:
+                        _, yaw, pitch, roll = i
+                        yaw = yaw % 360
+                    case Commands.SET_WHEELS_SPEED:
+                        pass
+                    case Commands.KICK:
+                        pass
+                    case Commands.SET_DRIBBLE_SPEED:
+                        pass
+                    case Commands.GET_RUN_KEY_DELTA:
+                        _ , key = i
+                        if key == 1:
+                            print(i)
             time.sleep(0.01)
             a += 1
 

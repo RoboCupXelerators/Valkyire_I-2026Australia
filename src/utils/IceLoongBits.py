@@ -51,13 +51,17 @@ class IceLoongBits:
         self.CommandLine = {
             'HAND_SHAKE': True,
             'GET_BMI088_DATA': True,
+            'GET_RUN_KEY_DELTA': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_SPEED': (0,0),
+            'SET_DRIBBLE_SPEED': [0,0],
             'KICK': False,
         }
 
 
         self.yaw = 0.0
+        self.key = False
+        self.key_setup = False
+        self.key_count = 0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -91,7 +95,9 @@ class IceLoongBits:
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
                         self.CommandLine['KICK'] = False
-            print(_CommandList)
+                    case 'GET_RUN_KEY_DELTA':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
@@ -108,7 +114,13 @@ class IceLoongBits:
                         pass
                     case Commands.SET_DRIBBLE_SPEED:
                         pass
-            time.sleep(0.09)
+                    case Commands.GET_RUN_KEY_DELTA:
+                        _, key = i
+                        if key == 1:
+                            self.key = True
+                        else:
+                            pass
+            time.sleep(0.02)
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -261,7 +273,10 @@ class IceLoongBits:
         """设置虚拟端口状态"""
         match port:
             case 3:
-                self.CommandLine['KICK'] = True
+                if status:
+                    pass
+                else:
+                    self.CommandLine['KICK'] = True
             case 4:
                 self.CommandLine['SET_DRIBBLE_SPEED'][0] = status
             case 5:
@@ -273,5 +288,16 @@ class IceLoongBits:
 
     def GetKey(self):
         """获取按键状态"""
-        # TODO
-        return 0
+        if self.key:
+            return True
+        else:
+            return False
+
+if __name__ == "__main__":
+    bits = IceLoongBits(port='/dev/ttyUSB0')
+    while(1):
+        if bits.key:
+            print(bits.GetKey())
+            break
+        else:
+            pass
