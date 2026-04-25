@@ -11,7 +11,7 @@ from LunaPre import *
 
 def main():
     try:
-        UnitedPosition.Move2Path([[0, 0, 90], [-90, 50, 0], [90, 50, 0], [90, -50, 0], [-90, -50, 0]], 0.8)
+        UnitedPosition.Move2Path([[40, 40, 0], [-90, 50, 0], [90, 50, 0], [90, -50, 0], [-90, -50, 0]], 0.8)
     finally:
         chassis.stop()
         UnitedPosition.Stop()

@@ -8,22 +8,22 @@ import time
 import threading
 
 class Commands(IntEnum):
-    HAND_SHAKE        = 0x01
-    GET_BMI088_DATA   = 0x02
-    SET_WHEELS_SPEED  = 0x03
-    KICK              = 0x04
-    SET_DRIBBLE_PWM   = 0x05
-    SET_RYB_LIGHTS    = 0x06
-    GET_RUN_KEY_DELTA = 0x07
+    HAND_SHAKE             = 0x01
+    GET_BMI088_DATA        = 0x02
+    SET_WHEELS_SPEED       = 0x03
+    KICK                   = 0x04
+    SET_DRIBBLE_SPEED      = 0x05
+    GET_REFEREE_UNLOCK_PIN = 0x06
+    GET_RUN_KEY_DELTA      = 0x07
 
 COMMAND_RESPONSE_LENGTHS = {
-    Commands.HAND_SHAKE:        1 + 1, 
-    Commands.GET_BMI088_DATA:   1 + 3 * 4 + 4, 
-    Commands.SET_WHEELS_SPEED:  1, 
-    Commands.KICK:              1, 
-    Commands.SET_DRIBBLE_PWM:   1, 
-    Commands.SET_RYB_LIGHTS:    1, 
-    Commands.GET_RUN_KEY_DELTA: 1 + 1, 
+    Commands.HAND_SHAKE:             1, 
+    Commands.GET_BMI088_DATA:        1 + 3 * 4, 
+    Commands.SET_WHEELS_SPEED:       1, 
+    Commands.KICK:                   1, 
+    Commands.SET_DRIBBLE_SPEED:      1, 
+    Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
+    Commands.GET_RUN_KEY_DELTA:      1 + 1, 
 }
 
 try:
@@ -36,7 +36,7 @@ class IceLoongBits:
     方法命名使用大驼峰（PascalCase）。
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.02, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.05, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -51,12 +51,17 @@ class IceLoongBits:
         self.CommandLine = {
             'HAND_SHAKE': True,
             'GET_BMI088_DATA': True,
+            'GET_RUN_KEY_DELTA': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_PWM': 0,
-            'KICK': 0,
+            'SET_DRIBBLE_SPEED': [0,0],
+            'KICK': False,
         }
 
+
         self.yaw = 0.0
+        self.key = False
+        self.key_setup = False
+        self.key_count = 0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -83,30 +88,38 @@ class IceLoongBits:
                     case 'SET_WHEELS_SPEED':
                         Speed1,Speed2,Speed3,Speed4 = self.CommandLine[i]
                         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1,Speed2,Speed3,Speed4)])
-                    case 'SET_DRIBBLE_PWM':
+                    case 'SET_DRIBBLE_SPEED':
                         Speed = self.CommandLine[i]
-                        self.ExecuteCommands([(Commands.SET_DRIBBLE_PWM, Speed)])
+                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed[0], Speed[1])])
                     case 'KICK':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
-                            self.CommandLine['KICK'] = False
+                        self.CommandLine['KICK'] = False
+                    case 'GET_RUN_KEY_DELTA':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
                     case 0x00:
-                        i+=1
                         continue
                     case Commands.HAND_SHAKE:
                         pass
                     case Commands.GET_BMI088_DATA:
-                        _, yaw, pitch, roll, timestamp = i
-                        self.yaw = round(yaw % 360,2)
+                        _, yaw, pitch, roll = i
+                        self.yaw = yaw % 360
                     case Commands.SET_WHEELS_SPEED:
                         pass
                     case Commands.KICK:
                         pass
-                    case Commands.SET_DRIBBLE_PWM:
+                    case Commands.SET_DRIBBLE_SPEED:
                         pass
+                    case Commands.GET_RUN_KEY_DELTA:
+                        _, key = i
+                        if key == 1:
+                            self.key = True
+                        else:
+                            pass
             time.sleep(0.02)
 
     def OpenPort(self) -> None:
@@ -208,10 +221,10 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
                     tx_bytes += bytes([cmd[0]])
-                case Commands.SET_DRIBBLE_PWM:
-                    tx_bytes += bytes([cmd[0]]) + struct.pack('<f', cmd[1])
-                case Commands.SET_RYB_LIGHTS:
-                    tx_bytes += bytes([cmd[0]]) + bytes([((cmd[1] & 1) << 0) | ((cmd[2] & 1) << 1) | ((cmd[3] & 1) << 2)])
+                case Commands.SET_DRIBBLE_SPEED:
+                    tx_bytes += bytes([cmd[0]]) + struct.pack('<ff', cmd[1], cmd[2])
+                case Commands.GET_REFEREE_UNLOCK_PIN:
+                    tx_bytes += bytes([cmd[0]])
                 case Commands.GET_RUN_KEY_DELTA:
                     tx_bytes += bytes([cmd[0]])
                 case _:
@@ -223,7 +236,7 @@ class IceLoongBits:
             resp_len += 1
 
         # 发送帧，返回接收帧
-        resp = self.SendHex(tx_bytes, True, resp_len, 0.01)
+        resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
 
         rx_data = []
         if resp and len(resp) == resp_len:
@@ -234,21 +247,21 @@ class IceLoongBits:
                         i += 1
                         continue
                     case Commands.HAND_SHAKE:
-                        rx_data.append((resp[i], resp[i+1]))
+                        rx_data.append((resp[i],))
                     case Commands.GET_BMI088_DATA:
-                        rx_data.append((resp[i], *struct.unpack('<fffI', resp[i+1:i+17])))
+                        rx_data.append((resp[i], *struct.unpack('<fff', resp[i+1:i+13])))
                     case Commands.SET_WHEELS_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
                         rx_data.append((resp[i],))
-                    case Commands.SET_DRIBBLE_PWM:
+                    case Commands.SET_DRIBBLE_SPEED:
                         rx_data.append((resp[i],))
-                    case Commands.SET_RYB_LIGHTS:
-                        rx_data.append((resp[i],))
+                    case Commands.GET_REFEREE_UNLOCK_PIN:
+                        rx_data.append((resp[i], resp[i+1]))
                     case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
                     case _:
-                        continue
+                        break
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
         return rx_data
 
@@ -260,12 +273,14 @@ class IceLoongBits:
         """设置虚拟端口状态"""
         match port:
             case 3:
-                if not status:
-                    self.CommandLine['KICK'] = True
+                if status:
+                    pass
                 else:
-                    self.CommandLine['KICK'] = False
+                    self.CommandLine['KICK'] = True
             case 4:
-                self.CommandLine['SET_DRIBBLE_PWM'] = status
+                self.CommandLine['SET_DRIBBLE_SPEED'][0] = status
+            case 5:
+                self.CommandLine['SET_DRIBBLE_SPEED'][1] = status
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
@@ -273,5 +288,16 @@ class IceLoongBits:
 
     def GetKey(self):
         """获取按键状态"""
-        # TODO
-        return 0
+        if self.key:
+            return True
+        else:
+            return False
+
+if __name__ == "__main__":
+    bits = IceLoongBits(port='/dev/ttyUSB0')
+    while(1):
+        if bits.key:
+            print(bits.GetKey())
+            break
+        else:
+            pass

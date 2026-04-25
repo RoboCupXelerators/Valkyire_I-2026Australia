@@ -217,8 +217,10 @@ main.py
 TEST.py
 test.py
 ./venv
+Software.backup/
+ROS2_Nodes/
 
 .DS_Store
 .python-version
 .vscode/settings.json
-Tools/Pixel2CM/Calibration/CalibrationData4.npz
+Tools/Pixel2CM/Calibration/*

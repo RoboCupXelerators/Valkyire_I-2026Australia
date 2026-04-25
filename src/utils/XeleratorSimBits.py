@@ -27,6 +27,7 @@ Status 扩展：如果 status 包长度 > 32 bytes，则在尾部额外携带 2 
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import socket
@@ -80,15 +81,57 @@ class XeleratorSimBits:
         hz: float = 50.0,
     ):
         self.unity_ip = unity_ip
-        self.cmd_port = int(cmd_port)
-        self.status_port = int(status_port)
-        self.robot_id = int(robot_id) & 0xFF
+        base_cmd_port = int(cmd_port)
+        base_status_port = int(status_port)
+        base_robot_id = int(robot_id)
 
-        self._tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._tx = None
+        self._rx = None
 
-        self._rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._rx.bind(("0.0.0.0", self.status_port))
-        self._rx.settimeout(0.05)
+        bind_error: OSError | None = None
+        # 防呆：如果状态端口被占用，自动尝试 robot_id+1、端口+10，最多 4 次。
+        # 这样在旧进程残留、多个脚本并行、或 Unity 尚未释放端口时，能更快恢复。
+        for attempt in range(4):
+            attempt_robot_id = base_robot_id + attempt
+            attempt_cmd_port = base_cmd_port + attempt * 10
+            attempt_status_port = base_status_port + attempt * 10
+
+            try:
+                tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                rx.bind(("0.0.0.0", attempt_status_port))
+                rx.settimeout(0.05)
+
+                self._tx = tx
+                self._rx = rx
+                self.cmd_port = attempt_cmd_port
+                self.status_port = attempt_status_port
+                self.robot_id = attempt_robot_id & 0xFF
+
+                if attempt > 0:
+                    print(
+                        f"[XEL_SIM] status_port occupied, auto-fallback to robot_id={self.robot_id} "
+                        f"cmd_port={self.cmd_port} status_port={self.status_port} (attempt {attempt + 1}/4)"
+                    )
+                break
+            except OSError as e:
+                bind_error = e
+                try:
+                    tx.close()
+                except Exception:
+                    pass
+                try:
+                    rx.close()
+                except Exception:
+                    pass
+
+                if e.errno != errno.EADDRINUSE:
+                    raise
+                if attempt == 3:
+                    raise
+
+        if self._tx is None or self._rx is None:
+            raise bind_error if bind_error is not None else OSError("Failed to initialize UDP sockets")
 
         self._seq = 0
         self._running = True
@@ -153,6 +196,14 @@ class XeleratorSimBits:
         self._yaw_zero_at_start = str(os.environ.get("XEL_YAW_ZERO_AT_START", "0")).lower() in {"1", "true", "yes"}
         self._yaw_zero_deg: float | None = None
 
+        # In this simulator layout, robotId 3/4 are spawned on the opposite half
+        # of the field from robotId 1/2. To keep the strategy-side yaw convention
+        # consistent across both team sides, add a default 180° readback offset
+        # for enemy-side robots. This affects GetYaw()/GetPose() only; Unity physics
+        # and command execution are unchanged.
+        side_default_offset = "180" if self.robot_id >= 3 else "0"
+        self._side_yaw_offset_deg = float(os.environ.get("XEL_SIDE_YAW_OFFSET_DEG", side_default_offset))
+
         # NOTE: start threads AFTER calibration attributes are ready.
         # Otherwise debug printing in _tx_loop may call GetPose() before these exist.
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
@@ -176,6 +227,7 @@ class XeleratorSimBits:
             yaw = yaw - self._yaw_zero_deg
 
         yaw = yaw + self._yaw_offset_deg
+        yaw = yaw + self._side_yaw_offset_deg
         # normalize [0, 360)
         yaw = yaw % 360.0
         return yaw

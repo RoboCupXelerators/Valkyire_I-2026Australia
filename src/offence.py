@@ -60,12 +60,9 @@ def main():
                         peripheral.Dribble(0.7)
                         if TurnTo_with_ball((goal_angle_deep) % 360, 0.6):
                             chassis.stop()
-                            time.sleep(2)
-                            chassis.stop()
                             peripheral.ShootBall()
                             logger.warning("Processing :27")
                             peripheral.Dribble(0.0)
-                            time.sleep(2)
                         else:
                             logger.warning("Processing :30")
                     else:
@@ -74,7 +71,7 @@ def main():
                             peripheral.ShootBall()
                             logger.warning("Processing :45")
                             chassis.stop()
-                            time.sleep(1)
+                            # time.sleep(1)
                         else:
                             logger.warning("Processing :47")
                 else:

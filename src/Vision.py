@@ -83,8 +83,8 @@ class UnitedVision(Detect_Method):
         self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
         self.BBoxFusionStrength = float(getattr(Settings.VisionVals, "BBoxFusionStrength", 0.5))
         self.BBoxLegacyReferenceAreaPx = float(getattr(Settings.VisionVals, "BBoxLegacyReferenceAreaPx", 12000.0))
-        self.BlueGoalWidthCM = float(getattr(Settings.VisionVals, "BlueGoalWidthCM", 900.0))
-        self.BlueGoalHeightCM = float(getattr(Settings.VisionVals, "BlueGoalHeightCM", 180.0))
+        self.BlueGoalWidthCM = float(getattr(Settings.VisionVals, "BlueGoalWidthCM", 90.0))
+        self.BlueGoalHeightCM = float(getattr(Settings.VisionVals, "BlueGoalHeightCM", 18.0))
         self.YellowGoalWidthCM = float(getattr(Settings.VisionVals, "YellowGoalWidthCM", 90.0))
         self.YellowGoalHeightCM = float(getattr(Settings.VisionVals, "YellowGoalHeightCM", 18.0))
 
@@ -156,11 +156,11 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread.start()
 
         # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
-        self._goal_backend = hasattr(self, "GoalQueue")
-        if self._goal_backend:
-            self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
-            self.GoalDetectionThread.daemon = True
-            self.GoalDetectionThread.start()
+        # self._goal_backend = hasattr(self, "GoalQueue")
+        # if self._goal_backend:
+        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+        #     self.GoalDetectionThread.daemon = True
+        #     self.GoalDetectionThread.start()
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -432,7 +432,6 @@ class UnitedVision(Detect_Method):
                         self.ChassisHeightCM,
                         strength=0.45,
                     )
-
                     ChassisTuple = (CX, CY, ChassisWidth, ChassisHeight, Confidence)
                     # 20251118 already changed X forward,Y left dimension
                     
@@ -523,6 +522,8 @@ class UnitedVision(Detect_Method):
                         best_goal = bbox
 
                     X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
+                    Y = Y*3
+                    X = X*3
                     # Match BallDetection axis conventions (x forward, y left)
                     planar = self._to_robot_frame(X, Y, cam_i)
                     fused, _ = self._fuse_detection_position(
@@ -533,9 +534,10 @@ class UnitedVision(Detect_Method):
                         float(H),
                         self.BlueGoalWidthCM if cls_i == 1 else self.YellowGoalWidthCM,
                         self.BlueGoalHeightCM if cls_i == 1 else self.YellowGoalHeightCM,
-                        strength=0.40,
+                        strength=0.55,
                     )
-                    GX, GY = fused
+                    GY, GX = fused
+                    self.logger.debug(f"Goal Processed ER: x: {(GX-X)} y: {(GY-Y)} cls_id: {cls_id} conf: {Confidence}")
 
                     goal_item = [round(GX, 2), round(GY, 2), float(Confidence)]
                     goals.append(goal_item)
@@ -621,7 +623,6 @@ class UnitedVision(Detect_Method):
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     X -= 12
                     Y -= 12
-                    # X = int(1.50117*X-5.10171)
                     if CameraIndex == 0:
                         BX = -X
                         BY = Y
@@ -872,7 +873,6 @@ class UnitedVision(Detect_Method):
 if __name__ == "__main__":
     import socket
     import pickle
-    import time
 
     # UDP socket setup
     UDP_IP = "127.0.0.1"
@@ -880,7 +880,7 @@ if __name__ == "__main__":
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     vision = UnitedVision()
-    while(1):
+    while True:
         try:
             ball_pos = vision.GetBallPos()
             chassis_pos = vision.GetChassisPos()
@@ -894,7 +894,6 @@ if __name__ == "__main__":
                     if len(goals_pos) >= 2:
                         yellow_goal = goals_pos[1]
                 elif isinstance(goals_pos, dict):
-                    # backward compatibility for older dict payloads
                     blue_goal = goals_pos.get("blue_goal")
                     yellow_goal = goals_pos.get("yellow_goal")
             except Exception:

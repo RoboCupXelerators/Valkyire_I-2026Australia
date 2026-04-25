@@ -146,6 +146,14 @@ class ArisuIntelligence(VisionPreUntil):
                     Bindings.input().set_buffer(Frame)
                     Bindings.output().set_buffer(OutputBuffer)
                     BindingsList.append(Bindings)
+
+            # No valid camera frame yet: keep waiting instead of sending an empty
+            # batch to Hailo. This avoids spurious run() timeouts during startup
+            # or when a camera temporarily drops out.
+            if not BindingsList:
+                time.sleep(0.02)
+                continue
+
             if self.YOLOQueue.full():
                 self.YOLOQueue.empty()
                 # print(self.YOLOQueue.get())
@@ -176,6 +184,8 @@ class ArisuIntelligence(VisionPreUntil):
             try:
                 configured = getattr(self, "ConfiguredInferModel", None)
                 if configured is None:
+                    continue
+                if not BindingsList:
                     continue
                 configured.run(BindingsList, 2000)
             except Exception as e:
