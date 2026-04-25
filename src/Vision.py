@@ -77,7 +77,7 @@ class UnitedVision(Detect_Method):
         self.CalibrationKs = []
         self.CalibrationDists = []
         self.CalibrationModes = []
-        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", True))
+        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", False))
         self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
         self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
         self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
@@ -187,7 +187,7 @@ class UnitedVision(Detect_Method):
         Point = np.array([X, Y, 1], dtype=np.float64)
         Transformed = Matrix @ Point
         Transformed /= Transformed[2]
-        return int(Transformed[1]), int(Transformed[0])
+        return int(Transformed[0]), int(Transformed[1])
 
     def Pixel2CM(self,X,Y,CamIndex):
         P2CK = self.P2CK[CamIndex]
@@ -522,8 +522,6 @@ class UnitedVision(Detect_Method):
                         best_goal = bbox
 
                     X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
-                    Y = Y*3
-                    X = X*3
                     # Match BallDetection axis conventions (x forward, y left)
                     planar = self._to_robot_frame(X, Y, cam_i)
                     fused, _ = self._fuse_detection_position(
@@ -621,20 +619,7 @@ class UnitedVision(Detect_Method):
                     if Confidence is None or Confidence <= 0:
                         continue
                     X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    X -= 12
-                    Y -= 12
-                    if CameraIndex == 0:
-                        BX = -X
-                        BY = Y
-                    elif CameraIndex == 1:
-                        BX = Y
-                        BY = X
-                    elif CameraIndex == 2:
-                        BX = X
-                        BY = -Y
-                    elif CameraIndex == 3:
-                        BX = -Y
-                        BY = -X
+                    (BX, BY) = self._to_robot_frame(X, Y, CameraIndex)
                     BallTuple = (round(BX,2), round(BY,2), BallWidth, BallHeight, Confidence)
                     Balls.append(BallTuple)
                 except:
