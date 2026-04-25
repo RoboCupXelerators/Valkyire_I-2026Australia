@@ -28,7 +28,7 @@ def main():
                     else:
                         distance_cache = UnitedPosition.DirectDistance()
                         speed_cache = max(distance_cache[1], distance_cache[3])
-                        chassis.FieldMoveVetor(0, ball_position[1] * 8 - speed_cache / 100, 0)
+                        chassis.FieldMoveVector(0, ball_position[1] * 8 - speed_cache / 100, 0)
             time.sleep(0.03)
     finally:
         peripheral.Dribble(False)

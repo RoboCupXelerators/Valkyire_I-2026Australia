@@ -17,7 +17,7 @@ def main():
             if a % 100:
                 resp4 = bot.ExecuteCommands([
                     (Commands.HAND_SHAKE,), 
-                    (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
+                    (Commands.SET_WHEELS_SPEED, 1000, 1000, 1000, 1000), 
                     (Commands.GET_BMI088_DATA,), 
                     (Commands.GET_REFEREE_UNLOCK_PIN,), 
                     (Commands.GET_RUN_KEY_DELTA,), 
@@ -26,7 +26,7 @@ def main():
             else:
                 resp4 = bot.ExecuteCommands([
                     (Commands.HAND_SHAKE,), 
-                    (Commands.SET_WHEELS_SPEED, 0, 0, 0, 0), 
+                    (Commands.SET_WHEELS_SPEED, 1000, 1000, 1000, 1000), 
                     (Commands.GET_BMI088_DATA,), 
                     (Commands.GET_REFEREE_UNLOCK_PIN,), 
                     (Commands.GET_RUN_KEY_DELTA,), 

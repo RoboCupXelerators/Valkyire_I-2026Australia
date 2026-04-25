@@ -260,6 +260,10 @@ class Lidar:
 
     def stop(self):
         """Stop the sllidar driver and close log files"""
+        p = subprocess.Popen(
+            ['/bin/bash', '-lc', 'sudo udevadm trigger'],
+            preexec_fn=os.setsid,
+        )
         if hasattr(self, 'lidar_process') and self.lidar_process is not None:
             self.stop_process_group(self.lidar_process)
             self.lidar_process = None

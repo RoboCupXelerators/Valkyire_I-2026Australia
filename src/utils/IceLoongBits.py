@@ -62,6 +62,7 @@ class IceLoongBits:
         self.key = False
         self.key_setup = False
         self.key_count = 0
+        self.motor_speed_k = 1.0
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -284,7 +285,7 @@ class IceLoongBits:
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
-        self.CommandLine['SET_WHEELS_SPEED'] = (Speed1,Speed2,-Speed3,-Speed4)
+        self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
 
     def GetKey(self):
         """获取按键状态"""

@@ -8,7 +8,8 @@ class Car:
         self.SetMotorFunc = SetMotorFunc
         self.GetYaw = GetYaw
         self.MotorEncoder = MotorEncoder
-        self.Kp = 1
+        self.Kp = 3
+        self.KpW = 1
         self.cfg = Settings
         # Always use the unified project logger (ReasonData.logger)
         # to avoid AttributeError when FullLog=False.
@@ -22,11 +23,11 @@ class Car:
     def SetMotor(self,speedCache:list[int,int,int,int]):
         number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
         speed = [0,0,0,0]
-        for n in number:
-            if speedCache[n-1] > self.cfg.ExpectedVals.MaxSpeedValue:
-                speed[n-1] = self.cfg.ExpectedVals.MaxSpeedValue
+        for n in range(4):
+            if speedCache[number[n]-1] > self.cfg.ExpectedVals.MaxSpeedValue:
+                speed[n] = self.cfg.ExpectedVals.MaxSpeedValue
             else:
-                speed[n-1] = int(speedCache[n-1])
+                speed[n] = int(speedCache[number[n]-1])
         if self.cfg.Debug.FullLog:
             if self.MotorEncoder:
                 EncoderCache = self.MotorEncoder()
@@ -46,14 +47,14 @@ class Car:
     def Compass(self):
         return self.GetYaw()
 
-    def RobotMoveVetor(self,SpeedX,SpeedY,SpeedZ,Z_Kp:int| None = 1):
+    def RobotMoveVector(self,SpeedX,SpeedY,SpeedZ):
         '''
         a vector movement (SpeedX,SpeedY,SpeedZ) without YawCorrect
         '''
-        Speed1 = SpeedX - SpeedY - SpeedZ*Z_Kp
-        Speed2 = SpeedX + SpeedY - SpeedZ*Z_Kp
-        Speed3 = SpeedX + SpeedY + SpeedZ*Z_Kp
-        Speed4 = SpeedX - SpeedY + SpeedZ*Z_Kp
+        Speed1 = SpeedX*self.Kp - SpeedY*self.Kp - SpeedZ*self.KpW
+        Speed2 = SpeedX*self.Kp + SpeedY*self.Kp - SpeedZ*self.KpW
+        Speed3 = SpeedX*self.Kp + SpeedY*self.Kp + SpeedZ*self.KpW
+        Speed4 = SpeedX*self.Kp - SpeedY*self.Kp + SpeedZ*self.KpW
         output = [Speed1, Speed2, Speed3, Speed4]
         self.SetMotor(output)
     
@@ -64,7 +65,7 @@ class Car:
         rad = math.radians(Angle)
         SpeedX = int(math.sin(rad) * Speed)
         SpeedY = int(math.cos(rad) * Speed)
-        self.RobotMoveVetor(SpeedY,SpeedX,0,Kp)
+        self.RobotMoveVector(SpeedY,SpeedX,0,Kp)
 
     def FieldMoveAngle(self,FacingAngle,MovingAngle,Speed,Kp:float|None = None):
         '''
@@ -74,9 +75,9 @@ class Car:
         rad = math.radians((MovingAngle-Yaw+FacingAngle))
         SpeedX = int(math.cos(rad) * Speed)
         SpeedY = int(math.sin(rad) * Speed)
-        self.FieldMoveVetor(SpeedX,SpeedY,FacingAngle,Kp)
+        self.FieldMoveVector(SpeedX,SpeedY,FacingAngle,Kp)
         
-    def FieldMoveVetor(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
+    def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
         '''
         vector movement (SpeedX,SpeedY,AngleZ˚,Angle_Gain) with YawCorrect
         '''
@@ -87,33 +88,33 @@ class Car:
         Error = -( (Error + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if not Kp:
             Kp = self.Kp
-        SpeedZ = Error * Kp
+        SpeedZ = Error * self.KpW
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
         # Only print high-frequency motion logs when FullLog is enabled
         if getattr(self.cfg.Debug, "FullLog", False):
             self.logger.info(f"used FieldMoveVector: {WheelX, WheelY, SpeedZ}")
-        self.RobotMoveVetor(WheelX, WheelY, SpeedZ)
+        self.RobotMoveVector(WheelX, WheelY, SpeedZ)
     
     def RobotXMove(self,Angle,Speed):
-        self.RobotMoveVetor(90,Angle,Speed)
+        self.RobotMoveVector(90,Angle,Speed)
    
     def RobotYMove(self,Angle,Speed,Kp=None):
-        self.RobotMoveVetor(0,Angle,Speed,Kp)
+        self.RobotMoveVector(0,Angle,Speed,Kp)
 
     def FieldTurn(self,Angle):
         if self.GetYaw is None:
             return False
-        self.FieldMoveVetor(0,0,Angle)
+        self.FieldMoveVector(0,0,Angle)
 
     def RobotTurn(self,Speed): #自转
-        self.RobotMoveVetor(0,0,Speed)
+        self.RobotMoveVector(0,0,Speed)
     
     def TurnTo(self,Angle,Kp=None):
         while True:
             Error = self.GetYaw() - Angle
             if not abs(Error) < 5:
-                self.FieldMoveVetor(0,0,Angle)
+                self.FieldMoveVector(0,0,Angle)
             else:
                 self.stop()
                 break

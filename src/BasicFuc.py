@@ -129,7 +129,7 @@ class LockSeries:
                 SpeedY = -300
             # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             # Keep the entire slip logic in robot-frame motion.
-            chassis.RobotMoveVetor(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
 
 lockball = LockSeries()

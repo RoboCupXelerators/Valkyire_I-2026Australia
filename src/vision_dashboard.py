@@ -9,7 +9,7 @@ Design goals
 - Read-only: does not change existing vision pipeline
 - Works with all backends selected by `vision_utils.Detect_Method`
 
-Endpoints
+Endpoints 
 ---------
 - GET /               : dashboard HTML
 - GET /static/*       : static assets (JS/CSS)

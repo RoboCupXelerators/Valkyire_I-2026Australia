@@ -828,6 +828,8 @@ class Positions:
         iDeltaX = (iAimX) - (iLocX)
         iDeltaY = (iAimY) - (iLocY)
         iDeltaZ = (iAimZ) - (iLocZ)
+        # iDeltaX = 0.001*iDeltaX**3+iDeltaX
+        # iDeltaY = 0.001*iDeltaY**3+iDeltaY
         RestrictedX = Settings.Bounds.FarPos[0]
         RestrictedY = Settings.Bounds.FarPos[1]
         try:
@@ -850,10 +852,10 @@ class Positions:
             chassis.FieldTurn(iAimZ)
         else:
             if speed_gain:
-                chassis.FieldMoveVetor(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
+                chassis.FieldMoveVector(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
                 # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                chassis.FieldMoveVetor(iDeltaX,iDeltaY,iAimZ)
+                chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
             return False
 
     def Move2Path(self, Posistions: list, iWaitMs: float):
