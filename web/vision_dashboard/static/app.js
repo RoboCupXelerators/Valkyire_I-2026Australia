@@ -34,6 +34,76 @@ function goalXY(goal){
   return {x: goal[0], y: goal[1], conf: goal.length >= 3 ? goal[2] : null};
 }
 
+function bboxEntryToArray(entry){
+  if (!entry) return null;
+  if (Array.isArray(entry)) return entry;
+  if (typeof entry === 'object'){
+    // tolerate dict-style payloads in case the backend changes
+    if ('cam' in entry && 'x1' in entry && 'y1' in entry && 'x2' in entry && 'y2' in entry){
+      return [entry.cam, entry.x1, entry.y1, entry.x2, entry.y2, entry.conf];
+    }
+    if ('cam' in entry && 'cls' in entry && 'x1' in entry && 'y1' in entry && 'x2' in entry && 'y2' in entry){
+      return [entry.cam, entry.cls, entry.x1, entry.y1, entry.x2, entry.y2, entry.conf];
+    }
+  }
+  return null;
+}
+
+function mapBBox640ToDisplay(bb, imgEl, outW, outH){
+  if (!bb) return null;
+  const srcW = imgEl.naturalWidth || 640;
+  const srcH = imgEl.naturalHeight || 640;
+  const scale = Math.min(640 / srcW, 640 / srcH);
+  const newW = srcW * scale;
+  const newH = srcH * scale;
+  const padX = (640 - newW) / 2;
+  const padY = (640 - newH) / 2;
+
+  function toSrc(x, y){
+    return [(x - padX) / scale, (y - padY) / scale];
+  }
+
+  const hasCls = bb.length >= 7;
+  const x1 = Number(bb[hasCls ? 2 : 1]);
+  const y1 = Number(bb[hasCls ? 3 : 2]);
+  const x2 = Number(bb[hasCls ? 4 : 3]);
+  const y2 = Number(bb[hasCls ? 5 : 4]);
+  const conf = Number(bb[hasCls ? 6 : 5]);
+
+  let [sx1, sy1] = toSrc(x1, y1);
+  let [sx2, sy2] = toSrc(x2, y2);
+  sx1 = Math.max(0, Math.min(srcW - 1, sx1));
+  sy1 = Math.max(0, Math.min(srcH - 1, sy1));
+  sx2 = Math.max(0, Math.min(srcW - 1, sx2));
+  sy2 = Math.max(0, Math.min(srcH - 1, sy2));
+
+  const dx1 = sx1 * (outW / srcW);
+  const dy1 = sy1 * (outH / srcH);
+  const dx2 = sx2 * (outW / srcW);
+  const dy2 = sy2 * (outH / srcH);
+
+  if (hasCls) return [bb[0], bb[1], dx1, dy1, dx2, dy2, conf];
+  return [bb[0], dx1, dy1, dx2, dy2, conf];
+}
+
+function pickPerCamBboxes(state, perCamKey, bestKey){
+  const out = [null,null,null,null];
+  const perCam = state[perCamKey] || [];
+  for (let i=0; i<4; i++){
+    const bb = bboxEntryToArray(perCam[i]);
+    if (bb) out[i] = bb;
+  }
+  // Fallback: if per-camera list is empty, place the single best bbox onto its camera slot.
+  if (out.every(v => !v)){
+    const best = bboxEntryToArray(state[bestKey]);
+    if (best && best.length >= 6){
+      const cam = Number(best[0]);
+      if (cam >= 0 && cam < 4) out[cam] = best;
+    }
+  }
+  return out;
+}
+
 function _computeDesiredRange(state){
   // Fit all targets (ball + chassis) into view.
   let maxAbs = 0;
@@ -220,9 +290,9 @@ function updateTable(state){
 }
 
 function drawOverlays(state){
-  const ballPerCam = state.ball_bboxes_640 || [null,null,null,null];
-  const chassisPerCam = state.chassis_bboxes_640 || [null,null,null,null];
-    const goalPerCam = state.goal_bboxes_640 || [null,null,null,null];
+  const ballPerCam = pickPerCamBboxes(state, 'ball_bboxes_640', 'ball_bbox_640');
+  const chassisPerCam = pickPerCamBboxes(state, 'chassis_bboxes_640', 'chassis_bbox_640');
+  const goalPerCam = pickPerCamBboxes(state, 'goal_bboxes_640', 'goal_bbox_640');
   for (let i=0; i<4; i++){
     const img = camImgs[i];
     const ov = overlays[i];
@@ -245,36 +315,40 @@ function drawOverlays(state){
     // ball bbox
     const bb = ballPerCam[i];
     if (bb){
-      // bb: (cam,x1,y1,x2,y2,conf) in 640x640
-      const x1 = bb[1], y1 = bb[2], x2 = bb[3], y2 = bb[4];
-      const conf = bb[5];
+      const mapped = mapBBox640ToDisplay(bb, img, ov.width, ov.height);
+      const x1 = mapped[1], y1 = mapped[2], x2 = mapped[3], y2 = mapped[4];
+      const conf = mapped[5];
       ctx.strokeStyle = 'rgba(247,37,133,0.95)';
       ctx.lineWidth = 3;
-      ctx.strokeRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
+      ctx.setLineDash([]);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       ctx.fillStyle = 'rgba(247,37,133,0.95)';
       ctx.font = '14px ui-monospace, monospace';
-      ctx.fillText(`ball ${conf.toFixed(2)}`, x1*sx+6, Math.max(16, y1*sy-6));
+      ctx.fillText(`ball ${conf.toFixed(2)}`, x1 + 6, Math.max(16, y1 - 6));
     }
 
     // chassis bbox
     const cb = chassisPerCam[i];
     if (cb){
-      const x1 = cb[1], y1 = cb[2], x2 = cb[3], y2 = cb[4];
-      const conf = cb[5];
+      const mapped = mapBBox640ToDisplay(cb, img, ov.width, ov.height);
+      const x1 = mapped[1], y1 = mapped[2], x2 = mapped[3], y2 = mapped[4];
+      const conf = mapped[5];
       ctx.strokeStyle = 'rgba(76,201,240,0.95)';
       ctx.lineWidth = 2;
-      ctx.strokeRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       ctx.fillStyle = 'rgba(76,201,240,0.9)';
       ctx.font = '14px ui-monospace, monospace';
-      ctx.fillText(`chassis ${conf.toFixed(2)}`, x1*sx+6, Math.min(ov.height-4, y2*sy+16));
+      ctx.fillText(`chassis ${conf.toFixed(2)}`, x1 + 6, Math.min(ov.height - 4, y2 + 16));
     }
 
     // goal bbox
     const gb = goalPerCam[i];
     if (gb){
-      const clsId = gb[1];
-      const x1 = gb[2], y1 = gb[3], x2 = gb[4], y2 = gb[5];
-      const conf = gb[6];
+      const mapped = mapBBox640ToDisplay(gb, img, ov.width, ov.height);
+      const clsId = mapped[1];
+      const x1 = mapped[2], y1 = mapped[3], x2 = mapped[4], y2 = mapped[5];
+      const conf = mapped[6];
       const isBlue = Number(clsId) === 1;
       if (isBlue){
         ctx.strokeStyle = 'rgba(59,130,246,0.98)';
@@ -287,12 +361,13 @@ function drawOverlays(state){
         ctx.fillStyle = 'rgba(167,139,250,0.18)';
       }
       ctx.lineWidth = 3;
-      ctx.strokeRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
-      ctx.fillRect(x1*sx, y1*sy, (x2-x1)*sx, (y2-y1)*sy);
+      ctx.setLineDash([]);
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
       ctx.fillStyle = 'rgba(233,238,252,0.95)';
       ctx.font = '14px ui-monospace, monospace';
       const label = isBlue ? 'blue_goal' : (Number(clsId) === 2 ? 'yellow_goal' : 'goal');
-      ctx.fillText(`${label} ${conf.toFixed(2)}`, x1*sx+6, Math.max(16, y1*sy-6));
+      ctx.fillText(`${label} ${conf.toFixed(2)}`, x1 + 6, Math.max(16, y1 - 6));
     }
   }
 }

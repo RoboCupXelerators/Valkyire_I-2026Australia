@@ -42,6 +42,138 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _json_safe(obj):
+    """Recursively convert common numpy / custom scalar types to JSON-safe values."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    # numpy scalars / other scalar-like objects
+    item = getattr(obj, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except Exception:
+            pass
+
+    # numpy arrays / array-like objects
+    tolist = getattr(obj, "tolist", None)
+    if callable(tolist):
+        try:
+            return _json_safe(tolist())
+        except Exception:
+            pass
+
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(v) for v in obj]
+
+    # Fallback: make it printable instead of crashing the dashboard endpoint.
+    return str(obj)
+
+
+def _bbox_at_cam(bbox, cam_index: int):
+    """Return bbox tuple for a specific camera, accepting either per-cam lists or a single bbox."""
+    if bbox is None:
+        return None
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and all(
+        (item is None or isinstance(item, (list, tuple))) for item in bbox
+    ):
+        if cam_index < 0 or cam_index >= len(bbox):
+            return None
+        return bbox[cam_index]
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 6:
+        try:
+            if int(bbox[0]) == int(cam_index):
+                return bbox
+        except Exception:
+            return None
+    return None
+
+
+def _draw_bbox_label(img, bbox, color, label: str, scale_x: float = 1.0, scale_y: float = 1.0):
+    if bbox is None:
+        return
+    try:
+        if len(bbox) < 6:
+            return
+        # Support both:
+        #   (cam, x1, y1, x2, y2, conf)
+        #   (cam, cls, x1, y1, x2, y2, conf)
+        if len(bbox) >= 7:
+            x1_i, y1_i, x2_i, y2_i, conf_i = 2, 3, 4, 5, 6
+        else:
+            x1_i, y1_i, x2_i, y2_i, conf_i = 1, 2, 3, 4, 5
+        x1 = int(round(float(bbox[x1_i]) * scale_x))
+        y1 = int(round(float(bbox[y1_i]) * scale_y))
+        x2 = int(round(float(bbox[x2_i]) * scale_x))
+        y2 = int(round(float(bbox[y2_i]) * scale_y))
+        conf = float(bbox[conf_i])
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        text = f"{label} {conf:.2f}"
+        text_y = max(15, y1 - 5)
+        cv2.putText(img, text, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    except Exception:
+        pass
+
+
+def _map_bbox_640_to_image(bbox, src_w: int, src_h: int, dst_w: int, dst_h: int):
+    """Map a bbox from 640x640 detector space into the displayed image space.
+
+    The detector uses letterbox preprocessing, so we first undo the padding/scale
+    from 640x640 back to the source frame, then scale to the final display size.
+    Returns a bbox tuple with coordinates in the destination image space.
+    """
+    if bbox is None:
+        return None
+    try:
+        if len(bbox) < 6:
+            return None
+        prefix = list(bbox[:2]) if len(bbox) >= 7 else [bbox[0]]
+        x1 = float(bbox[2 if len(bbox) >= 7 else 1])
+        y1 = float(bbox[3 if len(bbox) >= 7 else 2])
+        x2 = float(bbox[4 if len(bbox) >= 7 else 3])
+        y2 = float(bbox[5 if len(bbox) >= 7 else 4])
+        conf = float(bbox[6 if len(bbox) >= 7 else 5])
+
+        src_w = max(1, int(src_w))
+        src_h = max(1, int(src_h))
+        dst_w = max(1, int(dst_w))
+        dst_h = max(1, int(dst_h))
+
+        # Inverse of the letterbox used to resize source -> 640x640.
+        scale = min(640.0 / src_w, 640.0 / src_h)
+        new_w = src_w * scale
+        new_h = src_h * scale
+        pad_x = (640.0 - new_w) / 2.0
+        pad_y = (640.0 - new_h) / 2.0
+
+        def to_src(xp: float, yp: float) -> tuple[float, float]:
+            return (xp - pad_x) / scale, (yp - pad_y) / scale
+
+        sx1, sy1 = to_src(x1, y1)
+        sx2, sy2 = to_src(x2, y2)
+
+        # Clip to source frame first.
+        sx1 = max(0.0, min(float(src_w - 1), sx1))
+        sy1 = max(0.0, min(float(src_h - 1), sy1))
+        sx2 = max(0.0, min(float(src_w - 1), sx2))
+        sy2 = max(0.0, min(float(src_h - 1), sy2))
+
+        # Then scale to the displayed image size.
+        dx1 = sx1 * (dst_w / float(src_w))
+        dy1 = sy1 * (dst_h / float(src_h))
+        dx2 = sx2 * (dst_w / float(src_w))
+        dy2 = sy2 * (dst_h / float(src_h))
+
+        if len(bbox) >= 7:
+            return (int(prefix[0]), int(prefix[1]), int(round(dx1)), int(round(dy1)), int(round(dx2)), int(round(dy2)), conf)
+        return (int(prefix[0]), int(round(dx1)), int(round(dy1)), int(round(dx2)), int(round(dy2)), conf)
+    except Exception:
+        return None
+
+
 class _App:
     def __init__(self, vision, web_dir: Path, jpeg_quality: int = 75):
         self.vision = vision
@@ -139,6 +271,9 @@ class _App:
             "counters": counters,
         }
 
+    def state_dict_json_safe(self) -> dict:
+        return _json_safe(self.state_dict())
+
     def cam_jpeg(self, cam_index: int, resize_to: int | None = None) -> bytes | None:
         try:
             frames = getattr(self.vision, "Frames", None)
@@ -159,6 +294,49 @@ class _App:
                         nw = int(resize_to)
                         nh = int(h * (nw / w))
                     img = cv2.resize(img, (nw, nh))
+
+            # Draw detection overlays directly on the camera frame as a fallback.
+            # This makes boxes visible even if the browser-side canvas overlay is hidden,
+            # mis-sized, or temporarily fails to redraw.
+            try:
+                # Bounding boxes are produced in 640x640 detector space.
+                # Map them back to the source frame first, then to the actual displayed image size.
+                src_h, src_w = fr.shape[:2]
+                dst_h, dst_w = img.shape[:2]
+
+                ball_bbox = _bbox_at_cam(getattr(self.vision, "GetBallBBoxes", lambda: None)(), cam_index)
+                chassis_bbox = _bbox_at_cam(getattr(self.vision, "GetChassisBBoxes", lambda: None)(), cam_index)
+                goal_bbox = _bbox_at_cam(getattr(self.vision, "GetGoalBBoxes", lambda: None)(), cam_index)
+
+                # If per-camera lists are unavailable, fall back to the single best bbox.
+                if ball_bbox is None:
+                    ball_bbox = _bbox_at_cam(getattr(self.vision, "GetBallBBox", lambda: None)(), cam_index)
+                if chassis_bbox is None:
+                    chassis_bbox = _bbox_at_cam(getattr(self.vision, "GetChassisBBox", lambda: None)(), cam_index)
+                if goal_bbox is None:
+                    goal_bbox = _bbox_at_cam(getattr(self.vision, "GetGoalBBox", lambda: None)(), cam_index)
+
+                ball_bbox = _map_bbox_640_to_image(ball_bbox, src_w, src_h, dst_w, dst_h)
+                chassis_bbox = _map_bbox_640_to_image(chassis_bbox, src_w, src_h, dst_w, dst_h)
+                goal_bbox = _map_bbox_640_to_image(goal_bbox, src_w, src_h, dst_w, dst_h)
+
+                _draw_bbox_label(img, ball_bbox, (247, 37, 133), "ball")
+                _draw_bbox_label(img, chassis_bbox, (76, 201, 240), "chassis")
+                if goal_bbox is not None and len(goal_bbox) >= 7:
+                    cls_id = int(goal_bbox[1])
+                    if cls_id == 1:
+                        color = (59, 130, 246)
+                        label = "blue_goal"
+                    elif cls_id == 2:
+                        color = (250, 204, 21)
+                        label = "yellow_goal"
+                    else:
+                        color = (167, 139, 250)
+                        label = "goal"
+                    _draw_bbox_label(img, goal_bbox, color, label)
+            except Exception:
+                pass
+
             ok, buf = cv2.imencode(
                 ".jpg",
                 img,
@@ -227,7 +405,7 @@ def make_handler(app: _App):
                 return self._send(200, _guess_content_type(p), p.read_bytes())
 
             if path == "/api/state":
-                payload = json.dumps(app.state_dict(), ensure_ascii=False).encode("utf-8")
+                payload = json.dumps(app.state_dict_json_safe(), ensure_ascii=False).encode("utf-8")
                 return self._send(200, "application/json; charset=utf-8", payload)
 
             if path.startswith("/api/cam/") and path.endswith(".jpg"):

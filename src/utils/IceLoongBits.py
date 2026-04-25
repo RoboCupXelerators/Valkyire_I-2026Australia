@@ -290,6 +290,7 @@ class IceLoongBits:
     def GetKey(self):
         """获取按键状态"""
         if self.key:
+            self.key = False
             return True
         else:
             return False
