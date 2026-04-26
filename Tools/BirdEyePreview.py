@@ -178,8 +178,11 @@ def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm
     board_w_mm = max(1.0, (int(board_size[0]) - 1) * square_mm)
     board_h_mm = max(1.0, (int(board_size[1]) - 1) * square_mm)
     ppm = max(0.1, float(pixels_per_mm))
-    out_w = max(1, int(round(board_w_mm * ppm)))
-    out_h = max(1, int(round(board_h_mm * ppm)))
+    # Shrink the BEV resolution to ensure boundaries are visible in the UI
+    zoom_factor = 0.8
+    effective_ppm = ppm * zoom_factor
+    out_w = max(1, int(round(board_w_mm * effective_ppm)))
+    out_h = max(1, int(round(board_h_mm * effective_ppm)))
 
     src = frame_bgr
     if K is not None and dist is not None:
@@ -194,11 +197,11 @@ def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm
         H_inv = np.eye(3, dtype=np.float64)
 
     # World plane mm -> display px:
-    # x_display = x_mm * ppm
-    # y_display = (board_h_mm - y_mm) * ppm
+    # x_display = x_mm * effective_ppm
+    # y_display = (board_h_mm - y_mm) * effective_ppm
     scale = np.array([
-        [ppm, 0.0, 0.0],
-        [0.0, -ppm, board_h_mm * ppm],
+        [effective_ppm, 0.0, 0.0],
+        [0.0, -effective_ppm, board_h_mm * effective_ppm],
         [0.0, 0.0, 1.0],
     ], dtype=np.float64)
     M = scale @ H_inv
