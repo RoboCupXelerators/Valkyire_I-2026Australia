@@ -182,35 +182,39 @@ class UnitedVision(Detect_Method):
             except Exception:
                 pass
 
-    def ApplyPerspectiveTransform(self,X, Y, Matrix):
-        # 应用透视矩阵
-        Point = np.array([X, Y, 1], dtype=np.float64)
+    def ApplyPerspectiveTransform(self, px_x, px_y, Matrix):
+        # OpenCV image plane: origin is top-left, +x right, +y down.
+        # This function only applies the homography; it does NOT convert to robot frame.
+        Point = np.array([px_x, px_y, 1], dtype=np.float64)
         Transformed = Matrix @ Point
         Transformed /= Transformed[2]
         return int(Transformed[0]), int(Transformed[1])
 
-    def Pixel2CM(self,X,Y,CamIndex):
-        P2CK = self.P2CK[CamIndex]
-        P2CHB = self.P2CHB[CamIndex]
-        P2CVB = self.P2CVB[CamIndex]
-        X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[CamIndex])
+    def Pixel2CM(self, px_x, px_y, CamIndex):
+        # Step 1: image pixel -> board plane (still camera/board coordinates)
+        plane_x_px, plane_y_px = self.ApplyPerspectiveTransform(px_x, px_y, self.PerspectiveMatrices[CamIndex])
 
-        X = round(self.P2CK[CamIndex] * X + self.P2CHB[CamIndex],2)
-        Y = round(-self.P2CK[CamIndex] * Y + self.P2CVB[CamIndex],2)
+        # Step 2: board-plane pixels -> board-plane centimeters
+        # P2CK: scale, P2CHB/P2CVB: offsets. Y is flipped here so that later
+        # conversion to robot frame can be named explicitly.
+        plane_x_cm = round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
+        plane_y_cm = round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
 
-        return X, Y
- 
-    def CM2Pixel(self, X, Y, CamIndex):
-        P2CK = self.P2CK[CamIndex]
-        P2CHB = self.P2CHB[CamIndex]
-        P2CVB = self.P2CVB[CamIndex]
+        # IMPORTANT: return value is NOT robot-frame. It is still per-camera plane cm.
+        return plane_x_cm, plane_y_cm
 
-        X = (X - P2CHB) / P2CK
-        Y = -(Y - P2CVB) / P2CK
+    def CM2Pixel(self, plane_x_cm, plane_y_cm, CamIndex):
+        # Inverse of Pixel2CM: board-plane cm -> board-plane pixels -> raw image pixels.
+        plane_x_px = (plane_x_cm - self.P2CHB[CamIndex]) / self.P2CK[CamIndex]
+        plane_y_px = -(plane_y_cm - self.P2CVB[CamIndex]) / self.P2CK[CamIndex]
 
-        X, Y = self.ApplyPerspectiveTransform(X, Y, np.linalg.inv(self.PerspectiveMatrices[CamIndex]))
+        raw_px_x, raw_px_y = self.ApplyPerspectiveTransform(
+            plane_x_px,
+            plane_y_px,
+            np.linalg.inv(self.PerspectiveMatrices[CamIndex]),
+        )
 
-        return int(X), int(Y)
+        return int(raw_px_x), int(raw_px_y)
 
     @staticmethod
     def _bbox_distance_from_sizes(real_w_cm: float | None, real_h_cm: float | None, bbox_w_px: float, bbox_h_px: float, K: np.ndarray | None):
@@ -237,6 +241,26 @@ class UnitedVision(Detect_Method):
             return None
         return float(sum(candidates) / len(candidates))
 
+    @staticmethod
+    def _to_robot_frame(plane_x_cm: float, plane_y_cm: float, cam_index: int) -> tuple[float, float]:
+        """Convert per-camera plane cm into robot-frame cm.
+
+        Robot frame convention used across the codebase:
+        - x_forward_cm: forward distance
+        - y_left_cm: leftward distance
+
+        Note: the sign/axis mapping depends on the camera mounting direction.
+        """
+        if cam_index == 0:
+            return -plane_x_cm, plane_y_cm
+        if cam_index == 1:
+            return plane_y_cm, plane_x_cm
+        if cam_index == 2:
+            return plane_x_cm, plane_y_cm
+        if cam_index == 3:
+            return -plane_y_cm, -plane_x_cm
+        return plane_x_cm, plane_y_cm
+
     def _bbox_distance_legacy(self, bbox_w_px: float, bbox_h_px: float, real_scale_cm: float | None):
         """Fallback distance estimate when intrinsics are unavailable.
 
@@ -254,19 +278,6 @@ class UnitedVision(Detect_Method):
             return float(100.0 * scale)
         except Exception:
             return None
-
-    @staticmethod
-    def _to_robot_frame(x_cm: float, y_cm: float, cam_index: int) -> tuple[float, float]:
-        """Convert camera-frame ground-plane coordinates into robot frame."""
-        if cam_index == 0:
-            return -x_cm, y_cm
-        if cam_index == 1:
-            return y_cm, x_cm
-        if cam_index == 2:
-            return x_cm, y_cm
-        if cam_index == 3:
-            return -y_cm, -x_cm
-        return x_cm, y_cm
 
     @staticmethod
     def _blend_planar_with_range(planar_xy: tuple[float, float], range_cm: float | None, confidence: float, strength: float = 0.35):
@@ -421,9 +432,9 @@ class UnitedVision(Detect_Method):
                     # Ignore padded/dummy outputs
                     if Confidence is None or Confidence <= 0:
                         continue
-                    X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     (CX, CY), _ = self._fuse_detection_position(
-                        self._to_robot_frame(X, Y, CameraIndex),
+                        self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex),
                         int(CameraIndex),
                         float(Confidence),
                         float(ChassisWidth),
@@ -521,11 +532,11 @@ class UnitedVision(Detect_Method):
                     if best_goal is None or bbox[6] > best_goal[6]:
                         best_goal = bbox
 
-                    X, Y = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
-                    # Match BallDetection axis conventions (x forward, y left)
-                    planar = self._to_robot_frame(X, Y, cam_i)
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
+                    # Match BallDetection axis conventions: output must be robot-frame (x_forward, y_left).
+                    robot_xy = self._to_robot_frame(plane_x_cm, plane_y_cm, cam_i)
                     fused, _ = self._fuse_detection_position(
-                        planar,
+                        robot_xy,
                         cam_i,
                         float(Confidence),
                         float(W),
@@ -534,10 +545,13 @@ class UnitedVision(Detect_Method):
                         self.BlueGoalHeightCM if cls_i == 1 else self.YellowGoalHeightCM,
                         strength=0.55,
                     )
-                    GY, GX = fused
-                    self.logger.debug(f"Goal Processed ER: x: {(GX-X)} y: {(GY-Y)} cls_id: {cls_id} conf: {Confidence}")
+                    robot_x_cm, robot_y_cm = fused
+                    self.logger.debug(
+                        f"Goal Processed ER: robot_x={robot_x_cm:.2f}, robot_y={robot_y_cm:.2f}, "
+                        f"plane_x={plane_x_cm:.2f}, plane_y={plane_y_cm:.2f}, cls_id={cls_id}, conf={Confidence}"
+                    )
 
-                    goal_item = [round(GX, 2), round(GY, 2), float(Confidence)]
+                    goal_item = [round(robot_x_cm, 2), round(robot_y_cm, 2), float(Confidence)]
                     goals.append(goal_item)
                     if int(cls_id) == 1:
                         if blue_goal is None or goal_item[2] > blue_goal[2]:
@@ -618,9 +632,9 @@ class UnitedVision(Detect_Method):
                     # Ignore padded/dummy outputs
                     if Confidence is None or Confidence <= 0:
                         continue
-                    X,Y = self.Pixel2CM(CenterX, BottomY, CameraIndex)
-                    (BX, BY) = self._to_robot_frame(X, Y, CameraIndex)
-                    BallTuple = (round(BX,2), round(BY,2), BallWidth, BallHeight, Confidence)
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
+                    robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
+                    BallTuple = (round(robot_x_cm,2), round(robot_y_cm,2), BallWidth, BallHeight, Confidence)
                     Balls.append(BallTuple)
                 except:
                     continue
@@ -628,9 +642,9 @@ class UnitedVision(Detect_Method):
                 # pick the most confident one
                 Balls = sorted(Balls, key=lambda x: x[4], reverse=True)
                 Ball = Balls[0]
-                BX = Ball[0]
-                BY = Ball[1]
-                self.BallPosRaw = [BX, BY]
+                robot_x_cm = Ball[0]
+                robot_y_cm = Ball[1]
+                self.BallPosRaw = [robot_x_cm, robot_y_cm]
                 # Pull the position slightly toward the bbox-derived distance.
                 # This keeps the direction from pixel2cm while correcting long-range drift.
                 best_idx = 0
@@ -645,7 +659,7 @@ class UnitedVision(Detect_Method):
                 bbox_w = float(Ball[2])
                 bbox_h = float(Ball[3])
                 fused, _ = self._fuse_detection_position(
-                    (BX, BY),
+                    (robot_x_cm, robot_y_cm),
                     cam,
                     float(Ball[4]),
                     bbox_w,
