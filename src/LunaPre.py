@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import simple_pid
 
 from ReasonData import logger, Settings
 
@@ -278,6 +279,11 @@ class Positions:
         self.get_vision_data_process: threading.Thread | None = None
         self._vision_started = False
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
+        pan_P = 2.3
+        pan_I = 0.08
+        self.Position_X_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
+        self.Position_Y_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
+        self.Position_Z_PID = simple_pid.PID(1, 0, 0, setpoint=0)
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
         if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
@@ -816,39 +822,32 @@ class Positions:
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
             chassis.stop()
             return False
-        if iLocX < 0:
-            kX = -1
-        else:
-            kX = 1
-        if iLocY < 0:
-            kY = -1
-        else:
-            kY = 1
         iAimX,iAimY,iAimZ = AimPos
-        iDeltaX = (iAimX) - (iLocX)
-        iDeltaY = (iAimY) - (iLocY)
-        iDeltaZ = (iAimZ) - (iLocZ)
+        iErrorX = (iAimX) - (iLocX)
+        iErrorY = (iAimY) - (iLocY)
+        iErrorZ = (iAimZ) - (iLocZ)
         # iDeltaX = 0.001*iDeltaX**3+iDeltaX
         # iDeltaY = 0.001*iDeltaY**3+iDeltaY
         RestrictedX = Settings.Bounds.FarPos[0]
         RestrictedY = Settings.Bounds.FarPos[1]
-        try:
-            try:
-                Slope = iDeltaX/iDeltaY
-            except ZeroDivisionError:
-                Slope = 1
-            if Slope*RestrictedY > RestrictedX:
-                iAimX = (RestrictedX - 3)*kX
-            if Slope/RestrictedX > RestrictedY:
-                iAimY = (RestrictedY - 3)*kY
-        except:
-            iAimX,iAimY,iAimZ = AimPos
+        if Settings.Debug.Beta:
+            self.Position_X_PID.setpoint = iAimX
+            self.Position_Y_PID.setpoint = iAimY
+            self.Position_Z_PID.setpoint = iAimZ
+            iDeltaX = self.Position_X_PID(iLocX)
+            iDeltaY = self.Position_Y_PID(iLocY)
+            # iDeltaZ = self.Position_Z_PID(iLocZ+iErrorZ)
+            logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}, Z={self.Position_Z_PID.setpoint}")
+            logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}, iDeltaZ={iAimZ}")
         iErrorRange = Settings.ExpectedVals.ErrorRange
-        iMovedAngle = (int(math.degrees(math.atan2(iDeltaY,iDeltaX))))%360
-        if iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and abs(iErrorRange) > iDeltaZ:
+        iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
+        if iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and abs(iErrorRange) > iErrorZ:
             chassis.stop()
+            self.Position_X_PID.reset()
+            self.Position_Y_PID.reset()
+            self.Position_Z_PID.reset()
             return True
-        elif iErrorRange/2 > abs(iDeltaX) and iErrorRange/2 > abs(iDeltaY) and not abs(iErrorRange) > abs(iDeltaZ):
+        elif iErrorRange/4 > abs(iErrorX) and iErrorRange/4 > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
             chassis.FieldTurn(iAimZ)
         else:
             if speed_gain:

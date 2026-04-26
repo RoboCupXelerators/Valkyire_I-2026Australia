@@ -107,13 +107,13 @@ class LockSeries:
                 Fangle = int(math.degrees(math.atan2(iBY,iBX)))
             if iBX > 75 or iBY > 75:
                 Kp = 7
-                KpZ = 1
+                KpZ = 4
             elif 25 < iBX <= 75 or 25 < iBY <= 75:
                 Kp = 6
-                KpZ = 1
-            else:
-                Kp = 4
                 KpZ = 1.5
+            else:
+                Kp = 2
+                KpZ = 1
             # Kp = 3
             # KpZ = Fangle*self.D_time/500
             SpeedX = iBX * Kp
@@ -131,6 +131,50 @@ class LockSeries:
             # Keep the entire slip logic in robot-frame motion.
             chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
+
+    def LockBallDash(self):
+        iBX,iBY = UnitedPosition.RobotBallPos()
+        if [iBX,iBY] == [0xfff,0xfff]:
+            chassis.stop()
+            return False
+        elif [iBX,iBY] == [0xddd,0xddd]:
+            chassis.RobotMoveVector(50,0,0)
+            return True
+        else:
+            if iBY == 0:
+                Fangle = 0
+            else:
+                Fangle = int(math.degrees(math.atan2(iBY,iBX)))
+            if iBX > 75 or iBY > 75:
+                Kp = 7
+                KpZ = 4
+            elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                Kp = 6
+                KpZ = 1.5
+            else:
+                Kp = 2
+                KpZ = 1
+            if abs(Fangle) < Settings.ExpectedVals.ErrorRange:
+                KpZ = 0
+                Kp = 5
+            # Kp = 3
+            # KpZ = Fangle*self.D_time/500
+            SpeedX = iBX * Kp
+            SpeedY = iBY * Kp
+            Fangle = Fangle * KpZ
+            if SpeedX > 300:
+                SpeedX = 300
+            if SpeedY > 300:
+                SpeedY = 300
+            if SpeedX < -300:
+                SpeedX = -300
+            if SpeedY < -300:
+                SpeedY = -300
+            # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            # Keep the entire slip logic in robot-frame motion.
+            chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            return False
+
 
 lockball = LockSeries()
 

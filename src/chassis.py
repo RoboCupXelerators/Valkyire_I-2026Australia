@@ -77,7 +77,7 @@ class Car:
         SpeedY = int(math.sin(rad) * Speed)
         self.FieldMoveVector(SpeedX,SpeedY,FacingAngle,Kp)
         
-    def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None):
+    def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None,KpW:float|None = None):
         '''
         vector movement (SpeedX,SpeedY,AngleZ˚,Angle_Gain) with YawCorrect
         '''
@@ -88,7 +88,9 @@ class Car:
         Error = -( (Error + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if not Kp:
             Kp = self.Kp
-        SpeedZ = Error * self.KpW
+        if not KpW:
+            KpW = self.KpW
+        SpeedZ = Error * KpW
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
         # Only print high-frequency motion logs when FullLog is enabled

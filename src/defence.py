@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from BasicFuc import *
 
+a = simple_pid.PID(4, 0.4, 1, setpoint=0)
 
 def main():
     try:
@@ -16,20 +17,23 @@ def main():
 
                 if ball_position == [0xFFF, 0xFFF]:
                     UnitedPosition.Pos2Pos(Settings.CheckPoints.Home, 4.5)
+                    # pass
                 elif ball_position == [0xDDD, 0xDDD]:
                     if TurnTo_with_ball(UnitedPosition.Local2Angle([100, 0])):
                         peripheral.Dribble(0.3)
+                        chassis.RobotMoveVector(100,0,0)
+                        time.sleep(0.3)
                         peripheral.ShootBall()
                         time.sleep(0.5)
                 else:
-                    peripheral.Dribble(0.5)
+                    # peripheral.Dribble(0.5)
                     if 0 < ball_position[0] < 30:
                         lockball.LockBallSlip()
                     else:
                         distance_cache = UnitedPosition.DirectDistance()
                         speed_cache = max(distance_cache[1], distance_cache[3])
                         chassis.FieldMoveVector(0, ball_position[1] * 8 - speed_cache / 100, 0)
-            time.sleep(0.03)
+                time.sleep(0.03)
     finally:
         peripheral.Dribble(False)
         chassis.stop()
