@@ -11,6 +11,7 @@ class Car:
         self.Kp = 3
         self.KpW = 1
         self.cfg = Settings
+        self.speedCache = [0,0,0,0]
         # Always use the unified project logger (ReasonData.logger)
         # to avoid AttributeError when FullLog=False.
         self.logger = logger
@@ -21,6 +22,7 @@ class Car:
         # Note: debug verbosity is still controlled by cfg.Debug.FullLog in calls.
     
     def SetMotor(self,speedCache:list[int,int,int,int]):
+        self.speedCache = speedCache
         number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
         speed = [0,0,0,0]
         for n in range(4):

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from BasicFuc import *
 
-a = simple_pid.PID(4, 0.4, 1, setpoint=0)
+pan_y = simple_pid.PID(3.5, 0.08, 0.12, setpoint=0)
 
 def main():
     try:
@@ -32,7 +32,8 @@ def main():
                     else:
                         distance_cache = UnitedPosition.DirectDistance()
                         speed_cache = max(distance_cache[1], distance_cache[3])
-                        chassis.FieldMoveVector(0, ball_position[1] * 8 - speed_cache / 100, 0)
+                        print(lockball.BallScore())
+                        chassis.FieldMoveVector(0, -pan_y(ball_position[1]), 0)
                 time.sleep(0.03)
     finally:
         peripheral.Dribble(False)

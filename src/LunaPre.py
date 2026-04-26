@@ -280,10 +280,10 @@ class Positions:
         self._vision_started = False
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
         pan_P = 2.3
-        pan_I = 0.08
+        pan_I = 0.1
         self.Position_X_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
         self.Position_Y_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
-        self.Position_Z_PID = simple_pid.PID(1, 0, 0, setpoint=0)
+        self.Position_Z_PID = simple_pid.PID(0.01, 0.08, 0, setpoint=0)
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
         if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
@@ -836,9 +836,14 @@ class Positions:
             self.Position_Z_PID.setpoint = iAimZ
             iDeltaX = self.Position_X_PID(iLocX)
             iDeltaY = self.Position_Y_PID(iLocY)
-            # iDeltaZ = self.Position_Z_PID(iLocZ+iErrorZ)
-            logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}, Z={self.Position_Z_PID.setpoint}")
-            logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}, iDeltaZ={iAimZ}")
+            iDeltaZ = self.Position_Z_PID(iLocZ)
+            if Settings.Debug.FullLog:
+                logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}, Z={self.Position_Z_PID.setpoint}")
+                logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}, iDeltaZ={iDeltaZ}")
+        else:
+            iDeltaX = iErrorX
+            iDeltaY = iErrorY
+            iDeltaZ = iErrorZ
         iErrorRange = Settings.ExpectedVals.ErrorRange
         iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
         if iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and abs(iErrorRange) > iErrorZ:
@@ -854,7 +859,10 @@ class Positions:
                 chassis.FieldMoveVector(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
                 # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
+                if Settings.Debug.Beta:
+                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ,None,abs(iDeltaZ)*0.5)
+                else:
+                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
             return False
 
     def Move2Path(self, Posistions: list, iWaitMs: float):

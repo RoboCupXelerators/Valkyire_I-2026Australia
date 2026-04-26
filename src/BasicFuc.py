@@ -174,6 +174,18 @@ class LockSeries:
             # Keep the entire slip logic in robot-frame motion.
             chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             return False
+        
+    def BallScore(self):
+        distance = UnitedPosition.RobotBallDistance()
+        speed = sum(chassis.speedCache)/4
+        try:
+            time = distance/speed
+        except ZeroDivisionError:
+            time = distance
+        import random
+        seed = random.random()
+        score = round((abs(time) * 0.5 + abs(speed) * 0.2 + seed * 0.01)/100000,2)
+        return score
 
 
 lockball = LockSeries()
