@@ -197,8 +197,8 @@ class UnitedVision(Detect_Method):
         # Step 2: board-plane pixels -> board-plane centimeters
         # P2CK: scale, P2CHB/P2CVB: offsets. Y is flipped here so that later
         # conversion to robot frame can be named explicitly.
-        plane_x_cm = round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
-        plane_y_cm = round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
+        plane_y_cm = -round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
+        plane_x_cm = -round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
 
         # IMPORTANT: return value is NOT robot-frame. It is still per-camera plane cm.
         return plane_x_cm, plane_y_cm
@@ -633,6 +633,7 @@ class UnitedVision(Detect_Method):
                     if Confidence is None or Confidence <= 0:
                         continue
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
+                    # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
                     robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
                     BallTuple = (round(robot_x_cm,2), round(robot_y_cm,2), BallWidth, BallHeight, Confidence)
                     Balls.append(BallTuple)
@@ -668,7 +669,7 @@ class UnitedVision(Detect_Method):
                     self.BallDiameterCM,
                     strength=max(0.55, self.BBoxFusionStrength),
                 )
-                self.BallPos = [round(fused[0], 2), round(fused[1], 2)]
+                self.BallPos = self.BallPosRaw
                 self._ball_pos_ts = time.time()
             else:
                 # hold last position briefly to reduce flicker

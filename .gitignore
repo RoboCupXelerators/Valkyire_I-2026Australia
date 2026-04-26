@@ -225,3 +225,4 @@ ROS2_Nodes/
 .python-version
 .vscode/settings.json
 Tools/Pixel2CM/Calibration/*
+BirdEyeCaptures

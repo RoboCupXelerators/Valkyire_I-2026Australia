@@ -30,6 +30,8 @@ DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30
 DEFAULT_PIXELS_PER_MM = 4.0
 DEFAULT_GRID_MM = 10.0
+DEFAULT_BEV_PREVIEW_SCALE = 0.4
+DEFAULT_SAVE_DIR = str(APP_DIR / "BirdEyeCaptures")
 
 RUNNING = False
 CAPS: list[cv2.VideoCapture] = []
@@ -167,6 +169,16 @@ def _stack_four_views(views: list[np.ndarray], labels: list[str], cell_w: int = 
     return np.vstack([top, bottom])
 
 
+def _resize_preview(img: np.ndarray, scale: float) -> np.ndarray:
+    scale = float(scale)
+    if scale >= 0.999:
+        return img
+    scale = max(0.05, scale)
+    new_w = max(1, int(round(img.shape[1] * scale)))
+    new_h = max(1, int(round(img.shape[0] * scale)))
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
 
 def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm: float, grid_mm: float):
     K = calib.get("K")
@@ -175,14 +187,8 @@ def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm
     board_size = calib.get("board_size", (9, 9))
     square_mm = float(calib.get("square_size_mm", 15.0))
 
-    board_w_mm = max(1.0, (int(board_size[0]) - 1) * square_mm)
-    board_h_mm = max(1.0, (int(board_size[1]) - 1) * square_mm)
     ppm = max(0.1, float(pixels_per_mm))
-    # Shrink the BEV resolution to ensure boundaries are visible in the UI
-    zoom_factor = 0.8
-    effective_ppm = ppm * zoom_factor
-    out_w = max(1, int(round(board_w_mm * effective_ppm)))
-    out_h = max(1, int(round(board_h_mm * effective_ppm)))
+    margin_px = max(40, int(round(ppm * 10.0)))
 
     src = frame_bgr
     if K is not None and dist is not None:
@@ -196,14 +202,28 @@ def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm
     except Exception:
         H_inv = np.eye(3, dtype=np.float64)
 
-    # World plane mm -> display px:
-    # x_display = x_mm * effective_ppm
-    # y_display = (board_h_mm - y_mm) * effective_ppm
-    scale = np.array([
-        [effective_ppm, 0.0, 0.0],
-        [0.0, -effective_ppm, board_h_mm * effective_ppm],
-        [0.0, 0.0, 1.0],
-    ], dtype=np.float64)
+    h, w = src.shape[:2]
+    image_corners = np.array(
+        [[[0.0, 0.0]], [[w - 1.0, 0.0]], [[w - 1.0, h - 1.0]], [[0.0, h - 1.0]]],
+        dtype=np.float64,
+    )
+    world_corners = cv2.perspectiveTransform(image_corners, H_inv).reshape(-1, 2)
+    min_x, min_y = np.min(world_corners, axis=0)
+    max_x, max_y = np.max(world_corners, axis=0)
+    world_w_mm = max(1.0, float(max_x - min_x))
+    world_h_mm = max(1.0, float(max_y - min_y))
+    out_w = max(1, int(round(world_w_mm * ppm)) + 2 * margin_px)
+    out_h = max(1, int(round(world_h_mm * ppm)) + 2 * margin_px)
+
+    # World mm -> display px, auto-shift so the full warped content fits the canvas.
+    scale = np.array(
+        [
+            [ppm, 0.0, -min_x * ppm + margin_px],
+            [0.0, -ppm, max_y * ppm + margin_px],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
     M = scale @ H_inv
     bird = cv2.warpPerspective(
         src,
@@ -221,6 +241,7 @@ def _modern_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm
         [
             f"mode=modern | board={board_size[0]}x{board_size[1]} | square={square_mm:.1f}mm",
             f"bird-eye size={out_w}x{out_h} px | scale={ppm:.2f} px/mm",
+            f"auto-fit canvas | margin={margin_px}px",
             f"grid={grid_mm:.1f}mm",
         ],
         origin=(10, 24),
@@ -245,7 +266,12 @@ def _legacy_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any]):
     return bird
 
 
-def make_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm: float, grid_mm: float):
+def make_bird_eye(
+    frame_bgr: np.ndarray,
+    calib: dict[str, Any],
+    pixels_per_mm: float,
+    grid_mm: float,
+):
     mode = calib.get("mode")
     if mode == "modern":
         return _modern_bird_eye(frame_bgr, calib, pixels_per_mm, grid_mm)
@@ -257,7 +283,21 @@ def make_bird_eye(frame_bgr: np.ndarray, calib: dict[str, Any], pixels_per_mm: f
     return out
 
 
-def stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams):
+def stream_preview(
+    cam_index,
+    calib_file,
+    width,
+    height,
+    use_mjpg,
+    target_fps,
+    pixels_per_mm,
+    grid_mm,
+    display_mode,
+    mosaic_cams,
+    bev_preview_scale,
+    save_full_bev,
+    save_dir,
+):
     global RUNNING, CAPS
 
     cam_index = int(cam_index)
@@ -266,7 +306,12 @@ def stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, p
     target_fps = max(1, int(target_fps))
     pixels_per_mm = float(pixels_per_mm)
     grid_mm = float(grid_mm)
+    bev_preview_scale = float(bev_preview_scale)
     display_mode = str(display_mode)
+    save_full_bev = bool(save_full_bev)
+    save_dir = Path(str(save_dir)).expanduser() if save_dir else Path(DEFAULT_SAVE_DIR)
+    if save_full_bev:
+        save_dir.mkdir(parents=True, exist_ok=True)
     mosaic_indices = []
     if mosaic_cams:
         for part in str(mosaic_cams).replace('，', ',').split(','):
@@ -297,10 +342,20 @@ def stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, p
                 continue
             raw = frame.copy()
             bird = make_bird_eye(frame, calib, pixels_per_mm, grid_mm)
+            if save_full_bev:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                ms = int((time.time() % 1) * 1000)
+                out_path = save_dir / f"bev_cam{cam_index}_{ts}_{ms:03d}.png"
+                try:
+                    cv2.imwrite(str(out_path), bird)
+                except Exception:
+                    pass
+            bird_display = _resize_preview(bird, bev_preview_scale)
             info = [
                 f"mode=single | camera={cam_index} | frame={frame.shape[1]}x{frame.shape[0]} | fps_target={target_fps}",
                 f"calib={calib.get('path', '')}",
                 f"calib_mode={calib.get('mode', 'unknown')}",
+                f"bev_preview_scale={bev_preview_scale:.2f} | save_full_bev={save_full_bev}",
             ]
             if calib.get('mode') == 'modern':
                 board_size = calib.get('board_size', (9, 9))
@@ -308,7 +363,7 @@ def stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, p
                 info.append(f"board={board_size[0]}x{board_size[1]} inner corners | square={square_mm:.1f}mm")
             raw = _draw_grid(raw, 0)
             _draw_text_box(raw, info, origin=(10, 24))
-            yield cv2.cvtColor(raw, cv2.COLOR_BGR2RGB), cv2.cvtColor(bird, cv2.COLOR_BGR2RGB), '\n'.join(info)
+            yield cv2.cvtColor(raw, cv2.COLOR_BGR2RGB), cv2.cvtColor(bird_display, cv2.COLOR_BGR2RGB), '\n'.join(info)
             elapsed = time.perf_counter() - t0
             remain = frame_interval - elapsed
             if remain > 0:
@@ -341,11 +396,20 @@ def stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, p
                     frame = np.zeros((height, width, 3), dtype=np.uint8)
                     cv2.putText(frame, f"cam {cam}: no frame", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                 raw_views.append(frame.copy())
-                bird_views.append(make_bird_eye(frame, calib, pixels_per_mm, grid_mm))
+                bird = make_bird_eye(frame, calib, pixels_per_mm, grid_mm)
+                if save_full_bev:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    ms = int((time.time() % 1) * 1000)
+                    out_path = save_dir / f"bev_cam{cam}_{ts}_{ms:03d}.png"
+                    try:
+                        cv2.imwrite(str(out_path), bird)
+                    except Exception:
+                        pass
+                bird_views.append(_resize_preview(bird, bev_preview_scale))
                 labels.append(f"cam={cam} | {calib.get('mode', 'unknown')}")
             raw = _stack_four_views(raw_views, labels, cell_w=width, cell_h=height)
             bird = _stack_four_views(bird_views, labels, cell_w=640, cell_h=360)
-            summary = [f"mode=mosaic | cams={selected}", f"calib_files={[calib.get('path', '') for calib in calibs]}", f"bird-eye mosaic 2x2"]
+            summary = [f"mode=mosaic | cams={selected}", f"calib_files={[calib.get('path', '') for calib in calibs]}", f"bev_preview_scale={bev_preview_scale:.2f} | save_full_bev={save_full_bev}", f"bird-eye mosaic 2x2"]
             _draw_text_box(raw, summary, origin=(10, 24))
             _draw_text_box(bird, summary, origin=(10, 24))
             yield cv2.cvtColor(raw, cv2.COLOR_BGR2RGB), cv2.cvtColor(bird, cv2.COLOR_BGR2RGB), '\n'.join(summary)
@@ -405,6 +469,9 @@ with gr.Blocks(title="Bird-Eye Calibration Preview") as demo:
             target_fps = gr.Slider(1, 60, value=DEFAULT_FPS, step=1, label="Target FPS")
             pixels_per_mm = gr.Slider(0.5, 10.0, value=DEFAULT_PIXELS_PER_MM, step=0.5, label="Bird-eye scale (px/mm)")
             grid_mm = gr.Slider(5.0, 50.0, value=DEFAULT_GRID_MM, step=5.0, label="Grid spacing (mm)")
+            bev_preview_scale = gr.Slider(0.1, 1.0, value=DEFAULT_BEV_PREVIEW_SCALE, step=0.05, label="BEV Preview Scale")
+            save_full_bev = gr.Checkbox(label="Save full-resolution bird-eye image", value=False)
+            save_dir = gr.Textbox(value=DEFAULT_SAVE_DIR, label="Save Directory")
             use_mjpg = gr.Checkbox(label="Use MJPG", value=False)
 
             with gr.Row():
@@ -414,15 +481,15 @@ with gr.Blocks(title="Bird-Eye Calibration Preview") as demo:
             refresh_btn = gr.Button("Refresh Calibration List")
             status_box = gr.Textbox(label="Status", lines=8, interactive=False)
 
-    def _start(cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams):
+    def _start(cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams, bev_preview_scale, save_full_bev, save_dir):
         placeholder = np.zeros((int(height), int(width), 3), dtype=np.uint8)
         cv2.putText(placeholder, "Starting...", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
         yield placeholder, placeholder, "Starting..."
-        yield from stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams)
+        yield from stream_preview(cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams, bev_preview_scale, save_full_bev, save_dir)
 
     start_evt = start_btn.click(
         _start,
-        inputs=[cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams],
+        inputs=[cam_index, calib_file, width, height, use_mjpg, target_fps, pixels_per_mm, grid_mm, display_mode, mosaic_cams, bev_preview_scale, save_full_bev, save_dir],
         outputs=[raw_view, bird_view, status_box],
     )
     stop_btn.click(fn=stop_preview, outputs=status_box, cancels=[start_evt])
