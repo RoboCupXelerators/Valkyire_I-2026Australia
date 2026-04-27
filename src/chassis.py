@@ -86,13 +86,18 @@ class Car:
         Yaw = self.GetYaw()
         # TODO change facing
         # FacingAngle = 360 - FacingAngle
-        Error = Yaw - FacingAngle
-        Error = -( (Error + 180) % 360 - 180 ) # Normalize to [-180, 180]
+        Delta = Yaw - FacingAngle
+        Error = -( (Delta + 180) % 360 - 180 ) # Normalize to [-180, 180]
         if not Kp:
             Kp = self.Kp
         if not KpW:
             KpW = self.KpW
-        SpeedZ = Error * KpW
+        if Settings.Debug.Beta:
+            import simple_pid
+            Yaw_PID = simple_pid.PID(3, 0.08, 0, setpoint=FacingAngle)
+            SpeedZ = Yaw_PID(Yaw)
+        else:
+            SpeedZ = Error * KpW
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
         # Only print high-frequency motion logs when FullLog is enabled

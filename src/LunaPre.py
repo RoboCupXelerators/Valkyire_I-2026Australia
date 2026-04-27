@@ -860,7 +860,8 @@ class Positions:
                 # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
                 if Settings.Debug.Beta:
-                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ,None,abs(iDeltaZ)*0.5)
+                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
+                    # chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ,None,abs(iDeltaZ)*0.5)
                 else:
                     chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
             return False
