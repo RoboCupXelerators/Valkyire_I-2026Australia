@@ -64,7 +64,7 @@ class IceLoongBits:
         self.key = False
         self.key_setup = False
         self.key_count = 0
-        self.motor_speed_k = 1.0
+        self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
         self.logger = logging.getLogger(self.__class__.__name__)

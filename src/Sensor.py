@@ -225,7 +225,7 @@ class Lidar:
                 stdout=out,
                 stderr=err
             )
-            print(f"ROS 2 driver started with PID: {p.pid}, stdout->{out_path}, stderr->{err_path}")
+            print(f"ROS 2 driver started with PID: {p.pid}, stdout->'{out_path}', stderr->'{err_path}'")
             self.lidar_log_files = (out, err)
             self.lidar_process = p
             self.current_launch = launch_file
@@ -260,10 +260,6 @@ class Lidar:
 
     def stop(self):
         """Stop the sllidar driver and close log files"""
-        p = subprocess.Popen(
-            ['/bin/bash', '-lc', 'sudo udevadm trigger'],
-            preexec_fn=os.setsid,
-        )
         if hasattr(self, 'lidar_process') and self.lidar_process is not None:
             self.stop_process_group(self.lidar_process)
             self.lidar_process = None
