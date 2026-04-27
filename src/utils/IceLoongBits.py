@@ -15,6 +15,7 @@ class Commands(IntEnum):
     SET_DRIBBLE_SPEED      = 0x05
     GET_REFEREE_UNLOCK_PIN = 0x06
     GET_RUN_KEY_DELTA      = 0x07
+    MORSE_PLAY             = 0x08
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:             1, 
@@ -24,6 +25,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.SET_DRIBBLE_SPEED:      1, 
     Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
     Commands.GET_RUN_KEY_DELTA:      1 + 1, 
+    Commands.MORSE_PLAY:             1
 }
 
 try:
@@ -228,6 +230,12 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.GET_RUN_KEY_DELTA:
                     tx_bytes += bytes([cmd[0]])
+                case Commands.MORSE_PLAY:
+                    msg = str(cmd[1]) if len(cmd) > 1 else ""
+                    raw = msg.encode('utf-8')[:23]
+                    raw += b'\x00'
+                    length = len(raw)
+                    tx_bytes += bytes([cmd[0], length]) + raw
                 case _:
                     continue
             resp_len += COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
@@ -261,6 +269,8 @@ class IceLoongBits:
                         rx_data.append((resp[i], resp[i+1]))
                     case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
+                    case Commands.MORSE_PLAY:
+                        rx_data.append((resp[i],))
                     case _:
                         break
                 i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
