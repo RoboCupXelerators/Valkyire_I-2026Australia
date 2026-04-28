@@ -73,7 +73,7 @@ class LockSeries:
         self.D_time = 0
         import simple_pid
         self.pan_x = simple_pid.PID(
-            2.5,0,0,
+            3,0,0,
             setpoint=Settings.ExpectedVals.CatchVal[0],
             output_limits=(-200,200),
             auto_mode=True)
@@ -83,7 +83,7 @@ class LockSeries:
             output_limits=(-200,200),
             auto_mode=True)
         self.pan_w = simple_pid.PID(
-            2,0,0,
+            1,0,0,
             setpoint=0,
             output_limits=(-100,100),
             auto_mode=True)
@@ -128,15 +128,15 @@ class LockSeries:
                 angle = 0
             else:
                 angle = int(math.degrees(math.atan2(iBY,iBX)))
-            if self.D_time > 5000:
-                self.D_time = 0
-                self.pan_x.reset()
-                self.pan_y.reset()
-                self.pan_w.reset()
+            # if self.D_time > 5000:
+            #     self.D_time = 0
+            #     self.pan_x.reset()
+            #     self.pan_y.reset()
+            #     self.pan_w.reset()
             if Settings.Debug.Beta:
                 SpeedX = -self.pan_x(iBX)
                 SpeedY = -self.pan_y(iBY)
-                SpeedW = self.pan_w(iBY)
+                SpeedW = -self.pan_w(angle)
                 chassis.RobotMoveVector(SpeedX,SpeedY,SpeedW) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             else:
                 if iBX > 75 or iBY > 75:
