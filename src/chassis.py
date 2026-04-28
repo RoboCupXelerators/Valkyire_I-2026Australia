@@ -12,6 +12,8 @@ class Car:
         self.KpW = 1
         self.cfg = Settings
         self.speedCache = [0,0,0,0]
+        import simple_pid
+        self.Yaw_PID = simple_pid.PID(2.3, 0.08, 0.05, setpoint=0,output_limits=(-100,100),auto_mode=True)
         # Always use the unified project logger (ReasonData.logger)
         # to avoid AttributeError when FullLog=False.
         self.logger = logger
@@ -88,16 +90,20 @@ class Car:
         # FacingAngle = 360 - FacingAngle
         Delta = Yaw - FacingAngle
         Error = -( (Delta + 180) % 360 - 180 ) # Normalize to [-180, 180]
+        Normaled_Yaw =  ( (Yaw + 180) % 360 - 180 )
+        Normaled_Facing =  ( (FacingAngle + 180) % 360 - 180 )
         if not Kp:
             Kp = self.Kp
         if not KpW:
             KpW = self.KpW
         if Settings.Debug.Beta:
-            import simple_pid
-            Yaw_PID = simple_pid.PID(3, 0.08, 0, setpoint=FacingAngle)
-            SpeedZ = Yaw_PID(Yaw)
+            self.Yaw_PID.setpoint = Normaled_Facing
+            SpeedZ = self.Yaw_PID(Normaled_Yaw)
+            logger.error(f"PID output: {SpeedZ}, Yaw: {Normaled_Yaw}, FacingAngle: {Normaled_Facing}")
         else:
             SpeedZ = Error * KpW
+        if abs(Error) < Settings.ExpectedVals.ErrorRange:
+            self.Yaw_PID.reset()  # Reset PID when within acceptable error range
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))
         # Only print high-frequency motion logs when FullLog is enabled

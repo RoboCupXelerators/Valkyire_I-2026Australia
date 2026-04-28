@@ -13,7 +13,7 @@ def main():
 
         a = 0
         # 测试5：盘球降速
-        while True:
+        while False:
             if a % 100:
                 resp4 = bot.ExecuteCommands([
                     (Commands.HAND_SHAKE,), 
@@ -69,7 +69,8 @@ def main():
             (Commands.GET_BMI088_DATA,), 
             (Commands.KICK,), 
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
-            (Commands.GET_RUN_KEY_DELTA,)
+            (Commands.GET_RUN_KEY_DELTA,),
+            (Commands.MORSE_PLAY, "HELLO")
         ])
         print("响应:", resp2)
         time.sleep(1)

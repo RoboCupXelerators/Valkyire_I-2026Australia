@@ -281,9 +281,10 @@ class Positions:
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
         pan_P = 2.3
         pan_I = 0.1
-        self.Position_X_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
-        self.Position_Y_PID = simple_pid.PID(pan_P, pan_I, 0, setpoint=0)
-        self.Position_Z_PID = simple_pid.PID(0.01, 0.08, 0, setpoint=0)
+        pan_D = 0.02
+        self.ResetFlag = 0
+        self.Position_X_PID = simple_pid.PID(pan_P, pan_I, pan_D, setpoint=0,output_limits=(-300,300),auto_mode=True)
+        self.Position_Y_PID = simple_pid.PID(pan_P, pan_I, pan_D, setpoint=0,output_limits=(-300,300),auto_mode=True)
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
         if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
@@ -542,8 +543,9 @@ class Positions:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
             time.sleep(self.WaitTime) # wait 1 second for starting lidar
+            a = subprocess.run(['dir'], shell=True, capture_output=True, text=True)
             if self.WarnedLidarCount >= cfg.ExpectedVals.MaxWarnCount:
-                logger.error("No Lidar Data Recieved! Please Check Lidar Modules!")
+                logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping chassis to prevent damage.")
                 lidar.stop()
                 raise RuntimeError("No Lidar Data Recieved! Please Check Lidar Modules!")
             return [0xfff,0xfff,0xfff,0xfff]
@@ -828,42 +830,45 @@ class Positions:
         iErrorZ = (iAimZ) - (iLocZ)
         # iDeltaX = 0.001*iDeltaX**3+iDeltaX
         # iDeltaY = 0.001*iDeltaY**3+iDeltaY
+        
         RestrictedX = Settings.Bounds.FarPos[0]
         RestrictedY = Settings.Bounds.FarPos[1]
         if Settings.Debug.Beta:
+            if self.ResetFlag > 1000:
+                self.Position_X_PID.reset()
+                self.Position_Y_PID.reset()
+                self.ResetFlag = 0
+            else:
+                self.ResetFlag += 1
             self.Position_X_PID.setpoint = iAimX
             self.Position_Y_PID.setpoint = iAimY
-            self.Position_Z_PID.setpoint = iAimZ
             iDeltaX = self.Position_X_PID(iLocX)
             iDeltaY = self.Position_Y_PID(iLocY)
-            iDeltaZ = self.Position_Z_PID(iLocZ)
             if Settings.Debug.FullLog:
-                logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}, Z={self.Position_Z_PID.setpoint}")
-                logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}, iDeltaZ={iDeltaZ}")
+                logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}")
+                logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}")
         else:
             iDeltaX = iErrorX
             iDeltaY = iErrorY
-            iDeltaZ = iErrorZ
         iErrorRange = Settings.ExpectedVals.ErrorRange
         iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
         if iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and abs(iErrorRange) > iErrorZ:
             chassis.stop()
+            self.ResetFlag = 0
             self.Position_X_PID.reset()
             self.Position_Y_PID.reset()
-            self.Position_Z_PID.reset()
             return True
-        elif iErrorRange/4 > abs(iErrorX) and iErrorRange/4 > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
+        elif iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
+            self.ResetFlag = 0
+            self.Position_X_PID.reset()
+            self.Position_Y_PID.reset()
             chassis.FieldTurn(iAimZ)
+            logger.debug("Position reached, adjusting orientation to %s degrees." % iAimZ)
         else:
             if speed_gain:
                 chassis.FieldMoveVector(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
-                # chassis.AbsMoveAngle(AimPos[2],iMovedAngle,speed_gain)
             else:
-                if Settings.Debug.Beta:
-                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
-                    # chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ,None,abs(iDeltaZ)*0.5)
-                else:
-                    chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
+                chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
             return False
 
     def Move2Path(self, Posistions: list, iWaitMs: float):
