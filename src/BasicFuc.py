@@ -71,6 +71,22 @@ def ChasingBall():
 class LockSeries:
     def __init__(self):
         self.D_time = 0
+        import simple_pid
+        self.pan_x = simple_pid.PID(
+            2.5,0,0,
+            setpoint=Settings.ExpectedVals.CatchVal[0],
+            output_limits=(-200,200),
+            auto_mode=True)
+        self.pan_y = simple_pid.PID(
+            2.5,0,0,
+            setpoint=Settings.ExpectedVals.CatchVal[0],
+            output_limits=(-200,200),
+            auto_mode=True)
+        self.pan_w = simple_pid.PID(
+            2,0,0,
+            setpoint=0,
+            output_limits=(-100,100),
+            auto_mode=True)
 
     def Lockballangle(self):#贝尔巴托夫转身
         # iBX,iBY = UnitedPosition.AbsBallPos()#获取球的位置
@@ -96,41 +112,59 @@ class LockSeries:
         iBX,iBY = UnitedPosition.RobotBallPos()
         if [iBX,iBY] == [0xfff,0xfff]:
             chassis.stop()
+            self.D_time = 0
+            self.pan_x.reset()
+            self.pan_y.reset()
             return False
         elif [iBX,iBY] == [0xddd,0xddd]:
             chassis.stop()
+            self.D_time = 0
+            self.pan_x.reset()
+            self.pan_y.reset()
             return True
         else:
-            if iBY == 0:
-                Fangle = 0
+            self.D_time += 1
+            if iBY == 0: # iBY -> Angle
+                angle = 0
             else:
-                Fangle = int(math.degrees(math.atan2(iBY,iBX)))
-            if iBX > 75 or iBY > 75:
-                Kp = 7
-                KpZ = 4
-            elif 25 < iBX <= 75 or 25 < iBY <= 75:
-                Kp = 6
-                KpZ = 1.5
+                angle = int(math.degrees(math.atan2(iBY,iBX)))
+            if self.D_time > 5000:
+                self.D_time = 0
+                self.pan_x.reset()
+                self.pan_y.reset()
+                self.pan_w.reset()
+            if Settings.Debug.Beta:
+                SpeedX = -self.pan_x(iBX)
+                SpeedY = -self.pan_y(iBY)
+                SpeedW = self.pan_w(iBY)
+                chassis.RobotMoveVector(SpeedX,SpeedY,SpeedW) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
             else:
-                Kp = 2
-                KpZ = 1
-            # Kp = 3
-            # KpZ = Fangle*self.D_time/500
-            SpeedX = iBX * Kp
-            SpeedY = iBY * Kp
-            Fangle = Fangle * KpZ
-            if SpeedX > 300:
-                SpeedX = 300
-            if SpeedY > 300:
-                SpeedY = 300
-            if SpeedX < -300:
-                SpeedX = -300
-            if SpeedY < -300:
-                SpeedY = -300
-            # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            # Keep the entire slip logic in robot-frame motion.
-            chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            return False
+                if iBX > 75 or iBY > 75:
+                    Kp = 7
+                    KpZ = 4
+                elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                    Kp = 6
+                    KpZ = 1.5
+                else:
+                    Kp = 2
+                    KpZ = 1
+                # Kp = 3
+                # KpZ = Fangle*self.D_time/500
+                SpeedX = iBX * Kp
+                SpeedY = iBY * Kp
+                angle = angle * KpZ
+                if SpeedX > 300:
+                    SpeedX = 300
+                if SpeedY > 300:
+                    SpeedY = 300
+                if SpeedX < -300:
+                    SpeedX = -300
+                if SpeedY < -300:
+                    SpeedY = -300
+                # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+                # Keep the entire slip logic in robot-frame motion.
+                chassis.RobotMoveVector(SpeedX*1.5,SpeedY,angle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+                return False
 
     def LockBallDash(self):
         iBX,iBY = UnitedPosition.RobotBallPos()
