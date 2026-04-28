@@ -1,727 +1,98 @@
-# 🧠⚽ 机器人足球-策略/编程进阶文档
+# 🤖 机器人足球-快速上手指南
 
-<!-- 在这里可以添加一些徽章，例如构建状态、许可证等 -->
-[![LICENSE](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+本指南旨在帮助开发者快速上手编写机器人足球策略，重点介绍最常用的核心函数和典型应用场景。
 
-> 📝 还没想好放啥
+## 🚀 快速开始
 
-## ✨ 介绍
+### 1. 核心对象初始化
+在策略脚本中，通常通过 `from LunaPre import *` 导入所有常用工具。
+- `UnitedPosition`: 机器人位置、视觉数据获取及运动控制核心对象。
+- `chassis`: 底盘运动控制接口。
+- `peripheral`: 外设控制（如踢球、运球）。
+- `lockball`: 锁球控制类。
 
-这里存放的是「策略 / 编程」进阶相关的内容：包括基础规则、坐标系、命名规范，以及我们封装的一些常用模块，目标是让你更快上手写**上层策略**、更容易解决**现场题**。
+### 2. 最常用函数速查表
 
-在观看本文档前，你必须要了解：
+#### 📍 机器人定位与视觉 (UnitedPosition)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `RobotBallPos()` | 获取球在**机体坐标系**下的位置 | `[x, y]` (cm) |
+| `RobotBallAngle()` | 获取球相对机器人角度 | `int` (°) |
+| `FieldRobotPos()` | 获取机器人在**场地坐标系**下的位置 | `[x, y, yaw]` (cm, cm, °) |
+| `FieldBallPos()` | 获取球在**场地坐标系**下的位置 | `[x, y]` (cm) |
+| `Pos2Pos([x, y, yaw], speed_gain=None)` | 移动到场地坐标系的指定点 | `True` (到达) / `False` (未到达) |
+| `Move2Path(points, iWaitMs=0.1)` | 顺序移动到路径点列表（阻塞） | `True` (完成) |
 
-- 📜 **组委会提供的规则**
+#### 🛞 底盘控制 (chassis)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `RobotMoveVector(x, y, z)` | 机体坐标系向量移动 (x:前, y:左, z:自转) | 无 |
+| `FieldMoveVector(x, y, facing, kp=None)` | 场地坐标系向量移动 + 航向闭环 | 无 |
+| `FieldTurn(angle)` | 原地转向到场地绝对角度 | 无 |
+| `stop()` | 停止所有电机 | 无 |
 
-- 💻 如何使用一台电脑
+#### ⚽ 外设控制 (peripheral)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `ShootBall()` | 触发电磁铁脉冲踢球 | 无 |
+| `Dribble(status)` | 设置运球器状态 (True:开, False:关) | 无 |
 
-- 🔍 如何使用搜索引擎
+#### 🧠 锁球控制 (lockball)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `LockBallSlip()` | 自动追踪并锁定球 (非阻塞) | 无 |
 
-- 🧠 一颗完整的大脑
+---
 
-- ❓ [《如何智慧的提问》](https://manual.njust.wiki/notes/freshGuide/smart-questions/)
+## 🛠️ 典型应用场景
 
-- [`Python`基本语法](https://www.runoob.com/python3/python3-basic-syntax.html)
-
-- [`Python`如何导入库](https://www.runoob.com/python3/python3-module.html)
-
-- [`Python`条件控制](https://www.runoob.com/python3/python3-conditional-statements.html)
-
-- [`Python`循环语句](https://www.runoob.com/python3/python3-loop.html)
-
-## 🧭 基础规则
-
-机器人的方向描述统一为：**从提手处往下看**。
-
-- 航向角 `0˚`：正前方
-- 逆时针为正方向
-- `90˚`：左侧
-- `270˚`：右侧
-
-> 实际上是为了遵循`ROS`的规则，为后续封装节点做准备。
-
-### 🗺️ 方向与坐标系统
-
-方向与坐标系统分为两类：**绝对（场地坐标系）** 和 **相对（机体坐标系）**。
-
-<image src="../RoboCupJuniorModels/.readme/images/field.png" width=30%/>
-
-| 名称   |   场地坐标系   |   机体坐标系   |
-| :----: | :----: | :----: |
-| 参考点 | 以球场中圈圆心为原点 | 以机器人中心为原点 |
-| 参考方向 | 对方球门中心为正方向 | 指南针0˚为正方向 |
-
-同时，需要注意这里的 **坐标轴定义**（非常重要）：
-
-- **X 轴（x_forward）**：机器人“正前方”（对应航向角 `0˚` 的方向）为 **正方向**
-- **Y 轴（y_left）**：机器人“左侧”（对应航向角 `90˚` 的方向）为 **正方向**
-
-换句话说，我们统一使用 `x_forward, y_left` 的约定。
-
-举例：`[x, y] = [10, 5]` 表示目标在机器人 **前方 10cm、左侧 5cm**。
-
-## 🧱 基础命名规范
-
-- ✅ 函数/方法：使用 **大驼峰（PascalCase）**，英文命名，例如 `ChassisAngle`、`ChasingBall`。
-- ✅ 变量：使用 **蛇形命名（snake_case）**，英文命名，例如 `my_robot`、`my_position`。
-
-### 🏷️ 命名前缀
-
-| 名称   |   含义   |
-| :----: | :----: |
-| field | 针对场地坐标系 |
-| robot | 针对机体坐标系 |
-| direct | 原始数据 |
-| _ | class内的变量，不推荐直接读取 |
-
-
-### 📚 其他内部约定名词
-| 名称   |   含义   |
-| :----: | :----: |
-| Self | 机器人自己 |
-| Peer | 队友 |
-| Ball | 球 |
-| Chassis | 所有机器人底盘(包括队友) |
-| Enemy | 敌方机器人底盘 |
-
-## 🧰 基础用法（LunaPre）
-
-为了方便进行**上层策略开发**以及**处理现场题**，我们把一些常用功能逐渐封装成模块，并集中放在 `/src/LunaPre.py` 中，模块名为 `LunaPre`。
-
+### 场景 A: 简单追踪球并踢球
+这是最基础的进攻逻辑：
 ```python
-from LunaPre import *
+if UnitedPosition.RestrictedArea(): # 确保不在限制区/撞墙保护
+    ball_pos = UnitedPosition.RobotBallPos()
+    
+    if ball_pos == [0xFFF, 0xFFF]:
+        print("未发现球")
+    elif ball_pos == [0xDDD, 0xDDD]:
+        print("已抱球，准备射门")
+        peripheral.Dribble(0.7) # 开启运球/吸球
+        peripheral.ShootBall()  # 触发踢球
+    else:
+        print("追踪中...")
+        lockball.LockBallSlip() # 自动对准并锁定球 (非阻塞)
 ```
 
-在**策略脚本**里，为了快速写逻辑，允许使用这种方式[**导入模块**](https://www.runoob.com/python3/python3-module.html)，后续写策略会更省事。
-
-> ⚠️ 但在写「可复用模块/工具代码」时，不推荐 `import *`：
->
-> - 容易污染命名空间（看不出某个函数/变量从哪来）
-> - 更容易产生“同名覆盖”（例如你自己写了 `logger`、`Settings`，会被导入的同名对象覆盖）
->
-> 更推荐以下两种显式写法（可读性更好，也更利于 IDE 跳转）：
->
-> ```python
-> import LunaPre as lp
-> 
-> # 使用：lp.UnitedPosition.xxx()
-> ```
->
-> 或：
->
-> ```python
-> from LunaPre import UnitedPosition, Communication
-> ```
-
-### 🤖 机器人坐标系 (Robot Frame)
-
-> 还在为现场题的“走点”而头疼？还在因为场地不同就要重新量距离？还在用 _卷尺_ 去测场地里的点？大人，时代变了。
->
-> 我们的**集成坐标系统(The Automated Position System)**可以让你用很少的代码完成：定位、换算、移动到指定点等常见操作。
-
+### 场景 B: 场地走点 (Waypoints)
+如 `exec.py` 所示，可以通过 `Move2Path` 实现复杂的路径规划：
 ```python
-UnitedPosition = Positions()
+# 示例：依次经过五个点
+UnitedPosition.Move2Path([
+    [40, 40, 0], 
+    [-70, 50, 80], 
+    [-80, -50, 180], 
+    [80, -50, 270], 
+    [80, 50, 0]
+], 0.8)
 ```
 
-`UnitedPosition` 就是你接下来会频繁使用的对象，其中包含很多实用的 **方法（methods）/ 功能函数**。
-
-### ⚽ `RobotBallPos`：获取球在 _机体坐标系_ 下的位置
-获取 `球` 在机体坐标系下的位置。输出示例：
+### 场景 C: 基础防御逻辑 (横向拦截)
+利用场地坐标系，使机器人在球门线附近跟随球的 Y 轴位置：
 ```python
-print(UnitedPosition.RobotBallPos())
->>>[7.2,0.0]
+# 假设 pan_y 是一个 PID 控制器
+ball_pos = UnitedPosition.RobotBallPos()
+if ball_pos != [0xFFF, 0xFFF] and ball_pos != [0xDDD, 0xDDD]:
+    # 使用 PID 计算 Y 轴移动速度，保持在球的正对面
+    speed_y = pan_y(ball_pos[1]) 
+    # 保持航向角为 0 (面向对方球门)，沿 Y 轴进行 PID 修正移动
+    chassis.FieldMoveVector(0, -speed_y, 0) 
 ```
-输出是一个由两个浮点数组成的列表：第 0 项是 **X**，第 1 项是 **Y**。
 
-上面的结果表示：球在机器人正前方 **7.2cm**，左右偏移 **0cm**。
-
-#### ⚽ `RobotBallAngle`：球相对机器人（机体坐标系）的角度
-
-- **返回**：`int`（单位 °）
-- **含义**：根据视觉的 `ball_pos=[x, y]` 计算角度，常用于“对准球”的控制。
-
-#### 📐⚽ `RobotBallDistance`：球与机器人的距离
-
-- **返回**：`float | int`
+## ⚠️ 重要提示
+- **坐标系约定**：
+    - **机体坐标系**：$x$ 为前， $y$ 为左。
+    - **场地坐标系**：原点在场地中心，方向定义见 `README_DETAILED.md`。
+- **安全停止**：在策略脚本的 `finally` 块中，务必调用 `chassis.stop()` 和 `UnitedPosition.Stop()` 释放资源。
 - **哨兵值**：
-  - `0xfff`：没看到球 / 无效
-  - `0xddd`：判断为“已抱球/已抓球”（CatchBall）
-
-示例：
-
-```python
-dist = UnitedPosition.RobotBallDistance()
-if dist == 0xfff:
-    print("No ball")
-elif dist == 0xddd:
-    print("Catch ball")
-else:
-    print(f"Ball distance = {dist:.1f} cm")
-```
-
-### 🧩 `RobotChassisPos`：获取底盘在 _机体坐标系_ 下的位置
-```python
-    def RobotChassisPos(self):
-        return self.vision_data["chassis_pos"]
-```
-获取 `所有底盘` 在机体坐标系下的位置。输出示例：
-```python
-print(UnitedPosition.RobotChassisPos())
->>>[[9.2,0.0,20,20,0.85378],[15.3,0.0,20,20,0.85378]]
-```
-输出是一个“列表的列表”。其中每个子列表通常包含 5 个元素：
-
-- 第 0 项：**X**
-- 第 1 项：**Y**
-- 其余项：尺寸/置信度等信息（一般写上层策略时不必深究）
-
-上面的第一组数据表示：有一个底盘在机器人正前方 **9.2cm**。
-
-#### 🤖 `RobotChassisAngle`：其他底盘相对机器人角度列表
-
-- **返回**：`list[int]`（每个元素是一个角度）
-- **说明**：对视觉检测到的每个底盘计算一个相对角度。
-
-### 🏟️ 场地坐标系（Field Frame）
-
-### 📍 `FieldRobotPos`：获取机器人在 _场地坐标系_ 下的位置
-获取 `自己（机器人）` 在场地坐标系下的位置。输出示例：
-```python
-print(UnitedPosition.FieldRobotPos())
->>> [90.3, 0.0, 1.324542]
-```
-输出是一个由 3 个浮点数组成的列表：
-
-- 第 0 项：**X**（cm）
-- 第 1 项：**Y**（cm）
-- 第 2 项：**航向角**（°）
-
-上面的结果表示：机器人在场地坐标 **X=90.3cm，Y=0cm** 的位置，航向角约为 **1.32°**。
-
-#### 📍⚽ `FieldBallPos`：球在场地坐标系下的绝对位置
-
-- **返回**：`[x, y]`（cm）
-- **哨兵值**：同上：`0xfff`（无球）、`0xddd`（抱球）
-
-#### 🧭⚽ `FieldBallAngle`：球在场地坐标系下的绝对角度（叠加航向）
-
-- **返回**：`int`（单位 °，范围约 `0~360`）
-- **计算**：`(RobotBallAngle() + compass()) % 360`
-
-### 🧭 `FieldChassisPos`：获取其他底盘在 _场地坐标系_ 下的位置
-获取 `所有底盘（不包含自己）` 在场地坐标系下的位置。输出示例：
-```python
-print(UnitedPosition.FieldChassisPos())
->>>[[9.2,0.0],[15.3,0.0]]
-```
-
-> 兼容性说明：为了兼容历史代码，`LunaPre.py` 里仍保留了旧方法名（例如 `Robot_Ball_Pos`、`Field_Robot_Pos` 等）作为别名；新代码建议使用本文档里的 **PascalCase** 名称。
-输出是一个“列表的列表”，每个子列表包含两个元素：
-
-- 第 0 项：**X**（cm）
-- 第 1 项：**Y**（cm）
-
-上面的第一组数据表示：有一个底盘在场地坐标 **X=9.2cm，Y=0.0cm**。
-
-#### 🧭🤖 `FieldChassisAngle`：其他底盘在场地坐标系下的绝对角度列表
-
-- **返回**：`list[int]`
-- **计算**：`RelChassisAngle()` 的每个角度叠加 `compass()`。
-
-### 🧩 其他常用方法（Positions）
-
-#### 🧭🚗 `Pos2Pos`：移动到场地坐标系的某个目标点
-
-```python
-arrived = UnitedPosition.Pos2Pos([x, y, yaw], speed_gain=None)
-```
-
-- **参数**：
-  - `AimPos=[x, y, yaw]`（cm, cm, °）
-  - `speed_gain`：可选速度增益（越大走得越“猛”，但更容易抖/冲过头）
-- **返回**：
-  - `True`：到达（在误差范围内）
-  - `False`：未到达（函数内部会发底盘移动/转向指令）
-
-典型写法：
-
-```python
-target = [90, 0, 0]
-if UnitedPosition.Pos2Pos(target):
-    print("Arrived")
-```
-
-#### 🧵🚗 `Move2Path`：按路径点依次走完（阻塞）
-
-```python
-UnitedPosition.Move2Path(
-    Posistions=[
-        [60,  0, 0],
-        [90, 20, 0],
-    ],
-    iWaitMs=0.1,
-)
-```
-
-- **特性**：阻塞直到走完最后一个点才返回 `True`
-- **注意**：比赛策略里不建议长时间阻塞；更推荐在主循环中用 `Pos2Pos` 自己做状态机。
-
-### 🦾 其他进阶方法（Positions）
-
-下面这些函数同样来自 `Positions` 类（也就是 `UnitedPosition` 对象）。它们在写上层策略、处理现场题时非常常用。
-
-> 说明：`LunaPre.py` 中很多函数的注释里会写“非阻塞/阻塞”。
->
-> - **非阻塞**：调用一次就返回（但可能会发出底盘控制命令）。
-> - **阻塞**：内部有 `while` 循环，会一直等到条件满足才返回；在主策略中使用要谨慎。
-
-#### 🧾 `GetVisionData`：获取视觉原始数据（球 + 底盘）
-
-```python
-def GetVisionData(self):
-    return self.vision_data
-```
-
-- **返回**：`dict`，形如：
-
-```python
-{
-  "ball_pos": [x, y],
-  "chassis_pos": [[x, y, w, h, conf], ...]
-}
-```
-
-- **注意**：
-  - 视觉数据来自 `UDP 127.0.0.1:5005`。
-  - 当前实现里视觉监听线程是**按需启动（lazy start）**的：首次调用 `GetVisionData()` / `RobotBallPos()` / `RobotChassisPos()` 等依赖视觉的数据时才会启动。
-  - 若超时收不到数据，会尝试自动拉起 `src/Vision.py` 作为视觉服务。
-  - 在开发机/mock 环境下，通常不会安装 Hailo/相机等依赖；此时建议**禁用自动拉起 Vision**（否则可能频繁重启子进程）。
-  - 需要退出程序/重启策略时，建议调用 `UnitedPosition.Stop()` 释放线程与进程。
-
-示例：
-
-```python
-data = UnitedPosition.GetVisionData()
-print(data["ball_pos"], data["chassis_pos"]) 
-```
-
-#### 📏 `DirectDistance`：获取激光雷达到四面墙的“原始距离”
-
-```python
-def DirectDistance(self):
-    return lidar.GetDists()
-```
-
-- **返回**：`[d0, d1, d2, d3]`
-- **常见用法**：用于定位（`FieldRobotPos` 内部就是用它算的）。
-- **异常/哨兵值**：
-  - 若雷达未启动/无数据，会返回 `[0xfff, 0xfff, 0xfff, 0xfff]`。
-  - 内部会重试，超过 `cfg.ExpectedVals.MaxWarnCount` 会 `raise RuntimeError`。
-
-> 距离的**顺序与单位**由 `lidar.GetDists()` 决定；在当前实现里：
->
-> - `FieldRobotPos()` 会把它当作“长边方向两面墙 + 短边方向两面墙”的四个距离来使用（`0 & 2` 对应长边方向，`1 & 3` 对应短边方向）。
-> - 并通过 `LidarScale=10` 把距离换算到厘米级（内部最后会 `/10`）。
-
-#### 🧭 `Local2Angle`：从“自己当前场地坐标”指向目标点的角度
-
-```python
-def Local2Angle(self, AimPos: list) -> int:
-    ...
-```
-
-- **参数**：`AimPos=[x, y]`（场地坐标系，单位 cm）
-- **返回**：`int`，`atan2(deltaY, deltaX)` 的角度（单位 °）
-- **用途**：比如做一个“面向某点”的控制量，或用于决策（不直接控制底盘）。
-
-#### 🧭 `Pos2Angle`：从任意起点指向目标点的角度
-
-```python
-def Pos2Angle(self, lInputPos: list, lAimPos: list) -> int:
-    ...
-```
-
-- **参数**：
-  - `lInputPos=[x, y]` 起点
-  - `lAimPos=[x, y]` 终点
-- **返回**：`int` 角度（单位 °）
-
-#### 🧭🧱 `RestrictedArea`：限制区/撞墙保护（会直接控制底盘）
-
-```python
-ok = UnitedPosition.RestrictedArea()
-```
-
-- **返回**：`True/False`
-  - `True`：当前位置安全
-  - `False`：检测到接近边界/限制区，函数内部会调用 `chassis.AbsMoveAngle(...)` 做规避
-
-> 这是一个“保护函数”，通常放在策略主循环最前面：只要返回 `False`，就说明它刚刚发了一个避障动作，你的策略这帧最好不要再强行给别的移动指令。
-
-#### 🛑 `Cover2Start`：检测“前方被遮挡”后才返回（阻塞）
-
-- **返回**：`True`
-- **用途**：常用于“遮挡启动”类的开赛动作（例如裁判遮住前方传感器后，机器人才能动）。
-
-#### 🧯 `Stop`：安全停止并释放视觉线程/进程
-
-```python
-UnitedPosition.Stop()
-```
-
-- 会执行：底盘停止、关运球器（`peripheral.Dribble(False)`）、停止雷达、结束视觉线程与视觉进程。
-
-
-### 📡 通讯模块（Communication）
-
-`LunaPre.py` 同时封装了队内通信逻辑（目前主要是 Wi-Fi）。你可以用它来同步“是否持球 / 自己位置”等关键信息。
-
-```python
-from LunaPre import Communication
-
-comm = Communication()
-comm.StartConncetion()  # 注意：函数名就是这个拼写
-```
-
-#### 🏁 `StartConncetion`：一键启动收发线程
-
-- 内部会启动两个后台线程：
-  - `SendStatusThreadFunc`：周期发送自己的状态
-  - `PeerStatusThreadFunc`：周期解析队友发来的消息
-
-#### ⚽ `BallOwner`：更新本机“是否持球”标志位
-
-```python
-comm.BallOwner()
-print(comm.BallFlag)  # [self_has_ball, peer_has_ball]
-```
-
-- **说明**：该函数不返回值，只会根据 `UnitedPosition.AbsBallPos()` 的结果更新 `comm.BallFlag[0]`。
-
-#### 📤 `SendStatus`：启动“发送线程”（非阻塞）
-
-```python
-comm.SendStatus()
-```
-
-- **返回**：`True`（线程已启动/启动成功）
-- **发送内容**：当前实现会发送类似：
-
-```
-BS:1;PX:90;PY:0
-```
-
-字段含义：
-
-| 字段 | 含义 |
-|---|---|
-| `BS` | self 是否持球（0/1） |
-| `PX` | self 位置 X（int，cm） |
-| `PY` | self 位置 Y（int，cm） |
-
-#### 📥 `PeerStatus`：启动“接收/解析线程”（非阻塞）
-
-```python
-comm.PeerStatus()
-```
-
-- 会持续读取 `transimission.MessageCache` 并解析更新：
-  - `comm.PeerPosition = [x, y]`
-  - `comm.BallFlag[1]`（队友是否持球）
-
-#### 📌 通信模块常用数据
-
-- `comm.BallFlag`：`[self_has_ball, peer_has_ball]`
-- `comm.PeerPosition`：`[peer_x, peer_y]`（cm，若无数据为 `[0xfff, 0xfff]`）
-
-> ⚠️ 线程注意事项：
->
-> - `SendStatusThreadFunc` / `PeerStatusThreadFunc` 是“死循环线程函数”，**不要在主线程里直接调用**。
-> - 请使用 `SendStatus()` / `PeerStatus()` / `StartConncetion()` 来启动后台线程。
-> - 由于采用全局启动标志位（`SendstatusThreadFuncStarted` 等），同一进程里多次创建 `Communication()` 并重复启动线程可能会导致混乱；建议全局只创建一个 `comm` 实例。
-
-
-## 🛞 底盘/外设通用接口（chassis.py）
-
-`src/chassis.py` 提供了三类“硬件抽象层”对象：
-
-- `Car`：四轮底盘运动学封装（支持 **机体坐标系** / **场地坐标系** 的移动，以及航向角闭环）。
-- `Peripherals`：电磁铁（踢球）/ 运球器（dribble）等外设控制。
-- `Key`：按键输入的线程化计数与长按判定。
-
-在 `LunaPre.py` 中，会根据 `ReasonData.config.Settings` 选择不同的 Bits（下位机）实现，并创建全局对象：
-
-```python
-from chassis import Car, Peripherals, Key
-
-chassis = Car(Bits.SetMotor or Bits.SetWheelSpeed, Bits.GetYaw, Bits.get_motor_encoder)
-peripheral = Peripherals(Bits.SetIO or Bits.VirtualPorts)
-key = Key(Bits.GetKey)
-```
-
-> 也就是说：你在策略里经常直接用到的 `chassis / peripheral / key`，底层就是本文件里的类。
-
-### 🤖 `Car`：底盘运动控制
-
-#### 初始化
-
-```python
-from chassis import Car
-
-car = Car(
-    SetMotorFunc=Bits.SetMotor,               # 必填：底层“设置四电机速度”的函数
-    GetYaw=Bits.GetYaw,                       # 可选：获取航向角（°，0~360）
-    MotorEncoder=Bits.get_motor_encoder,      # 可选：用于 FullLog 下打印编码器反馈
-)
-```
-
-**依赖配置**：
-
-- `Settings.Ports.LeftFront/LeftBack/RightFront/RightBack`：电机编号映射（1~4）。
-- `Settings.ExpectedVals.MaxSpeedValue`：速度限幅。
-- `Settings.Debug.FullLog`：是否输出高频调试日志。
-
-#### 约定：坐标系与速度方向
-
-`RobotMoveVetor(SpeedX, SpeedY, SpeedZ)` 中：
-
-- `SpeedX`：机体坐标系 **前后**（x_forward，前为正）
-- `SpeedY`：机体坐标系 **左右**（y_left，左为正）
-- `SpeedZ`：自转角速度（正负号由底盘约定；本项目中用于“航向误差 * Kp”）
-
-#### 🧩 `SetMotor(speed_cache)`：直接设置四个电机速度
-
-```python
-car.SetMotor([s1, s2, s3, s4])
-```
-
-- 内部会按 `MaxSpeedValue` 做限幅，并调用你传入的 `SetMotorFunc(s1, s2, s3, s4)`。
-- 若 `Settings.Debug.FullLog=True`，会打印速度与（可选）编码器反馈。
-
-> 一般策略不建议直接 `SetMotor`，更推荐使用下面的“向量/角度”接口。
-
-#### ➡️ `RobotMoveVetor(SpeedX, SpeedY, SpeedZ, Z_Kp=1)`：机体坐标系向量移动（不做航向闭环）
-
-```python
-car.RobotMoveVetor(SpeedX=200, SpeedY=0, SpeedZ=0)
-```
-
-- 适合：纯手动控制、或你自己在上层做了航向控制。
-- `Z_Kp`：旋转通道增益（代码里是乘在 `SpeedZ` 上）。
-
-#### 🧭 `RobotMoveAngle(Angle, Speed, Kp=1)`：机体坐标系按角度移动（不做航向闭环）
-
-```python
-# Angle=0 -> 正前方；Angle=90 -> 左侧；Angle=180 -> 后方
-car.RobotMoveAngle(Angle=0, Speed=200)
-```
-
-> 注意：这里的 `Angle` 是“相对机器人自身”的角度，不会自动补偿当前航向角。
-
-#### 🌍 `FieldMoveVetor(SpeedX, SpeedY, FacingAngle, Kp=None)`：场地坐标系向量移动（带航向闭环）
-
-```python
-# 以场地坐标系给速度，同时要求车头最终面向 FacingAngle
-car.FieldMoveVetor(SpeedX=150, SpeedY=0, FacingAngle=0)
-```
-
-内部逻辑要点：
-
-- `Error = yaw - FacingAngle` 会被归一化到 `[-180, 180]`，再用 `SpeedZ = Error * Kp` 做航向修正。
-- `Kp` 为空时会使用 `car.Kp`（可用 `SetKp()` 修改）。
-
-#### 🧭🌍 `FieldMoveAngle(FacingAngle, MovingAngle, Speed, Kp=None)`：场地坐标系按角度移动（带航向闭环）
-
-```python
-# MovingAngle：你希望在“场地坐标系”里往哪个方向走
-# FacingAngle：你希望机器人面向哪个绝对角度
-car.FieldMoveAngle(FacingAngle=0, MovingAngle=0, Speed=200)
-```
-
-#### 🔄 `FieldTurn(Angle)`：原地转向到某航向（闭环）
-
-```python
-car.FieldTurn(Angle=90)
-```
-
-等价于给 `FieldMoveVetor(0, 0, FacingAngle)`。
-
-#### 🌀 `RobotTurn(Speed)`：纯自转（不闭环）
-
-```python
-car.RobotTurn(Speed=80)
-```
-
-#### 🎯 `TurnTo(Angle, Kp=None)`：阻塞式转到目标航向
-
-```python
-car.TurnTo(Angle=0)   # 会一直转，直到误差 < 5° 才返回
-```
-
-> ⚠️ 这是阻塞函数：内部 `while True` + `sleep(0.03)`，策略主循环中使用要谨慎。
-
-#### 🛑 `stop()`：底盘停止
-
-```python
-car.stop()
-```
-
-### 🦾 `Peripherals`：运球器/电磁铁
-
-#### 初始化
-
-```python
-from chassis import Peripherals
-
-peripheral = Peripherals(IOFunc=Bits.SetIO)
-```
-
-初始化时会默认将 `Settings.Ports.ElecMagnet` 置为 `1`（上电/保持）。
-
-#### ⚽ `ShootBall()`：踢球（电磁铁脉冲）
-
-行为：
-
-1. 电磁铁端口置 `0`
-2. 等待 `0.3s`
-3. 电磁铁端口恢复为 `1`
-
-#### 🧲 `Dribble(Status)`：设置运球器
-
-```python
-peripheral.Dribble(True)   # 开
-peripheral.Dribble(False)  # 关
-peripheral.Dribble(0.5)    # 也允许传入自定义占空比/强度（取决于下位机实现）
-```
-
-- 会更新 `peripheral.DribbleStatus`，并打印日志。
-
-### ⌨️ `Key`：按键（线程计数）
-
-#### 初始化
-
-```python
-from chassis import Key
-
-key = Key(GetKeyFunc=Bits.GetKey)
-```
-
-初始化后会启动后台线程 `KeyEvent()`（守护线程），以约 `10ms` 周期采样按键状态并计数。
-
-#### `Press()`：当前是否按下
-
-```python
-if key.Press():
-    ...
-```
-
-#### `LongPress()`：是否长按
-
-```python
-if key.LongPress():
-    ...
-```
-
-- 当前实现：`KeyCount >= 500` 判定为长按。
-- 由于采样周期约 `0.01s`，所以 **500 次 ≈ 5 秒**。
-
-
-## 🗒️ 其他碎碎念
-
-### 📡 通讯
-通讯目前常见有两种方式：**蓝牙**、**Wi-Fi**。两者在比赛环境下都可能不稳定，后续会考虑补充 **UART** 通讯。
-
-> 上面「📡 通讯模块（Communication）」是当前代码里已经落地的一版封装；如果你准备写更通用的通讯层，建议至少包含以下两个核心能力：
-
-通讯相关函数建议至少包含两个核心能力：
-
-- `MessageCache`：消息缓存/队列
-- `Send`：发送
-
-## 🧾 ReasonData（运行数据）
-
-### 🪵 日志（logger）
-日志等级分为：`info`、`debug`、`warning`、`success`、`error` 五个等级。
-<table>
-    <tr>
-        <td>info</td>
-        <td>记录普通信息 例如球的坐标 自己的坐标等基础数据</td>
-    </tr>
-    <tr>
-        <td>debug</td>
-        <td>记录只会在调试阶段用到的变量 例如电机编码器数值</td>
-    </tr>
-    <tr>
-        <td>warning</td>
-        <td>记录不符合预期 但是不值得阻塞主程序继续进行的异常情况</td>
-    </tr>
-    <tr>
-        <td>success</td>
-        <td>记录关键流程已完成/状态良好的信息（例如初始化完成、任务成功等）</td>
-    </tr>
-    <tr>
-        <td>error</td>
-        <td>记录不符合预期 必须要阻塞程序/报错之前的所有变量</td>
-    </tr>
-
-</table>
-
-### ⚙️ 配置文件
-配置文件一般是 JSON，用于存储每台机器人可能不同的变量，例如：机器人编号、下位机类型、端口号等。
-
-> 具体字段含义见文件内注释，这里不再展开。
-
-### 🗃️ 数据库
-预留：支援未来。
-
-## 📗 SOP 标准解决方案
-
-### 🧭 航向角突变 / 走最短转向（角度归一化）
-
-#### 现象
-
-用航向角做控制/路径规划时，经常会遇到 **0°/360° 边界跳变** 导致的转向“走反了”。
-
-例如：
-
-- 当前 `yaw = 350°`
-- 目标 `aim = 10°`
-
-直减会得到 `aim - yaw = -340°`，但实际上应该向左转 `+20°`（最短路）。
-
-#### 标准解法（推荐写成工具函数）
-
-把“目标角 - 当前角”的误差归一化到 `[-180°, 180°)`：
-
-```python
-def angle_error_deg(current: float, target: float) -> float:
-    """Return signed shortest angle error in degrees.
-
-    Convention:
-    - Result in [-180, 180)
-    - Positive means CCW (turn left), negative means CW (turn right)
-    """
-    return ((target - current + 180) % 360) - 180
-
-
-yaw = self.GetYaw()                # 当前航向角 [0, 360)
-aim = AimAngle % 360               # 目标航向角 [0, 360)
-error = angle_error_deg(yaw, aim)  # 误差 ∈ [-180, 180)
-
-```
-
-#### 如何判断“左转还是右转”？
-
-- `error > 0`：说明目标在左侧（建议 **逆时针/左转**）
-- `error < 0`：说明目标在右侧（建议 **顺时针/右转**）
-
-举例：
-
-- `yaw=90°`，`aim=0°` → `error=-90°`：右转 90°
-- `yaw=350°`，`aim=10°` → `error=+20°`：左转 20°
-
-#### 常见坑
-
-- 不要直接用 `Yaw - AimAngle` 作为误差（会在 0/360 处跳变）。
-- 注意你的底盘接口对 `speed_z` 的符号约定：
-  - 如果你发现 `error>0` 反而右转，就把 `speed_z = -Kp * error`。
+    - `0xFFF`: 未检测到球。
+    - `0xDDD`: 已经抱球。
