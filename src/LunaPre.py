@@ -233,6 +233,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             compass = Bits.GetYaw
             key = Bits.GetKey
             referee = Bits.GetRefereeUnlockPin
+            beep = Bits.MosePrint
             # Odometer = Bits.Odometer  # TODO add odometer support
             logger.info("IceLoongBits Bit loaded.")
             return
@@ -689,10 +690,8 @@ class Positions:
             ballangle: int | relative ball angle
         '''
         ballX, ballY = self._get_ball_pos()
-        if ballY == 0:
-            relBallAngle = 0
         try:
-            relBallAngle = int(math.degrees(math.atan2(ballX,ballY)))
+            relBallAngle = int(math.degrees(math.atan2(ballY,ballX)))
         except ZeroDivisionError:
             relBallAngle = 0
         return relBallAngle
@@ -906,6 +905,19 @@ class Positions:
             else:
                 pass
 
+    def Referee(self):
+        '''
+        `非阻塞函数`
+
+        获取裁判系统的状态
+
+        #### Returns:
+            RefereeStatus: bool | `True` for unlocked, `False` for locked
+        '''
+        try:
+            return Bits.referee_key
+        except Exception:
+            return False
 
     def RestrictedArea(self):
         Distance = self.DirectDistance()

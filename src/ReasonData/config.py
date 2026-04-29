@@ -11,6 +11,7 @@ except ModuleNotFoundError:
     import json as _json
 import os
 from pathlib import Path
+import random
 
 APP_DIR = Path(__file__).parent
 DATA_DIR = APP_DIR / "data"
@@ -46,7 +47,7 @@ class Preference:
                     "LidarType": "s1", # "s1" or "s2" to select lidar launch file
                 },
                 "Ports": {
-                    "LidarID": 88,
+                    "LidarID": random.randrange(1, 99),  # Random ID for Lidar (if used)
                     "IceLoongPort": '/dev/iceloong',
                     "LowTigger" : 0, 
                     "ReferPort": 1,
@@ -54,8 +55,8 @@ class Preference:
                     "Dribble" : 4,
                     "LeftFront" : 1,
                     "LeftBack" : 2,
-                    "RightFront" : 3,
-                    "RightBack" : 4,
+                    "RightBack" : 3,
+                    "RightFront" : 4,
                 },
                 "VisionVals": {
                     'Front' : 4,
@@ -74,7 +75,7 @@ class Preference:
                     "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
                     "CalibrationFolder": '/Calibration/',
-                    "HailoModelPath": '/yoloV8_Weighs/',
+                    "HailoModelPath": 'src/vision_utils/models/ArisuModel_v1.2s.hef',
                     # TunaIntelligence (Ultralytics/TensorRT) model paths
                     # - Use absolute path or path relative to repo root / working directory.
                     # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
@@ -85,12 +86,12 @@ class Preference:
                     # These are fallback physical sizes used with camera intrinsics.
                     # Tune them for your robot/model if you want better range estimates.
                     "EnableBBoxDistanceEstimate": True,
-                    "BallDiameterCM": 18.0,
+                    "BallDiameterCM": 4.2,
                     "ChassisWidthCM": 18.0,
                     "ChassisHeightCM": 18.0,
-                    "BlueGoalWidthCM": 45.0,
+                    "BlueGoalWidthCM": 90.0,
                     "BlueGoalHeightCM": 18.0,
-                    "YellowGoalWidthCM": 45.0,
+                    "YellowGoalWidthCM": 90.0,
                     "YellowGoalHeightCM": 18.0,
                 },
                 "Bounds" : {
@@ -106,7 +107,7 @@ class Preference:
                     "Home": [-70,0,0],
                 },
                 "ExpectedVals": {
-                    "CatchVal" : [10,0], # Position when Robo Cathch the ball
+                    "CatchVal" : [6,0], # Position when Robo Cathch the ball
                     "ErrorRange": 10,
                     "MaxWarnCount": 3,
                     "MaxSpeedValue": 500,
@@ -114,10 +115,6 @@ class Preference:
                 "Transimission": {
                     "Type" : "Slave", # master to start AP/ slave to connect
                     "Method" : "WIFI", # WIFI/BLE/Refer
-                },
-                "BLE" : {
-                    "MAC" : "NONE",
-                    "REMOTE" : "NONE",
                 },
                 "WIFI" : {
                     "SelfIP" : "192.168.1.x",
@@ -128,9 +125,8 @@ class Preference:
                 },
                 "Debug": {
                     "FullLog": False,
-                    "Beta": False,
-                }
-                ,
+                    "Beta": True,
+                },
                 "Sim": {
                     "UnityIP": "127.0.0.1",
                     "CmdPort": 20001,
