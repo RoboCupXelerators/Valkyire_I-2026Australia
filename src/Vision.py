@@ -256,7 +256,7 @@ class UnitedVision(Detect_Method):
         if cam_index == 1:
             return plane_y_cm, plane_x_cm
         if cam_index == 2:
-            return plane_x_cm, plane_y_cm
+            return plane_x_cm, -plane_y_cm
         if cam_index == 3:
             return -plane_y_cm, -plane_x_cm
         return plane_x_cm, plane_y_cm
