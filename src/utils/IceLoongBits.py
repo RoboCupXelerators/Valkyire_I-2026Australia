@@ -57,13 +57,12 @@ class IceLoongBits:
             'SET_WHEELS_SPEED': (0,0,0,0),
             'SET_DRIBBLE_SPEED': [0,0],
             'KICK': False,
+            'GET_REFEREE_UNLOCK_PIN': True,
         }
-
 
         self.yaw = 0.0
         self.key = False
-        self.key_setup = False
-        self.key_count = 0
+        self.referee_key = False
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
@@ -94,6 +93,8 @@ class IceLoongBits:
                     case 'SET_DRIBBLE_SPEED':
                         Speed = self.CommandLine[i]
                         self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed[0], Speed[1])])
+                    case 'MORSE_PLAY':
+                        self.ExecuteCommands([(Commands.MORSE_PLAY, str(self.CommandLine[i]))])
                     case 'KICK':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.KICK,))
@@ -101,6 +102,9 @@ class IceLoongBits:
                     case 'GET_RUN_KEY_DELTA':
                         if self.CommandLine[i]:
                             _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
+                    case 'GET_REFEREE_UNLOCK_PIN':
+                        if self.CommandLine[i]:
+                            _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
             response = self.ExecuteCommands(_CommandList)
             for i in response:
                 match i[0] ^ 0x80:
@@ -117,6 +121,14 @@ class IceLoongBits:
                         pass
                     case Commands.SET_DRIBBLE_SPEED:
                         pass
+                    case Commands.MORSE_PLAY:
+                        pass
+                    case Commands.GET_REFEREE_UNLOCK_PIN:
+                        _, referee_key = i
+                        if referee_key == 1:
+                            self.referee_key = True
+                        else:
+                            pass
                     case Commands.GET_RUN_KEY_DELTA:
                         _, key = i
                         if key == 1:
@@ -296,6 +308,14 @@ class IceLoongBits:
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
         self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
+
+    def MosePrint(self,Msg):
+        """摩斯电码播放"""
+        self.CommandLine['MORSE_PLAY'] = Msg
+
+    def GetRefereeUnlockPin(self):
+        """获取裁判解锁状态"""
+        return self.CommandLine['GET_REFEREE_UNLOCK_PIN']
 
     def GetKey(self):
         """获取按键状态"""

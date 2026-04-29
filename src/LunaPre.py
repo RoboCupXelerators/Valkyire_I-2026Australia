@@ -197,6 +197,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             return
 
         if cfg.RoboInfo.Bit == "AB":
+            logger.error("Initializing Arisu Bit... Nice to See You Again, Arisu!")
             from utils.ArisuBits import ArisBit
 
             # avoid starting hardware on dev machines
@@ -230,8 +231,8 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             peripheral = Peripherals(Bits.VirtualPorts)  # TODO
             chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
             compass = Bits.GetYaw
-            # key = Key(Bits.GetKey)
             key = Bits.GetKey
+            referee = Bits.GetRefereeUnlockPin
             # Odometer = Bits.Odometer  # TODO add odometer support
             logger.info("IceLoongBits Bit loaded.")
             return
@@ -905,8 +906,6 @@ class Positions:
             else:
                 pass
 
-    def referee2Start(self):
-        pass
 
     def RestrictedArea(self):
         Distance = self.DirectDistance()
