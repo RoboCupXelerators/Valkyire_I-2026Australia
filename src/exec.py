@@ -6,22 +6,25 @@
 
 from __future__ import annotations
 
+from LunaPre import *
 from BasicFuc import *
 
 
 def main():
     try:
-        a = time.time()
-        UnitedPosition.Move2Path([[40, 40, 0], [-70, 50, 80], [-80, -50, 180], [80, -50, 270], [80, 50, 0]], 0.8)
-        b = time.time() - a
-        logger.info(f"Move2Path finished in {b:.2f} seconds")
-        # while(1):
-            # UnitedPosition.Pos2Pos([0, 0, 0])
-        time.sleep(0.01)
+        UnitedPosition.Move2Path([[80, 0, 0],[30, 0, 0],[15, -25, 0],[0, -30, 0],[-15, -25, 0],[-30, 0, 0],[-15, 25, 0],[0, 30, 0],[15, 25, 0]], 0.8)
+        UnitedPosition.Move2Path([[30, 0, 0]], 0.8)
+        while(1):
+                if UnitedPosition.RobotBallPos() == [0xDDD, 0xDDD]:
+                    break
+                else:
+                    lockball.LockBallSlip()
+                    peripheral.ShootBall()
+
+
     finally:
         chassis.stop()
         UnitedPosition.Stop()
-
 
 if __name__ == "__main__":
     main()
