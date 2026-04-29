@@ -551,7 +551,7 @@ class Positions:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
             time.sleep(self.WaitTime) # wait 1 second for starting lidar
-            a = subprocess.run(['dir'], shell=True, capture_output=True, text=True)
+            a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
             if self.WarnedLidarCount >= cfg.ExpectedVals.MaxWarnCount:
                 logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping chassis to prevent damage.")
                 lidar.stop()
