@@ -17,46 +17,54 @@ RCJ 现场题函数速查（可直接复制）
   bx, by = UnitedPosition.RobotBallPos()
   # 返回: [x, y] cm
   # 哨兵: [0xfff,0xfff] 无球  |  [0xddd,0xddd] 抱球
+  !!!可用
 
   angle = UnitedPosition.RobotBallAngle()
   # 返回: int (0°=正前方, 90°=左侧)
+  !!!不可用
 
   dist = UnitedPosition.RobotBallDistance()
   # 返回: float cm  |  哨兵值同上
+  !!!不可用
 
   # 自己在场地坐标系
   x, y, yaw = UnitedPosition.FieldRobotPos()
   # 返回: [x, y, yaw] cm, cm, 度
+  !!!可用
 
   # 球在场地坐标系
   fx, fy = UnitedPosition.FieldBallPos()
   # 返回: [x, y] cm  |  哨兵值同上
+  !!!可用
 
   fa = UnitedPosition.FieldBallAngle()
   # 返回: int (0~360)
+  !!!不可用
 
   # 其他底盘在场地坐标系
   enemies = UnitedPosition.FieldChassisPos()
   # 返回: [ [x,y], [x,y], ... ]
+  !!!不可用
 
   # 四面墙距离 (激光雷达)
   d_front, d_left, d_back, d_right = UnitedPosition.DirectDistance()
   # 返回: [前,左,后,右] cm  |  故障: 全0xfff
+  !!!可用
 
   # 视觉原始数据 (球+底盘+球门)
   data = UnitedPosition.GetVisionData()
   # 返回: dict {"ball_pos":..., "chassis_pos":..., "blue_goal":..., "yellow_goal":...}
+  !!!可用
 
   # 移动到场地目标点 (非阻塞, 每帧调用)
-  arrived = UnitedPosition.Pos2Pos([x, y, yaw], speed_gain=2)
+  arrived = UnitedPosition.Pos2Pos([x, y, yaw])
   # 返回: True 到达 / False 未到达
+  !!!可用
 
   # 边界保护 (放主循环最前)
   safe = UnitedPosition.RestrictedArea()
   # 返回: True 安全 / False 已自动调整
-
-  # 停机并释放视觉进程
-  UnitedPosition.Stop()
+  !!!可用
 
 ========================================
 【底盘移动】 (全局对象 chassis)
@@ -64,28 +72,36 @@ RCJ 现场题函数速查（可直接复制）
   # 机体坐标系 (不补偿航向)
   chassis.RobotMoveVector(SpeedX, SpeedY, SpeedZ)
   # 功能: 前后/左右/旋转  无返回值
+  !!!可用
 
-  chassis.RobotMoveAngle(Angle, Speed, Kp=1)
+  chassis.RobotMoveAngle(Angle, Speed)
   # Angle=0前, 90左  无返回值
+  !!!可用
 
   chassis.RobotTurn(Speed)
   # 无返回值
+  !!!可用
 
   # 场地坐标系 (自动补偿航向)
-  chassis.FieldMoveVector(SpeedX, SpeedY, FacingAngle, Kp=None, KpW=None)
+  chassis.FieldMoveVector(SpeedX, SpeedY, FacingAngle)
   # FacingAngle: 车头朝向的绝对角度
+  !!!可用
 
-  chassis.FieldMoveAngle(FacingAngle, MovingAngle, Speed, Kp=None)
+  chassis.FieldMoveAngle(FacingAngle, MovingAngle, Speed)
   # 面朝FacingAngle, 往MovingAngle方向移动
+  !!!不可用
 
   chassis.FieldTurn(Angle)
   # 原地转向到绝对角度 (有闭环)
+  !!!不可用
 
   chassis.TurnTo(Angle, Kp=None)
   # 阻塞式转向 (慎用)
+  !!!不可用
 
   chassis.stop()
   # 立即停车
+  !!!可用
 
 ========================================
 【高级策略动作】 (BasicFuc.py 已有)

@@ -75,12 +75,12 @@ class Preference:
                     "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
                     "CalibrationFolder": '/Calibration/',
-                    "HailoModelName": 'ArisuModel_v1.2s.hef',
+                    "HailoModelName": '/ArisuModel_v1.2s.hef',
                     # TunaIntelligence (Ultralytics/TensorRT) model paths
                     # - Use absolute path or path relative to repo root / working directory.
                     # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
-                    "TunaModelName": "yolov8nForX5.pt",
-                    "TunaEnginePath": "yolov8nForX5.engine",
+                    "TunaModelName": "/yolov8nForX5.pt",
+                    "TunaEnginePath": "/yolov8nForX5.engine",
 
                     # Bounding-box based distance estimation (cm).
                     # These are fallback physical sizes used with camera intrinsics.

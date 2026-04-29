@@ -51,22 +51,6 @@ def LinearMap(value, input_range, output_range):
     
     return mapped_value
 
-def ChasingBall():
-    iBX,iBY = UnitedPosition.RobotBallPos()
-    # Robot-frame pursuit: RobotBallPos() already returns (x_forward, y_left).
-    # Use robot-series motion only to avoid mixing field-frame yaw compensation.
-    if [iBX, iBY] == [0xfff, 0xfff]:
-        chassis.stop()
-        return
-    if [iBX, iBY] == [0xddd, 0xddd]:
-        peripheral.Dribble(True)
-        return
-
-    Kp = 1.5
-    # 0°=forward, 90°=left, 180°=back, 270°=right
-    ball_angle = (math.degrees(math.atan2(iBY, iBX)) + 360) % 360
-    speed = min(300, int(math.sqrt(iBX * iBX + iBY * iBY) * Kp))
-    chassis.RobotMoveAngle(ball_angle, speed)
 
 class LockSeries:
     def __init__(self):

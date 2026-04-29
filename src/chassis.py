@@ -69,7 +69,7 @@ class Car:
         rad = math.radians(Angle)
         SpeedX = int(math.sin(rad) * Speed)
         SpeedY = int(math.cos(rad) * Speed)
-        self.RobotMoveVector(SpeedY,SpeedX,0,Kp)
+        self.RobotMoveVector(SpeedY,SpeedX,0)
 
     def FieldMoveAngle(self,FacingAngle,MovingAngle,Speed,Kp:float|None = None):
         '''
