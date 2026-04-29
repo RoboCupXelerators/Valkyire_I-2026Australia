@@ -1,0 +1,96 @@
+自动运行main.py里的攻防
+	./scripts/install_system_service.sh
+
+查看攻防输出
+	journalctl -u ENDFIELD -f
+
+取消main.py攻防自动运行
+	systemctl disable ENDFIELD.service
+
+========================================
+现场题函数速查（PascalCase 新名，旧名兼容）
+========================================
+
+【数据读取】 UnitedPosition = Positions()
+
+球相关（机体坐标系）
+  RobotBallPos()        -> [x_forward, y_left] cm
+                           哨兵: [0xfff,0xfff] 无球  [0xddd,0xddd] 抱球
+  RobotBallAngle()      -> int 角度 (0°=正前)
+  RobotBallDistance()   -> float 距离或哨兵值
+
+位置相关（场地坐标系）
+  FieldRobotPos()       -> [x, y, yaw]  本机位置
+  FieldBallPos()        -> [x, y] 或哨兵  球绝对位置
+  FieldBallAngle()      -> int (0~360)    球绝对角度
+  FieldChassisPos()     -> [[x,y], ...]  其他底盘绝对位置
+
+其他
+  DirectDistance()      -> [前,左,后,右] cm 激光测距
+  GetVisionData()       -> dict 原始视觉（球+底盘+球门）
+  Pos2Pos([x,y,yaw], speed_gain) -> bool  移动到场地目标（非阻塞）
+  RestrictedArea()      -> bool  边界保护（返回False时内部已规避）
+  Stop()                -> 停机+释放视觉线程
+
+========================================
+【底盘移动】 chassis (已在 LunaPre 中初始化)
+
+机体坐标系（不补偿航向）
+  RobotMoveVector(SpeedX, SpeedY, SpeedZ)  前后/左右/旋转
+  RobotMoveAngle(Angle, Speed, Kp=1)       按机体角度移动
+  RobotTurn(Speed)                         纯自转
+
+场地坐标系（自动补偿航向，FacingAngle=车头朝向绝对角度）
+  FieldMoveVector(SpeedX, SpeedY, FacingAngle)     带闭环平移
+  FieldMoveAngle(FacingAngle, MovingAngle, Speed)  面向FacingAngle, 往MovingAngle移动
+  FieldTurn(Angle)                                  原地转向到绝对角度
+  TurnTo(Angle)                                     阻塞式转向（慎用）
+  stop()                                            立即停车
+
+========================================
+【高级策略动作】 BasicFuc.py / lockball
+
+追球
+  ChasingBall()               简单比例追球（需循环调用）
+  lockball.LockBallSlip()     精确吸球（返回 True=抱球，False=移动中）
+  lockball.LockBallDash()     冲击吸球（抱球瞬间前冲）
+
+带球/射门
+  TurnTo_with_ball(aim_angle)  抱球转向目标角度（返回 True=到位）
+  NormalShoot()               兼容版射门（调用 LockBallSlip + 调整）
+  GoBack()                    返回 config 预设 Home 点
+
+========================================
+【外设】 peripheral
+
+  Dribble(True/False)   开关运球器
+  ShootBall()           踢球（电磁铁脉冲）
+
+========================================
+【工具函数】 BasicFuc.py
+
+  RoundThresholdJudger(value, round, mid, offset) -> bool
+      环形阈值判断，例如判断航向是否在目标±offset内
+
+  FindNearestAngle(arr, target) -> angle
+      从角度列表找最接近 target 的角度
+
+  LinearMap(value, (in_min,in_max), (out_min,out_max)) -> float
+      线性映射，如测距转速度
+
+  # 角度归一化（防绕远路）
+  error = ((target - current + 180) % 360) - 180
+  # error>0 左转, error<0 右转
+
+========================================
+【常用组合套路】
+  while True:
+      bx, by = UnitedPosition.RobotBallPos()
+      if [bx,by] == [0xfff,0xfff]:
+          ChasingBall()                  # 没球就追
+      elif [bx,by] == [0xddd,0xddd]:
+          # 抱球成功，走向射门点
+          if UnitedPosition.Pos2Pos([目标x, 目标y, 目标yaw]):
+              peripheral.ShootBall()
+      else:
+          lockball.LockBallSlip()        # 有球就吸
