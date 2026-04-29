@@ -19,14 +19,6 @@ RCJ 现场题函数速查（可直接复制）
   # 哨兵: [0xfff,0xfff] 无球  |  [0xddd,0xddd] 抱球
   !!!可用
 
-  angle = UnitedPosition.RobotBallAngle()
-  # 返回: int (0°=正前方, 90°=左侧)
-  !!!不可用
-
-  dist = UnitedPosition.RobotBallDistance()
-  # 返回: float cm  |  哨兵值同上
-  !!!不可用
-
   # 自己在场地坐标系
   x, y, yaw = UnitedPosition.FieldRobotPos()
   # 返回: [x, y, yaw] cm, cm, 度
@@ -37,16 +29,7 @@ RCJ 现场题函数速查（可直接复制）
   # 返回: [x, y] cm  |  哨兵值同上
   !!!可用
 
-  fa = UnitedPosition.FieldBallAngle()
-  # 返回: int (0~360)
-  !!!不可用
-
-  # 其他底盘在场地坐标系
-  enemies = UnitedPosition.FieldChassisPos()
-  # 返回: [ [x,y], [x,y], ... ]
-  !!!不可用
-
-  # 四面墙距离 (激光雷达)
+    # 四面墙距离 (激光雷达)
   d_front, d_left, d_back, d_right = UnitedPosition.DirectDistance()
   # 返回: [前,左,后,右] cm  |  故障: 全0xfff
   !!!可用
@@ -59,6 +42,10 @@ RCJ 现场题函数速查（可直接复制）
   # 移动到场地目标点 (非阻塞, 每帧调用)
   arrived = UnitedPosition.Pos2Pos([x, y, yaw])
   # 返回: True 到达 / False 未到达
+  !!!可用
+
+  # 按顺序移动到场地目标点 (阻塞)
+  UnitedPosition.Move2Path([[x1, y1, yaw1], [x2, y2, yaw2], ...], wait_s)
   !!!可用
 
   # 边界保护 (放主循环最前)
@@ -87,18 +74,6 @@ RCJ 现场题函数速查（可直接复制）
   # FacingAngle: 车头朝向的绝对角度
   !!!可用
 
-  chassis.FieldMoveAngle(FacingAngle, MovingAngle, Speed)
-  # 面朝FacingAngle, 往MovingAngle方向移动
-  !!!不可用
-
-  chassis.FieldTurn(Angle)
-  # 原地转向到绝对角度 (有闭环)
-  !!!不可用
-
-  chassis.TurnTo(Angle, Kp=None)
-  # 阻塞式转向 (慎用)
-  !!!不可用
-
   chassis.stop()
   # 立即停车
   !!!可用
@@ -106,23 +81,9 @@ RCJ 现场题函数速查（可直接复制）
 ========================================
 【高级策略动作】 (BasicFuc.py 已有)
 
-  # 追球
-  ChasingBall()
-  # 简单比例追球, 需每帧调用
-
   got_ball = lockball.LockBallSlip()
   # 精确吸球, 返回 True=抱球  False=正在移动
-
-  got_ball = lockball.LockBallDash()
-  # 冲击吸球, 返回 True=抱球  False=正在移动
-
-  # 抱球转向
-  done = TurnTo_with_ball(Aim_Angle, SpeedK=1)
-  # 返回: True 已到位  False 还在转
-
-  # 射门 (兼容版, 内部调 LockBallSlip)
-  kicked = NormalShoot(x=1, HomePos=[0,-20,0])
-  # 返回: True 已踢出  False 执行中
+  !!!可用
 
   # 回 Home 点
   GoBack()
@@ -130,44 +91,9 @@ RCJ 现场题函数速查（可直接复制）
   # 绕球转圈 (阻塞)
   CircleAround(AimAngle)
 
-  # 抱球溜边射门
-  Slipsideshot(EnemyPos, GoalPos)
-
-  # 带球跑后射门
-  OHMYBACK(HomePos=[0,-20,0])
-
 ========================================
 【外设】 (全局对象 peripheral)
 
   peripheral.Dribble(True)   # 开运球
   peripheral.Dribble(False)  # 关运球
   peripheral.ShootBall()     # 踢球 (电磁铁脉冲)
-
-========================================
-【工具函数】 (BasicFuc.py)
-
-  ok = RoundThresholdJudger(value, round, middle, offset)
-  # 环形阈值判断, 例: 判断航向
-  # if RoundThresholdJudger(compass(), 360, 180, 10):
-
-  aim = FindNearestAngle(angle_list, target_angle)
-  # 从角度数组里找最接近 target 的角度
-
-  y = LinearMap(x, (in_min, in_max), (out_min, out_max))
-  # 线性映射
-
-  # 角度归一化 (防绕远路)
-  error = ((target - current + 180) % 360) - 180
-  # error>0 左转, error<0 右转
-
-========================================
-【最常用现场题套路】
-  while True:
-      bx, by = UnitedPosition.RobotBallPos()
-      if [bx, by] == [0xfff, 0xfff]:
-          ChasingBall()
-      elif [bx, by] == [0xddd, 0xddd]:
-          if UnitedPosition.Pos2Pos([90, 0, 0]):
-              peripheral.ShootBall()
-      else:
-          lockball.LockBallSlip()
