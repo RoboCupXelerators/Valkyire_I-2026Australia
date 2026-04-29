@@ -31,7 +31,7 @@ def main():
     last_log_ts = 0.0
     last_state: str | None = None
     last_pose_ts = 0.0
-
+    
     def _log_state(state: str):
         nonlocal last_log_ts, last_state
         now = time.time()
