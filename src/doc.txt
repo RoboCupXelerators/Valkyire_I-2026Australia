@@ -109,15 +109,17 @@ RCJ 现场题函数速查（可直接复制）
   # 追球
   ChasingBall()
   # 简单比例追球, 需每帧调用
+  !!!不可用
 
   got_ball = lockball.LockBallSlip()
   # 精确吸球, 返回 True=抱球  False=正在移动
 
   got_ball = lockball.LockBallDash()
   # 冲击吸球, 返回 True=抱球  False=正在移动
+  !!!不可用
 
   # 抱球转向
-  done = TurnTo_with_ball(Aim_Angle, SpeedK=1)
+  done = TurnTo_with_ball(Aim_Angle)
   # 返回: True 已到位  False 还在转
 
   # 射门 (兼容版, 内部调 LockBallSlip)

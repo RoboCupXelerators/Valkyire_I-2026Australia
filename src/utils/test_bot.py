@@ -7,7 +7,7 @@ from IceLoongBits import IceLoongBits, Commands
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
     # PORT = "/dev/ttyTHS1"
-    PORT = "/dev/ttyUSB0"
+    PORT = "/dev/iceloong"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
 
@@ -67,7 +67,6 @@ def main():
         resp2 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,),
             (Commands.GET_BMI088_DATA,), 
-            (Commands.KICK,), 
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
             (Commands.GET_RUN_KEY_DELTA,),
             (Commands.MORSE_PLAY, "HELLO")
@@ -89,22 +88,13 @@ def main():
         resp4 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,), 
             (Commands.GET_BMI088_DATA,), 
-            (Commands.KICK,), 
-            (Commands.SET_DRIBBLE_SPEED, 1, 0), 
+            (Commands.SET_DRIBBLE_SPEED, 0.22, 0), 
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
             (Commands.GET_RUN_KEY_DELTA,)
         ])
         print("响应:", resp4)
-        time.sleep(2)
+        time.sleep(5)
 
-        print("\n=== 测试5：盘球降速 ===")
-        resp4 = bot.ExecuteCommands([
-            (Commands.KICK,), 
-            (Commands.SET_DRIBBLE_SPEED, 0.0, 0)
-        ])
-        print("响应:", resp4)
-        time.sleep(2)
-        
         print("\n=== 测试5：盘球降速 ===")
         resp4 = bot.ExecuteCommands([
             (Commands.KICK,), 
