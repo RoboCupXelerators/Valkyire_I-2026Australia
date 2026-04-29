@@ -100,8 +100,8 @@ class TunaIntelligence(VisionPreUntil):
         cfg_model = getattr(getattr(Settings, "VisionVals", object()), "TunaModelPath", None)
         cfg_engine = getattr(getattr(Settings, "VisionVals", object()), "TunaEnginePath", None)
 
-        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / "yolov8nForX5.pt"))
-        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / "yolov8nForX5.engine"))
+        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / Settings.VisionVals.TunaModelName))
+        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / Settings.VisionVals.TunaEngineName))
         self.device = device  # None => auto
         # Default behavior: prefer TensorRT engine if present (Jetson-oriented).
         # Set prefer_engine=False in offline CPU tests.

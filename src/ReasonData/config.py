@@ -75,12 +75,12 @@ class Preference:
                     "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
                     "AutoExpose" : 0,  # 0: Manual, 1: Auto
                     "CalibrationFolder": '/Calibration/',
-                    "HailoModelPath": 'src/vision_utils/models/ArisuModel_v1.2s.hef',
+                    "HailoModelName": 'ArisuModel_v1.2s.hef',
                     # TunaIntelligence (Ultralytics/TensorRT) model paths
                     # - Use absolute path or path relative to repo root / working directory.
                     # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
-                    "TunaModelPath": "src/vision_utils/models/yolov8nForX5.pt",
-                    "TunaEnginePath": "src/vision_utils/models/yolov8nForX5.engine",
+                    "TunaModelName": "yolov8nForX5.pt",
+                    "TunaEnginePath": "yolov8nForX5.engine",
 
                     # Bounding-box based distance estimation (cm).
                     # These are fallback physical sizes used with camera intrinsics.
@@ -240,10 +240,10 @@ class Prompts(object):
             self.ExposeVal = 100
             self.AutoExpose = 0
             self.CalibrationFolder = '/Calibration/'
-            self.ModelPath = '/yoloV8_Weighs/'
+            self.HailoModelName = '/yoloV8_Weighs/'
             # TunaIntelligence model paths
-            self.TunaModelPath = "src/vision_utils/models/yolov8nForX5.pt"
-            self.TunaEnginePath = "src/vision_utils/models/yolov8nForX5.engine"
+            self.TunaModelName = "yolov8nForX5.pt"
+            self.TunaEngineName = "yolov8nForX5.engine"
 
     class _bounds(object):
         def __init__(self):
