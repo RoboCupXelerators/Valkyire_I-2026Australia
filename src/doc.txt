@@ -29,16 +29,6 @@ RCJ 现场题函数速查（可直接复制）
   # 返回: [x, y] cm  |  哨兵值同上
   !!!可用
 
-    # 四面墙距离 (激光雷达)
-  d_front, d_left, d_back, d_right = UnitedPosition.DirectDistance()
-  # 返回: [前,左,后,右] cm  |  故障: 全0xfff
-  !!!可用
-
-  # 视觉原始数据 (球+底盘+球门)
-  data = UnitedPosition.GetVisionData()
-  # 返回: dict {"ball_pos":..., "chassis_pos":..., "blue_goal":..., "yellow_goal":...}
-  !!!可用
-
   # 移动到场地目标点 (非阻塞, 每帧调用)
   arrived = UnitedPosition.Pos2Pos([x, y, yaw])
   # 返回: True 到达 / False 未到达
@@ -85,15 +75,11 @@ RCJ 现场题函数速查（可直接复制）
   # 精确吸球, 返回 True=抱球  False=正在移动
   !!!可用
 
-  # 回 Home 点
-  GoBack()
-
-  # 绕球转圈 (阻塞)
-  CircleAround(AimAngle)
-
 ========================================
 【外设】 (全局对象 peripheral)
 
-  peripheral.Dribble(True)   # 开运球
-  peripheral.Dribble(False)  # 关运球
+  peripheral.Dribble(pwm)    # 设置运球
+  !!!可用
+
   peripheral.ShootBall()     # 踢球 (电磁铁脉冲)
+  !!!可用
