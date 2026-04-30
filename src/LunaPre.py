@@ -67,7 +67,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     - 开发机：允许用 Mock 初始化，避免 import 直接失败。
     """
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer, mose, referee
 
     def _use_mock(reason: str) -> None:
         """Switch module-level runtime objects to mock implementations."""
@@ -944,17 +944,20 @@ class Positions:
             x_min = -x_max
             y_max = 70
             y_min = -y_max
+            rsct_width = 25
+            rsct_height = 80
             robo_pos = UnitedPosition.FieldRobotPos()
             robo_abs_pos = [abs(robo_pos[0]), abs(robo_pos[1])]
+            rst = True
             if (robo_pos[0] > x_max or robo_pos[0] < x_min
-                or robo_pos[1] > y_max or robo_pos[1] < y_min
-                or (robo_abs_pos[0] > x_max - Settings.Bounds.restricted_area_x / 10
-                    and robo_abs_pos[1] < Settings.Bounds.restricted_area_y / 20)):
+                or (robo_abs_pos[0] > x_max - rsct_width
+                    and robo_abs_pos[1] < rsct_height / 2 + 10)):
                 UnitedPosition.Pos2Pos([0, robo_pos[1], robo_pos[2]])
-                return False
-            else:
-                return True
-
+                rst = False
+            if (robo_pos[1] > y_max or robo_pos[1] < y_min):
+                UnitedPosition.Pos2Pos([robo_pos[0], 0, robo_pos[2]])
+                rst = False
+            return rst
             
     def Stop(self):
         '''
