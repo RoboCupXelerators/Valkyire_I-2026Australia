@@ -940,27 +940,21 @@ class Positions:
         if Distance[0] == 0:
             return False
         else:
-            if abs(Distance[1] - Distance[3])<Settings.Bounds.restricted_area_y:
-                if Distance[0]<Settings.Bounds.restricted_area_x:
-                    chassis.FieldMoveAngle(0,180,300)
-                    return False
-                elif Distance[2]<Settings.Bounds.restricted_area_x:
-                    chassis.FieldMoveAngle(0,0,300)
-                    return False
-            if Distance[0]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,180,300)
-                return False
-            if Distance[2]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,0,300)
-                return False
-            if Distance[1]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,270,300)
-                return False
-            if Distance[3]<Settings.Bounds.Distance2Bound:
-                chassis.FieldMoveAngle(0,90,300)
+            x_max = 90
+            x_min = -x_max
+            y_max = 70
+            y_min = -y_max
+            robo_pos = UnitedPosition.FieldRobotPos()
+            robo_abs_pos = [abs(robo_pos[0]), abs(robo_pos[1])]
+            if (robo_pos[0] > x_max or robo_pos[0] < x_min
+                or robo_pos[1] > y_max or robo_pos[1] < y_min
+                or (robo_abs_pos[0] > x_max - Settings.Bounds.restricted_area_x / 10
+                    and robo_abs_pos[1] < Settings.Bounds.restricted_area_y / 20)):
+                UnitedPosition.Pos2Pos([0, robo_pos[1], robo_pos[2]])
                 return False
             else:
                 return True
+
             
     def Stop(self):
         '''
