@@ -83,3 +83,9 @@ RCJ 现场题函数速查（可直接复制）
 
   peripheral.ShootBall()     # 踢球 (电磁铁脉冲)
   !!!可用
+
+  mose("str")                # 发摩斯码
+  !!!可用
+
+  key() -> bool              # 按键按下
+  !!!可用
