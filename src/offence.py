@@ -31,15 +31,6 @@ def main():
     last_log_ts = 0.0
     last_state: str | None = None
     last_pose_ts = 0.0
-    
-    def _log_state(state: str):
-        nonlocal last_log_ts, last_state
-        now = time.time()
-        if state != last_state or (now - last_log_ts) >= log_every:
-            # loguru uses `{}` formatting; printf-style `%s` won't be substituted.
-            logger.info("[offence] state={}", state)
-            last_state = state
-            last_log_ts = now
 
     try:
         while True:

@@ -58,7 +58,6 @@ class _MockBits:
     def GetKey(self):
         return 0
 
-
 def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     """初始化 Bits / chassis / peripheral / lidar 等全局对象。
 
@@ -67,7 +66,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     - 开发机：允许用 Mock 初始化，避免 import 直接失败。
     """
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer, mose, referee
 
     def _use_mock(reason: str) -> None:
         """Switch module-level runtime objects to mock implementations."""
