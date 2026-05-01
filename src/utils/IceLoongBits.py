@@ -95,7 +95,7 @@ class IceLoongBits:
                         Speed = self.CommandLine[i]
                         self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed[0], Speed[1])])
                     case 'MORSE_PLAY':
-                        if self.CommandLine[i] != None
+                        if self.CommandLine[i] != None:
                             self.ExecuteCommands([(Commands.MORSE_PLAY, str(self.CommandLine[i]))])
                         self.CommandLine['MORSE_PLAY'] = None
                     case 'KICK':
