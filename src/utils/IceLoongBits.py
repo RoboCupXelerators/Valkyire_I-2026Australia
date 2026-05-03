@@ -154,7 +154,9 @@ class IceLoongBits:
             try:
                 self.ser.close()
             except Exception as e:
-                self.logger.exception("关闭串口失败: %s", e)
+                import subprocess
+                a = subprocess.run(['sudo fuser -k /dev/iceloong'], shell=True, capture_output=True, text=True)
+                self.logger.exception("关闭串口失败: %s", a.returncode)
             finally:
                 self.ser = None
 

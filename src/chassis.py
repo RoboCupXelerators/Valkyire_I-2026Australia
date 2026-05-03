@@ -4,9 +4,13 @@ from ReasonData import logger
 import time, threading
 
 class Car:
-    def __init__(self,SetMotorFunc,GetYaw=None,MotorEncoder=None):
+    def __init__(self,SetMotorFunc,GetYaw=None,permission=None,MotorEncoder=None):
         self.SetMotorFunc = SetMotorFunc
         self.GetYaw = GetYaw
+        if permission is None:
+            self.Permission = lambda: True
+        else:
+            self.Permission = permission
         self.MotorEncoder = MotorEncoder
         self.Kp = 3
         self.KpW = 1
@@ -24,26 +28,29 @@ class Car:
         # Note: debug verbosity is still controlled by cfg.Debug.FullLog in calls.
     
     def SetMotor(self,speedCache:list[int,int,int,int]):
-        self.speedCache = speedCache
-        number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
-        speed = [0,0,0,0]
-        for n in range(4):
-            if speedCache[number[n]-1] > self.cfg.ExpectedVals.MaxSpeedValue:
-                speed[n] = self.cfg.ExpectedVals.MaxSpeedValue
-            else:
-                speed[n] = int(speedCache[number[n]-1])
-        if self.cfg.Debug.FullLog:
-            if self.MotorEncoder:
-                EncoderCache = self.MotorEncoder()
-                Encoder =[0,0,0,0]
-                for n in number:
-                    Encoder[n-1] = int(EncoderCache[n-1])
-                self.logger.debug("SetMotorVals: (%s, %s, %s, %s) | With feedbackVals %s" %
-                                   (speed[0], speed[1], speed[2], speed[3],Encoder)
-                                   )
-            else:
-                self.logger.debug("SetMotorVals: %s, %s, %s, %s" % (speed[0], speed[1], -speed[2], -speed[3]))
-        self.SetMotorFunc(speed[0], speed[1], speed[2], speed[3])
+        if self.Permission():
+            self.speedCache = speedCache
+            number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
+            speed = [0,0,0,0]
+            for n in range(4):
+                if speedCache[number[n]-1] > self.cfg.ExpectedVals.MaxSpeedValue:
+                    speed[n] = self.cfg.ExpectedVals.MaxSpeedValue
+                else:
+                    speed[n] = int(speedCache[number[n]-1])
+            if self.cfg.Debug.FullLog:
+                if self.MotorEncoder:
+                    EncoderCache = self.MotorEncoder()
+                    Encoder =[0,0,0,0]
+                    for n in number:
+                        Encoder[n-1] = int(EncoderCache[n-1])
+                    self.logger.debug("SetMotorVals: (%s, %s, %s, %s) | With feedbackVals %s" %
+                                    (speed[0], speed[1], speed[2], speed[3],Encoder)
+                                    )
+                else:
+                    self.logger.debug("SetMotorVals: %s, %s, %s, %s" % (speed[0], speed[1], -speed[2], -speed[3]))
+            self.SetMotorFunc(speed[0], speed[1], speed[2], speed[3])
+        else:
+            self.logger.warning("Permission Denied: Unable to set motor speeds.")
     
     def SetKp(self,Kp):
         self.Kp = Kp
