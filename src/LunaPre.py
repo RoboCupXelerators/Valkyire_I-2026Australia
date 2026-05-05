@@ -58,7 +58,6 @@ class _MockBits:
     def GetKey(self):
         return 0
 
-
 def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     """初始化 Bits / chassis / peripheral / lidar 等全局对象。
 
@@ -72,7 +71,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     def _use_mock(reason: str) -> None:
         """Switch module-level runtime objects to mock implementations."""
 
-        global Bits, lidar, chassis, compass, peripheral, key, Odometer, referee, mose, RUNTIME_IS_MOCK
+        global Bits, lidar, chassis, compass, peripheral, key, Odometer, referee, Morse, RUNTIME_IS_MOCK
 
         logger.warning(f"Using MockBits: {reason}")
         RUNTIME_IS_MOCK = True
@@ -83,7 +82,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         peripheral = Peripherals(Bits.VirtualPorts)
         key = Key(Bits.GetKey)
         referee = None
-        mose = None
+        Morse = None
         Odometer = None
         return
 
@@ -191,7 +190,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             key = Key(Bits.GetKey)
             Odometer = None
             referee = None
-            mose = None
+            Morse = None
             # Provide a lightweight vision provider in SIM (no subprocess)
             try:
                 globals()["vision"] = XeleratorVision(bits=Bits)
@@ -219,7 +218,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             key = Key(Bits.GetKey)
             Odometer = None
             referee = None
-            mose = None
+            Morse = None
             logger.info("Arisu Bit loaded.")
             return
 
@@ -235,11 +234,11 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             Bits = IceLoongBits(port=dev_path)
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
             peripheral = Peripherals(Bits.VirtualPorts)  # TODO
-            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
+            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
             compass = Bits.GetYaw
             key = Bits.GetKey
             referee = Bits.GetRefereeUnlockPin
-            mose = Bits.MosePrint
+            Morse = Bits.MosePrint
             Odometer = None  # TODO add odometer support
             logger.info("IceLoongBits Bit loaded.")
             return
@@ -410,10 +409,6 @@ class Positions:
         self.StartVision()
         return self.vision_data
 
-    # Backward-compatible alias
-    def get_vision_data(self):
-        return self.GetVisionData()
-
     def _get_ball_pos(self):
         v = globals().get("vision", None)
         if v is not None:
@@ -532,9 +527,9 @@ class Positions:
     def DirectDistance(self):
         '''
         `非阻塞函数`
-        Get the [Direct] Distance From the bound to the Bound
+        Get the [Direct] Distance From the bound to the Bound, unit mm [Forward,Left,Backward,Right]
 
-        获取四面墙的距离 
+        获取四面墙的距离 单位 mm [Forward,Left,Backward,Right]
 
         #### Args:
 
@@ -617,7 +612,7 @@ class Positions:
         logger.info("[Absolute] Robot Position: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
         try:
-            if Bits.Odometer:# if use odometer datas
+            if Odometer:# if use odometer datas
                 # TODO finish lower Positions
                 pass
         except:
@@ -637,11 +632,23 @@ class Positions:
         """获取球门检测结果（蓝/黄球门）。"""
         return self._get_goals_pos()
 
-    def GetGoalsPos(self):
-        return self._get_goals_pos()
+    def FieldGoalsPos(self):
+        """获取球门在场地坐标系下的位置。"""
+        goals = self._get_goals_pos()
+        if not goals:
+            return {"blue_goal": None, "yellow_goal": None}
 
-    def get_goals_pos(self):
-        return self._get_goals_pos()
+        self_pos = self.FieldRobotPos()
+        result = {}
+        for color in ["blue_goal", "yellow_goal"]:
+            goal_pos = goals.get(color)
+            if goal_pos is not None:
+                angle_to_goal = self.Pos2Angle(self_pos, goal_pos)
+                distance_to_goal = math.sqrt((goal_pos[0] - self_pos[0]) ** 2 + (goal_pos[1] - self_pos[1]) ** 2)
+                result[color] = {"position": goal_pos, "angle": angle_to_goal, "distance": distance_to_goal}
+            else:
+                result[color] = None
+        return result
 
     def FieldChassisPos(self):
         '''
@@ -658,7 +665,7 @@ class Positions:
                     chassis height
                     chassis weidth
         '''
-        # 20251017 already changed X,Y dimension
+        # TODO 20260503 This method is to be tested.
         ChassisRawList = self._get_chassis_pos()
         SelfX, SelfY, SelfZ = self.FieldRobotPos()
         OutputDistanceList = []
@@ -686,6 +693,7 @@ class Positions:
     
     # ********* UPPER FUNCTIONS ********
     def RobotBallAngle(self):
+        # TODO 20260503 This method is to be tested.
         '''
         `非阻塞函数`
 
@@ -703,6 +711,7 @@ class Positions:
         return relBallAngle
     
     def FieldBallAngle(self):
+        # TODO 20260503 This method is to be tested.
         '''
         `非阻塞函数`
 
@@ -716,6 +725,7 @@ class Positions:
         return self.BallAngle
 
     def RobotBallDistance(self):
+        # TODO 20260503 This method is to be tested.
         '''
         `非阻塞函数`
 
@@ -743,6 +753,7 @@ class Positions:
         return self.BallDistance
 
     def FieldBallPos(self):
+        # TODO 20260503 This method is to be tested.
         '''
         `非阻塞函数`
 
@@ -773,6 +784,7 @@ class Positions:
             return [SelfX + dx, SelfY + dy]
 
     def RobotChassisAngle(self):
+        # TODO 20260503 This method is to be tested.
         '''
         `非阻塞函数`
 
@@ -796,25 +808,6 @@ class Positions:
                 ChassisAngleList.append(0)
         return ChassisAngleList
 
-    def FieldChassisAngle(self):
-        '''
-        `非阻塞函数`
-
-        获取[其他机器]相对于[场地几何中心]的角度列表
-        ##### retrun a list of the absolute angles of the chassis
-        #### Returns:
-            [a1,a2,a3,etc]
-        '''
-        OutputAngles = []
-        CompassCache = compass()
-        for i in self.RobotChassisAngle():
-            ChassisAngleCache = i + CompassCache
-            if ChassisAngleCache > 360:
-                OutputAngles.append(int(ChassisAngleCache)%360)
-            else:
-                OutputAngles.append(int(ChassisAngleCache))
-        return OutputAngles
-
     def Pos2Pos(self, AimPos: list, speed_gain: int | None = None) -> bool:
         '''
         `非阻塞函数`
@@ -829,16 +822,12 @@ class Positions:
         iLocX, iLocY, iLocZ = self.FieldRobotPos()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
             chassis.stop()
+            Morse("No Position Data!")
             return False
         iAimX,iAimY,iAimZ = AimPos
         iErrorX = (iAimX) - (iLocX)
         iErrorY = (iAimY) - (iLocY)
         iErrorZ = (iAimZ) - (iLocZ)
-        # iDeltaX = 0.001*iDeltaX**3+iDeltaX
-        # iDeltaY = 0.001*iDeltaY**3+iDeltaY
-        
-        RestrictedX = Settings.Bounds.FarPos[0]
-        RestrictedY = Settings.Bounds.FarPos[1]
         if Settings.Debug.Beta:
             if self.ResetFlag > 1000:
                 self.Position_X_PID.reset()
@@ -932,10 +921,6 @@ class Positions:
         # do not run boundary-avoidance logic (it would generate bogus commands).
         if Distance == [0xfff, 0xfff, 0xfff, 0xfff]:
             return True
-        
-        # border = 240
-        # restricted_area_x = 400
-        # restricted_area_y = 800
 
         if Distance[0] == 0:
             return False
@@ -958,7 +943,7 @@ class Positions:
                 UnitedPosition.Pos2Pos([robo_pos[0], 0, robo_pos[2]])
                 rst = False
             return rst
-            
+
     def Stop(self):
         '''
         ### Function for stopping the vision data thread
@@ -994,127 +979,275 @@ class Positions:
         except Exception:
             pass
 
-    # Backward-compatible alias (legacy code used lower-case stop())
-    def stop(self):
-        return self.Stop()
-
 UnitedPosition = Positions()
 
 class Communication:
+    """蓝牙/Wi-Fi 队内通信封装。
+
+    协议参考 `蓝牙数据协议.csv`：
+    - 帧头: 0x23
+    - 帧尾: 0x42
+    - 字段顺序:
+        [帧头, 识别ID, 角色, 状态, x+, y+, x-, y-, 备用, 帧尾]
+
+    说明：
+    - 这里保留了一个通用实现，既可以用于串口 BLE，也可以用于 Wi-Fi
+      方案中的二次封装。
+    - 对于坐标字段，默认采用“正负拆分”的方式：
+        signed = positive - negative
+      其中每个分量都会被限制到 0~0xFF。
+    """
+
+    FRAME_HEAD = 0x23
+    FRAME_TAIL = 0x42
+    FRAME_LENGTH = 10
+
+    # 角色编码（对齐蓝牙数据协议.csv）
+    ROLE_OFFENCE_YELLOW = 0x01
+    ROLE_DEFENCE_YELLOW = 0x00
+    ROLE_DEFENCE_BLUE = 0x02
+    ROLE_OFFENCE_BLUE = 0x03
+    ROLE_BAN = 0x04
+
+    # 状态编码
+    STATUS_CATCH_BALL = 0x00
+    STATUS_CHASING = 0x01
+    STATUS_AVOIDING = 0xEE
+    STATUS_NO_BALL = 0xFF
+
     def __init__(self):
         if cfg.Transimission.Method == "WIFI":
             from utils.ReasonBeacon import MisakaNetwork
             self.transimission = MisakaNetwork()
         elif cfg.Transimission.Method == "BLE":
-            pass
+            import serial
+            self.transimission = serial.Serial(getattr(Settings.Ports, "BLEPort", "/dev/ble"), 115200, timeout=0.1)
         else:
             raise RuntimeError("None Transmission Method Selected!")
-        self.BallFlag = [0,0]
-        self.PeerPosition = [0xfff,0xfff]
+
+        self.BallFlag = [0, 0]
+        self.PeerPosition = [0xFFF, 0xFFF]
         self.FullLog = cfg.Debug.FullLog
+        self.RobotID = int(getattr(cfg.RoboInfo, "number", 1))
+        self.Role = self._default_role_from_config()
+        self.Status = self.STATUS_NO_BALL
+        self.LastFrame = None
+        self.LastPeerFrame = None
 
-    # Communicate Functions
-    def BallOwner(self):# function for judging whether catch the ball
-        '''
-        ### function for judging whether catch the ball
-        #### no return value, this function will change the global variable `BallFlag`
-        '''
-        BallX, BallY = UnitedPosition.FieldBallPos()
-        if [BallX,BallY] == [0xddd,0xddd]:
-            self.BallFlag[0] = 1
+    def _default_role_from_config(self) -> int:
+        robo_type = str(getattr(cfg.RoboInfo, "type", "OP")).upper()
+        color = str(getattr(cfg.RoboInfo, "Color", getattr(cfg.RoboInfo, "color", "Y"))).upper()
+
+        if robo_type in {"DP", "DEFENCE", "DEFENSE"}:
+            return self.ROLE_DEFENCE_BLUE if color.startswith("B") else self.ROLE_DEFENCE_YELLOW
+        return self.ROLE_OFFENCE_BLUE if color.startswith("B") else self.ROLE_OFFENCE_YELLOW
+
+    @staticmethod
+    def _clamp_byte(value) -> int:
+        try:
+            value = int(round(float(value)))
+        except Exception:
+            value = 0
+        return max(0, min(0xFF, value))
+
+    @staticmethod
+    def _split_signed_xy(x, y) -> tuple[int, int, int, int]:
+        """将带符号坐标拆成正负两路字节。"""
+        try:
+            x = float(x)
+        except Exception:
+            x = 0.0
+        try:
+            y = float(y)
+        except Exception:
+            y = 0.0
+
+        x_pos = Communication._clamp_byte(max(x, 0.0))
+        y_pos = Communication._clamp_byte(max(y, 0.0))
+        x_neg = Communication._clamp_byte(max(-x, 0.0))
+        y_neg = Communication._clamp_byte(max(-y, 0.0))
+        return x_pos, y_pos, x_neg, y_neg
+
+    @staticmethod
+    def _merge_signed_xy(x_pos, y_pos, x_neg, y_neg) -> list[int]:
+        return [int(x_pos) - int(x_neg), int(y_pos) - int(y_neg)]
+
+    def BuildFrame(self, identity_id: int | None = None, role: int | None = None, status: int | None = None,
+                   x_pos: int = 0, y_pos: int = 0, x_neg: int = 0, y_neg: int = 0, reserve: int = 0) -> bytes:
+        """构造一帧通信报文。"""
+        frame = bytes([
+            self.FRAME_HEAD,
+            self._clamp_byte(self.RobotID if identity_id is None else identity_id),
+            self._clamp_byte(self.Role if role is None else role),
+            self._clamp_byte(self.Status if status is None else status),
+            self._clamp_byte(x_pos),
+            self._clamp_byte(y_pos),
+            self._clamp_byte(x_neg),
+            self._clamp_byte(y_neg),
+            self._clamp_byte(reserve),
+            self.FRAME_TAIL,
+        ])
+        self.LastFrame = frame
+        return frame
+
+    def ParseFrame(self, payload: bytes | bytearray | list[int]):
+        """解析协议帧，返回字典；非法帧返回 None。"""
+        if payload is None:
+            return None
+        if isinstance(payload, list):
+            payload = bytes(payload)
+        if not isinstance(payload, (bytes, bytearray)):
+            return None
+        if len(payload) != self.FRAME_LENGTH:
+            return None
+        if payload[0] != self.FRAME_HEAD or payload[-1] != self.FRAME_TAIL:
+            return None
+
+        identity_id = int(payload[1])
+        role = int(payload[2])
+        status = int(payload[3])
+        x_pos, y_pos, x_neg, y_neg, reserve = map(int, payload[4:9])
+        signed_xy = self._merge_signed_xy(x_pos, y_pos, x_neg, y_neg)
+        data = {
+            "id": identity_id,
+            "role": role,
+            "status": status,
+            "x_pos": x_pos,
+            "y_pos": y_pos,
+            "x_neg": x_neg,
+            "y_neg": y_neg,
+            "reserve": reserve,
+            "signed_xy": signed_xy,
+        }
+        self.LastPeerFrame = data
+        self.PeerPosition = signed_xy
+        self.BallFlag = [status, reserve]
+        return data
+
+    def UpdateState(self, *, role: int | None = None, status: int | None = None,
+                    ball_flag: list[int] | None = None, peer_position: list[int] | None = None):
+        """更新本机待发送状态。"""
+        if role is not None:
+            self.Role = self._clamp_byte(role)
+        if status is not None:
+            self.Status = self._clamp_byte(status)
+        if ball_flag is not None and len(ball_flag) >= 2:
+            self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
+        if peer_position is not None and len(peer_position) >= 2:
+            self.PeerPosition = [int(peer_position[0]), int(peer_position[1])]
+
+    def PackSelfStatus(self, *, identity_id: int | None = None, role: int | None = None,
+                       status: int | None = None, position: list[int] | tuple[int, int] | None = None,
+                       reserve: int = 0) -> bytes:
+        """根据当前状态和位置打包一帧。"""
+        if position is None:
+            position = self.PeerPosition
+        if isinstance(position, (list, tuple)) and len(position) >= 2:
+            x_pos, y_pos, x_neg, y_neg = self._split_signed_xy(position[0], position[1])
         else:
-            self.BallFlag[0] = 0
-        if self.FullLog:
-            logger.debug("BallFlag Satus: %s"%self.BallFlag)
-        else:
-            pass
+            x_pos, y_pos, x_neg, y_neg = 0, 0, 0, 0
+        return self.BuildFrame(
+            identity_id=identity_id,
+            role=role,
+            status=status,
+            x_pos=x_pos,
+            y_pos=y_pos,
+            x_neg=x_neg,
+            y_neg=y_neg,
+            reserve=reserve,
+        )
 
-    def SendStatusThreadFunc(self): # send role and the status of the ball
-        '''
-        ### Warning: This function will stuck the main thread
-        ### use `Sendstatus()` instead
-        '''
-        while (1):
-            SelfPosition = UnitedPosition.FieldRobotPos()
-            try:
-                # make sure all the values are integer
-                ball_self = int(self.BallFlag[0]) if isinstance(self.BallFlag[0], (int, float, str)) else 0
-                pos_x = int(SelfPosition[0])
-                pos_y = int(SelfPosition[1])
-                msg = f"BS:{ball_self};PX:{pos_x};PY:{pos_y}"
-                self.transimission.Send(msg)
-                if self.FullLog:
-                    logger.success(f"Sent message: {msg}")  # Debug message
-            except Exception as e:
-                logger.error(f"Send error: {e}")
-                raise e
-            time.sleep(0.03) # in case too fast
+    def Send(self, payload: bytes | bytearray | list[int] | None = None) -> bool:
+        """发送原始帧或当前状态帧。"""
+        if payload is None:
+            payload = self.PackSelfStatus()
 
-    def SendStatus(self):
-        '''
-        ### Function for starting Send Status Thread
-        #### return `True` if the Thread is already started
-        '''
-        global SendstatusThreadFuncStarted
-        if not SendstatusThreadFuncStarted:
-            SendstatusThread = threading.Thread(target=self.SendStatusThreadFunc)
-            SendstatusThread.daemon = True  # Set as a daemon thread, will auto finished after the main thread finished
-            SendstatusThread.start()
-            SendstatusThreadFuncStarted = True
-        return True
+        try:
+            if hasattr(self.transimission, "send") and callable(getattr(self.transimission, "send")):
+                self.transimission.send(payload)
+            elif hasattr(self.transimission, "sendall") and callable(getattr(self.transimission, "sendall")):
+                self.transimission.sendall(payload)
+            elif hasattr(self.transimission, "write") and callable(getattr(self.transimission, "write")):
+                self.transimission.write(payload)
+            else:
+                raise AttributeError("transimission object has no send/write interface")
+            return True
+        except Exception as e:
+            if self.FullLog:
+                logger.warning(f"Communication send failed: {e}")
+            return False
 
-    def PeerStatusThreadFunc(self):
-        '''
-        ### Warning: This function will stuck main thread
-        ### use `Peerstatus()` instead
-        '''
-        while (1):
-            MessageCache = self.transimission.MessageCache
-            if MessageCache == None:
-                if self.FullLog:
-                    logger.warning("No Messages")
-                time.sleep(1)
-            if MessageCache:
-                try:
-                    # setup default val
-                    self.PeerPosition = [0xfff,0xfff]
-                    self.BallFlag[1] = 0
-                    PeerPositionX, PeerPositionY = 0xfff, 0xfff
-                    for part in MessageCache.split(";"):
-                        if part.startswith("BS:"):
-                            self.BallFlag[1] = int(part.split(":")[1])  # convert into int
-                        if part.startswith("PX:"):
-                            PeerPositionX = int(float(part.split(":")[1]))  # process float number
-                        if part.startswith("PY:"):
-                            PeerPositionY = int(float(part.split(":")[1]))  # process float number
-                    self.PeerPosition = [PeerPositionX, PeerPositionY]
-                except Exception as e:
-                    self.BallFlag = [0, 0]
-                    self.PeerPosition = [0xfff, 0xfff]
-                    logger.error(f"Failed to parse message '{MessageCache}': {e}")
-                MessageCache = None
-            time.sleep(0.02)
+    def Receive(self):
+        """尝试接收一帧并解析。"""
+        try:
+            raw = None
+            if hasattr(self.transimission, "recv") and callable(getattr(self.transimission, "recv")):
+                raw = self.transimission.recv(self.FRAME_LENGTH)
+            elif hasattr(self.transimission, "read") and callable(getattr(self.transimission, "read")):
+                raw = self.transimission.read(self.FRAME_LENGTH)
+            elif hasattr(self.transimission, "receive") and callable(getattr(self.transimission, "receive")):
+                raw = self.transimission.receive()
+            else:
+                raise AttributeError("transimission object has no recv/read/receive interface")
 
-    def PeerStatus(self):# Start the Prase Thread
-        '''
-        ### Function for starting Prase Status Thread
-        #### return `True` if the Thread is already started
-        #### This thread will update the BallFlag
-        '''
-        global PeerstatusThreadFuncStarted
-        if not PeerstatusThreadFuncStarted:
-            PeerstatusThread = threading.Thread(target=self.PeerStatusThreadFunc)
-            PeerstatusThread.daemon = True  # 设置为守护线程，主线程结束时自动结束
-            PeerstatusThread.start()
-            PeerstatusThreadFuncStarted = True
+            if not raw:
+                return None
 
-    def StartConncetion(self):
-        '''
-        ### Function for starting Send&Prase Status Thread
-        '''
-        if not PeerstatusThreadFuncStarted and not SendstatusThreadFuncStarted:
-            self.SendStatus()
-            self.PeerStatus()
-        else:
-            pass
+            if isinstance(raw, tuple):
+                # 某些实现会返回 (addr, data)
+                raw = raw[-1]
 
+            if isinstance(raw, list):
+                raw = bytes(raw)
+
+            if isinstance(raw, str):
+                raw = raw.encode("latin1", errors="ignore")
+
+            # 兼容一次读到多帧的场景，尽量从中截取第一帧合法数据。
+            if isinstance(raw, (bytes, bytearray)) and len(raw) >= self.FRAME_LENGTH:
+                for idx in range(0, len(raw) - self.FRAME_LENGTH + 1):
+                    chunk = raw[idx: idx + self.FRAME_LENGTH]
+                    parsed = self.ParseFrame(chunk)
+                    if parsed is not None:
+                        return parsed
+            return self.ParseFrame(raw)
+        except Exception as e:
+            if self.FullLog:
+                logger.warning(f"Communication receive failed: {e}")
+            return None
+
+    def SendStatus(self, *, status: int | None = None, role: int | None = None,
+                   position: list[int] | tuple[int, int] | None = None, reserve: int = 0) -> bool:
+        """发送当前机器人状态。"""
+        payload = self.PackSelfStatus(role=role, status=status, position=position, reserve=reserve)
+        return self.Send(payload)
+
+    def SendBallFlag(self, ball_flag: list[int] | None = None, *, reserve: int = 0) -> bool:
+        """便捷接口：发送球状态（兼容旧变量命名）。"""
+        if ball_flag is not None and len(ball_flag) >= 2:
+            self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
+        return self.SendStatus(status=self.Status, position=self.PeerPosition, reserve=reserve)
+
+    def Close(self):
+        """关闭通信句柄。"""
+        try:
+            if hasattr(self.transimission, "close") and callable(getattr(self.transimission, "close")):
+                self.transimission.close()
+        except Exception as e:
+            if self.FullLog:
+                logger.warning(f"Communication close failed: {e}")
+
+    # Backward-compatible aliases
+    def SendMessage(self, *args, **kwargs):
+        return self.Send(*args, **kwargs)
+
+    def RecvMessage(self):
+        return self.Receive()
+
+    def SetBallFlag(self, ball_flag):
+        self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
+        return self.BallFlag
+
+    def SetPeerPosition(self, peer_position):
+        self.PeerPosition = [int(peer_position[0]), int(peer_position[1])]
+        return self.PeerPosition
