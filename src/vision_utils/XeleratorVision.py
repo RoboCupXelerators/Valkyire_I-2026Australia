@@ -62,6 +62,29 @@ class XeleratorVision:
         self._cameras: list[Any] = []
         self._camera_urls: list[str] = []
         self._model = None
+        
+        # Frames list for dashboard compatibility (like VisionPreUntil)
+        self.Frames = [None, None, None, None]
+        
+        # Start background thread to pull frames from Unity MJPEG server
+        self._frame_thread = None
+        self._frame_running = False
+        self._frame_stop_event = None
+        try:
+            import threading
+            self._frame_stop_event = threading.Event()
+            self._frame_running = True
+            self._frame_thread = threading.Thread(target=self._pull_frames_loop, daemon=True)
+            self._frame_thread.start()
+        except Exception:
+            pass
+        
+        # Simple logger fallback
+        try:
+            from ReasonData import logger  # type: ignore
+        except Exception:
+            import logging
+            logger = logging.getLogger(__name__)
 
     # ===== Unity camera URL helpers =====
     @staticmethod
@@ -236,3 +259,73 @@ class XeleratorVision:
     def infer(self, frame) -> dict[str, Any]:
         """Placeholder for future inference output -> VisionData."""
         raise NotImplementedError("Vision inference is not implemented yet.")
+
+    # ===== Frame pulling for dashboard =====
+    def _pull_frames_loop(self):
+        """Background thread to pull frames from Unity MJPEG server using OpenCV."""
+        import time
+        
+        # Get robot ID and camera slots from config
+        robot_id = 1
+        if Settings is not None and hasattr(Settings, "RoboInfo"):
+            try:
+                robot_id = int(getattr(Settings.RoboInfo, "number", 1))
+            except Exception:
+                pass
+        
+        camera_slots = self._camera_slot_defaults()
+        server_port = int(os.environ.get("XEL_CAM_SERVER_PORT", "20801"))
+        host = os.environ.get("XEL_CAM_HOST", "127.0.0.1")
+        
+        # Build URLs for each camera
+        urls = [self.build_camera_url(robot_id, slot, server_port, host) for slot in camera_slots]
+        
+        # Wait a bit for Unity server to start
+        time.sleep(1.0)
+        
+        # OpenCV VideoCapture can handle MJPEG streams
+        import cv2  # type: ignore
+        
+        caps = [None, None, None, None]
+        
+        while self._frame_running and not self._frame_stop_event.is_set():
+            for i, url in enumerate(urls):
+                try:
+                    # Open or reopen capture if needed
+                    if caps[i] is None or not caps[i].isOpened():
+                        caps[i] = cv2.VideoCapture(url)
+                        caps[i].set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    
+                    if caps[i] is not None and caps[i].isOpened():
+                        ret, frame = caps[i].read()
+                        if ret and frame is not None:
+                            self.Frames[i] = frame
+                except Exception:
+                    if caps[i] is not None:
+                        try:
+                            caps[i].release()
+                        except Exception:
+                            pass
+                        caps[i] = None
+            
+            time.sleep(0.03)  # ~30 FPS
+        
+        # Cleanup
+        for cap in caps:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+    
+    def close(self, join_timeout: float = 1.0):
+        """Stop background frame thread."""
+        self._frame_running = False
+        if self._frame_stop_event:
+            self._frame_stop_event.set()
+        if self._frame_thread and self._frame_thread.is_alive():
+            try:
+                self._frame_thread.join(timeout=join_timeout)
+            except Exception:
+                pass
+        self.close_camera()

@@ -74,6 +74,11 @@
                         <span class="label">连接模式</span>
                         <span class="value" id="connection-mode">--</span>
                     </div>
+                    <div class="info-badge">
+                        <span class="icon">👁️</span>
+                        <span class="label">识别系统</span>
+                        <span class="value" id="rec-type-display">--</span>
+                    </div>
                 </div>
                 
                 <div class="dashboard-grid">
@@ -140,23 +145,65 @@
             <div id="page-vision" class="page">
                 <header class="page-header">
                     <h1>视觉监控</h1>
-                    <div class="cam-selector">
-                        <button class="cam-btn active" data-cam="0">CAM 0</button>
-                        <button class="cam-btn" data-cam="1">CAM 1</button>
-                        <button class="cam-btn" data-cam="2">CAM 2</button>
-                        <button class="cam-btn" data-cam="3">CAM 3</button>
-                    </div>
+                    <span class="status" id="vision-status">状态: 加载中...</span>
                 </header>
-                <div class="vision-container">
-                    <div class="camera-view">
-                        <img id="camera-feed" src="" alt="Camera Feed">
-                        <canvas id="bbox-overlay"></canvas>
-                    </div>
-                    <div class="detection-info">
-                        <h3>检测结果</h3>
-                        <div class="detection-list" id="detection-list">
-                            <p>加载中...</p>
+                <div class="vision-grid">
+                    <!-- 四摄像头网格显示 -->
+                    <div class="cam-grid">
+                        <div class="cam-panel">
+                            <div class="cam-label">后 (Back)</div>
+                            <div class="cam-wrapper">
+                                <img id="cam0" src="" alt="Camera 0">
+                                <canvas id="ov0" class="overlay"></canvas>
+                            </div>
                         </div>
+                        <div class="cam-panel">
+                            <div class="cam-label">左 (Left)</div>
+                            <div class="cam-wrapper">
+                                <img id="cam1" src="" alt="Camera 1">
+                                <canvas id="ov1" class="overlay"></canvas>
+                            </div>
+                        </div>
+                        <div class="cam-panel">
+                            <div class="cam-label">前 (Front)</div>
+                            <div class="cam-wrapper">
+                                <img id="cam2" src="" alt="Camera 2">
+                                <canvas id="ov2" class="overlay"></canvas>
+                            </div>
+                        </div>
+                        <div class="cam-panel">
+                            <div class="cam-label">右 (Right)</div>
+                            <div class="cam-wrapper">
+                                <img id="cam3" src="" alt="Camera 3">
+                                <canvas id="ov3" class="overlay"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 状态面板 -->
+                    <div class="state-panel">
+                        <div class="panel-header">状态信息</div>
+                        <table class="state-table">
+                            <tr><td>球位置</td><td id="ball-pos">--</td></tr>
+                            <tr><td>球检测框</td><td id="ball-bbox">--</td></tr>
+                            <tr><td>蓝球门</td><td id="blue-goal">--</td></tr>
+                            <tr><td>黄球门</td><td id="yellow-goal">--</td></tr>
+                        </table>
+                    </div>
+                    <!-- 雷达图 -->
+                    <div class="radar-panel">
+                        <div class="panel-header">雷达视图</div>
+                        <canvas id="radar" width="600" height="600"></canvas>
+                    </div>
+                    <!-- 延时面板 -->
+                    <div class="latency-panel">
+                        <div class="panel-header">摄像头延时</div>
+                        <table class="state-table">
+                            <tr><td>CAM 0 (后)</td><td id="lat-cam0">-- ms</td></tr>
+                            <tr><td>CAM 1 (左)</td><td id="lat-cam1">-- ms</td></tr>
+                            <tr><td>CAM 2 (前)</td><td id="lat-cam2">-- ms</td></tr>
+                            <tr><td>CAM 3 (右)</td><td id="lat-cam3">-- ms</td></tr>
+                            <tr><td>平均</td><td id="lat-avg">-- ms</td></tr>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -295,22 +342,26 @@
                                 <div class="setting-item">
                                     <label>机器人类型</label>
                                     <select id="robot-type">
-                                        <option value="OP">OP</option>
-                                        <option value="IL">IL</option>
+                                        <option value="OP">OP (OffencePlayer)</option>
+                                        <option value="DP">DP (DefencePlayer)</option>
                                     </select>
                                 </div>
                                 <div class="setting-item">
                                     <label>Bit 类型</label>
                                     <select id="robot-bit">
-                                        <option value="IL">IL</option>
-                                        <option value="OP">OP</option>
+                                        <option value="AB">AB (Arisu Bits)</option>
+                                        <option value="IL">IL (IceLoong Bits)</option>
+                                        <option value="3Q">3Q (3Q Bits)</option>
+                                        <option value="SIM">SIM (Simulator)</option>
                                     </select>
                                 </div>
                                 <div class="setting-item">
                                     <label>Rec 类型</label>
                                     <select id="robot-rec">
-                                        <option value="AI">AI</option>
-                                        <option value="Manual">Manual</option>
+                                        <option value="AI">AI (Arisu Intelligence)</option>
+                                        <option value="TV">TV (Tuna Vision)</option>
+                                        <option value="BB">BB (Blob Based)</option>
+                                        <option value="XV">XV (Xelerator Vision)</option>
                                     </select>
                                 </div>
                             </div>
@@ -492,16 +543,33 @@
                         <div class="settings-section">
                             <h3>模型配置</h3>
                             <div class="setting-item">
-                                <label>Hailo 模型</label>
-                                <input type="text" id="vision-hailo-model" value="/ArisuModel_v1.2s.hef">
+                                <label>Hailo 模型 (.hef)</label>
+                                <select id="vision-hailo-model">
+                                    <option value="">-- 选择模型 --</option>
+                                </select>
                             </div>
                             <div class="setting-item">
                                 <label>Tuna 模型</label>
-                                <input type="text" id="vision-tuna-model" value="/yolov8nForX5.pt">
+                                <select id="vision-tuna-model">
+                                    <option value="">-- 选择模型 --</option>
+                                </select>
                             </div>
                             <div class="setting-item">
                                 <label>Tuna Engine</label>
-                                <input type="text" id="vision-tuna-engine" value="/yolov8nForX5.engine">
+                                <select id="vision-tuna-engine">
+                                    <option value="">-- 选择引擎 --</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>OTA 更新</h3>
+                            <div class="setting-row">
+                                <button class="btn btn-primary" id="ota-start-btn">🔄 开始 OTA 更新</button>
+                                <button class="btn btn-secondary" id="ota-refresh-btn">🔁 刷新模型列表</button>
+                            </div>
+                            <div class="setting-item" style="margin-top: 12px;">
+                                <label>OTA 日志</label>
+                                <textarea id="ota-log" readonly style="width: 100%; height: 150px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 8px; color: var(--text-primary); font-family: monospace; font-size: 0.85rem; padding: 10px; resize: vertical;">点击"开始 OTA 更新"按钮拉取最新模型和配置...</textarea>
                             </div>
                         </div>
                         <div class="settings-section">
@@ -575,11 +643,11 @@
                             <div class="setting-row">
                                 <div class="setting-item">
                                     <label>本机 IP</label>
-                                    <input type="text" id="wifi-self-ip" placeholder="192.168.1.x">
+                                    <input type="text" id="wifi-self-ip" value="192.168.1.x">
                                 </div>
                                 <div class="setting-item">
                                     <label>远程 IP</label>
-                                    <input type="text" id="wifi-remote-ip" placeholder="192.168.1.x">
+                                    <input type="text" id="wifi-remote-ip" value="192.168.1.x">
                                 </div>
                             </div>
                             <div class="setting-row">
@@ -591,11 +659,11 @@
                             <div class="setting-row">
                                 <div class="setting-item">
                                     <label>SSID</label>
-                                    <input type="text" id="wifi-ssid" placeholder="网络名称">
+                                    <input type="text" id="wifi-ssid" value="MisakaNetwork">
                                 </div>
                                 <div class="setting-item">
                                     <label>密码</label>
-                                    <input type="password" id="wifi-pwd" placeholder="网络密码">
+                                    <input type="text" id="wifi-pwd" value="MisakaNetwork20001/">
                                 </div>
                             </div>
                         </div>
@@ -670,11 +738,11 @@
                             </div>
                             <div class="setting-row">
                                 <div class="setting-item">
-                                    <label>禁区 X</label>
+                                    <label>禁区 X (MM)</label>
                                     <input type="number" id="field-restrict-x" value="400">
                                 </div>
                                 <div class="setting-item">
-                                    <label>禁区 Y</label>
+                                    <label>禁区 Y (MM)</label>
                                     <input type="number" id="field-restrict-y" value="800">
                                 </div>
                             </div>
@@ -683,15 +751,15 @@
                             <h3>检查点</h3>
                             <div class="setting-row">
                                 <div class="setting-item">
-                                    <label>Home X</label>
+                                    <label>Home X (CM)</label>
                                     <input type="number" id="home-x" value="-70">
                                 </div>
                                 <div class="setting-item">
-                                    <label>Home Y</label>
+                                    <label>Home Y (CM)</label>
                                     <input type="number" id="home-y" value="0">
                                 </div>
                                 <div class="setting-item">
-                                    <label>Home θ</label>
+                                    <label>Home θ (°)</label>
                                     <input type="number" id="home-theta" value="0">
                                 </div>
                             </div>

@@ -351,53 +351,51 @@ body {
     margin-top: 16px;
 }
 
-/* Vision Page */
-.cam-selector {
-    display: flex;
-    gap: 8px;
-}
-
-.cam-btn {
-    padding: 8px 16px;
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    color: var(--text-secondary);
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.cam-btn:hover {
-    background: var(--border-color);
-}
-
-.cam-btn.active {
-    background: var(--accent-primary);
-    border-color: var(--accent-primary);
-    color: white;
-}
-
-.vision-container {
+/* Vision Page - Four Camera Grid */
+.vision-grid {
     display: grid;
-    grid-template-columns: 1fr 300px;
+    grid-template-columns: 1fr 420px;
     gap: 20px;
 }
 
-.camera-view {
-    position: relative;
-    background: var(--bg-tertiary);
-    border-radius: 12px;
-    overflow: hidden;
-    min-height: 400px;
+.cam-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
 }
 
-.camera-view img {
+.cam-panel {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+}
+
+.cam-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    text-align: center;
+}
+
+.cam-wrapper {
+    position: relative;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    overflow: hidden;
+    width: 640px;
+    height: 640px;
+    margin: 0 auto;
+}
+
+.cam-wrapper img {
     width: 100%;
-    height: auto;
+    height: 100%;
+    object-fit: contain;
     display: block;
 }
 
-.camera-view canvas {
+.cam-wrapper canvas.overlay {
     position: absolute;
     top: 0;
     left: 0;
@@ -406,15 +404,88 @@ body {
     pointer-events: none;
 }
 
-.detection-info {
+.radar-panel {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid var(--border-color);
+    width: fit-content;
+}
+
+.radar-panel .panel-header {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.radar-panel canvas {
+    display: block;
+    background: #0c1430;
+    border-radius: 8px;
+}
+
+.state-panel {
     background: var(--bg-card);
     border-radius: 12px;
     padding: 16px;
     border: 1px solid var(--border-color);
 }
 
-.detection-list {
+.state-panel .panel-header {
     font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.state-table {
+    width: 100%;
+    font-size: 0.85rem;
+}
+
+.state-table td {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.state-table td:first-child {
+    color: var(--text-muted);
+}
+
+.state-table td:last-child {
+    color: var(--accent-primary);
+    font-weight: 500;
+    text-align: right;
+}
+
+.vision-status {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+/* Latency Panel */
+.latency-panel {
+    background: var(--bg-card);
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid var(--border-color);
+}
+
+.latency-panel .panel-header {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.latency-good {
+    color: var(--accent-success) !important;
+}
+
+.latency-medium {
+    color: var(--accent-warning) !important;
+}
+
+.latency-bad {
+    color: var(--accent-danger) !important;
 }
 
 /* Recording Page */

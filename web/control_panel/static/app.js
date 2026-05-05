@@ -42,6 +42,7 @@ function init() {
     setupVisionControls();
     setupSettingsTabs();
     setupConfigPanel();
+    setupOTAControls();
     loadConfig();
     startPolling();
     loadSessions();
@@ -127,26 +128,192 @@ function navigateTo(page) {
     }
 }
 
-// Vision Controls
+// Vision Controls - Four camera grid
 function setupVisionControls() {
-    elements.camBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const cam = parseInt(btn.dataset.cam);
-            selectCamera(cam);
+    // Initialize camera feeds
+    startVisionFeeds();
+}
+
+// Camera latency tracking
+const camLatencies = {0: [], 1: [], 2: [], 3: []};
+const camRequestTimes = {};
+
+function startVisionFeeds() {
+    // Refresh all four camera feeds periodically with latency tracking
+    function refresh(){
+        const t = Date.now();
+        for (let i = 0; i < 4; i++) {
+            const img = document.getElementById('cam' + i);
+            if (img) {
+                // Track request start time
+                camRequestTimes[i] = t;
+                
+                // Set up load handler to measure latency
+                img.onload = function() {
+                    const latency = Date.now() - camRequestTimes[i];
+                    // Keep last 10 samples for averaging
+                    camLatencies[i].push(latency);
+                    if (camLatencies[i].length > 10) {
+                        camLatencies[i].shift();
+                    }
+                    updateLatencyDisplay();
+                };
+                
+                img.onerror = function() {
+                    // Clear latency on error
+                    camLatencies[i] = [];
+                    updateLatencyDisplay();
+                };
+                
+                img.src = `/api/cam/${i}.jpg?size=480&t=${t}`;
+            }
+        }
+    }
+    refresh();
+    setInterval(refresh, 120); // ~8 FPS
+    
+    // Start state polling for radar and info
+    setInterval(updateVisionState, 100);
+}
+
+function updateLatencyDisplay() {
+    let totalAvg = 0;
+    let validCams = 0;
+    
+    for (let i = 0; i < 4; i++) {
+        const el = document.getElementById('lat-cam' + i);
+        if (!el) continue;
+        
+        const samples = camLatencies[i];
+        if (samples.length > 0) {
+            const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+            el.textContent = avg.toFixed(0) + ' ms';
+            
+            // Color coding based on latency
+            el.classList.remove('latency-good', 'latency-medium', 'latency-bad');
+            if (avg < 100) {
+                el.classList.add('latency-good');
+            } else if (avg < 200) {
+                el.classList.add('latency-medium');
+            } else {
+                el.classList.add('latency-bad');
+            }
+            
+            totalAvg += avg;
+            validCams++;
+        } else {
+            el.textContent = '-- ms';
+            el.classList.remove('latency-good', 'latency-medium', 'latency-bad');
+        }
+    }
+    
+    // Update average
+    const avgEl = document.getElementById('lat-avg');
+    if (avgEl) {
+        if (validCams > 0) {
+            const avg = totalAvg / validCams;
+            avgEl.textContent = avg.toFixed(0) + ' ms';
+            avgEl.classList.remove('latency-good', 'latency-medium', 'latency-bad');
+            if (avg < 100) {
+                avgEl.classList.add('latency-good');
+            } else if (avg < 200) {
+                avgEl.classList.add('latency-medium');
+            } else {
+                avgEl.classList.add('latency-bad');
+            }
+        } else {
+            avgEl.textContent = '-- ms';
+            avgEl.classList.remove('latency-good', 'latency-medium', 'latency-bad');
+        }
+    }
+}
+
+function updateVisionState() {
+    fetch('/api/state')
+        .then(r => r.json())
+        .then(data => {
+            // Update ball position
+            const ballPosEl = document.getElementById('ball-pos');
+            if (ballPosEl && data.ball_pos_cm) {
+                ballPosEl.textContent = `(${data.ball_pos_cm[0]?.toFixed(1) || '--'}, ${data.ball_pos_cm[1]?.toFixed(1) || '--'}) cm`;
+            }
+            
+            // Update vision status
+            const statusEl = document.getElementById('vision-status');
+            if (statusEl) {
+                statusEl.textContent = `状态: 在线 | 运行时间: ${formatDuration(data.uptime_s)}`;
+            }
+            
+            // Update radar
+            drawRadar(data);
+        })
+        .catch(e => {
+            const statusEl = document.getElementById('vision-status');
+            if (statusEl) {
+                statusEl.textContent = '状态: 离线';
+            }
         });
-    });
 }
 
-function selectCamera(camIndex) {
-    state.currentCam = camIndex;
-    elements.camBtns.forEach(btn => {
-        btn.classList.toggle('active', parseInt(btn.dataset.cam) === camIndex);
-    });
-    updateCameraFeed();
-}
-
-function updateCameraFeed() {
-    elements.cameraFeed.src = `/api/cam/${state.currentCam}.jpg?t=${Date.now()}`;
+function drawRadar(data) {
+    const canvas = document.getElementById('radar');
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    
+    // Clear
+    ctx.fillStyle = '#0c1430';
+    ctx.fillRect(0, 0, w, h);
+    
+    const cx = w / 2, cy = h / 2;
+    const scale = Math.min(w, h) * 0.4 / 300; // 300cm range
+    const rangeCm = 300;
+    
+    // Grid circles
+    ctx.strokeStyle = 'rgba(76,201,240,0.18)';
+    ctx.lineWidth = 1;
+    for (let r = 50; r <= rangeCm; r += 50) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    
+    // Axes
+    ctx.strokeStyle = 'rgba(233,238,252,0.15)';
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(w, cy);
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, h);
+    ctx.stroke();
+    
+    // Ego robot at center
+    ctx.fillStyle = 'rgba(58,238,159,0.85)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Ball
+    if (data.ball_pos_cm && data.ball_pos_cm.length >= 2) {
+        const bx = data.ball_pos_cm[0], by = data.ball_pos_cm[1];
+        if (bx !== 0 || by !== 0) {
+            const px = cx - by * scale;  // Y left is positive
+            const py = cy - bx * scale;  // X forward is positive
+            ctx.fillStyle = 'rgba(247,37,133,0.95)';
+            ctx.beginPath();
+            ctx.arc(px, py, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(247,37,133,0.9)';
+            ctx.font = '10px sans-serif';
+            ctx.fillText('BALL', px + 8, py - 4);
+        }
+    }
+    
+    // Range label
+    ctx.fillStyle = 'rgba(159,176,214,0.85)';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(`±${rangeCm}cm`, 8, 14);
 }
 
 // Recording Controls
@@ -640,24 +807,126 @@ function setupConfigPanel() {
 
 async function loadConfig() {
     try {
-        const response = await fetch('/api/config');
-        const config = await response.json();
+        // Load config
+        const configResponse = await fetch('/api/config');
+        const config = await configResponse.json();
         state.config = config;
+        
+        // Load dynamic options for dropdowns
+        await loadDynamicOptions();
+        
+        // Now populate form (after dynamic options are loaded)
         populateConfigForm(config);
         updateSystemInfoBar(config);
     } catch (e) {
         console.error('Failed to load config:', e);
     }
+    
+    // Also load system info from dedicated endpoint
+    try {
+        const sysResponse = await fetch('/api/system-info');
+        const sysInfo = await sysResponse.json();
+        
+        // Update local IP from system info
+        const localIPEl = document.getElementById('local-ip');
+        if (localIPEl && sysInfo.local_ip && sysInfo.local_ip !== '--') {
+            localIPEl.textContent = sysInfo.local_ip;
+        }
+    } catch (e) {
+        console.error('Failed to load system info:', e);
+    }
+}
+
+async function loadDynamicOptions() {
+    try {
+        const response = await fetch('/api/dynamic-options');
+        const options = await response.json();
+        
+        // Get current config values for models
+        const hailoModel = state.config?.VisionVals?.HailoModelName;
+        const tunaModel = state.config?.VisionVals?.TunaModelName;
+        const tunaEngine = state.config?.VisionVals?.TunaEnginePath;
+        
+        // Populate Hailo models dropdown with config value
+        populateSelectOptions('vision-hailo-model', options.hailo_models || [], '-- 选择模型 --', hailoModel);
+        
+        // Populate Tuna models dropdown with config value
+        populateSelectOptions('vision-tuna-model', options.tuna_models || [], '-- 选择模型 --', tunaModel);
+        
+        // Populate Tuna engines dropdown with config value
+        populateSelectOptions('vision-tuna-engine', options.tuna_engines || [], '-- 选择引擎 --', tunaEngine);
+        
+        console.log('[Config] Dynamic options loaded:', options);
+    } catch (e) {
+        console.error('Failed to load dynamic options:', e);
+    }
+}
+
+function populateSelectOptions(selectId, options, defaultLabel, configValue) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    
+    // Clear existing options
+    select.innerHTML = '';
+    
+    // Add default option
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = defaultLabel;
+    select.appendChild(defaultOpt);
+    
+    // Add options from list
+    options.forEach(opt => {
+        const option = document.createElement('option');
+        option.value = opt;
+        option.textContent = opt;
+        select.appendChild(option);
+    });
+    
+    // Try to match config value
+    if (configValue) {
+        // Extract filename from path (e.g., "/ArisuModel_v1.2s.hef" -> "ArisuModel_v1.2s.hef")
+        const filename = configValue.split('/').pop();
+        
+        // First try exact match
+        if (options.includes(configValue)) {
+            select.value = configValue;
+        }
+        // Then try filename match
+        else if (options.includes(filename)) {
+            select.value = filename;
+        }
+        // If no match, add config value as custom option
+        else if (configValue && configValue.trim()) {
+            const customOpt = document.createElement('option');
+            customOpt.value = configValue;
+            customOpt.textContent = configValue + ' (配置)';
+            select.appendChild(customOpt);
+            select.value = configValue;
+        }
+    }
 }
 
 function populateConfigForm(config) {
-    if (!config) return;
+    if (!config) {
+        console.warn('[Config] No config data to populate');
+        return;
+    }
+    
+    console.log('[Config] Populating form with config:', config);
     
     // Robot info
     setFieldValue('robot-number', config.RoboInfo?.number);
     setFieldValue('robot-type', config.RoboInfo?.type);
-    setFieldValue('robot-bit', config.RoboInfo?.Bit);
-    setFieldValue('robot-rec', config.RoboInfo?.Rec);
+    setFieldValue('robot-bit', config.RoboInfo?.Bit);  // Note: JSON uses "Bit" (capital B)
+    setFieldValue('robot-rec', config.RoboInfo?.Rec);  // Note: JSON uses "Rec" (capital R)
+    
+    console.log('[Config] Robot info loaded:', {
+        number: config.RoboInfo?.number,
+        type: config.RoboInfo?.type,
+        Bit: config.RoboInfo?.Bit,
+        Rec: config.RoboInfo?.Rec
+    });
     
     // Ports
     setFieldValue('lidar-id', config.Ports?.LidarID);
@@ -748,12 +1017,36 @@ function populateConfigForm(config) {
 
 function setFieldValue(id, value, type = 'input') {
     const el = document.getElementById(id);
-    if (!el) return;
+    if (!el) {
+        console.warn('[Config] Element not found:', id);
+        return;
+    }
     
     if (type === 'checkbox') {
         el.checked = Boolean(value);
+    } else if (el.tagName === 'SELECT') {
+        // For select elements, find and select the matching option
+        const strValue = String(value ?? '');
+        const options = el.options;
+        let found = false;
+        
+        for (let i = 0; i < options.length; i++) {
+            if (options[i].value === strValue) {
+                el.selectedIndex = i;
+                found = true;
+                console.log('[Config] Set select', id, 'to', strValue);
+                break;
+            }
+        }
+        
+        if (!found && strValue) {
+            console.warn('[Config] Option not found for', id, 'value:', strValue);
+        }
     } else {
-        el.value = value ?? '';
+        // For input elements, set the value
+        if (value !== null && value !== undefined) {
+            el.value = value;
+        }
     }
 }
 
@@ -794,6 +1087,123 @@ function updateSystemInfoBar(config) {
     if (connModeEl && config.Transimission) {
         connModeEl.textContent = `${config.Transimission.Type} / ${config.Transimission.Method}`;
     }
+    
+    // Recognition type
+    const recTypeEl = document.getElementById('rec-type-display');
+    if (recTypeEl && config.RoboInfo?.Rec) {
+        const recNames = {
+            'AI': 'AI (Arisu)',
+            'TV': 'TV (Tuna)',
+            'BB': 'BB (Blob)',
+            'XV': 'XV (Xelerator)'
+        };
+        recTypeEl.textContent = recNames[config.RoboInfo.Rec] || config.RoboInfo.Rec;
+    }
+}
+
+// OTA Functions
+function setupOTAControls() {
+    const startBtn = document.getElementById('ota-start-btn');
+    const refreshBtn = document.getElementById('ota-refresh-btn');
+    
+    if (startBtn) {
+        startBtn.addEventListener('click', startOTAUpdate);
+    }
+    
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            loadDynamicOptions();
+            document.getElementById('ota-log').value = '模型列表已刷新';
+        });
+    }
+}
+
+async function startOTAUpdate() {
+    const btn = document.getElementById('ota-start-btn');
+    const logEl = document.getElementById('ota-log');
+    
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ 更新中...';
+    }
+    
+    if (logEl) {
+        logEl.value = '正在启动 OTA 更新...\n';
+    }
+    
+    try {
+        const response = await fetch('/api/ota/start', {
+            method: 'POST'
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            // Start polling for log updates
+            pollOTALog();
+        } else {
+            if (logEl) {
+                logEl.value += '启动失败: ' + (data.error || '未知错误');
+            }
+        }
+    } catch (e) {
+        if (logEl) {
+            logEl.value += '请求失败: ' + e.message;
+        }
+    }
+}
+
+function pollOTALog() {
+    const logEl = document.getElementById('ota-log');
+    const btn = document.getElementById('ota-start-btn');
+    
+    let attempts = 0;
+    const maxAttempts = 300; // 5 minutes at 1 second intervals
+    
+    const poll = async () => {
+        try {
+            const response = await fetch('/api/ota/log');
+            const data = await response.json();
+            
+            if (logEl) {
+                logEl.value = data.log;
+                // Scroll to bottom
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+            
+            // Check if OTA is complete
+            if (data.log && (data.log.includes('OTA 更新完成') || data.log.includes('OTA 更新失败') || data.log.includes('OTA 更新出错'))) {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🔄 开始 OTA 更新';
+                }
+                // Refresh model options
+                loadDynamicOptions();
+                return;
+            }
+            
+            // Continue polling
+            attempts++;
+            if (attempts < maxAttempts) {
+                setTimeout(poll, 1000);
+            } else {
+                if (logEl) {
+                    logEl.value += '\n\n日志轮询超时';
+                }
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🔄 开始 OTA 更新';
+                }
+            }
+        } catch (e) {
+            console.error('OTA log poll error:', e);
+            attempts++;
+            if (attempts < maxAttempts) {
+                setTimeout(poll, 2000); // Retry with longer interval
+            }
+        }
+    };
+    
+    setTimeout(poll, 500);
 }
 
 async function saveConfig() {

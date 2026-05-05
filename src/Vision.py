@@ -29,6 +29,15 @@ class UnitedVision(Detect_Method):
 
         super().__init__()
 
+        # Ensure CamPorts is available (XeleratorVision backend doesn't have it)
+        if not hasattr(self, 'CamPorts'):
+            self.CamPorts = [
+                Settings.VisionVals.Front,
+                Settings.VisionVals.Right,
+                Settings.VisionVals.Back,
+                Settings.VisionVals.Left,
+            ]
+
         # ---- Runtime caches/params (must be set before starting threads) ----
         # Ball bbox (xyxy in 640x640 resized space from detector)
         self._ball_bbox = None  # (cam, x1,y1,x2,y2,conf)

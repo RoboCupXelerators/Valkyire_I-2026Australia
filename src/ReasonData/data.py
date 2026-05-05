@@ -182,16 +182,29 @@ def ExportSessionToDict(session_id: str) -> dict:
     }
 
 # Configuration management
-CONFIG_FILE = APP_DIR / "config.json"
+CONFIG_FILE = DATA_DIR / "config.json"  # Fixed: use DATA_DIR instead of APP_DIR
 
 def GetConfig() -> dict:
     """读取配置文件"""
+    import json
     try:
+        # Ensure DATA_DIR exists
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        
+        print(f"[data] CONFIG_FILE path: {CONFIG_FILE}")
+        print(f"[data] CONFIG_FILE exists: {CONFIG_FILE.exists()}")
+        
         if CONFIG_FILE.exists():
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return __import__('json').load(f)
+                config = json.load(f)
+                print(f"[data] Config loaded, RoboInfo: {config.get('RoboInfo')}")
+                return config
+        else:
+            print(f"[data] Config file not found at {CONFIG_FILE}")
     except Exception as e:
         print(f"[data] Error reading config: {e}")
+        import traceback
+        traceback.print_exc()
     return {}
 
 def SaveConfig(config: dict) -> None:

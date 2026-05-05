@@ -70,27 +70,40 @@ class ControlPanelApp:
     
     def get_state_dict(self) -> dict:
         """获取视觉状态"""
-        if not self.vision:
-            return {"ts": time.time(), "uptime_s": time.time() - self.start_ts}
-        
-        vision = self.vision
-        ball_pos = None
-        chassis_pos = None
-        try:
-            ball_pos = vision.GetBallPos()
-        except Exception:
-            ball_pos = [0, 0]
-        try:
-            chassis_pos = vision.GetChassisPos()
-        except Exception:
-            chassis_pos = []
-        
-        return {
+        result = {
             "ts": time.time(),
             "uptime_s": round(time.time() - self.start_ts, 3),
-            "ball_pos_cm": ball_pos,
-            "chassis_list_cm": chassis_pos,
+            "ball_pos_cm": [0, 0],
+            "chassis_list_cm": [],
         }
+        
+        # Try to get data from vision module
+        if self.vision:
+            try:
+                ball_pos = self.vision.GetBallPos()
+                if ball_pos:
+                    result["ball_pos_cm"] = ball_pos
+            except Exception as e:
+                pass
+            
+            try:
+                chassis_pos = self.vision.GetChassisPos()
+                if chassis_pos:
+                    result["chassis_list_cm"] = chassis_pos
+            except Exception as e:
+                pass
+        
+        # Try to get data from simulator bridge if available
+        if hasattr(self, 'sim_bridge') and self.sim_bridge:
+            try:
+                state = self.sim_bridge.get_robot_state()
+                if state:
+                    result["chassis_list_cm"] = [state.get('x_cm', 0), state.get('y_cm', 0)]
+                    result["ball_pos_cm"] = [state.get('ball_x_cm', 0), state.get('ball_y_cm', 0)]
+            except Exception as e:
+                pass
+        
+        return result
     
     def get_cam_jpeg(self, cam_index: int, resize_to: int = None) -> bytes:
         """获取摄像头 JPEG 图像"""
@@ -249,11 +262,25 @@ class ControlPanelApp:
     
     def get_config(self) -> dict:
         """获取配置"""
+        import json
         try:
-            from ReasonData.data import GetConfig
-            return GetConfig()
+            # Direct path to config file
+            config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
+            print(f"[ControlPanel] Config file path: {config_file}")
+            print(f"[ControlPanel] Config file exists: {config_file.exists()}")
+            
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                print(f"[ControlPanel] Config loaded: RoboInfo={config.get('RoboInfo')}")
+                return config
+            else:
+                print(f"[ControlPanel] Config file not found")
+                return {}
         except Exception as e:
             print(f"[ControlPanel] Error getting config: {e}")
+            import traceback
+            traceback.print_exc()
             return {}
     
     def save_config(self, config: dict) -> dict:
@@ -283,6 +310,128 @@ class ControlPanelApp:
             "local_ip": local_ip,
             "hostname": socket.gethostname(),
         }
+    
+    def list_files(self, directory: str, extensions: list = None) -> list:
+        """列出目录下的文件"""
+        import os
+        from pathlib import Path
+        
+        try:
+            # Resolve directory path
+            repo_root = _repo_root()
+            
+            # Handle different directory types
+            if directory == "models":
+                # Check YOLO_Models/models directory
+                models_dir = repo_root.parent / "YOLO_Models" / "models"
+                if not models_dir.exists():
+                    models_dir = repo_root / "models"
+                if not models_dir.exists():
+                    models_dir = Path("/models")
+                search_dir = models_dir
+            elif directory == "hailo_models":
+                # Use the same directory as models for Hailo models (.hef files)
+                possible_dirs = [
+                    Path("/usr/share/hailo-models"),
+                    repo_root.parent / "YOLO_Models" / "models",  # Same as models
+                    repo_root / "models",
+                    repo_root / "hailo_models",
+                ]
+                search_dir = None
+                for d in possible_dirs:
+                    if d.exists():
+                        search_dir = d
+                        break
+                if search_dir is None:
+                    # Fall back to models directory
+                    search_dir = repo_root.parent / "YOLO_Models" / "models"
+                    if not search_dir.exists():
+                        search_dir = repo_root / "models"
+            elif directory == "calibration":
+                search_dir = repo_root.parent / "YOLO_Models" / "calibration"
+                if not search_dir.exists():
+                    search_dir = repo_root / "Calibration"
+            elif directory == "records":
+                search_dir = repo_root / "Records"
+            elif directory.startswith("/"):
+                search_dir = Path(directory)
+            else:
+                search_dir = repo_root / directory
+            
+            if not search_dir.exists():
+                return []
+            
+            files = []
+            for f in search_dir.iterdir():
+                if f.is_file():
+                    if extensions is None or f.suffix.lower() in extensions:
+                        files.append(f.name)
+            
+            return sorted(files)
+        except Exception as e:
+            print(f"[ControlPanel] Error listing files: {e}")
+            return []
+    
+    def get_dynamic_options(self) -> dict:
+        """获取动态选项（用于下拉框）"""
+        return {
+            "hailo_models": self.list_files("hailo_models", [".hef"]),
+            "tuna_models": self.list_files("models", [".pt", ".onnx"]),
+            "tuna_engines": self.list_files("models", [".engine", ".trt"]),
+            "calibration_files": self.list_files("calibration", [".npz", ".yaml", ".yml"]),
+        }
+    
+    def run_ota_update(self) -> dict:
+        """运行 OTA 更新"""
+        import subprocess
+        import threading
+        
+        def run_ota():
+            try:
+                repo_root = _repo_root()
+                ota_script = repo_root / "src" / "utils" / "ota_updater.py"
+                
+                if not ota_script.exists():
+                    self.ota_log = "OTA 脚本不存在: " + str(ota_script)
+                    return
+                
+                self.ota_log = "开始 OTA 更新...\n"
+                
+                # Run OTA script
+                result = subprocess.run(
+                    ["python", str(ota_script)],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minutes timeout
+                )
+                
+                self.ota_log += result.stdout
+                if result.stderr:
+                    self.ota_log += "\n错误:\n" + result.stderr
+                
+                if result.returncode == 0:
+                    self.ota_log += "\n\nOTA 更新完成！"
+                else:
+                    self.ota_log += f"\n\nOTA 更新失败 (退出码: {result.returncode})"
+                    
+            except subprocess.TimeoutExpired:
+                self.ota_log += "\n\nOTA 更新超时（超过5分钟）"
+            except Exception as e:
+                self.ota_log = f"OTA 更新出错: {e}"
+        
+        # Initialize log
+        self.ota_log = "正在启动 OTA 更新..."
+        
+        # Run in background thread
+        thread = threading.Thread(target=run_ota, daemon=True)
+        thread.start()
+        
+        return {"success": True, "message": "OTA 更新已启动"}
+    
+    def get_ota_log(self) -> str:
+        """获取 OTA 日志"""
+        return getattr(self, 'ota_log', '暂无日志')
 
 
 def make_handler(app: ControlPanelApp):
@@ -388,6 +537,24 @@ def make_handler(app: ControlPanelApp):
             if path == "/api/system-info":
                 return self._send_json(app.get_system_info())
             
+            if path == "/api/dynamic-options":
+                return self._send_json(app.get_dynamic_options())
+            
+            if path == "/api/ota/log":
+                return self._send_json({"log": app.get_ota_log()})
+            
+            if path.startswith("/api/files/"):
+                directory = path[len("/api/files/"):]
+                extensions = None
+                q = u.query or ""
+                if "ext=" in q:
+                    try:
+                        ext_str = q.split("ext=")[-1].split("&")[0]
+                        extensions = ext_str.split(",")
+                    except Exception:
+                        pass
+                return self._send_json(app.list_files(directory, extensions))
+            
             return self._send(404, "text/plain; charset=utf-8", b"not found")
         
         def do_POST(self):
@@ -417,6 +584,10 @@ def make_handler(app: ControlPanelApp):
             
             if path == "/api/config":
                 result = app.save_config(body_data)
+                return self._send_json(result)
+            
+            if path == "/api/ota/start":
+                result = app.run_ota_update()
                 return self._send_json(result)
             
             return self._send(404, "text/plain; charset=utf-8", b"not found")

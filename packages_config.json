@@ -1,0 +1,32 @@
+{
+  "packages_repo": "https://github.com/your-org/xelerators-packages.git",
+  "packages_branch": "main",
+  "packages_dir": "packages",
+  "packages": {
+    "hailort-4.23.0-cp312-cp312-linux_aarch64.whl": {
+      "size": 9932383,
+      "sha256": "auto",
+      "platform": ["linux_aarch64"],
+      "description": "Hailo runtime wheel for Jetson"
+    },
+    "hailort_4.23.0_arm64.deb": {
+      "size": 6877660,
+      "sha256": "auto",
+      "platform": ["linux_aarch64"],
+      "description": "Hailo runtime deb for Jetson"
+    },
+    "hailort-pcie-driver_4.23.0_all.deb": {
+      "size": 142680,
+      "sha256": "auto",
+      "platform": ["linux_aarch64"],
+      "description": "Hailo PCIe driver"
+    },
+    "tegra234-p3768-0000+p3767-0005-nv-super.dtb": {
+      "size": 249487,
+      "sha256": "auto",
+      "platform": ["linux_aarch64"],
+      "description": "Jetson device tree blob"
+    }
+  },
+  "version": "1.0.0"
+}
