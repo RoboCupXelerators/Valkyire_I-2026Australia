@@ -1,119 +1,98 @@
 # 🤖 机器人足球-快速上手指南
 
-[![LICENSE](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+本指南旨在帮助开发者快速上手编写机器人足球策略，重点介绍最常用的核心函数和典型应用场景。
 
-> 📝 本文档将 `doc.txt` 中的常用命令和函数速查内容，整理为更适合查阅的详细版 README。
+## 🚀 快速开始
 
-## ✨ 介绍
+### 1. 核心对象初始化
+在策略脚本中，通常通过 `from LunaPre import *` 导入所有常用工具。
+- `UnitedPosition`: 机器人位置、视觉数据获取及运动控制核心对象。
+- `chassis`: 底盘运动控制接口。
+- `peripheral`: 外设控制（如踢球、运球）。
+- `lockball`: 锁球控制类。
 
-这里收录的是机器人足球项目中最常用的自动运行命令，以及 `LunaPre` / `UnitedPosition` / `chassis` / `peripheral` / `lockball` 等对象的常用函数速查，方便你快速编写上层策略和现场题逻辑。
+### 2. 最常用函数速查表
 
-在阅读本文档前，你最好已经了解：
+#### 📍 机器人定位与视觉 (UnitedPosition)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `RobotBallPos()` | 获取球在**机体坐标系**下的位置 | `[x, y]` (cm) |
+| `RobotBallAngle()` | 获取球相对机器人角度 | `int` (°) |
+| `FieldRobotPos()` | 获取机器人在**场地坐标系**下的位置 | `[x, y, yaw]` (cm, cm, °) |
+| `FieldBallPos()` | 获取球在**场地坐标系**下的位置 | `[x, y]` (cm) |
+| `Pos2Pos([x, y, yaw], speed_gain=None)` | 移动到场地坐标系的指定点 | `True` (到达) / `False` (未到达) |
+| `Move2Path(points, iWaitMs=0.1)` | 顺序移动到路径点列表（阻塞） | `True` (完成) |
 
-- 🧠 基本的 Python 语法
-- 💻 如何运行脚本与查看日志
-- 🔍 如何使用搜索引擎定位问题
-- ❓ 如何提问与排查环境问题
+#### 🛞 底盘控制 (chassis)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `RobotMoveVector(x, y, z)` | 机体坐标系向量移动 (x:前, y:左, z:自转) | 无 |
+| `FieldMoveVector(x, y, facing, kp=None)` | 场地坐标系向量移动 + 航向闭环 | 无 |
+| `FieldTurn(angle)` | 原地转向到场地绝对角度 | 无 |
+| `stop()` | 停止所有电机 | 无 |
 
-## 🚀 自动运行与日志查看
+#### ⚽ 外设控制 (peripheral)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `ShootBall()` | 触发电磁铁脉冲踢球 | 无 |
+| `Dribble(status)` | 设置运球器状态 (True:开, False:关) | 无 |
 
-### 1. 自动运行 `main.py` 里的攻防
+#### 🧠 锁球控制 (lockball)
+| 函数 | 功能 | 返回值/示例 |
+| :--- | :--- | :--- |
+| `LockBallSlip()` | 自动追踪并锁定球 (非阻塞) | 无 |
 
-```bash
-./scripts/install_system_service.sh
-```
+---
 
-### 2. 查看攻防输出
+## 🛠️ 典型应用场景
 
-```bash
-journalctl -u ENDFIELD -f
-```
-
-### 3. 取消 `main.py` 攻防自动运行
-
-```bash
-systemctl disable ENDFIELD.service
-```
-
-## 🧭 现场题函数速查
-
-### 📍 数据读取（使用前已自动初始化）
-
-| 函数 | 作用 | 返回值 / 说明 | 可用性 |
-| :--- | :--- | :--- | :---: |
-| `UnitedPosition.RobotBallPos()` | 获取球在机体坐标系下的位置 | `[x, y]`，单位 cm；哨兵值：`[0xfff, 0xfff]` 表示无球，`[0xddd, 0xddd]` 表示抱球 | ✅ |
-| `UnitedPosition.FieldRobotPos()` | 获取自己在场地坐标系下的位置 | `[x, y, yaw]`，单位 cm, cm, ° | ✅ |
-| `UnitedPosition.FieldBallPos()` | 获取球在场地坐标系下的位置 | `[x, y]`，单位 cm；哨兵值同上 | ✅ |
-| `UnitedPosition.Pos2Pos([x, y, yaw])` | 非阻塞移动到场地目标点 | 返回 `True` 表示到达，`False` 表示未到达 | ✅ |
-| `UnitedPosition.Move2Path([[x1, y1, yaw1], ...], wait_s)` | 阻塞方式按顺序移动到多个目标点 | 逐点执行路径 | ✅ |
-| `UnitedPosition.RestrictedArea()` | 边界保护 / 限制区保护 | 放在主循环最前面使用；返回 `True` 表示安全，`False` 表示已自动调整 | ✅ |
-
-### 🛞 底盘移动（全局对象 `chassis`）
-
-| 函数 | 作用 | 说明 | 可用性 |
-| :--- | :--- | :--- | :---: |
-| `chassis.RobotMoveVector(SpeedX, SpeedY, SpeedZ)` | 机体坐标系下的移动 | 前后 / 左右 / 旋转，无返回值 | ✅ |
-| `chassis.RobotMoveAngle(Angle, Speed)` | 按角度移动 | `Angle=0` 表示前方，`90` 表示左侧，无返回值 | ✅ |
-| `chassis.RobotTurn(Speed)` | 原地旋转 | 无返回值 | ✅ |
-| `chassis.FieldMoveVector(SpeedX, SpeedY, FacingAngle)` | 场地坐标系下移动 | 自动补偿航向角，`FacingAngle` 为车头绝对朝向 | ✅ |
-| `chassis.stop()` | 立即停车 | 紧急停止底盘 | ✅ |
-
-### 🧠 高级策略动作（`BasicFuc.py`）
-
-| 函数 | 作用 | 说明 | 可用性 |
-| :--- | :--- | :--- | :---: |
-| `lockball.LockBallSlip()` | 精确吸球 / 锁球 | 返回 `True` 表示抱球，`False` 表示正在移动 | ✅ |
-
-### ⚽ 外设（全局对象 `peripheral`）
-
-| 函数 | 作用 | 说明 | 可用性 |
-| :--- | :--- | :--- | :---: |
-| `peripheral.Dribble(pwm)` | 设置运球器 | 控制运球器 PWM | ✅ |
-| `peripheral.ShootBall()` | 踢球 | 触发电磁铁脉冲 | ✅ |
-| `mose("str")` | 发摩斯码 | 可用于调试输出 | ✅ |
-| `key() -> bool` | 按键检测 | 返回按键是否按下 | ✅ |
-
-## 🧩 快速示例
-
-### 示例 1：读取球的位置
-
+### 场景 A: 简单追踪球并踢球
+这是最基础的进攻逻辑：
 ```python
-bx, by = UnitedPosition.RobotBallPos()
-print(bx, by)
+if UnitedPosition.RestrictedArea(): # 确保不在限制区/撞墙保护
+    ball_pos = UnitedPosition.RobotBallPos()
+    
+    if ball_pos == [0xFFF, 0xFFF]:
+        print("未发现球")
+    elif ball_pos == [0xDDD, 0xDDD]:
+        print("已抱球，准备射门")
+        peripheral.Dribble(0.7) # 开启运球/吸球
+        peripheral.ShootBall()  # 触发踢球
+    else:
+        print("追踪中...")
+        lockball.LockBallSlip() # 自动对准并锁定球 (非阻塞)
 ```
 
-### 示例 2：读取机器人在场地坐标系中的位置
-
+### 场景 B: 场地走点 (Waypoints)
+如 `exec.py` 所示，可以通过 `Move2Path` 实现复杂的路径规划：
 ```python
-x, y, yaw = UnitedPosition.FieldRobotPos()
-print(x, y, yaw)
+# 示例：依次经过五个点
+UnitedPosition.Move2Path([
+    [40, 40, 0], 
+    [-70, 50, 80], 
+    [-80, -50, 180], 
+    [80, -50, 270], 
+    [80, 50, 0]
+], 0.8)
 ```
 
-### 示例 3：让机器人走到指定点
-
+### 场景 C: 基础防御逻辑 (横向拦截)
+利用场地坐标系，使机器人在球门线附近跟随球的 Y 轴位置：
 ```python
-arrived = UnitedPosition.Pos2Pos([x, y, yaw])
-if arrived:
-    print("arrived")
-```
-
-### 示例 4：按路径点移动
-
-```python
-UnitedPosition.Move2Path([[x1, y1, yaw1], [x2, y2, yaw2]], wait_s=0.1)
-```
-
-### 示例 5：使用限制区保护
-
-```python
-if not UnitedPosition.RestrictedArea():
-    print("robot adjusted by safety guard")
+# 假设 pan_y 是一个 PID 控制器
+ball_pos = UnitedPosition.RobotBallPos()
+if ball_pos != [0xFFF, 0xFFF] and ball_pos != [0xDDD, 0xDDD]:
+    # 使用 PID 计算 Y 轴移动速度，保持在球的正对面
+    speed_y = pan_y(ball_pos[1]) 
+    # 保持航向角为 0 (面向对方球门)，沿 Y 轴进行 PID 修正移动
+    chassis.FieldMoveVector(0, -speed_y, 0) 
 ```
 
 ## ⚠️ 重要提示
-
-- **哨兵值约定**：
-  - `0xfff`：无球 / 无效数据
-  - `0xddd`：已抱球 / 已抓球
-- **推荐调用顺序**：在主循环中优先调用 `UnitedPosition.RestrictedArea()`，再执行具体策略逻辑。
-- **安全停止**：退出策略时，建议调用 `chassis.stop()` 停止底盘，避免持续运动。
+- **坐标系约定**：
+    - **机体坐标系**：$x$ 为前， $y$ 为左。
+    - **场地坐标系**：原点在场地中心，方向定义见 `README_DETAILED.md`。
+- **安全停止**：在策略脚本的 `finally` 块中，务必调用 `chassis.stop()` 和 `UnitedPosition.Stop()` 释放资源。
+- **哨兵值**：
+    - `0xFFF`: 未检测到球。
+    - `0xDDD`: 已经抱球。

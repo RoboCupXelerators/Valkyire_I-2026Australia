@@ -69,7 +69,7 @@ def main():
             (Commands.GET_BMI088_DATA,), 
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
             (Commands.GET_RUN_KEY_DELTA,),
-            (Commands.MORSE_PLAY, "HELLO")
+            (Commands.MORSE_PLAY, "")
         ])
         print("响应:", resp2)
         time.sleep(1)

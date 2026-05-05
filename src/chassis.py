@@ -251,6 +251,7 @@ class Car:
             
             self.SetMotorFunc(speed[0], speed[1], speed[2], speed[3])
         else:
+            self.SetMotorFunc(0,0,0,0)
             self.logger.warning("Permission Denied: Unable to set motor speeds.")
     
     def SetKp(self,Kp):
@@ -354,7 +355,11 @@ class Car:
         
 
 class Peripherals:
-    def __init__(self,IOFunc):
+    def __init__(self,IOFunc,permission=None):
+        if permission is None:
+            self.Permission = lambda: True
+        else:
+            self.Permission = permission
         self.SetIO = IOFunc
         from ReasonData import Settings
         self.cfg = Settings
@@ -364,19 +369,26 @@ class Peripherals:
         self.DribbleStatus = False
 
     def ShootBall(self):
-        self.SetIO(self.cfg.Ports.ElecMagnet,0)
-        self.logger.info("Used ElecMagnet")
+        if self.Permission():
+            self.SetIO(self.cfg.Ports.ElecMagnet,0)
+            self.logger.info("ShootBall Activated")
+        else:
+            self.logger.warning("Permission Denied: Unable to set dribble status.")
 
     def Dribble(self,Status):
-        if Status == True:
-            self.SetIO(self.cfg.Ports.Dribble,1.0)
-        elif Status == False:
-            self.SetIO(self.cfg.Ports.Dribble,0.0)
+        if self.Permission():
+            if Status == True:
+                self.SetIO(self.cfg.Ports.Dribble,1.0)
+            elif Status == False:
+                self.SetIO(self.cfg.Ports.Dribble,0.0)
+            else:
+                self.SetIO(self.cfg.Ports.Dribble,Status)
+            self.DribbleStatus = Status
+            self.logger.info("Dribble set to %s" % str(Status))
+            # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
         else:
-            self.SetIO(self.cfg.Ports.Dribble,Status)
-        self.DribbleStatus = Status
-        self.logger.info("Dribble set to %s" % str(Status))
-        # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
+            self.SetIO(self.cfg.Ports.Dribble,0.0)
+            self.logger.warning("Permission Denied: Unable to set dribble status.")
 
 class Key:
     def __init__(self,GetKeyFunc):
