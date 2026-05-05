@@ -53,6 +53,102 @@ def _json_safe(obj):
     return str(obj)
 
 
+def _bbox_at_cam(bbox, cam_index: int):
+    """Return bbox tuple for a specific camera, accepting either per-cam lists or a single bbox."""
+    if bbox is None:
+        return None
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and all(
+        (item is None or isinstance(item, (list, tuple))) for item in bbox
+    ):
+        if cam_index < 0 or cam_index >= len(bbox):
+            return None
+        return bbox[cam_index]
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 6:
+        try:
+            if int(bbox[0]) == int(cam_index):
+                return bbox
+        except Exception:
+            return None
+    return None
+
+
+def _draw_bbox_label(img, bbox, color, label: str, scale_x: float = 1.0, scale_y: float = 1.0):
+    if bbox is None:
+        return
+    try:
+        if len(bbox) < 6:
+            return
+        # Support both:
+        #   (cam, x1, y1, x2, y2, conf)
+        #   (cam, cls, x1, y1, x2, y2, conf)
+        if len(bbox) >= 7:
+            x1_i, y1_i, x2_i, y2_i, conf_i = 2, 3, 4, 5, 6
+        else:
+            x1_i, y1_i, x2_i, y2_i, conf_i = 1, 2, 3, 4, 5
+        x1 = int(round(float(bbox[x1_i]) * scale_x))
+        y1 = int(round(float(bbox[y1_i]) * scale_y))
+        x2 = int(round(float(bbox[x2_i]) * scale_x))
+        y2 = int(round(float(bbox[y2_i]) * scale_y))
+        conf = float(bbox[conf_i])
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        text = f"{label} {conf:.2f}"
+        text_y = max(15, y1 - 5)
+        cv2.putText(img, text, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    except Exception:
+        pass
+
+
+def _map_bbox_640_to_image(bbox, src_w: int, src_h: int, dst_w: int, dst_h: int):
+    """Map a bbox from 640x640 detector space into the displayed image space."""
+    if bbox is None:
+        return None
+    try:
+        if len(bbox) < 6:
+            return None
+        prefix = list(bbox[:2]) if len(bbox) >= 7 else [bbox[0]]
+        x1 = float(bbox[2 if len(bbox) >= 7 else 1])
+        y1 = float(bbox[3 if len(bbox) >= 7 else 2])
+        x2 = float(bbox[4 if len(bbox) >= 7 else 3])
+        y2 = float(bbox[5 if len(bbox) >= 7 else 4])
+        conf = float(bbox[6 if len(bbox) >= 7 else 5])
+
+        src_w = max(1, int(src_w))
+        src_h = max(1, int(src_h))
+        dst_w = max(1, int(dst_w))
+        dst_h = max(1, int(dst_h))
+
+        # Inverse of the letterbox used to resize source -> 640x640.
+        scale = min(640.0 / src_w, 640.0 / src_h)
+        new_w = src_w * scale
+        new_h = src_h * scale
+        pad_x = (640.0 - new_w) / 2.0
+        pad_y = (640.0 - new_h) / 2.0
+
+        def to_src(xp: float, yp: float) -> tuple:
+            return (xp - pad_x) / scale, (yp - pad_y) / scale
+
+        sx1, sy1 = to_src(x1, y1)
+        sx2, sy2 = to_src(x2, y2)
+
+        # Clip to source frame first.
+        sx1 = max(0.0, min(float(src_w - 1), sx1))
+        sy1 = max(0.0, min(float(src_h - 1), sy1))
+        sx2 = max(0.0, min(float(src_w - 1), sx2))
+        sy2 = max(0.0, min(float(src_h - 1), sy2))
+
+        # Then scale to the displayed image size.
+        dx1 = sx1 * (dst_w / float(src_w))
+        dy1 = sy1 * (dst_h / float(src_h))
+        dx2 = sx2 * (dst_w / float(src_w))
+        dy2 = sy2 * (dst_h / float(src_h))
+
+        if len(bbox) >= 7:
+            return (int(prefix[0]), int(prefix[1]), int(round(dx1)), int(round(dy1)), int(round(dx2)), int(round(dy2)), conf)
+        return (int(prefix[0]), int(round(dx1)), int(round(dy1)), int(round(dx2)), int(round(dy2)), conf)
+    except Exception:
+        return None
+
+
 class ControlPanelApp:
     """控制面板应用状态"""
     
@@ -75,7 +171,25 @@ class ControlPanelApp:
             "uptime_s": round(time.time() - self.start_ts, 3),
             "ball_pos_cm": [0, 0],
             "chassis_list_cm": [],
+            "robot_x_cm": 0,
+            "robot_y_cm": 0,
+            "robot_yaw_deg": 0,
+            "has_ball": False,
+            "ball_bboxes_640": [None, None, None, None],
+            "chassis_bboxes_640": [None, None, None, None],
+            "goal_bboxes_640": [None, None, None, None],
         }
+        
+        # Try to get robot state from global state module
+        try:
+            from robot_state import get_robot_state
+            robot_state = get_robot_state()
+            result["robot_x_cm"] = robot_state.get("x_cm", 0)
+            result["robot_y_cm"] = robot_state.get("y_cm", 0)
+            result["robot_yaw_deg"] = robot_state.get("yaw_deg", 0)
+            result["has_ball"] = robot_state.get("has_ball", False)
+        except Exception:
+            pass
         
         # Try to get data from vision module
         if self.vision:
@@ -92,31 +206,60 @@ class ControlPanelApp:
                     result["chassis_list_cm"] = chassis_pos
             except Exception as e:
                 pass
+            
+            # Get bboxes for drawing
+            try:
+                ball_bboxes = self.vision.GetBallBBoxes()
+                if ball_bboxes:
+                    result["ball_bboxes_640"] = ball_bboxes
+            except Exception:
+                pass
+            
+            try:
+                chassis_bboxes = self.vision.GetChassisBBoxes()
+                if chassis_bboxes:
+                    result["chassis_bboxes_640"] = chassis_bboxes
+            except Exception:
+                pass
+            
+            try:
+                goal_bboxes = self.vision.GetGoalBBoxes()
+                if goal_bboxes:
+                    result["goal_bboxes_640"] = goal_bboxes
+            except Exception:
+                pass
         
         # Try to get data from simulator bridge if available
         if hasattr(self, 'sim_bridge') and self.sim_bridge:
             try:
                 state = self.sim_bridge.get_robot_state()
                 if state:
-                    result["chassis_list_cm"] = [state.get('x_cm', 0), state.get('y_cm', 0)]
+                    result["robot_x_cm"] = state.get('x_cm', 0)
+                    result["robot_y_cm"] = state.get('y_cm', 0)
                     result["ball_pos_cm"] = [state.get('ball_x_cm', 0), state.get('ball_y_cm', 0)]
             except Exception as e:
                 pass
         
         return result
     
-    def get_cam_jpeg(self, cam_index: int, resize_to: int = None) -> bytes:
-        """获取摄像头 JPEG 图像"""
+    def get_cam_jpeg(self, cam_index: int, resize_to: int = None) -> tuple[bytes | None, float | None]:
+        """获取摄像头 JPEG 图像和处理时间
+        
+        Returns:
+            tuple: (jpeg_bytes, processing_time_ms) 或 (None, None)
+        """
+        start_ts = time.time()
         if not self.vision:
-            return None
+            return None, None
         try:
             frames = getattr(self.vision, "Frames", None)
             if frames is None or cam_index < 0 or cam_index >= len(frames):
-                return None
+                return None, None
             fr = frames[cam_index]
             if fr is None:
-                return None
-            img = fr
+                return None, None
+            img = fr  # 不修改图像，画框由前端完成
+            
             if resize_to is not None:
                 h, w = img.shape[:2]
                 if max(h, w) > int(resize_to):
@@ -134,10 +277,11 @@ class ControlPanelApp:
                 [int(cv2.IMWRITE_JPEG_QUALITY), int(self.jpeg_quality)],
             )
             if not ok:
-                return None
-            return bytes(buf)
+                return None, None
+            processing_time_ms = (time.time() - start_ts) * 1000.0
+            return bytes(buf), processing_time_ms
         except Exception:
-            return None
+            return None, None
     
     def get_recording_status(self) -> dict:
         """获取记录状态"""
@@ -284,12 +428,19 @@ class ControlPanelApp:
             return {}
     
     def save_config(self, config: dict) -> dict:
-        """保存配置"""
+        """保存配置到 JSON 文件"""
+        import json
         try:
-            from ReasonData.data import SaveConfig
-            SaveConfig(config)
+            # 直接写入配置文件，不依赖 peewee
+            config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
             return {"success": True}
         except Exception as e:
+            print(f"[ControlPanel] Error saving config: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
     
     def get_system_info(self) -> dict:
@@ -511,10 +662,20 @@ def make_handler(app: ControlPanelApp):
                     except Exception:
                         resize_to = None
                 
-                jpg = app.get_cam_jpeg(cam_i, resize_to=resize_to)
+                jpg, processing_time_ms = app.get_cam_jpeg(cam_i, resize_to=resize_to)
                 if jpg is None:
                     return self._send(204, "text/plain; charset=utf-8", b"")
-                return self._send(200, "image/jpeg", jpg)
+                # Send processing time in response header for latency display
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(jpg)))
+                if processing_time_ms is not None:
+                    self.send_header("X-Processing-Time-Ms", f"{processing_time_ms:.1f}")
+                self.end_headers()
+                self.wfile.write(jpg)
+                return
             
             if path == "/api/sessions":
                 return self._send_json(app.list_sessions())
@@ -617,12 +778,23 @@ def main():
         help="Directory containing web UI files"
     )
     ap.add_argument("--no-vision", action="store_true", help="Disable vision module")
+    ap.add_argument("--no-chassis", action="store_true", help="Disable chassis module (no yaw data)")
     args = ap.parse_args()
     
     import sys
     root = str(_repo_root())
     if root not in sys.path:
         sys.path.insert(0, root)
+    
+    # Initialize chassis module for yaw data
+    if not args.no_chassis:
+        try:
+            # Import LunaPre to initialize chassis and Bits
+            # This will start the state update thread in chassis.py
+            from src.LunaPre import chassis, compass, Bits
+            print("[ControlPanel] Chassis module initialized, yaw data available")
+        except Exception as e:
+            print(f"[ControlPanel] Warning: Could not initialize chassis: {e}")
     
     # Initialize vision
     vision = None
@@ -666,6 +838,23 @@ def main():
                 vision.close(join_timeout=1.0)
             except Exception:
                 pass
+        # Clean up chassis/lidar resources
+        try:
+            from src.LunaPre import lidar, UnitedPosition
+            if lidar:
+                try:
+                    lidar.stop()
+                    print("[ControlPanel] Lidar stopped")
+                except Exception:
+                    pass
+            if UnitedPosition:
+                try:
+                    UnitedPosition.Stop()
+                    print("[ControlPanel] UnitedPosition stopped")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

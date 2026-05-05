@@ -32,6 +32,10 @@ class ArisuIntelligence(VisionPreUntil):
         # Format: [[cam, cls, center_x, bottom_y, w, h, conf], ...]
         # cls: 1 BlueGoal, 2 YellowGoal
         self.GoalQueue = queue.Queue(maxsize=1)
+        # BBox queues for dashboard overlay (same as TunaIntelligence)
+        # Format: [[cam, x1, y1, x2, y2, conf], ...] in 640x640 space
+        self.BallBBoxQueue = queue.Queue(maxsize=1)
+        self.ChassisBBoxQueue = queue.Queue(maxsize=1)
 
         super().__init__()
 
@@ -197,6 +201,9 @@ class ArisuIntelligence(VisionPreUntil):
             BallOutputs = []
             ChassisOutputs = []
             GoalOutputs = []
+            # BBox outputs for dashboard overlay (in 640x640 space)
+            BallBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam, x1, y1, x2, y2, conf]
+            ChassisBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]
             CameraIndex = 0
             for Bindings in BindingsList:
                 OutputBuffer = Bindings.output().get_buffer()
@@ -204,6 +211,16 @@ class ArisuIntelligence(VisionPreUntil):
                     for _ball in OutputBuffer[0]:
                         if _ball[4] < 0.4:
                             continue
+                        # Raw bbox in 640x640 space (before the -80 offset used for position calculation)
+                        # Hailo output is normalized [ymin, xmin, ymax, xmax, conf]
+                        raw_y1 = int(_ball[0] * 640)
+                        raw_x1 = int(_ball[1] * 640)
+                        raw_y2 = int(_ball[2] * 640)
+                        raw_x2 = int(_ball[3] * 640)
+                        Ball_Confidence = float(_ball[4])
+                        # Store bbox in 640x640 space for dashboard
+                        BallBBoxOutputs[CameraIndex] = [CameraIndex, raw_x1, raw_y1, raw_x2, raw_y2, Ball_Confidence]
+                        
                         Ball_Y_Min = int(_ball[0] * 640) - 80 + 15
                         Ball_X_Min = int(_ball[1] * 640) + 15
                         Ball_Y_Max = int(_ball[2] * 640) - 80 -15
@@ -212,7 +229,6 @@ class ArisuIntelligence(VisionPreUntil):
                         Ball_Width = Ball_X_Max - Ball_X_Min
                         Ball_Height = Ball_Y_Max - Ball_Y_Min
                         Ball_Center_X = int((Ball_X_Min + Ball_X_Max) / 2)
-                        Ball_Confidence = _ball[4]
                         BallOutputs.append([
                             CameraIndex,
                             Ball_Center_X, 
@@ -224,6 +240,15 @@ class ArisuIntelligence(VisionPreUntil):
                     for chassis in OutputBuffer[3]:
                         if chassis[4] < 0.5:
                             continue
+                        # Raw bbox in 640x640 space
+                        raw_y1 = int(chassis[0] * 640)
+                        raw_x1 = int(chassis[1] * 640)
+                        raw_y2 = int(chassis[2] * 640)
+                        raw_x2 = int(chassis[3] * 640)
+                        Chassis_Confidence = float(chassis[4])
+                        # Store bbox in 640x640 space for dashboard
+                        ChassisBBoxOutputs[CameraIndex] = [CameraIndex, raw_x1, raw_y1, raw_x2, raw_y2, Chassis_Confidence]
+                        
                         Chassis_Y_Min = int(chassis[0] * 640) - 80 
                         Chassis_X_Min = int(chassis[1] * 640)
                         Chassis_Y_Max = int(chassis[2] * 640) - 80 
@@ -232,7 +257,6 @@ class ArisuIntelligence(VisionPreUntil):
                         Chassis_Width = Chassis_X_Max - Chassis_X_Min
                         Chassis_Height = Chassis_Y_Max - Chassis_Y_Min
                         Chassis_Center_X = int((Chassis_X_Min + Chassis_X_Max) / 2)
-                        Chassis_Confidence = chassis[4]
                         ChassisOutputs.append([
                             CameraIndex,
                             Chassis_Center_X,
@@ -306,6 +330,20 @@ class ArisuIntelligence(VisionPreUntil):
                 self.ChassisQueue.put(ChassisOutputs)
                 self.BallQueue.put(BallOutputs)
                 self.GoalQueue.put(GoalOutputs)
+            
+            # Put bbox outputs into queues for dashboard overlay
+            if self.BallBBoxQueue.full():
+                try:
+                    _ = self.BallBBoxQueue.get_nowait()
+                except Exception:
+                    pass
+            if self.ChassisBBoxQueue.full():
+                try:
+                    _ = self.ChassisBBoxQueue.get_nowait()
+                except Exception:
+                    pass
+            self.BallBBoxQueue.put(BallBBoxOutputs)
+            self.ChassisBBoxQueue.put(ChassisBBoxOutputs)
             # print(ChassisList)
         
             # print(Output0)
