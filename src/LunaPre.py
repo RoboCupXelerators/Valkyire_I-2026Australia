@@ -66,7 +66,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
     - 开发机：允许用 Mock 初始化，避免 import 直接失败。
     """
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer, mose, referee
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee
 
     def _use_mock(reason: str) -> None:
         """Switch module-level runtime objects to mock implementations."""
@@ -233,7 +233,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
 
             Bits = IceLoongBits(port=dev_path)
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            peripheral = Peripherals(Bits.VirtualPorts)  # TODO
+            peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
             chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
             compass = Bits.GetYaw
             key = Bits.GetKey
