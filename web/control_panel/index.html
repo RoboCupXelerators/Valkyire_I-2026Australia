@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xelerator 控制面板</title>
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 侧边导航 -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h2>🤖 Xelerator</h2>
+            </div>
+            <ul class="nav-menu">
+                <li class="nav-item active" data-page="overview">
+                    <span class="icon">📊</span>
+                    <span class="label">概览</span>
+                </li>
+                <li class="nav-item" data-page="vision">
+                    <span class="icon">👁️</span>
+                    <span class="label">视觉</span>
+                </li>
+                <li class="nav-item" data-page="recording">
+                    <span class="icon">🎥</span>
+                    <span class="label">记录</span>
+                </li>
+                <li class="nav-item" data-page="replay">
+                    <span class="icon">▶️</span>
+                    <span class="label">回放</span>
+                </li>
+                <li class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span>
+                    <span class="label">设置</span>
+                </li>
+            </ul>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="dot online"></span>
+                    <span>系统在线</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 概览页面 -->
+            <div id="page-overview" class="page active">
+                <header class="page-header">
+                    <h1>系统概览</h1>
+                    <span class="uptime">运行时间: <span id="uptime">--</span></span>
+                </header>
+                
+                <!-- 系统信息卡片 -->
+                <div class="system-info-bar">
+                    <div class="info-badge">
+                        <span class="icon">🌐</span>
+                        <span class="label">本机 IP</span>
+                        <span class="value" id="local-ip">--</span>
+                    </div>
+                    <div class="info-badge">
+                        <span class="icon">🎯</span>
+                        <span class="label">Unity IP</span>
+                        <span class="value" id="unity-ip-display">--</span>
+                    </div>
+                    <div class="info-badge">
+                        <span class="icon">🤖</span>
+                        <span class="label">机器人</span>
+                        <span class="value" id="robot-info">--</span>
+                    </div>
+                    <div class="info-badge">
+                        <span class="icon">📡</span>
+                        <span class="label">连接模式</span>
+                        <span class="value" id="connection-mode">--</span>
+                    </div>
+                </div>
+                
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>机器人状态</h3>
+                        <div class="status-grid" id="robot-status">
+                            <div class="status-item">
+                                <span class="label">位置 X</span>
+                                <span class="value" id="robot-x">-- cm</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">位置 Y</span>
+                                <span class="value" id="robot-y">-- cm</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">航向角</span>
+                                <span class="value" id="robot-yaw">--°</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">持球状态</span>
+                                <span class="value" id="has-ball">--</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>球位置</h3>
+                        <div class="ball-info" id="ball-info">
+                            <div class="coord-display">
+                                <span class="axis">X</span>
+                                <span class="value" id="ball-x">-- cm</span>
+                            </div>
+                            <div class="coord-display">
+                                <span class="axis">Y</span>
+                                <span class="value" id="ball-y">-- cm</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>记录状态</h3>
+                        <div class="recording-mini">
+                            <span class="rec-indicator" id="rec-indicator"></span>
+                            <span id="rec-status">未记录</span>
+                            <span class="rec-frames" id="rec-frames">0 帧</span>
+                        </div>
+                        <button class="btn btn-primary" id="quick-record-btn">开始记录</button>
+                    </div>
+                    <div class="card">
+                        <h3>性能指标</h3>
+                        <div class="metrics">
+                            <div class="metric">
+                                <span class="label">FPS</span>
+                                <span class="value" id="fps">--</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">延迟</span>
+                                <span class="value" id="latency">-- ms</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 视觉页面 -->
+            <div id="page-vision" class="page">
+                <header class="page-header">
+                    <h1>视觉监控</h1>
+                    <div class="cam-selector">
+                        <button class="cam-btn active" data-cam="0">CAM 0</button>
+                        <button class="cam-btn" data-cam="1">CAM 1</button>
+                        <button class="cam-btn" data-cam="2">CAM 2</button>
+                        <button class="cam-btn" data-cam="3">CAM 3</button>
+                    </div>
+                </header>
+                <div class="vision-container">
+                    <div class="camera-view">
+                        <img id="camera-feed" src="" alt="Camera Feed">
+                        <canvas id="bbox-overlay"></canvas>
+                    </div>
+                    <div class="detection-info">
+                        <h3>检测结果</h3>
+                        <div class="detection-list" id="detection-list">
+                            <p>加载中...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 记录页面 -->
+            <div id="page-recording" class="page">
+                <header class="page-header">
+                    <h1>比赛记录</h1>
+                </header>
+                <div class="recording-controls">
+                    <div class="control-group">
+                        <label>会话 ID</label>
+                        <input type="text" id="session-id" placeholder="自动生成">
+                    </div>
+                    <div class="control-group">
+                        <label>记录频率 (每 N 帧)</label>
+                        <input type="number" id="record-freq" value="5" min="1" max="100">
+                    </div>
+                    <div class="control-group">
+                        <label>描述</label>
+                        <input type="text" id="session-desc" placeholder="比赛描述">
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-primary" id="start-record-btn">▶ 开始记录</button>
+                        <button class="btn btn-danger" id="stop-record-btn" disabled>⏹ 停止记录</button>
+                    </div>
+                </div>
+                <div class="sessions-list">
+                    <h3>历史会话</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>会话 ID</th>
+                                <th>开始时间</th>
+                                <th>时长</th>
+                                <th>帧数</th>
+                                <th>描述</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sessions-tbody">
+                            <tr>
+                                <td colspan="6">加载中...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 回放页面 -->
+            <div id="page-replay" class="page">
+                <header class="page-header">
+                    <h1>比赛回放</h1>
+                </header>
+                <div class="replay-container">
+                    <div class="replay-controls">
+                        <div class="session-selector">
+                            <label>选择会话</label>
+                            <select id="replay-session-select">
+                                <option value="">-- 选择会话 --</option>
+                            </select>
+                        </div>
+                        <div class="playback-controls">
+                            <button class="btn btn-icon" id="replay-prev" title="上一帧">⏮</button>
+                            <button class="btn btn-icon btn-primary" id="replay-play" title="播放">▶</button>
+                            <button class="btn btn-icon" id="replay-next" title="下一帧">⏭</button>
+                            <button class="btn btn-icon" id="replay-loop" title="循环">🔁</button>
+                        </div>
+                        <div class="speed-control">
+                            <label>速度</label>
+                            <input type="range" id="replay-speed" min="0.1" max="4" step="0.1" value="1">
+                            <span id="speed-value">1.0x</span>
+                        </div>
+                        <div class="progress-bar">
+                            <input type="range" id="replay-progress" min="0" max="100" value="0">
+                            <div class="time-display">
+                                <span id="current-time">00:00</span> / <span id="total-time">00:00</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="replay-view">
+                        <div class="field-visualization">
+                            <canvas id="field-canvas" width="520" height="400"></canvas>
+                        </div>
+                        <div class="frame-info">
+                            <h3>帧信息</h3>
+                            <div class="info-grid" id="frame-info">
+                                <div class="info-item">
+                                    <span class="label">帧号</span>
+                                    <span class="value" id="frame-num">--</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">时间戳</span>
+                                    <span class="value" id="frame-ts">--</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">机器人位置</span>
+                                    <span class="value" id="frame-pos">--</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">球位置</span>
+                                    <span class="value" id="frame-ball">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 设置页面 -->
+            <div id="page-settings" class="page">
+                <header class="page-header">
+                    <h1>系统设置</h1>
+                    <button class="btn btn-primary" id="save-config-btn">💾 保存配置</button>
+                </header>
+                
+                <!-- 设置标签页 -->
+                <div class="settings-tabs">
+                    <button class="tab-btn active" data-tab="robot">机器人</button>
+                    <button class="tab-btn" data-tab="simulator">模拟器</button>
+                    <button class="tab-btn" data-tab="vision">视觉</button>
+                    <button class="tab-btn" data-tab="network">网络</button>
+                    <button class="tab-btn" data-tab="data">数据</button>
+                </div>
+                
+                <div class="settings-content">
+                    <!-- 机器人配置 -->
+                    <div id="tab-robot" class="tab-content active">
+                        <div class="settings-section">
+                            <h3>机器人信息</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>机器人编号</label>
+                                    <input type="number" id="robot-number" value="1" min="1" max="99">
+                                </div>
+                                <div class="setting-item">
+                                    <label>机器人类型</label>
+                                    <select id="robot-type">
+                                        <option value="OP">OP</option>
+                                        <option value="IL">IL</option>
+                                    </select>
+                                </div>
+                                <div class="setting-item">
+                                    <label>Bit 类型</label>
+                                    <select id="robot-bit">
+                                        <option value="IL">IL</option>
+                                        <option value="OP">OP</option>
+                                    </select>
+                                </div>
+                                <div class="setting-item">
+                                    <label>Rec 类型</label>
+                                    <select id="robot-rec">
+                                        <option value="AI">AI</option>
+                                        <option value="Manual">Manual</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>端口配置</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>Lidar ID</label>
+                                    <input type="number" id="lidar-id" value="31">
+                                </div>
+                                <div class="setting-item">
+                                    <label>IceLoong Port</label>
+                                    <input type="text" id="iceloong-port" value="/dev/iceloong">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>电机端口</h3>
+                            <div class="setting-row motors-grid">
+                                <div class="setting-item">
+                                    <label>左前轮</label>
+                                    <input type="number" id="motor-lf" value="1" min="0" max="15">
+                                </div>
+                                <div class="setting-item">
+                                    <label>左后轮</label>
+                                    <input type="number" id="motor-lb" value="2" min="0" max="15">
+                                </div>
+                                <div class="setting-item">
+                                    <label>右后轮</label>
+                                    <input type="number" id="motor-rb" value="3" min="0" max="15">
+                                </div>
+                                <div class="setting-item">
+                                    <label>右前轮</label>
+                                    <input type="number" id="motor-rf" value="4" min="0" max="15">
+                                </div>
+                                <div class="setting-item">
+                                    <label>运球</label>
+                                    <input type="number" id="motor-dribble" value="4" min="0" max="15">
+                                </div>
+                                <div class="setting-item">
+                                    <label>电磁铁</label>
+                                    <input type="number" id="motor-magnet" value="3" min="0" max="15">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 模拟器配置 -->
+                    <div id="tab-simulator" class="tab-content">
+                        <div class="settings-section">
+                            <h3>Unity 连接</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>Unity IP</label>
+                                    <input type="text" id="sim-unity-ip" value="127.0.0.1">
+                                </div>
+                                <div class="setting-item">
+                                    <label>机器人 ID</label>
+                                    <input type="number" id="sim-robot-id" value="1" min="1">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>命令端口</label>
+                                    <input type="number" id="sim-cmd-port" value="20001">
+                                </div>
+                                <div class="setting-item">
+                                    <label>状态端口</label>
+                                    <input type="number" id="sim-status-port" value="20002">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>运动参数</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>轮子速度系数</label>
+                                    <input type="number" id="sim-wheel-v" value="0.008" step="0.001">
+                                </div>
+                                <div class="setting-item">
+                                    <label>轮子角速度系数</label>
+                                    <input type="number" id="sim-wheel-wz" value="0.02" step="0.001">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>踢球力度</label>
+                                    <input type="number" id="sim-kick" value="1.0" step="0.1" min="0.1" max="5.0">
+                                </div>
+                                <div class="setting-item">
+                                    <label>运球力度系数</label>
+                                    <input type="number" id="sim-dribble" value="1.0" step="0.1">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>移动速度系数</label>
+                                    <input type="number" id="sim-move-scale" value="1.0" step="0.1">
+                                </div>
+                                <div class="setting-item">
+                                    <label>Unity→CM 转换</label>
+                                    <input type="number" id="sim-unity-cm" value="100.0">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>航向角</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>航向角偏移 (°)</label>
+                                    <input type="number" id="sim-yaw-offset" value="0.0" step="1.0">
+                                </div>
+                                <div class="setting-item checkbox-item">
+                                    <label>
+                                        <input type="checkbox" id="sim-yaw-zero-start">
+                                        启动时归零
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>多机器人模式</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>端口基数</label>
+                                    <input type="number" id="sim-port-base" value="20001">
+                                </div>
+                                <div class="setting-item">
+                                    <label>端口步长</label>
+                                    <input type="number" id="sim-port-stride" value="10">
+                                </div>
+                            </div>
+                            <div class="setting-item">
+                                <label>多机器人模式</label>
+                                <select id="sim-multi-mode">
+                                    <option value="per_port">per_port</option>
+                                    <option value="shared">shared</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 视觉配置 -->
+                    <div id="tab-vision" class="tab-content">
+                        <div class="settings-section">
+                            <h3>摄像头配置</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>前置摄像头</label>
+                                    <input type="number" id="cam-front" value="4">
+                                </div>
+                                <div class="setting-item">
+                                    <label>右侧摄像头</label>
+                                    <input type="number" id="cam-right" value="6">
+                                </div>
+                                <div class="setting-item">
+                                    <label>后置摄像头</label>
+                                    <input type="number" id="cam-back" value="0">
+                                </div>
+                                <div class="setting-item">
+                                    <label>左侧摄像头</label>
+                                    <input type="number" id="cam-left" value="2">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>曝光值</label>
+                                    <input type="number" id="cam-expose" value="100" min="1" max="10000">
+                                </div>
+                                <div class="setting-item checkbox-item">
+                                    <label>
+                                        <input type="checkbox" id="cam-auto-expose">
+                                        自动曝光
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>模型配置</h3>
+                            <div class="setting-item">
+                                <label>Hailo 模型</label>
+                                <input type="text" id="vision-hailo-model" value="/ArisuModel_v1.2s.hef">
+                            </div>
+                            <div class="setting-item">
+                                <label>Tuna 模型</label>
+                                <input type="text" id="vision-tuna-model" value="/yolov8nForX5.pt">
+                            </div>
+                            <div class="setting-item">
+                                <label>Tuna Engine</label>
+                                <input type="text" id="vision-tuna-engine" value="/yolov8nForX5.engine">
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>目标尺寸 (CM)</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>球直径</label>
+                                    <input type="number" id="obj-ball-dia" value="4.2" step="0.1">
+                                </div>
+                                <div class="setting-item">
+                                    <label>底盘宽度</label>
+                                    <input type="number" id="obj-chassis-w" value="18.0" step="0.5">
+                                </div>
+                                <div class="setting-item">
+                                    <label>底盘高度</label>
+                                    <input type="number" id="obj-chassis-h" value="18.0" step="0.5">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>蓝球门宽度</label>
+                                    <input type="number" id="obj-blue-goal-w" value="90.0">
+                                </div>
+                                <div class="setting-item">
+                                    <label>蓝球门高度</label>
+                                    <input type="number" id="obj-blue-goal-h" value="18.0">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>黄球门宽度</label>
+                                    <input type="number" id="obj-yellow-goal-w" value="90.0">
+                                </div>
+                                <div class="setting-item">
+                                    <label>黄球门高度</label>
+                                    <input type="number" id="obj-yellow-goal-h" value="18.0">
+                                </div>
+                            </div>
+                            <div class="setting-item checkbox-item">
+                                <label>
+                                    <input type="checkbox" id="vision-bbox-dist" checked>
+                                    启用 BBox 距离估算
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 网络配置 -->
+                    <div id="tab-network" class="tab-content">
+                        <div class="settings-section">
+                            <h3>传输配置</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>传输类型</label>
+                                    <select id="trans-type">
+                                        <option value="Slave">Slave</option>
+                                        <option value="Master">Master</option>
+                                    </select>
+                                </div>
+                                <div class="setting-item">
+                                    <label>传输方式</label>
+                                    <select id="trans-method">
+                                        <option value="WIFI">WIFI</option>
+                                        <option value="UART">UART</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>WiFi 配置</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>本机 IP</label>
+                                    <input type="text" id="wifi-self-ip" placeholder="192.168.1.x">
+                                </div>
+                                <div class="setting-item">
+                                    <label>远程 IP</label>
+                                    <input type="text" id="wifi-remote-ip" placeholder="192.168.1.x">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>端口</label>
+                                    <input type="number" id="wifi-port" value="20001">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>SSID</label>
+                                    <input type="text" id="wifi-ssid" placeholder="网络名称">
+                                </div>
+                                <div class="setting-item">
+                                    <label>密码</label>
+                                    <input type="password" id="wifi-pwd" placeholder="网络密码">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 数据管理 -->
+                    <div id="tab-data" class="tab-content">
+                        <div class="settings-section">
+                            <h3>录像配置</h3>
+                            <div class="setting-item checkbox-item">
+                                <label>
+                                    <input type="checkbox" id="rec-record">
+                                    启用录像
+                                </label>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>录像目录</label>
+                                    <input type="text" id="rec-dir" value="./Records">
+                                </div>
+                                <div class="setting-item">
+                                    <label>录制摄像头</label>
+                                    <input type="text" id="rec-cams" value="0,1,2,3" placeholder="0,1,2,3">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>分辨率宽度</label>
+                                    <input type="number" id="rec-width" value="320">
+                                </div>
+                                <div class="setting-item">
+                                    <label>分辨率高度</label>
+                                    <input type="number" id="rec-height" value="320">
+                                </div>
+                                <div class="setting-item">
+                                    <label>FPS</label>
+                                    <input type="number" id="rec-fps" value="30">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>分段时长 (秒)</label>
+                                    <input type="number" id="rec-segment" value="60">
+                                </div>
+                                <div class="setting-item">
+                                    <label>编码器</label>
+                                    <select id="rec-codec">
+                                        <option value="mp4v">mp4v</option>
+                                        <option value="h264">h264</option>
+                                    </select>
+                                </div>
+                                <div class="setting-item">
+                                    <label>格式</label>
+                                    <select id="rec-ext">
+                                        <option value="mp4">mp4</option>
+                                        <option value="avi">avi</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>场地参数</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>场地短边 (CM)</label>
+                                    <input type="number" id="field-short" value="200">
+                                </div>
+                                <div class="setting-item">
+                                    <label>场地长边 (CM)</label>
+                                    <input type="number" id="field-long" value="260">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>禁区 X</label>
+                                    <input type="number" id="field-restrict-x" value="400">
+                                </div>
+                                <div class="setting-item">
+                                    <label>禁区 Y</label>
+                                    <input type="number" id="field-restrict-y" value="800">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>检查点</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>Home X</label>
+                                    <input type="number" id="home-x" value="-70">
+                                </div>
+                                <div class="setting-item">
+                                    <label>Home Y</label>
+                                    <input type="number" id="home-y" value="0">
+                                </div>
+                                <div class="setting-item">
+                                    <label>Home θ</label>
+                                    <input type="number" id="home-theta" value="0">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>动作记录 (比赛回放)</h3>
+                            <div class="setting-row">
+                                <div class="setting-item checkbox-item">
+                                    <label>
+                                        <input type="checkbox" id="debug-record-motion">
+                                        启用动作记录
+                                    </label>
+                                </div>
+                                <div class="setting-item">
+                                    <label>记录间隔 (帧)</label>
+                                    <input type="number" id="debug-record-interval" value="1" min="1" max="100">
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>会话 ID (可选)</label>
+                                    <input type="text" id="debug-record-session" placeholder="留空自动生成">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="settings-section">
+                            <h3>调试</h3>
+                            <div class="setting-row">
+                                <div class="setting-item checkbox-item">
+                                    <label>
+                                        <input type="checkbox" id="debug-full-log">
+                                        完整日志
+                                    </label>
+                                </div>
+                                <div class="setting-item checkbox-item">
+                                    <label>
+                                        <input type="checkbox" id="debug-beta" checked>
+                                        Beta 功能
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="static/app.js"></script>
+</body>
+</html>

@@ -6,3 +6,4 @@ uvicorn
 gradio
 numpy
 simple_pid
+peewee

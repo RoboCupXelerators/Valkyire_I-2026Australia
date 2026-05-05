@@ -37,6 +37,7 @@ import time
 import re
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 
 @dataclass
@@ -211,6 +212,108 @@ class XeleratorSimBits:
 
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self._tx_thread.start()
+
+        # ===== Match recording support =====
+        # Optional callback for recording match data to database
+        # Set via SetRecorder() or enable via EnableRecording()
+        self._recorder_callback: Optional[Callable] = None
+        self._record_every: int = 1  # Record every N status updates
+        self._record_counter: int = 0
+        self._recording_enabled: bool = False
+
+    # ===== Match recording API =====
+
+    def SetRecorder(self, callback: Optional[Callable] = None):
+        """Set a callback function to record status data.
+        
+        The callback will be called with a dict containing:
+        - tick: timestamp
+        - robot_id: robot ID
+        - x_cm, y_cm, yaw_deg: pose in cm/deg
+        - vx, vy, wz: velocities
+        - ball_x_cm, ball_y_cm: relative ball position
+        - has_ball: ball possession status
+        
+        Args:
+            callback: A callable that accepts a dict, or None to disable recording.
+        """
+        self._recorder_callback = callback
+        self._recording_enabled = callback is not None
+
+    def EnableRecording(self, session_id: str = None, record_every: int = 5):
+        """Enable database recording with automatic session management.
+        
+        Args:
+            session_id: Optional session ID. If None, auto-generates from timestamp.
+            record_every: Record every N status updates (default 5 to reduce DB load).
+        """
+        try:
+            from ReasonData.data import SetupDatabase, Positions, MatchSession
+            
+            # Ensure database is initialized
+            SetupDatabase()
+            
+            # Create or get session
+            if session_id is None:
+                session_id = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            
+            self._record_session_id = session_id
+            self._record_every = max(1, int(record_every))
+            
+            # Create session record
+            try:
+                MatchSession.create_session(session_id, description="Simulator match recording")
+            except Exception:
+                pass  # Session may already exist
+            
+            # Create recorder callback
+            def _record_to_db(data: dict):
+                try:
+                    Positions(
+                        Tick=data['tick'],
+                        RobotId=data['robot_id'],
+                        SessionId=self._record_session_id,
+                        XPosition=data['x_cm'],
+                        YPosition=data['y_cm'],
+                        YawDeg=data['yaw_deg'],
+                        Vx=data['vx'],
+                        Vy=data['vy'],
+                        Wz=data['wz'],
+                        BallXPosition=data['ball_x_cm'],
+                        BallYPosition=data['ball_y_cm'],
+                        HasBall=data['has_ball'],
+                        CreatedAt=time.time(),
+                    ).save()
+                except Exception:
+                    pass  # Silently ignore DB errors to avoid blocking control loop
+            
+            self.SetRecorder(_record_to_db)
+            
+        except ImportError:
+            print("[XEL_SIM] Warning: ReasonData not available, recording disabled")
+            self._recording_enabled = False
+
+    def StopRecording(self):
+        """Stop recording and close the session."""
+        if self._recording_enabled and hasattr(self, '_record_session_id'):
+            try:
+                from ReasonData.data import MatchSession
+                session = MatchSession.get_or_none(MatchSession.SessionId == self._record_session_id)
+                if session:
+                    session.end_session()
+            except Exception:
+                pass
+        
+        self.SetRecorder(None)
+        self._recording_enabled = False
+
+    def IsRecording(self) -> bool:
+        """Check if recording is enabled."""
+        return self._recording_enabled
+
+    def GetSessionId(self) -> Optional[str]:
+        """Get current recording session ID."""
+        return getattr(self, '_record_session_id', None)
 
     # ===== Bits-like API expected by upper layers =====
 
@@ -558,6 +661,40 @@ class XeleratorSimBits:
                 self._status.ball_y_m = ball_y
 
             self._rx_count += 1
+
+            # Record to database if recording is enabled
+            if self._recording_enabled and self._recorder_callback is not None:
+                self._record_counter += 1
+                if self._record_counter >= self._record_every:
+                    self._record_counter = 0
+                    try:
+                        # Convert to cm for recording
+                        x_cm = float(x) * self._unity_to_cm
+                        y_cm = float(y) * self._unity_to_cm
+                        x_cm = (x_cm - float(self._origin_x_cm)) * self._pose_scale
+                        y_cm = (y_cm - float(self._origin_y_cm)) * self._pose_scale
+                        
+                        ball_x_cm = 0.0
+                        ball_y_cm = 0.0
+                        if ball_x is not None and ball_y is not None:
+                            ball_x_cm = float(ball_x) * self._unity_to_cm * self._pose_scale
+                            ball_y_cm = float(ball_y) * self._unity_to_cm * self._pose_scale
+                        
+                        self._recorder_callback({
+                            'tick': time.time(),
+                            'robot_id': int(rid),
+                            'x_cm': x_cm,
+                            'y_cm': y_cm,
+                            'yaw_deg': float(yaw),
+                            'vx': float(vx),
+                            'vy': float(vy),
+                            'wz': float(wz),
+                            'ball_x_cm': ball_x_cm,
+                            'ball_y_cm': ball_y_cm,
+                            'has_ball': (flags & 0x01) != 0,
+                        })
+                    except Exception:
+                        pass  # Silently ignore recording errors
 
 
 class Lidar:

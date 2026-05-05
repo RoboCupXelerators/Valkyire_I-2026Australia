@@ -126,6 +126,9 @@ class Preference:
                 "Debug": {
                     "FullLog": False,
                     "Beta": True,
+                    "RecordMotion": False,  # 是否记录机器人动作数据（用于比赛回放）
+                    "RecordSessionId": None,  # 当前记录会话ID（None=自动生成）
+                    "RecordInterval": 1,  # 记录间隔（每N次调用记录一次）
                 },
                 "Sim": {
                     "UnityIP": "127.0.0.1",
