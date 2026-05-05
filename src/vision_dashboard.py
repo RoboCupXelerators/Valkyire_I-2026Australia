@@ -274,14 +274,20 @@ class _App:
     def state_dict_json_safe(self) -> dict:
         return _json_safe(self.state_dict())
 
-    def cam_jpeg(self, cam_index: int, resize_to: int | None = None) -> bytes | None:
+    def cam_jpeg(self, cam_index: int, resize_to: int | None = None) -> tuple[bytes | None, float | None]:
+        """Get camera frame as JPEG with processing time.
+
+        Returns:
+            tuple: (jpeg_bytes, processing_time_ms) or (None, None) on error
+        """
+        start_ts = time.time()
         try:
             frames = getattr(self.vision, "Frames", None)
             if frames is None or cam_index < 0 or cam_index >= len(frames):
-                return None
+                return None, None
             fr = frames[cam_index]
             if fr is None:
-                return None
+                return None, None
             img = fr
             if resize_to is not None:
                 # keep aspect ratio, set long side=resize_to
@@ -295,47 +301,7 @@ class _App:
                         nh = int(h * (nw / w))
                     img = cv2.resize(img, (nw, nh))
 
-            # Draw detection overlays directly on the camera frame as a fallback.
-            # This makes boxes visible even if the browser-side canvas overlay is hidden,
-            # mis-sized, or temporarily fails to redraw.
-            try:
-                # Bounding boxes are produced in 640x640 detector space.
-                # Map them back to the source frame first, then to the actual displayed image size.
-                src_h, src_w = fr.shape[:2]
-                dst_h, dst_w = img.shape[:2]
-
-                ball_bbox = _bbox_at_cam(getattr(self.vision, "GetBallBBoxes", lambda: None)(), cam_index)
-                chassis_bbox = _bbox_at_cam(getattr(self.vision, "GetChassisBBoxes", lambda: None)(), cam_index)
-                goal_bbox = _bbox_at_cam(getattr(self.vision, "GetGoalBBoxes", lambda: None)(), cam_index)
-
-                # If per-camera lists are unavailable, fall back to the single best bbox.
-                if ball_bbox is None:
-                    ball_bbox = _bbox_at_cam(getattr(self.vision, "GetBallBBox", lambda: None)(), cam_index)
-                if chassis_bbox is None:
-                    chassis_bbox = _bbox_at_cam(getattr(self.vision, "GetChassisBBox", lambda: None)(), cam_index)
-                if goal_bbox is None:
-                    goal_bbox = _bbox_at_cam(getattr(self.vision, "GetGoalBBox", lambda: None)(), cam_index)
-
-                ball_bbox = _map_bbox_640_to_image(ball_bbox, src_w, src_h, dst_w, dst_h)
-                chassis_bbox = _map_bbox_640_to_image(chassis_bbox, src_w, src_h, dst_w, dst_h)
-                goal_bbox = _map_bbox_640_to_image(goal_bbox, src_w, src_h, dst_w, dst_h)
-
-                _draw_bbox_label(img, ball_bbox, (247, 37, 133), "ball")
-                _draw_bbox_label(img, chassis_bbox, (76, 201, 240), "chassis")
-                if goal_bbox is not None and len(goal_bbox) >= 7:
-                    cls_id = int(goal_bbox[1])
-                    if cls_id == 1:
-                        color = (59, 130, 246)
-                        label = "blue_goal"
-                    elif cls_id == 2:
-                        color = (250, 204, 21)
-                        label = "yellow_goal"
-                    else:
-                        color = (167, 139, 250)
-                        label = "goal"
-                    _draw_bbox_label(img, goal_bbox, color, label)
-            except Exception:
-                pass
+            # 不在后端画框，画框由前端完成
 
             ok, buf = cv2.imencode(
                 ".jpg",
@@ -343,10 +309,11 @@ class _App:
                 [int(cv2.IMWRITE_JPEG_QUALITY), int(self.jpeg_quality)],
             )
             if not ok:
-                return None
-            return bytes(buf)
+                return None, None
+            processing_time_ms = (time.time() - start_ts) * 1000.0
+            return bytes(buf), processing_time_ms
         except Exception:
-            return None
+            return None, None
 
 
 def _guess_content_type(p: Path) -> str:
@@ -422,10 +389,19 @@ def make_handler(app: _App):
                         resize_to = int(q.split("size=")[-1].split("&")[0])
                     except Exception:
                         resize_to = None
-                jpg = app.cam_jpeg(cam_i, resize_to=resize_to)
+                jpg, processing_time_ms = app.cam_jpeg(cam_i, resize_to=resize_to)
                 if jpg is None:
                     return self._send(204, "text/plain; charset=utf-8", b"")
-                return self._send(200, "image/jpeg", jpg)
+                # Send processing time in response header for latency display
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(jpg)))
+                if processing_time_ms is not None:
+                    self.send_header("X-Processing-Time-Ms", f"{processing_time_ms:.1f}")
+                self.end_headers()
+                self.wfile.write(jpg)
+                return
 
             return self._send(404, "text/plain; charset=utf-8", b"not found")
 

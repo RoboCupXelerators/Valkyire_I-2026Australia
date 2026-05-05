@@ -134,9 +134,8 @@ function setupVisionControls() {
     startVisionFeeds();
 }
 
-// Camera latency tracking
+// Camera latency tracking (server-side processing time)
 const camLatencies = {0: [], 1: [], 2: [], 3: []};
-const camRequestTimes = {};
 
 function startVisionFeeds() {
     // Refresh all four camera feeds periodically with latency tracking
@@ -145,27 +144,34 @@ function startVisionFeeds() {
         for (let i = 0; i < 4; i++) {
             const img = document.getElementById('cam' + i);
             if (img) {
-                // Track request start time
-                camRequestTimes[i] = t;
-                
-                // Set up load handler to measure latency
-                img.onload = function() {
-                    const latency = Date.now() - camRequestTimes[i];
-                    // Keep last 10 samples for averaging
-                    camLatencies[i].push(latency);
-                    if (camLatencies[i].length > 10) {
-                        camLatencies[i].shift();
-                    }
-                    updateLatencyDisplay();
-                };
-                
-                img.onerror = function() {
-                    // Clear latency on error
-                    camLatencies[i] = [];
-                    updateLatencyDisplay();
-                };
-                
-                img.src = `/api/cam/${i}.jpg?size=480&t=${t}`;
+                // Use fetch to get response headers with processing time
+                fetch(`/api/cam/${i}.jpg?size=480&t=${t}`)
+                    .then(response => {
+                        // Read processing time from response header
+                        const processingTimeHeader = response.headers.get('X-Processing-Time-Ms');
+                        if (processingTimeHeader) {
+                            const processingTime = parseFloat(processingTimeHeader);
+                            camLatencies[i].push(processingTime);
+                            if (camLatencies[i].length > 10) {
+                                camLatencies[i].shift();
+                            }
+                        }
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        const url = URL.createObjectURL(blob);
+                        img.onload = function() {
+                            URL.revokeObjectURL(url);
+                            drawAllOverlays();
+                        };
+                        img.src = url;
+                        updateLatencyDisplay();
+                    })
+                    .catch(e => {
+                        // Clear latency on error
+                        camLatencies[i] = [];
+                        updateLatencyDisplay();
+                    });
             }
         }
     }
@@ -228,10 +234,22 @@ function updateLatencyDisplay() {
     }
 }
 
+// Vision state for bbox drawing
+let visionState = {
+    ball_bboxes_640: [null, null, null, null],
+    chassis_bboxes_640: [null, null, null, null],
+    goal_bboxes_640: [null, null, null, null],
+};
+
 function updateVisionState() {
     fetch('/api/state')
         .then(r => r.json())
         .then(data => {
+            // Store bboxes for drawing
+            visionState.ball_bboxes_640 = data.ball_bboxes_640 || [null, null, null, null];
+            visionState.chassis_bboxes_640 = data.chassis_bboxes_640 || [null, null, null, null];
+            visionState.goal_bboxes_640 = data.goal_bboxes_640 || [null, null, null, null];
+            
             // Update ball position
             const ballPosEl = document.getElementById('ball-pos');
             if (ballPosEl && data.ball_pos_cm) {
@@ -253,6 +271,146 @@ function updateVisionState() {
                 statusEl.textContent = '状态: 离线';
             }
         });
+}
+
+// Map bbox from 640x640 detector space to image space
+function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH) {
+    if (!bbox || bbox.length < 6) return null;
+    
+    try {
+        const prefix = bbox.length >= 7 ? bbox.slice(0, 2) : [bbox[0]];
+        const x1 = bbox.length >= 7 ? bbox[2] : bbox[1];
+        const y1 = bbox.length >= 7 ? bbox[3] : bbox[2];
+        const x2 = bbox.length >= 7 ? bbox[4] : bbox[3];
+        const y2 = bbox.length >= 7 ? bbox[5] : bbox[4];
+        const conf = bbox.length >= 7 ? bbox[6] : bbox[5];
+        
+        srcW = Math.max(1, srcW);
+        srcH = Math.max(1, srcH);
+        dstW = Math.max(1, dstW);
+        dstH = Math.max(1, dstH);
+        
+        // Inverse letterbox
+        const scale = Math.min(640 / srcW, 640 / srcH);
+        const newW = srcW * scale;
+        const newH = srcH * scale;
+        const padX = (640 - newW) / 2;
+        const padY = (640 - newH) / 2;
+        
+        const toSrc = (xp, yp) => [(xp - padX) / scale, (yp - padY) / scale];
+        
+        let [sx1, sy1] = toSrc(x1, y1);
+        let [sx2, sy2] = toSrc(x2, y2);
+        
+        // Clip to source frame
+        sx1 = Math.max(0, Math.min(srcW - 1, sx1));
+        sy1 = Math.max(0, Math.min(srcH - 1, sy1));
+        sx2 = Math.max(0, Math.min(srcW - 1, sx2));
+        sy2 = Math.max(0, Math.min(srcH - 1, sy2));
+        
+        // Scale to display size
+        const dx1 = sx1 * (dstW / srcW);
+        const dy1 = sy1 * (dstH / srcH);
+        const dx2 = sx2 * (dstW / srcW);
+        const dy2 = sy2 * (dstH / srcH);
+        
+        if (bbox.length >= 7) {
+            return [prefix[0], prefix[1], Math.round(dx1), Math.round(dy1), Math.round(dx2), Math.round(dy2), conf];
+        }
+        return [prefix[0], Math.round(dx1), Math.round(dy1), Math.round(dx2), Math.round(dy2), conf];
+    } catch (e) {
+        return null;
+    }
+}
+
+// Draw bbox on canvas overlay
+function drawBboxOnCanvas(canvas, bbox, color, label) {
+    if (!bbox || bbox.length < 6) return;
+    
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    
+    // Get coordinates based on bbox format
+    const x1_i = bbox.length >= 7 ? 2 : 1;
+    const y1_i = bbox.length >= 7 ? 3 : 2;
+    const x2_i = bbox.length >= 7 ? 4 : 3;
+    const y2_i = bbox.length >= 7 ? 5 : 4;
+    const conf_i = bbox.length >= 7 ? 6 : 5;
+    
+    const x1 = Math.round(bbox[x1_i]);
+    const y1 = Math.round(bbox[y1_i]);
+    const x2 = Math.round(bbox[x2_i]);
+    const y2 = Math.round(bbox[y2_i]);
+    const conf = bbox[conf_i];
+    
+    // Draw rectangle
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    
+    // Draw label
+    ctx.fillStyle = color;
+    ctx.font = '12px sans-serif';
+    const text = `${label} ${conf.toFixed(2)}`;
+    const textY = Math.max(15, y1 - 5);
+    ctx.fillText(text, x1, textY);
+}
+
+// Draw overlays for all cameras
+function drawAllOverlays() {
+    for (let i = 0; i < 4; i++) {
+        const img = document.getElementById('cam' + i);
+        const canvas = document.getElementById('ov' + i);
+        if (!img || !canvas) continue;
+        
+        // Match canvas size to image
+        canvas.width = img.clientWidth || 480;
+        canvas.height = img.clientHeight || 480;
+        
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Get original frame size (assume 640x640 detector input)
+        // The actual frame size is typically 720x540 or similar
+        const srcW = 720;  // Approximate source width
+        const srcH = 540;  // Approximate source height
+        const dstW = canvas.width;
+        const dstH = canvas.height;
+        
+        // Draw ball bbox
+        const ballBbox = visionState.ball_bboxes_640[i];
+        if (ballBbox) {
+            const mapped = mapBbox640ToImage(ballBbox, srcW, srcH, dstW, dstH);
+            drawBboxOnCanvas(canvas, mapped, '#f72585', 'ball');
+        }
+        
+        // Draw chassis bbox
+        const chassisBbox = visionState.chassis_bboxes_640[i];
+        if (chassisBbox) {
+            const mapped = mapBbox640ToImage(chassisBbox, srcW, srcH, dstW, dstH);
+            drawBboxOnCanvas(canvas, mapped, '#4cc9f0', 'chassis');
+        }
+        
+        // Draw goal bbox
+        const goalBbox = visionState.goal_bboxes_640[i];
+        if (goalBbox && goalBbox.length >= 7) {
+            const clsId = goalBbox[1];
+            let color, label;
+            if (clsId === 1) {
+                color = '#3b82f6';
+                label = 'blue_goal';
+            } else if (clsId === 2) {
+                color = '#facc15';
+                label = 'yellow_goal';
+            } else {
+                color = '#a78bfa';
+                label = 'goal';
+            }
+            const mapped = mapBbox640ToImage(goalBbox, srcW, srcH, dstW, dstH);
+            drawBboxOnCanvas(canvas, mapped, color, label);
+        }
+    }
 }
 
 function drawRadar(data) {
@@ -676,10 +834,28 @@ async function updateOverview() {
         const visionResponse = await fetch('/api/state');
         const visionData = await visionResponse.json();
         
-        // Update robot status
-        if (visionData.chassis_list_cm && visionData.chassis_list_cm.length >= 2) {
-            elements.robotX.textContent = visionData.chassis_list_cm[0].toFixed(1) + ' cm';
-            elements.robotY.textContent = visionData.chassis_list_cm[1].toFixed(1) + ' cm';
+        // Update robot status - use robot_x_cm/robot_y_cm if available
+        if (visionData.robot_x_cm !== undefined && visionData.robot_y_cm !== undefined) {
+            elements.robotX.textContent = visionData.robot_x_cm.toFixed(1) + ' cm';
+            elements.robotY.textContent = visionData.robot_y_cm.toFixed(1) + ' cm';
+        } else if (visionData.chassis_list_cm && visionData.chassis_list_cm.length >= 2) {
+            // Fallback: chassis_list_cm is a list of detections, use first one
+            const firstChassis = visionData.chassis_list_cm[0];
+            if (firstChassis && firstChassis.length >= 2) {
+                elements.robotX.textContent = firstChassis[0].toFixed(1) + ' cm';
+                elements.robotY.textContent = firstChassis[1].toFixed(1) + ' cm';
+            }
+        }
+        
+        // Update yaw
+        if (visionData.robot_yaw_deg !== undefined) {
+            elements.robotYaw.textContent = visionData.robot_yaw_deg.toFixed(1) + '°';
+        }
+        
+        // Update has_ball status
+        if (visionData.has_ball !== undefined) {
+            elements.hasBall.textContent = visionData.has_ball ? '是' : '否';
+            elements.hasBall.style.color = visionData.has_ball ? '#22c55e' : 'var(--text-muted)';
         }
         
         if (visionData.ball_pos_cm) {

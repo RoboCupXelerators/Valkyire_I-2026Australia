@@ -208,6 +208,32 @@ class Car:
         
         # 检查是否启用记录
         self._check_recording_config()
+        
+        # 启动状态更新线程
+        self._state_update_thread = None
+        self._state_update_stop = threading.Event()
+        self._start_state_update_thread()
+    
+    def _start_state_update_thread(self):
+        """启动状态更新线程，定期更新全局状态"""
+        def _update_loop():
+            while not self._state_update_stop.is_set():
+                try:
+                    # 更新全局状态
+                    from robot_state import set_robot_state
+                    yaw = self.GetYaw() if self.GetYaw else 0.0
+                    set_robot_state(
+                        yaw_deg=yaw,
+                        vx=self._last_vx,
+                        vy=self._last_vy,
+                        wz=self._last_wz,
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.05)  # 20Hz 更新
+        
+        self._state_update_thread = threading.Thread(target=_update_loop, daemon=True)
+        self._state_update_thread.start()
     
     def _check_recording_config(self):
         """检查配置是否启用记录"""
