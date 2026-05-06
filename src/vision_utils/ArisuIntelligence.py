@@ -89,7 +89,7 @@ class ArisuIntelligence(VisionPreUntil):
                 self._hailo_init_error = None
 
                 with VDevice(self.HailoParams) as hat:
-                    infer_model = hat.create_infer_model(str(MODEL_DIR)+Settings.VisionVals.HailoModelName)
+                    infer_model = hat.create_infer_model(str(MODEL_DIR)+Settings.Vision.HailoModelPath)
                     infer_model.set_batch_size(4)
                     self.InputShape = infer_model.input().shape
                     self.OutputShape = infer_model.output().shape

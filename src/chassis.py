@@ -252,8 +252,8 @@ class Car:
             number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
             speed = [0,0,0,0]
             for n in range(4):
-                if speedCache[number[n]-1] > self.cfg.ExpectedVals.MaxSpeedValue:
-                    speed[n] = self.cfg.ExpectedVals.MaxSpeedValue
+                if speedCache[number[n]-1] > self.cfg.Motion.MaxSpeed:
+                    speed[n] = self.cfg.Motion.MaxSpeed
                 else:
                     speed[n] = int(speedCache[number[n]-1])
             if self.cfg.Debug.FullLog:
@@ -342,7 +342,7 @@ class Car:
             logger.error(f"PID output: {SpeedZ}, Yaw: {Normaled_Yaw}, FacingAngle: {Normaled_Facing}")
         else:
             SpeedZ = Error * KpW
-        if abs(Error) < Settings.ExpectedVals.ErrorRange:
+        if abs(Error) < Settings.Motion.ErrorRange:
             self.Yaw_PID.reset()  # Reset PID when within acceptable error range
         WheelX = SpeedX * math.cos(math.radians(Yaw)) + SpeedY * math.sin(math.radians(Yaw))
         WheelY = - SpeedX * math.sin(math.radians(Yaw)) + SpeedY * math.cos(math.radians(Yaw))

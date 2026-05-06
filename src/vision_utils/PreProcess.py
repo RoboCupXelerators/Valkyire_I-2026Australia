@@ -412,12 +412,7 @@ class VisionPreUntil:
 
         # TODO put into settings
         # self.CamPorts = [8,10,1,5]
-        self.CamPorts = cam_ports or [
-            Settings.VisionVals.Front,
-            Settings.VisionVals.Right,
-            Settings.VisionVals.Back,
-            Settings.VisionVals.Left,
-        ]
+        self.CamPorts = cam_ports or list(getattr(Settings.Vision, "CamPorts", [0, 2, 4, 6]))
         self.StopRecord = 0
 
         self.Cams = []

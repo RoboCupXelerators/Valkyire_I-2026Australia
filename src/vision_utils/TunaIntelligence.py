@@ -95,13 +95,13 @@ class TunaIntelligence(VisionPreUntil):
         # Model paths (config-driven)
         # Priority:
         #   1) explicit args: model_path/engine_path
-        #   2) config: Settings.VisionVals.TunaModelPath / TunaEnginePath
+        #   2) config: Settings.Vision.ModelPath / EnginePath
         #   3) fallback: repo default yolov8nForX5
-        cfg_model = getattr(getattr(Settings, "VisionVals", object()), "TunaModelPath", None)
-        cfg_engine = getattr(getattr(Settings, "VisionVals", object()), "TunaEnginePath", None)
+        cfg_model = getattr(getattr(Settings, "Vision", object()), "ModelPath", None)
+        cfg_engine = getattr(getattr(Settings, "Vision", object()), "EnginePath", None)
 
-        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / Settings.VisionVals.TunaModelName))
-        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / Settings.VisionVals.TunaEngineName))
+        self.model_path = model_path or (str(cfg_model) if cfg_model else str(MODEL_DIR / Settings.Vision.ModelPath))
+        self.engine_path = engine_path or (str(cfg_engine) if cfg_engine else str(MODEL_DIR / Settings.Vision.EnginePath))
         self.device = device  # None => auto
         # Default behavior: prefer TensorRT engine if present (Jetson-oriented).
         # Set prefer_engine=False in offline CPU tests.

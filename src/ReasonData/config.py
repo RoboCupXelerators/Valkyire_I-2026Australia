@@ -1,8 +1,9 @@
 """ReasonData.config
 
-本模块原本依赖 ujson。
-在开发机/CI 环境中可能未安装 ujson，导致整个 SoccerSoftware 无法启动。
-这里做一个向后兼容：优先用 ujson，没有则回退到标准库 json。
+精简版配置模块：
+- 统一模型路径配置
+- 移除冗余配置项
+- 保持向后兼容
 """
 
 try:
@@ -16,319 +17,467 @@ import random
 APP_DIR = Path(__file__).parent
 DATA_DIR = APP_DIR / "data"
 CONFIG_FILE = DATA_DIR / "config.json"
-CACHE_FILE = DATA_DIR /  "cfg.cache.json"
+CACHE_FILE = DATA_DIR / "cfg.cache.json"
 
-# kits
+
 class ConfigSection:
-    """用于表示配置的每个部分"""
+    """配置分段的通用容器"""
     def __init__(self, data):
         for key, value in data.items():
             if isinstance(value, dict):
-                # 如果值是字典，创建新的ConfigSection实例
                 setattr(self, key, ConfigSection(value))
             else:
-                # 否则直接设置属性
                 setattr(self, key, value)
+
 
 def ParseJsonToObj():
     parseData = Preference().cfg
-    result = ConfigSection(parseData)
-    return result
+    return ConfigSection(parseData)
 
 
 class Preference:
-    def __init__(self):
-        data = {
-                "RoboInfo": {
-                    "number" : 1,
-                    "type": "OP", # OffencePlayer/DefencePlayer
-                    "Bit" : "IL", # AB(Arisu Bits)/IL (IceLoong Bits)/ 3Q (3Q Bits) .etc
-                    "Rec" : "AI", # AI(Arisu Intelligence)/TV(Tuna Vision)/BB(Blob Based)
-                    "LidarType": "s1", # "s1" or "s2" to select lidar launch file
-                },
-                "Ports": {
-                    "LidarID": random.randrange(1, 99),  # Random ID for Lidar (if used)
-                    "IceLoongPort": '/dev/iceloong',
-                    "LowTigger" : 0, 
-                    "ReferPort": 1,
-                    "ElecMagnet" : 3,
-                    "Dribble" : 4,
-                    "LeftFront" : 1,
-                    "LeftBack" : 2,
-                    "RightBack" : 3,
-                    "RightFront" : 4,
-                },
-                "VisionVals": {
-                    'Front' : 4,
-                    'Right' : 6,
-                    'Back' : 0,
-                    'Left' : 2,
-                    "Record" : False, # False to Disable Record video
-                    "RecordDir": "./Records", # where to save recordings (relative to run cwd)
-                    "RecordCams": [0, 1, 2, 3], # which camera indices to record (0:Front,1:Right,2:Back,3:Left)
-                    "RecordWidth": 320, # recording output width (writer size)
-                    "RecordHeight": 320, # recording output height (writer size)
-                    "RecordSegmentSeconds": 60, # split video into segments (seconds)
-                    "RecordFPS": 30, # writer fps (not necessarily camera fps)
-                    "RecordCodec": "mp4v", # mp4 codec: mp4v is widely supported; h264 may require extra deps
-                    "RecordExt": "mp4", # file extension
-                    "ExposeVal" : 100, # 0-255, 0: Auto, 1-255: Manual
-                    "AutoExpose" : 0,  # 0: Manual, 1: Auto
-                    "CalibrationFolder": '/Calibration/',
-                    "HailoModelName": '/ArisuModel_v1.2s.hef',
-                    # TunaIntelligence (Ultralytics/TensorRT) model paths
-                    # - Use absolute path or path relative to repo root / working directory.
-                    # - Engine is optional; if missing TunaIntelligence can export (FP16) on-device.
-                    "TunaModelName": "/yolov8nForX5.pt",
-                    "TunaEnginePath": "/yolov8nForX5.engine",
+    """配置管理类：负责读取、写入、迁移配置文件"""
+    
+    # 默认配置模板（唯一来源）
+    DEFAULT_CONFIG = {
+        "RoboInfo": {
+            "number": 1,
+            "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
+            "Bit": "SIM",           # SIM / AB(ArisuBits) / IL(IceLoongBits)
+            "Rec": "XV",            # AI(ArisuIntelligence) / TV(TunaVision) / XV(XeleratorVision) / BB(BlobBased)
+            "LidarType": "s1",      # s1 / s2
+        },
+        "Ports": {
+            "LidarID": random.randrange(1, 99),
+            "IceLoongPort": "/dev/iceloong",
+            "ElecMagnet": 3,
+            "Dribble": 4,
+            "LeftFront": 1,
+            "LeftBack": 2,
+            "RightBack": 3,
+            "RightFront": 4,
+        },
+        "Vision": {
+            # 相机端口映射 (0:Back, 1:Left, 2:Front, 3:Right)
+            "CamPorts": [0, 2, 4, 6],
+            # 模型路径 (统一配置，相对于项目根目录)
+            "ModelPath": "YOLO_Models/models/yolov8nForX5.pt",
+            "EnginePath": "YOLO_Models/models/yolov8nForX5.engine",
+            "HailoModelPath": "YOLO_Models/models/ArisuModel_v1.2s.hef",
+            # 标定文件夹
+            "CalibrationFolder": "Calibration",
+            # 目标物理尺寸 (cm) - 用于bbox距离估计
+            "BallDiameter": 4.2,
+            "ChassisWidth": 18.0,
+            "ChassisHeight": 18.0,
+            "GoalWidth": 90.0,
+            "GoalHeight": 18.0,
+            # 录制配置
+            "Record": False,
+            "RecordDir": "./Records",
+        },
+        "Field": {
+            "Short": 200,           # 短边长度 (cm)
+            "Long": 260,            # 长边长度 (cm)
+            "Home": [-70, 0, 0],    # 默认回位点
+        },
+        "Motion": {
+            "CatchVal": [6, 0],     # 抱球时的球位置
+            "ErrorRange": 10,       # 到达目标的误差范围 (cm)
+            "MaxSpeed": 500,        # 最大速度值
+        },
+        "Network": {
+            "Type": "Slave",        # Master / Slave
+            "Method": "WIFI",       # WIFI / BLE
+            "SelfIP": "192.168.1.x",
+            "RemoteIP": "192.168.1.x",
+            "Port": 20001,
+            "SSID": "MisakaNetwork",
+            "Password": "MisakaNetwork20001/",
+        },
+        "Sim": {
+            "UnityIP": "127.0.0.1",
+            "RobotId": 1,
+            # 多机器人端口映射: CmdPort = PortBase + (RobotId-1) * PortStride
+            "PortBase": 20001,
+            "PortStride": 10,
+            "MultiRobotMode": "per_port",  # per_port / hub
+            # 运动参数缩放
+            "WheelToV": 0.008,
+            "WheelToWz": 0.02,
+            "YawOffsetDeg": 0.0,
+            "KickStrength": 1.0,
+            "DribbleScale": 1.0,
+            "MoveScale": 1.0,
+        },
+        "Debug": {
+            "FullLog": False,
+            "Beta": True,
+        },
+    }
 
-                    # Bounding-box based distance estimation (cm).
-                    # These are fallback physical sizes used with camera intrinsics.
-                    # Tune them for your robot/model if you want better range estimates.
-                    "EnableBBoxDistanceEstimate": True,
-                    "BallDiameterCM": 4.2,
-                    "ChassisWidthCM": 18.0,
-                    "ChassisHeightCM": 18.0,
-                    "BlueGoalWidthCM": 90.0,
-                    "BlueGoalHeightCM": 18.0,
-                    "YellowGoalWidthCM": 90.0,
-                    "YellowGoalHeightCM": 18.0,
-                },
-                "Bounds" : {
-                    "ClsPos": [85,35,0], #Bound CheckPoint (Close to [0,0])
-                    "FarPos": [95,75,0], #Bound CheckPoint (Far from [0,0])
-                    "Short" : 200, # length of short side
-                    "Long" : 260, # length of longer side
-                    "Distance2Bound" : 240,
-                    "restricted_area_x": 400,
-                    "restricted_area_y": 800,
-                },
-                "CheckPoints" : {
-                    "Home": [-70,0,0],
-                },
-                "ExpectedVals": {
-                    "CatchVal" : [6,0], # Position when Robo Cathch the ball
-                    "ErrorRange": 10,
-                    "MaxWarnCount": 3,
-                    "MaxSpeedValue": 500,
-                },
-                "Transimission": {
-                    "Type" : "Slave", # master to start AP/ slave to connect
-                    "Method" : "WIFI", # WIFI/BLE/Refer
-                },
-                "WIFI" : {
-                    "SelfIP" : "192.168.1.x",
-                    "RemoteIP" : "192.168.1.x",
-                    "Port" : 20001,
-                    "SSID" : "MisakaNetwork",
-                    "PWD" : "MisakaNetwork20001/",
-                },
-                "Debug": {
-                    "FullLog": False,
-                    "Beta": True,
-                    "RecordMotion": False,  # 是否记录机器人动作数据（用于比赛回放）
-                    "RecordSessionId": None,  # 当前记录会话ID（None=自动生成）
-                    "RecordInterval": 1,  # 记录间隔（每N次调用记录一次）
-                },
-                "Sim": {
-                    "UnityIP": "127.0.0.1",
-                    "CmdPort": 20001,
-                    "StatusPort": 20002,
-                    "RobotId": 1,
-                    "TwistFromWheels": True,
-                    "WheelToV": 0.008,
-                    "WheelToWz": 0.02,
-                    "YawOffsetDeg": 0.0,
-                    "YawZeroAtStart": False,
-                    "KickStrength": 1.0,
-                    "DribbleStrengthScale": 1.0,
-                    "PlanarMoveSpeedScale": 1.0,
-                    "UnityToCm": 100.0,
-                    "OriginXCM": 0.0,
-                    "OriginYCM": 0.0,
-                    "PoseScale": 1.0,
-                    "PoseOffsetXCM": 0.0,
-                    "PoseOffsetYCM": 0.0,
-                    "Debug": False,
-                    "CmdPortBase": 20001,
-                    "StatusPortBase": 20002,
-                    "PortStride": 10,
-                    "MultiRobotMode": "per_port"
-                }
-            }
+    def __init__(self):
+        # 确保配置文件存在
         try:
             os.stat(CONFIG_FILE)
-        except:
-            try:
-                with open(CONFIG_FILE, "w") as f:
-                    _json.dump(data, f)
-            except:
-                raise FileNotFoundError("Create config.json Failed, please delete config.json and try again.")
+        except FileNotFoundError:
+            self._create_default_config()
+
+        # 读取配置
         with open(CONFIG_FILE) as f:
             self.cfg = _json.load(f)
-            bUpdate = False
-            for i in data:
-                for c in data[i].keys():
-                    try:
-                        self.cfg[str(i)][str(c)]
-                    except:
-                        bUpdate = True
-        if bUpdate:
-            os.rename(CONFIG_FILE,CACHE_FILE)
-            with open(CACHE_FILE, "r") as ca:
-                self.cache = _json.load(ca)
-            with open(CONFIG_FILE, "w") as d:
-                _json.dump(data, d)
-            with open(CONFIG_FILE, "r") as d:
-                self.cfg = _json.load(d)
-            for i in data:
-                for c in data[i].keys():
-                    try:
-                        vCache = self.cache[str(i)][str(c)]
-                        self.cfg[str(i)][str(c)] = vCache
-                        with open(CONFIG_FILE, "w") as d:
-                            _json.dump(self.cfg, d)
-                    except:
-                        pass
-            os.remove(CACHE_FILE)
 
-    def write(self, section: str, option: str, value: int) -> int:
+        # 检查是否需要迁移旧配置
+        if self._needs_migration():
+            self._migrate_config()
+
+    def _create_default_config(self):
+        try:
+            with open(CONFIG_FILE, "w") as f:
+                _json.dump(self.DEFAULT_CONFIG, f, indent=2)
+        except Exception:
+            raise FileNotFoundError("无法创建 config.json，请手动创建")
+
+    def _needs_migration(self):
+        """检查是否需要从旧配置迁移"""
+        for section in self.DEFAULT_CONFIG:
+            if section not in self.cfg:
+                return True
+            for key in self.DEFAULT_CONFIG[section]:
+                if key not in self.cfg.get(section, {}):
+                    return True
+        return False
+
+    def _migrate_config(self):
+        """迁移旧配置到新格式"""
+        # 备份旧配置
+        if os.path.exists(CACHE_FILE):
+            os.remove(CACHE_FILE)
+        os.rename(CONFIG_FILE, CACHE_FILE)
+
+        # 读取旧配置
+        with open(CACHE_FILE, "r") as f:
+            old_cfg = _json.load(f)
+
+        # 创建新配置，保留旧值
+        new_cfg = _json.loads(_json.dumps(self.DEFAULT_CONFIG))
+        
+        # 迁移映射表
+        migrations = {
+            # VisionVals -> Vision
+            ("VisionVals", "Front"): ("Vision", "CamPorts", lambda v: None),  # 特殊处理
+            ("VisionVals", "HailoModelName"): ("Vision", "HailoModelPath"),
+            ("VisionVals", "TunaModelName"): ("Vision", "ModelPath"),
+            ("VisionVals", "TunaEnginePath"): ("Vision", "EnginePath"),
+            ("VisionVals", "CalibrationFolder"): ("Vision", "CalibrationFolder"),
+            ("VisionVals", "BallDiameterCM"): ("Vision", "BallDiameter"),
+            ("VisionVals", "ChassisWidthCM"): ("Vision", "ChassisWidth"),
+            ("VisionVals", "ChassisHeightCM"): ("Vision", "ChassisHeight"),
+            ("VisionVals", "BlueGoalWidthCM"): ("Vision", "GoalWidth"),
+            ("VisionVals", "Record"): ("Vision", "Record"),
+            ("VisionVals", "RecordDir"): ("Vision", "RecordDir"),
+            # Bounds -> Field
+            ("Bounds", "Short"): ("Field", "Short"),
+            ("Bounds", "Long"): ("Field", "Long"),
+            # CheckPoints -> Field
+            ("CheckPoints", "Home"): ("Field", "Home"),
+            # ExpectedVals -> Motion
+            ("ExpectedVals", "CatchVal"): ("Motion", "CatchVal"),
+            ("ExpectedVals", "ErrorRange"): ("Motion", "ErrorRange"),
+            ("ExpectedVals", "MaxSpeedValue"): ("Motion", "MaxSpeed"),
+            # WIFI -> Network
+            ("WIFI", "SelfIP"): ("Network", "SelfIP"),
+            ("WIFI", "RemoteIP"): ("Network", "RemoteIP"),
+            ("WIFI", "Port"): ("Network", "Port"),
+            ("WIFI", "SSID"): ("Network", "SSID"),
+            ("WIFI", "PWD"): ("Network", "Password"),
+            # Transimission -> Network
+            ("Transimission", "Type"): ("Network", "Type"),
+            ("Transimission", "Method"): ("Network", "Method"),
+            # Sim (部分迁移)
+            ("Sim", "CmdPortBase"): ("Sim", "PortBase"),
+            ("Sim", "KickStrength"): ("Sim", "KickStrength"),
+            ("Sim", "DribbleStrengthScale"): ("Sim", "DribbleScale"),
+            ("Sim", "PlanarMoveSpeedScale"): ("Sim", "MoveScale"),
+        }
+
+        for (old_sec, old_key), new_path in migrations.items():
+            try:
+                old_val = old_cfg.get(old_sec, {}).get(old_key)
+                if old_val is not None:
+                    if len(new_path) == 2:
+                        new_sec, new_key = new_path
+                        if new_sec in new_cfg and new_key in new_cfg[new_sec]:
+                            new_cfg[new_sec][new_key] = old_val
+            except Exception:
+                continue
+
+        # 特殊处理: CamPorts 从 Front/Right/Back/Left 迁移
+        try:
+            vv = old_cfg.get("VisionVals", {})
+            cam_ports = [
+                vv.get("Back", 0),
+                vv.get("Left", 2),
+                vv.get("Front", 4),
+                vv.get("Right", 6),
+            ]
+            # 去重保持顺序
+            seen = set()
+            unique_ports = []
+            for p in cam_ports:
+                if p not in seen:
+                    seen.add(p)
+                    unique_ports.append(p)
+            new_cfg["Vision"]["CamPorts"] = unique_ports
+        except Exception:
+            pass
+
+        # 写入新配置
+        with open(CONFIG_FILE, "w") as f:
+            _json.dump(new_cfg, f, indent=2)
+
+        # 更新内存中的配置
+        self.cfg = new_cfg
+        os.remove(CACHE_FILE)
+
+    def write(self, section: str, option: str, value) -> None:
         self.cfg[section][option] = value
         with open(CONFIG_FILE, "w") as f:
-            _json.dump(self.cfg, f)
+            _json.dump(self.cfg, f, indent=2)
 
-    def read(self, section: str, option: str) -> int:
+    def read(self, section: str, option: str):
         try:
             return self.cfg[section][option]
         except KeyError:
             self.__init__()
+            return self.cfg.get(section, {}).get(option)
 
-class Prompts(object):
-    class _roboinfo(object):
-        def __init__(self):
-            self.number = 0
-            self.type = 'OP'
-            self.Bit = 'IL'
-            self.Rec = 'AI'
-            self.LidarType = 's1'  # default lidar type: 's1' or 's2'
 
-    class _ports(object):
-        def __init__(self):
-            self.LowTigger = 0
-            self.IceLoongPort = '/dev/ttyUSB0'
-            self.ReferPort = 1
-            self.ElecMagnet = 3
-            self.Dribble = 4
-            self.LidarID = 99
-            self.LeftFront = 1
-            self.LeftBack = 2
-            self.RightFront = 3
-            self.RightBack = 4
+# 向后兼容的属性访问类
+class _CompatVisionVals:
+    """向后兼容层：将旧属性名映射到新配置"""
+    def __init__(self, settings):
+        self._s = settings
 
-    class _visionvals(object):
-        def __init__(self):
-            self.Front = 4,
-            self.Right = 6,
-            self.Back = 0,
-            self.Left = 2,
-            self.Record = False
-            self.RecordDir = "./Records"
-            self.RecordCams = [0, 1, 2, 3]
-            self.RecordWidth = 320
-            self.RecordHeight = 320
-            self.RecordSegmentSeconds = 60
-            self.RecordFPS = 30
-            self.RecordCodec = "mp4v"
-            self.RecordExt = "mp4"
-            self.ExposeVal = 100
-            self.AutoExpose = 0
-            self.CalibrationFolder = '/Calibration/'
-            self.HailoModelName = '/yoloV8_Weighs/'
-            # TunaIntelligence model paths
-            self.TunaModelName = "yolov8nForX5.pt"
-            self.TunaEngineName = "yolov8nForX5.engine"
+    @property
+    def Front(self): return self._s.Vision.CamPorts[2] if len(self._s.Vision.CamPorts) > 2 else 4
+    @property
+    def Right(self): return self._s.Vision.CamPorts[3] if len(self._s.Vision.CamPorts) > 3 else 6
+    @property
+    def Back(self): return self._s.Vision.CamPorts[0] if len(self._s.Vision.CamPorts) > 0 else 0
+    @property
+    def Left(self): return self._s.Vision.CamPorts[1] if len(self._s.Vision.CamPorts) > 1 else 2
+    @property
+    def HailoModelName(self): return self._s.Vision.HailoModelPath
+    @property
+    def TunaModelName(self): return self._s.Vision.ModelPath
+    @property
+    def TunaEnginePath(self): return self._s.Vision.EnginePath
+    @property
+    def CalibrationFolder(self): return self._s.Vision.CalibrationFolder
+    @property
+    def BallDiameterCM(self): return self._s.Vision.BallDiameter
+    @property
+    def ChassisWidthCM(self): return self._s.Vision.ChassisWidth
+    @property
+    def ChassisHeightCM(self): return self._s.Vision.ChassisHeight
+    @property
+    def BlueGoalWidthCM(self): return self._s.Vision.GoalWidth
+    @property
+    def BlueGoalHeightCM(self): return self._s.Vision.GoalHeight
+    @property
+    def YellowGoalWidthCM(self): return self._s.Vision.GoalWidth
+    @property
+    def YellowGoalHeightCM(self): return self._s.Vision.GoalHeight
+    @property
+    def EnableBBoxDistanceEstimate(self): return True
+    @property
+    def Record(self): return self._s.Vision.Record
+    @property
+    def RecordDir(self): return self._s.Vision.RecordDir
+    @property
+    def RecordCams(self): return [0, 1, 2, 3]
+    @property
+    def RecordWidth(self): return 320
+    @property
+    def RecordHeight(self): return 320
+    @property
+    def RecordSegmentSeconds(self): return 60
+    @property
+    def RecordFPS(self): return 30
+    @property
+    def RecordCodec(self): return "mp4v"
+    @property
+    def RecordExt(self): return "mp4"
+    @property
+    def ExposeVal(self): return 100
+    @property
+    def AutoExpose(self): return 0
 
-    class _bounds(object):
-        def __init__(self):
-            self.ClsPos = [85,35,0]
-            self.FarPos = [95,75,0]
-            self.Short = 200
-            self.Long = 250
-            self.Distance2Bound = 240
-            self.restricted_area_x = 400
-            self.restricted_area_y = 800
 
-    class _checkpoints(object):
-        def __init__(self):
-            self.Home = [-70,0,0]
+class _CompatBounds:
+    """向后兼容层：Bounds -> Field"""
+    def __init__(self, settings):
+        self._s = settings
 
-    class _expectedvals(object):
-        def __init__(self):
-            self.CatchVal = [10,0]
-            self.ErrorRange = 10
-            self.MaxWarnCount = 3
-            self.MaxSpeedValue = 500
+    @property
+    def Short(self): return self._s.Field.Short
+    @property
+    def Long(self): return self._s.Field.Long
+    @property
+    def ClsPos(self): return [85, 35, 0]
+    @property
+    def FarPos(self): return [95, 75, 0]
+    @property
+    def Distance2Bound(self): return 240
+    @property
+    def restricted_area_x(self): return 400
+    @property
+    def restricted_area_y(self): return 800
 
-    class _transimission(object):
-        def __init__(self):
-            self.Type = "Slave"
-            self.Method = "WIFI"
 
-    class _ble(object):
-        def __init__(self):
-            self.MAC = "NONE"
-            self.REMOTE = "NONE"
+class _CompatExpectedVals:
+    """向后兼容层：ExpectedVals -> Motion"""
+    def __init__(self, settings):
+        self._s = settings
 
-    class _wifi(object):
-        def __init__(self):
-            self.SelfIP = "192.168.1.x"
-            self.RemoteIP = "192.168.1.x"
-            self.Port = 20001
-            self.SSID = "MisakaNetwork"
-            self.PWD = "MisakaNetwork20001/"
+    @property
+    def CatchVal(self): return self._s.Motion.CatchVal
+    @property
+    def ErrorRange(self): return self._s.Motion.ErrorRange
+    @property
+    def MaxSpeedValue(self): return self._s.Motion.MaxSpeed
+    @property
+    def MaxWarnCount(self): return 3
 
-    class _debug(object):
-        def __init__(self):
-            self.FullLog = False
-            self.Beta = False
 
-    class _sim(object):
-        def __init__(self):
-            # Simulator (Unity) connection settings
-            self.UnityIP = "127.0.0.1"
-            # Single-robot explicit ports
-            self.CmdPort = 20001
-            self.StatusPort = 20002
-            # If 0/None, will fallback to RoboInfo.number
-            self.RobotId = 1
-            # Kick strength is fixed per simulator config (triggered by any non-zero kick command)
-            self.KickStrength = 1.0
-            # Dribble strength = config scale * incoming 0..1 command
-            self.DribbleStrengthScale = 1.0
-            # Scale planar movement commands (vx, vy) in SIM to tame chasing overshoot
-            self.PlanarMoveSpeedScale = 1.0
-            # Multi-robot helpers (per-robot port mapping)
-            # robotId -> cmdPort = CmdPortBase + (robotId-1)*PortStride
-            # robotId -> statusPort = StatusPortBase + (robotId-1)*PortStride
-            self.CmdPortBase = 20001
-            self.StatusPortBase = 20002
-            self.PortStride = 10
-            # per_port: each robot listens on its own command port
-            # hub: (future) all robots share one command port via a Unity hub component
-            self.MultiRobotMode = "per_port"
+class _CompatWIFI:
+    """向后兼容层：WIFI -> Network"""
+    def __init__(self, settings):
+        self._s = settings
 
+    @property
+    def SelfIP(self): return self._s.Network.SelfIP
+    @property
+    def RemoteIP(self): return self._s.Network.RemoteIP
+    @property
+    def Port(self): return self._s.Network.Port
+    @property
+    def SSID(self): return self._s.Network.SSID
+    @property
+    def PWD(self): return self._s.Network.Password
+
+
+class _CompatTransimission:
+    """向后兼容层：Transimission -> Network"""
+    def __init__(self, settings):
+        self._s = settings
+
+    @property
+    def Type(self): return self._s.Network.Type
+    @property
+    def Method(self): return self._s.Network.Method
+
+
+class _CompatSim:
+    """向后兼容层：Sim新属性"""
+    def __init__(self, settings):
+        self._s = settings
+
+    @property
+    def UnityIP(self): return self._s.Sim.UnityIP
+    @property
+    def RobotId(self): return self._s.Sim.RobotId
+    @property
+    def CmdPortBase(self): return self._s.Sim.PortBase
+    @property
+    def StatusPortBase(self): return self._s.Sim.PortBase + 1
+    @property
+    def PortStride(self): return self._s.Sim.PortStride
+    @property
+    def MultiRobotMode(self): return self._s.Sim.MultiRobotMode
+    @property
+    def CmdPort(self): return self._s.Sim.PortBase
+    @property
+    def StatusPort(self): return self._s.Sim.PortBase + 1
+    @property
+    def TwistFromWheels(self): return True
+    @property
+    def WheelToV(self): return self._s.Sim.WheelToV
+    @property
+    def WheelToWz(self): return self._s.Sim.WheelToWz
+    @property
+    def YawOffsetDeg(self): return self._s.Sim.YawOffsetDeg
+    @property
+    def YawZeroAtStart(self): return False
+    @property
+    def KickStrength(self): return self._s.Sim.KickStrength
+    @property
+    def DribbleStrengthScale(self): return self._s.Sim.DribbleScale
+    @property
+    def PlanarMoveSpeedScale(self): return self._s.Sim.MoveScale
+    @property
+    def UnityToCm(self): return 100.0
+    @property
+    def OriginXCM(self): return 0.0
+    @property
+    def OriginYCM(self): return 0.0
+    @property
+    def PoseScale(self): return 1.0
+    @property
+    def PoseOffsetXCM(self): return 0.0
+    @property
+    def PoseOffsetYCM(self): return 0.0
+    @property
+    def Debug(self): return False
+
+
+class SettingsProxy:
+    """设置代理：提供新配置API和向后兼容"""
+    
     def __init__(self):
-        self.RoboInfo = self._roboinfo()
-        self.Ports = self._ports()
-        self.VisionVals = self._visionvals()
-        self.Bounds = self._bounds()
-        self.CheckPoints = self._checkpoints()
-        self.ExpectedVals = self._expectedvals()
-        self.Transimission = self._transimission()
-        self.BLE = self._ble()
-        self.WIFI = self._wifi()
-        self.Debug = self._debug()
-        self.Sim = self._sim()
+        self._raw = ParseJsonToObj()
+        # 设置向后兼容层
+        self.VisionVals = _CompatVisionVals(self)
+        self.Bounds = _CompatBounds(self)
+        self.ExpectedVals = _CompatExpectedVals(self)
+        self.WIFI = _CompatWIFI(self)
+        self.Transimission = _CompatTransimission(self)
+        # Sim需要特殊处理，因为新旧配置混用
+        self._sim_compat = _CompatSim(self)
+
+    def __getattr__(self, name):
+        # 优先返回原始配置
+        if hasattr(self._raw, name):
+            return getattr(self._raw, name)
+        # Sim向后兼容
+        if name == "Sim":
+            return self._sim_compat
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    # 直接暴露常用配置段
+    @property
+    def RoboInfo(self): return self._raw.RoboInfo
+    @property
+    def Ports(self): return self._raw.Ports
+    @property
+    def Vision(self): return self._raw.Vision
+    @property
+    def Field(self): return self._raw.Field
+    @property
+    def Motion(self): return self._raw.Motion
+    @property
+    def Network(self): return self._raw.Network
+    @property
+    def Sim(self): return self._raw.Sim
+    @property
+    def Debug(self): return self._raw.Debug
+    # 向后兼容别名
+    @property
+    def CheckPoints(self):
+        class _CP:
+            Home = self._raw.Field.Home
+        return _CP()
 
 
-Settings: Prompts = ParseJsonToObj()
+Settings: SettingsProxy = SettingsProxy()

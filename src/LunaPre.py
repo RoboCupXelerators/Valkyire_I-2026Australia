@@ -516,7 +516,7 @@ class Positions:
         # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
         elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.ExpectedVals.CatchVal[1]) <= cfg.ExpectedVals.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.ExpectedVals.CatchVal[0]),0) <= cfg.ExpectedVals.ErrorRange/20:
+        elif abs(self.ballPos[1]-cfg.Motion.CatchVal[1]) <= cfg.Motion.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.Motion.CatchVal[0]),0) <= cfg.Motion.ErrorRange/20:
             self.ballPosOut = [0xddd,0xddd]
         else:
             self.ballPosOut = self.ballPos
@@ -546,7 +546,7 @@ class Positions:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
             time.sleep(self.WaitTime) # wait 1 second for starting lidar
-            if self.WarnedLidarCount >= cfg.ExpectedVals.MaxWarnCount:
+            if self.WarnedLidarCount >= cfg.Motion.MaxWarnCount:
                 a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
                 logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping chassis to prevent damage.")
                 lidar.stop()
@@ -845,7 +845,7 @@ class Positions:
         else:
             iDeltaX = iErrorX
             iDeltaY = iErrorY
-        iErrorRange = Settings.ExpectedVals.ErrorRange
+        iErrorRange = Settings.Motion.ErrorRange
         iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
         if iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and abs(iErrorRange) > iErrorZ:
             chassis.stop()

@@ -106,19 +106,9 @@ class XeleratorVision:
         # the user-friendly 0/2/4/6 slot set.
         if Settings is not None:
             try:
-                vv = Settings.VisionVals
-                slots = [
-                    int(getattr(vv, "Back", 0)),
-                    int(getattr(vv, "Left", 2)),
-                    int(getattr(vv, "Front", 4)),
-                    int(getattr(vv, "Right", 6)),
-                ]
-                ordered: list[int] = []
-                for s in slots:
-                    if s not in ordered:
-                        ordered.append(s)
-                if ordered:
-                    return ordered
+                cam_ports = list(getattr(Settings.Vision, "CamPorts", [0, 2, 4, 6]))
+                if cam_ports:
+                    return cam_ports
             except Exception:
                 pass
         return [0, 2, 4, 6]

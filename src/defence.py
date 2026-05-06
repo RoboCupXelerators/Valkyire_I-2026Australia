@@ -34,7 +34,7 @@ def main():
                         distance_cache = UnitedPosition.DirectDistance()
                         speed_cache = max(distance_cache[1], distance_cache[3])
                         print(lockball.BallScore())
-                        if not abs(ball_position[1]) < Settings.ExpectedVals.ErrorRange:
+                        if not abs(ball_position[1]) < Settings.Motion.ErrorRange:
                             chassis.FieldMoveVector(0, -pan_y(ball_position[1]), 0)
                         else:
                             pan_y.reset()

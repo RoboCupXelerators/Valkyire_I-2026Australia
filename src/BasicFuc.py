@@ -58,12 +58,12 @@ class LockSeries:
         import simple_pid
         self.pan_x = simple_pid.PID(
             3,0,0,
-            setpoint=Settings.ExpectedVals.CatchVal[0],
+            setpoint=Settings.Motion.CatchVal[0],
             output_limits=(-200,200),
             auto_mode=True)
         self.pan_y = simple_pid.PID(
             2.5,0,0,
-            setpoint=Settings.ExpectedVals.CatchVal[0],
+            setpoint=Settings.Motion.CatchVal[0],
             output_limits=(-200,200),
             auto_mode=True)
         self.pan_w = simple_pid.PID(
@@ -172,7 +172,7 @@ class LockSeries:
             else:
                 Kp = 2
                 KpZ = 1
-            if abs(Fangle) < Settings.ExpectedVals.ErrorRange:
+            if abs(Fangle) < Settings.Motion.ErrorRange:
                 KpZ = 0
                 Kp = 5
             # Kp = 3
@@ -326,10 +326,10 @@ def CircleAround(iAimAngle):
         iBX = lBallPos[0]
         if lBallPos[0] + lBallPos[1] > 20:
             break
-        if iBX <= -Settings.ExpectedVals.ErrorRange/3:
+        if iBX <= -Settings.Motion.ErrorRange/3:
             logger.debug('atleft')
             chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,40)
-        elif iBX >= Settings.ExpectedVals.ErrorRange/3:
+        elif iBX >= Settings.Motion.ErrorRange/3:
             logger.debug('atright')
             chassis.FieldMoveAngle(iAimAngle,iAimAngle + 90,-40)
         else:
