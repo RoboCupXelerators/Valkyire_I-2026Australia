@@ -233,7 +233,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
 
             Bits = IceLoongBits(port=dev_path)
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            peripheral = Peripherals(Bits.VirtualPorts)  # TODO
+            peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
             chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
             compass = Bits.GetYaw
             key = Bits.GetKey
