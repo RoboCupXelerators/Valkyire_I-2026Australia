@@ -226,3 +226,14 @@ ROS2_Nodes/
 .vscode/settings.json
 Tools/Pixel2CM/Calibration/*
 BirdEyeCaptures
+
+# Large binary packages (download from official sources)
+packages/
+*.deb
+*.whl
+*.dtb
+
+# OTA update files
+.ota_backup/
+.ota_state.json
+packages_lock.json
