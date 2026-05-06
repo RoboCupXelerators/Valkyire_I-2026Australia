@@ -34,11 +34,15 @@
                     <span class="icon">⚙️</span>
                     <span class="label">设置</span>
                 </li>
+                <li class="nav-item" data-page="tools">
+                    <span class="icon">🔧</span>
+                    <span class="label">工具</span>
+                </li>
             </ul>
             <div class="status-bar">
                 <div class="status-item">
-                    <span class="dot online"></span>
-                    <span>系统在线</span>
+                    <span class="dot online" id="status-dot"></span>
+                    <span id="status-text">系统在线</span>
                 </div>
             </div>
         </nav>
@@ -129,12 +133,20 @@
                         <h3>性能指标</h3>
                         <div class="metrics">
                             <div class="metric">
-                                <span class="label">FPS</span>
-                                <span class="value" id="fps">--</span>
+                                <span class="label">预处理延时</span>
+                                <span class="value" id="perf-preprocess">-- ms</span>
                             </div>
                             <div class="metric">
-                                <span class="label">延迟</span>
-                                <span class="value" id="latency">-- ms</span>
+                                <span class="label">推理延时</span>
+                                <span class="value" id="perf-inference">-- ms</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">后处理延时</span>
+                                <span class="value" id="perf-postprocess">-- ms</span>
+                            </div>
+                            <div class="metric">
+                                <span class="label">摄像头 FPS</span>
+                                <span class="value" id="perf-camera">-- FPS</span>
                             </div>
                         </div>
                     </div>
@@ -803,6 +815,173 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- 工具页面 -->
+            <div id="page-tools" class="page">
+                <header class="page-header">
+                    <h1>工具</h1>
+                </header>
+                
+                <!-- 工具标签页 -->
+                <div class="tools-tabs">
+                    <button class="tab-btn active" data-tool-tab="calibration">📷 摄像头标定</button>
+                    <button class="tab-btn" data-tool-tab="birdeye">🦅 鸟瞰图预览</button>
+                    <button class="tab-btn" data-tool-tab="files">📁 标定文件</button>
+                </div>
+                
+                <!-- 标定工具 -->
+                <div id="tool-tab-calibration" class="tool-tab-content active">
+                    <div class="tool-panel">
+                        <div class="tool-controls">
+                            <div class="control-row">
+                                <div class="control-group">
+                                    <label>摄像头</label>
+                                    <select id="calib-camera">
+                                        <option value="0">摄像头 0</option>
+                                    </select>
+                                    <button class="btn btn-small" id="calib-scan-cams">扫描</button>
+                                </div>
+                                <div class="control-group">
+                                    <label>分辨率</label>
+                                    <select id="calib-resolution">
+                                        <option value="640x480">640x480</option>
+                                        <option value="1280x720">1280x720</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="control-row">
+                                <div class="control-group">
+                                    <label>棋盘格宽度 (内角点)</label>
+                                    <input type="number" id="calib-board-w" value="9" min="2" max="20">
+                                </div>
+                                <div class="control-group">
+                                    <label>棋盘格高度 (内角点)</label>
+                                    <input type="number" id="calib-board-h" value="9" min="2" max="20">
+                                </div>
+                                <div class="control-group">
+                                    <label>格子大小 (mm)</label>
+                                    <input type="number" id="calib-square-mm" value="15" step="0.5">
+                                </div>
+                            </div>
+                            <div class="control-row">
+                                <button class="btn btn-primary" id="calib-start-btn">▶ 开始</button>
+                                <button class="btn btn-danger" id="calib-stop-btn" disabled>⏹ 停止</button>
+                                <button class="btn btn-success" id="calib-capture-btn" disabled>📷 采集样本</button>
+                                <button class="btn btn-secondary" id="calib-clear-btn">清除样本</button>
+                            </div>
+                        </div>
+                        <div class="tool-preview">
+                            <img id="calib-preview" src="" alt="标定预览">
+                            <div class="preview-overlay">
+                                <span id="calib-info">等待启动...</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="calib-actions">
+                        <div class="calib-status">
+                            <span>样本数: <strong id="calib-samples">0</strong></span>
+                            <span>棋盘格: <strong id="calib-found">未检测</strong></span>
+                            <span>状态: <strong id="calib-status-text">空闲</strong></span>
+                        </div>
+                        <div class="calib-buttons">
+                            <button class="btn btn-primary" id="calib-calibrate-btn" disabled>🔧 执行标定</button>
+                            <div class="control-group">
+                                <label>保存到摄像头</label>
+                                <input type="number" id="calib-save-index" value="0" min="0" max="15">
+                            </div>
+                            <button class="btn btn-success" id="calib-save-btn" disabled>💾 保存标定</button>
+                        </div>
+                        <div class="calib-result" id="calib-result"></div>
+                    </div>
+                </div>
+                
+                <!-- 鸟瞰图预览 -->
+                <div id="tool-tab-birdeye" class="tool-tab-content">
+                    <div class="tool-panel birdeye-panel">
+                        <div class="tool-controls">
+                            <div class="control-row">
+                                <div class="control-group">
+                                    <label>摄像头</label>
+                                    <select id="birdeye-camera">
+                                        <option value="0">摄像头 0</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label>分辨率</label>
+                                    <select id="birdeye-resolution">
+                                        <option value="640x480">640x480</option>
+                                        <option value="1280x720">1280x720</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label>标定文件</label>
+                                    <select id="birdeye-calib-file">
+                                        <option value="">-- 选择标定文件 --</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="control-row">
+                                <div class="control-group">
+                                    <label>缩放 (px/mm)</label>
+                                    <input type="number" id="birdeye-ppm" value="4" min="0.5" max="20" step="0.5">
+                                </div>
+                                <div class="control-group">
+                                    <label>网格间距 (mm)</label>
+                                    <input type="number" id="birdeye-grid" value="10" min="5" max="100" step="5">
+                                </div>
+                                <div class="control-group">
+                                    <label>预览缩放</label>
+                                    <input type="number" id="birdeye-scale" value="0.4" min="0.1" max="1" step="0.1">
+                                </div>
+                                <div class="control-group checkbox-item">
+                                    <label><input type="checkbox" id="birdeye-mjpg"> MJPG</label>
+                                </div>
+                            </div>
+                            <div class="control-row">
+                                <button class="btn btn-primary" id="birdeye-start-btn">▶ 开始</button>
+                                <button class="btn btn-danger" id="birdeye-stop-btn" disabled>⏹ 停止</button>
+                            </div>
+                        </div>
+                        <div class="birdeye-views">
+                            <div class="view-panel">
+                                <h4>原始画面</h4>
+                                <img id="birdeye-raw" src="" alt="原始画面">
+                            </div>
+                            <div class="view-panel">
+                                <h4>鸟瞰图</h4>
+                                <img id="birdeye-bird" src="" alt="鸟瞰图">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="birdeye-status">
+                        <span id="birdeye-status-text">状态: 空闲</span>
+                    </div>
+                </div>
+                
+                <!-- 标定文件列表 -->
+                <div id="tool-tab-files" class="tool-tab-content">
+                    <div class="files-header">
+                        <h3>标定文件列表</h3>
+                        <button class="btn btn-secondary" id="refresh-calib-files-btn">🔄 刷新</button>
+                    </div>
+                    <p class="hint">标定文件存储在 <code>Tools/Pixel2CM/Calibration/</code> 或 <code>Calibration/</code> 目录下</p>
+                    <table class="data-table" id="calib-files-table">
+                        <thead>
+                            <tr>
+                                <th>文件名</th>
+                                <th>摄像头</th>
+                                <th>棋盘格</th>
+                                <th>格子大小</th>
+                                <th>RMSE</th>
+                                <th>大小</th>
+                            </tr>
+                        </thead>
+                        <tbody id="calib-files-tbody">
+                            <tr><td colspan="6">加载中...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </main>

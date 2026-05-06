@@ -9,7 +9,7 @@ const CONFIG = {
     visionApiBase: '',  // Will be set from vision dashboard
 };
 
-// State
+// State 
 const state = {
     currentPage: 'overview',
     currentCam: 0,
@@ -26,6 +26,8 @@ const state = {
     fieldHeight: 200, // cm
     config: null,     // Configuration data
     localIP: '--',
+    isOnline: false,  // 系统在线状态
+    lastOnlineTime: 0, // 最后在线时间
 };
 
 // DOM Elements
@@ -47,6 +49,9 @@ function init() {
     startPolling();
     loadSessions();
     initFieldCanvas();
+    
+    // 初始化时设置为离线状态，直到成功连接到后端
+    updateOnlineStatus(false);
 }
 
 function cacheElements() {
@@ -112,6 +117,7 @@ function setupNavigation() {
 }
 
 function navigateTo(page) {
+    const previousPage = state.currentPage;
     state.currentPage = page;
     
     elements.navItems.forEach(item => {
@@ -122,38 +128,97 @@ function navigateTo(page) {
         p.classList.toggle('active', p.id === `page-${page}`);
     });
     
+    // Page-specific cleanup when leaving
+    if (previousPage === 'vision') {
+        // 离开视觉页时停止摄像头流
+        stopVisionFeeds();
+    } else if (previousPage === 'tools') {
+        // 离开工具页时停止所有工具
+        stopAllTools();
+    }
+    
     // Page-specific initialization
-    if (page === 'replay') {
+    if (page === 'vision') {
+        // 进入视觉页时启动摄像头流
+        startVisionFeeds();
+    } else if (page === 'replay') {
         loadReplaySessions();
+    } else if (page === 'tools') {
+        // 进入工具页时初始化
+        if (!toolsState.initialized) {
+            setupToolsPage();
+            toolsState.initialized = true;
+        }
     }
 }
 
 // Vision Controls - Four camera grid
 function setupVisionControls() {
-    // Initialize camera feeds
-    startVisionFeeds();
+    // Initialize camera feeds - will be started when navigating to vision page
 }
 
+// Camera indices will be loaded from config
+// CAM_INDICES: 显示位置对应的摄像头端口号 [Back, Left, Front, Right]
+// CAM_PORTS: Vision 模块的 CamPorts 顺序 [Front, Right, Back, Left]（默认）
+let CAM_INDICES = [0, 2, 4, 6];  // 显示位置对应的摄像头端口号
+let CAM_PORTS = [0, 2, 4, 6];    // Vision 模块的 CamPorts 顺序
+
 // Camera latency tracking (server-side processing time)
-const camLatencies = {0: [], 1: [], 2: [], 3: []};
+let camLatencies = {};
+
+// 初始化摄像头索引（从配置加载）
+function initCameraIndices() {
+    if (state.config && state.config.VisionVals) {
+        const v = state.config.VisionVals;
+        // 显示顺序: Back(后), Left(左), Front(前), Right(右)
+        CAM_INDICES = [
+            v.Back ?? 0,
+            v.Left ?? 2,
+            v.Front ?? 4,
+            v.Right ?? 6
+        ];
+        // CamPorts 顺序: Front, Right, Back, Left（与 Vision 模块一致）
+        CAM_PORTS = [
+            v.Front ?? 4,
+            v.Right ?? 6,
+            v.Back ?? 0,
+            v.Left ?? 2
+        ];
+        console.log('[Vision] Display indices (Back,Left,Front,Right):', CAM_INDICES);
+        console.log('[Vision] CamPorts order (Front,Right,Back,Left):', CAM_PORTS);
+    }
+    // 更新 camLatencies 的键
+    camLatencies = {};
+    CAM_INDICES.forEach(idx => {
+        camLatencies[idx] = [];
+    });
+}
+
+// Vision feed intervals
+let visionFeedInterval = null;
+let visionStateInterval = null;
 
 function startVisionFeeds() {
+    // 如果已经在运行，先停止
+    stopVisionFeeds();
+    
     // Refresh all four camera feeds periodically with latency tracking
     function refresh(){
         const t = Date.now();
         for (let i = 0; i < 4; i++) {
+            const camIdx = CAM_INDICES[i];
             const img = document.getElementById('cam' + i);
             if (img) {
                 // Use fetch to get response headers with processing time
-                fetch(`/api/cam/${i}.jpg?size=480&t=${t}`)
+                fetch(`/api/cam/${camIdx}.jpg?size=480&t=${t}`)
                     .then(response => {
                         // Read processing time from response header
                         const processingTimeHeader = response.headers.get('X-Processing-Time-Ms');
                         if (processingTimeHeader) {
                             const processingTime = parseFloat(processingTimeHeader);
-                            camLatencies[i].push(processingTime);
-                            if (camLatencies[i].length > 10) {
-                                camLatencies[i].shift();
+                            camLatencies[camIdx].push(processingTime);
+                            if (camLatencies[camIdx].length > 10) {
+                                camLatencies[camIdx].shift();
                             }
                         }
                         return response.blob();
@@ -169,17 +234,53 @@ function startVisionFeeds() {
                     })
                     .catch(e => {
                         // Clear latency on error
-                        camLatencies[i] = [];
+                        camLatencies[camIdx] = [];
                         updateLatencyDisplay();
                     });
             }
         }
     }
     refresh();
-    setInterval(refresh, 120); // ~8 FPS
+    visionFeedInterval = setInterval(refresh, 120); // ~8 FPS
     
     // Start state polling for radar and info
-    setInterval(updateVisionState, 100);
+    visionStateInterval = setInterval(updateVisionState, 100);
+}
+
+// 停止视觉页面的摄像头流
+function stopVisionFeeds() {
+    if (visionFeedInterval) {
+        clearInterval(visionFeedInterval);
+        visionFeedInterval = null;
+    }
+    if (visionStateInterval) {
+        clearInterval(visionStateInterval);
+        visionStateInterval = null;
+    }
+    console.log('[Vision] Stopped vision feeds');
+}
+
+// 停止所有工具
+function stopAllTools() {
+    // 停止标定工具
+    if (toolsState.calibRunning) {
+        stopCalibStream();
+    }
+    if (calibPreviewInterval) {
+        clearInterval(calibPreviewInterval);
+        calibPreviewInterval = null;
+    }
+    
+    // 停止鸟瞰图
+    if (toolsState.birdeyeRunning) {
+        stopBirdeye();
+    }
+    if (birdeyePreviewInterval) {
+        clearInterval(birdeyePreviewInterval);
+        birdeyePreviewInterval = null;
+    }
+    
+    console.log('[Tools] Stopped all tools');
 }
 
 function updateLatencyDisplay() {
@@ -187,10 +288,11 @@ function updateLatencyDisplay() {
     let validCams = 0;
     
     for (let i = 0; i < 4; i++) {
+        const camIdx = CAM_INDICES[i];
         const el = document.getElementById('lat-cam' + i);
         if (!el) continue;
         
-        const samples = camLatencies[i];
+        const samples = camLatencies[camIdx];
         if (samples.length > 0) {
             const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
             el.textContent = avg.toFixed(0) + ' ms';
@@ -239,6 +341,26 @@ let visionState = {
     ball_bboxes_640: [null, null, null, null],
     chassis_bboxes_640: [null, null, null, null],
     goal_bboxes_640: [null, null, null, null],
+    perf: {
+        preprocess_tf: 0,
+        inference_tf: 0,
+        postprocess_tf: 0,
+        camera_tf: 0,
+    },
+};
+
+// Performance metrics calculation state
+let perfState = {
+    lastTs: 0,
+    lastPreprocess: 0,
+    lastInference: 0,
+    lastPostprocess: 0,
+    lastCamera: 0,
+    // Smoothed values
+    preprocessMs: 0,
+    inferenceMs: 0,
+    postprocessMs: 0,
+    cameraFps: 0,
 };
 
 function updateVisionState() {
@@ -249,6 +371,22 @@ function updateVisionState() {
             visionState.ball_bboxes_640 = data.ball_bboxes_640 || [null, null, null, null];
             visionState.chassis_bboxes_640 = data.chassis_bboxes_640 || [null, null, null, null];
             visionState.goal_bboxes_640 = data.goal_bboxes_640 || [null, null, null, null];
+            
+            // Store performance metrics
+            if (data.perf) {
+                visionState.perf = data.perf;
+                
+                // Update performance display in overview page
+                const perfPreprocessEl = document.getElementById('perf-preprocess');
+                const perfInferenceEl = document.getElementById('perf-inference');
+                const perfPostprocessEl = document.getElementById('perf-postprocess');
+                const perfCameraEl = document.getElementById('perf-camera');
+                
+                if (perfPreprocessEl) perfPreprocessEl.textContent = data.perf.preprocess_fps + ' FPS';
+                if (perfInferenceEl) perfInferenceEl.textContent = data.perf.inference_fps + ' FPS';
+                if (perfPostprocessEl) perfPostprocessEl.textContent = data.perf.postprocess_fps + ' FPS';
+                if (perfCameraEl) perfCameraEl.textContent = data.perf.camera_fps + ' FPS';
+            }
             
             // Update ball position
             const ballPosEl = document.getElementById('ball-pos');
@@ -371,29 +509,41 @@ function drawAllOverlays() {
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         
-        // Get original frame size (assume 640x640 detector input)
-        // The actual frame size is typically 720x540 or similar
-        const srcW = 720;  // Approximate source width
-        const srcH = 540;  // Approximate source height
+        // Get original frame size from the actual image
+        const srcW = img.naturalWidth || 640;
+        const srcH = img.naturalHeight || 640;
         const dstW = canvas.width;
         const dstH = canvas.height;
         
-        // Draw ball bbox
-        const ballBbox = visionState.ball_bboxes_640[i];
+        // CAM_INDICES[i] 是显示位置 i 对应的摄像头端口号
+        // CAM_PORTS 是 Vision 模块的 CamPorts 顺序，bbox 按 CAM_PORTS 顺序存储
+        // 需要将摄像头端口号转换为 Frames 索引
+        const camIdx = CAM_INDICES[i];  // 显示位置 i 对应的摄像头端口号
+        const frameIdx = CAM_PORTS.indexOf(camIdx);  // 在 CamPorts 中的位置，即 Frames 索引
+        
+        console.log(`[Overlay] Display ${i}: camIdx=${camIdx}, frameIdx=${frameIdx}, CAM_PORTS=${JSON.stringify(CAM_PORTS)}`);
+        
+        if (frameIdx < 0 || frameIdx >= 4) {
+            console.warn(`[Overlay] Invalid frameIdx=${frameIdx} for camIdx=${camIdx}`);
+            continue;
+        }
+        
+        // Draw ball bbox - 使用 frameIdx 访问 bbox
+        const ballBbox = visionState.ball_bboxes_640[frameIdx];
         if (ballBbox) {
             const mapped = mapBbox640ToImage(ballBbox, srcW, srcH, dstW, dstH);
             drawBboxOnCanvas(canvas, mapped, '#f72585', 'ball');
         }
         
         // Draw chassis bbox
-        const chassisBbox = visionState.chassis_bboxes_640[i];
+        const chassisBbox = visionState.chassis_bboxes_640[frameIdx];
         if (chassisBbox) {
             const mapped = mapBbox640ToImage(chassisBbox, srcW, srcH, dstW, dstH);
             drawBboxOnCanvas(canvas, mapped, '#4cc9f0', 'chassis');
         }
         
         // Draw goal bbox
-        const goalBbox = visionState.goal_bboxes_640[i];
+        const goalBbox = visionState.goal_bboxes_640[frameIdx];
         if (goalBbox && goalBbox.length >= 7) {
             const clsId = goalBbox[1];
             let color, label;
@@ -425,16 +575,42 @@ function drawRadar(data) {
     ctx.fillRect(0, 0, w, h);
     
     const cx = w / 2, cy = h / 2;
-    const scale = Math.min(w, h) * 0.4 / 300; // 300cm range
-    const rangeCm = 300;
+    
+    // 动态计算范围：根据球的位置自动调整
+    let maxDist = 100; // 最小范围 100cm
+    
+    // 计算球到机器人的距离
+    if (data.ball_pos_cm && data.ball_pos_cm.length >= 2) {
+        const bx = data.ball_pos_cm[0] || 0;
+        const by = data.ball_pos_cm[1] || 0;
+        const ballDist = Math.sqrt(bx * bx + by * by);
+        maxDist = Math.max(maxDist, ballDist * 1.5); // 留出 50% 余量
+    }
+    
+    // 限制最大范围为场地尺寸的一半
+    const fieldMax = Math.max(state.fieldWidth || 260, state.fieldHeight || 200) / 2;
+    maxDist = Math.min(maxDist, fieldMax);
+    
+    // 确保范围是合理的整数（50cm 的倍数）
+    maxDist = Math.ceil(maxDist / 50) * 50;
+    maxDist = Math.max(100, Math.min(300, maxDist)); // 限制在 100-300cm
+    
+    const scale = Math.min(w, h) * 0.4 / maxDist;
+    const rangeCm = maxDist;
     
     // Grid circles
     ctx.strokeStyle = 'rgba(76,201,240,0.18)';
     ctx.lineWidth = 1;
-    for (let r = 50; r <= rangeCm; r += 50) {
+    const gridStep = rangeCm <= 150 ? 25 : 50; // 小范围时使用 25cm 步长
+    for (let r = gridStep; r <= rangeCm; r += gridStep) {
         ctx.beginPath();
         ctx.arc(cx, cy, r * scale, 0, Math.PI * 2);
         ctx.stroke();
+        
+        // 在网格圆上标注距离
+        ctx.fillStyle = 'rgba(159,176,214,0.5)';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(`${r}cm`, cx + r * scale + 4, cy - 4);
     }
     
     // Axes
@@ -446,11 +622,24 @@ function drawRadar(data) {
     ctx.lineTo(cx, h);
     ctx.stroke();
     
+    // 方向标注
+    ctx.fillStyle = 'rgba(159,176,214,0.7)';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('前', cx + 4, 20);
+    ctx.fillText('后', cx + 4, h - 10);
+    ctx.fillText('左', 10, cy + 4);
+    ctx.fillText('右', w - 20, cy + 4);
+    
     // Ego robot at center
     ctx.fillStyle = 'rgba(58,238,159,0.85)';
     ctx.beginPath();
-    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
     ctx.fill();
+    
+    // 机器人标注
+    ctx.fillStyle = 'rgba(58,238,159,0.9)';
+    ctx.font = '10px sans-serif';
+    ctx.fillText('ROBOT', cx + 12, cy - 4);
     
     // Ball
     if (data.ball_pos_cm && data.ball_pos_cm.length >= 2) {
@@ -458,20 +647,111 @@ function drawRadar(data) {
         if (bx !== 0 || by !== 0) {
             const px = cx - by * scale;  // Y left is positive
             const py = cy - bx * scale;  // X forward is positive
-            ctx.fillStyle = 'rgba(247,37,133,0.95)';
-            ctx.beginPath();
-            ctx.arc(px, py, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(247,37,133,0.9)';
-            ctx.font = '10px sans-serif';
-            ctx.fillText('BALL', px + 8, py - 4);
+            
+            // 检查球是否在可视范围内
+            if (px >= 0 && px <= w && py >= 0 && py <= h) {
+                ctx.fillStyle = 'rgba(247,37,133,0.95)';
+                ctx.beginPath();
+                ctx.arc(px, py, 6, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 球的标注和距离
+                const ballDist = Math.sqrt(bx * bx + by * by);
+                ctx.fillStyle = 'rgba(247,37,133,0.9)';
+                ctx.font = '10px sans-serif';
+                ctx.fillText(`BALL (${ballDist.toFixed(0)}cm)`, px + 10, py - 6);
+            } else {
+                // 球在范围外，显示指示箭头
+                const angle = Math.atan2(-bx, -by);
+                const arrowDist = Math.min(w, h) * 0.38;
+                const arrowX = cx + Math.cos(angle) * arrowDist;
+                const arrowY = cy + Math.sin(angle) * arrowDist;
+                
+                ctx.fillStyle = 'rgba(247,37,133,0.7)';
+                ctx.font = '10px sans-serif';
+                ctx.fillText('BALL (超出范围)', arrowX - 40, arrowY);
+            }
         }
     }
     
     // Range label
     ctx.fillStyle = 'rgba(159,176,214,0.85)';
     ctx.font = '10px sans-serif';
-    ctx.fillText(`±${rangeCm}cm`, 8, 14);
+    ctx.fillText(`范围: ±${rangeCm}cm`, 8, 14);
+    
+    // Draw chassis detections
+    // chassis_list_cm is a list of [x, y] positions in robot frame
+    if (data.chassis_list_cm && data.chassis_list_cm.length > 0) {
+        for (const chassis of data.chassis_list_cm) {
+            if (chassis && chassis.length >= 2) {
+                const chx = chassis[0], chy = chassis[1];
+                if (chx !== 0 || chy !== 0) {
+                    // Convert to canvas coordinates (same as ball)
+                    // X forward is positive -> up on canvas
+                    // Y left is positive -> left on canvas
+                    const px = cx - chy * scale;  // Y left is positive
+                    const py = cy - chx * scale;  // X forward is positive
+                    
+                    if (px >= 0 && px <= w && py >= 0 && py <= h) {
+                        // Draw chassis as a rectangle
+                        ctx.fillStyle = 'rgba(76,201,240,0.85)';
+                        ctx.fillRect(px - 10, py - 8, 20, 16);
+                        
+                        // Chassis label
+                        ctx.fillStyle = 'rgba(76,201,240,0.9)';
+                        ctx.font = '9px sans-serif';
+                        const chassisDist = Math.sqrt(chx * chx + chy * chy);
+                        ctx.fillText(`CHASSIS (${chassisDist.toFixed(0)}cm)`, px + 12, py - 2);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Draw goal detections
+    // Blue goal
+    if (data.blue_goal_pos_cm && data.blue_goal_pos_cm.length >= 2) {
+        const gx = data.blue_goal_pos_cm[0], gy = data.blue_goal_pos_cm[1];
+        if (gx !== 0 || gy !== 0) {
+            // Convert to canvas coordinates (same as ball)
+            const px = cx - gy * scale;  // Y left is positive
+            const py = cy - gx * scale;  // X forward is positive
+            
+            if (px >= 0 && px <= w && py >= 0 && py <= h) {
+                ctx.fillStyle = 'rgba(59,130,246,0.95)';
+                ctx.beginPath();
+                ctx.arc(px, py, 8, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'rgba(59,130,246,0.9)';
+                ctx.font = '10px sans-serif';
+                const goalDist = Math.sqrt(gx * gx + gy * gy);
+                ctx.fillText(`BLUE GOAL (${goalDist.toFixed(0)}cm)`, px + 10, py - 4);
+            }
+        }
+    }
+    
+    // Yellow goal
+    if (data.yellow_goal_pos_cm && data.yellow_goal_pos_cm.length >= 2) {
+        const gx = data.yellow_goal_pos_cm[0], gy = data.yellow_goal_pos_cm[1];
+        if (gx !== 0 || gy !== 0) {
+            // Convert to canvas coordinates (same as ball)
+            const px = cx - gy * scale;  // Y left is positive
+            const py = cy - gx * scale;  // X forward is positive
+            
+            if (px >= 0 && px <= w && py >= 0 && py <= h) {
+                ctx.fillStyle = 'rgba(250,204,21,0.95)';
+                ctx.beginPath();
+                ctx.arc(px, py, 8, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'rgba(250,204,21,0.9)';
+                ctx.font = '10px sans-serif';
+                const goalDist = Math.sqrt(gx * gx + gy * gy);
+                ctx.fillText(`YELLOW GOAL (${goalDist.toFixed(0)}cm)`, px + 10, py - 4);
+            }
+        }
+    }
 }
 
 // Recording Controls
@@ -828,11 +1108,43 @@ function startPolling() {
     setInterval(updateOverview, CONFIG.updateInterval);
 }
 
+// 更新系统在线状态指示器
+function updateOnlineStatus(isOnline) {
+    state.isOnline = isOnline;
+    if (isOnline) {
+        state.lastOnlineTime = Date.now();
+    }
+    
+    // 使用 id 直接获取元素
+    const dot = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
+    
+    console.log('[Status] Updating online status:', isOnline, 'dot:', dot, 'text:', text);
+    
+    if (dot) {
+        dot.classList.remove('online', 'offline');
+        dot.classList.add(isOnline ? 'online' : 'offline');
+        console.log('[Status] Dot classes:', dot.className);
+    } else {
+        console.warn('[Status] status-dot element not found');
+    }
+    
+    if (text) {
+        text.textContent = isOnline ? '系统在线' : '系统离线';
+        console.log('[Status] Text content:', text.textContent);
+    } else {
+        console.warn('[Status] status-text element not found');
+    }
+}
+
 async function updateOverview() {
     try {
         // Fetch vision state
         const visionResponse = await fetch('/api/state');
         const visionData = await visionResponse.json();
+        
+        // 更新系统在线状态
+        updateOnlineStatus(true);
         
         // Update robot status - use robot_x_cm/robot_y_cm if available
         if (visionData.robot_x_cm !== undefined && visionData.robot_y_cm !== undefined) {
@@ -868,6 +1180,69 @@ async function updateOverview() {
             elements.uptime.textContent = formatDuration(visionData.uptime_s);
         }
         
+        // Update performance metrics - calculate from frame counters
+        if (visionData.perf) {
+            const now = Date.now();
+            const dt = (now - perfState.lastTs) / 1000;  // seconds
+            
+            // Only update every 1 second to reduce fluctuation
+            if (dt >= 1.0 && perfState.lastTs > 0) {
+                const preprocessTf = visionData.perf.preprocess_tf || 0;
+                const inferenceTf = visionData.perf.inference_tf || 0;
+                const postprocessTf = visionData.perf.postprocess_tf || 0;
+                const cameraTf = visionData.perf.camera_tf || 0;
+                
+                // Calculate FPS from frame counter delta
+                const preprocessFps = (preprocessTf - perfState.lastPreprocess) / dt;
+                const inferenceFps = (inferenceTf - perfState.lastInference) / dt;
+                const postprocessFps = (postprocessTf - perfState.lastPostprocess) / dt;
+                const cameraFps = (cameraTf - perfState.lastCamera) / dt;
+                
+                // Convert FPS to latency (ms), with smoothing
+                const alpha = 0.4;  // Smoothing factor
+                if (preprocessFps > 0.1) {
+                    const ms = 1000 / preprocessFps;
+                    perfState.preprocessMs = alpha * ms + (1 - alpha) * perfState.preprocessMs;
+                }
+                if (inferenceFps > 0.1) {
+                    const ms = 1000 / inferenceFps;
+                    perfState.inferenceMs = alpha * ms + (1 - alpha) * perfState.inferenceMs;
+                }
+                if (postprocessFps > 0.1) {
+                    const ms = 1000 / postprocessFps;
+                    perfState.postprocessMs = alpha * ms + (1 - alpha) * perfState.postprocessMs;
+                }
+                if (cameraFps > 0) {
+                    perfState.cameraFps = alpha * cameraFps + (1 - alpha) * perfState.cameraFps;
+                }
+                
+                // Update last values
+                perfState.lastPreprocess = preprocessTf;
+                perfState.lastInference = inferenceTf;
+                perfState.lastPostprocess = postprocessTf;
+                perfState.lastCamera = cameraTf;
+                perfState.lastTs = now;
+            } else if (perfState.lastTs === 0) {
+                // Initialize
+                perfState.lastTs = now;
+                perfState.lastPreprocess = visionData.perf.preprocess_tf || 0;
+                perfState.lastInference = visionData.perf.inference_tf || 0;
+                perfState.lastPostprocess = visionData.perf.postprocess_tf || 0;
+                perfState.lastCamera = visionData.perf.camera_tf || 0;
+            }
+            
+            // Update display
+            const perfPreprocessEl = document.getElementById('perf-preprocess');
+            const perfInferenceEl = document.getElementById('perf-inference');
+            const perfPostprocessEl = document.getElementById('perf-postprocess');
+            const perfCameraEl = document.getElementById('perf-camera');
+            
+            if (perfPreprocessEl && perfState.preprocessMs > 0) perfPreprocessEl.textContent = Math.round(perfState.preprocessMs) + ' ms';
+            if (perfInferenceEl && perfState.inferenceMs > 0) perfInferenceEl.textContent = Math.round(perfState.inferenceMs) + ' ms';
+            if (perfPostprocessEl && perfState.postprocessMs > 0) perfPostprocessEl.textContent = Math.round(perfState.postprocessMs) + ' ms';
+            if (perfCameraEl && perfState.cameraFps > 0) perfCameraEl.textContent = Math.round(perfState.cameraFps) + ' FPS';
+        }
+        
         // Fetch recording state
         try {
             const recResponse = await fetch('/api/recording/status');
@@ -886,6 +1261,8 @@ async function updateOverview() {
         
     } catch (e) {
         console.error('Polling error:', e);
+        // 更新系统在线状态为离线
+        updateOnlineStatus(false);
     }
 }
 
@@ -903,11 +1280,523 @@ function formatDuration(seconds) {
 }
 
 function formatTime(seconds) {
-    if (!seconds || seconds < 0) return '00:00';
+    if (!seconds) return '00:00';
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+// ==================== 工具页面 ====================
+
+// 工具状态
+const toolsState = {
+    calibRunning: false,
+    calibSamples: 0,
+    calibFound: false,
+    calibHasResult: false,
+    birdeyeRunning: false,
+    calibFiles: [],
+};
+
+// 初始化工具页面
+function setupToolsPage() {
+    // 工具标签页切换
+    document.querySelectorAll('.tools-tabs .tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabId = btn.dataset.toolTab;
+            
+            // 更新标签按钮状态
+            document.querySelectorAll('.tools-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            // 更新标签内容
+            document.querySelectorAll('.tool-tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`tool-tab-${tabId}`).classList.add('active');
+            
+            // 标签页初始化
+            if (tabId === 'files') {
+                loadCalibFiles();
+            } else if (tabId === 'birdeye') {
+                loadBirdeyeCalibFiles();
+            }
+        });
+    });
+    
+    // 标定工具按钮
+    document.getElementById('calib-scan-cams')?.addEventListener('click', scanCalibCameras);
+    document.getElementById('calib-start-btn')?.addEventListener('click', startCalibStream);
+    document.getElementById('calib-stop-btn')?.addEventListener('click', stopCalibStream);
+    document.getElementById('calib-capture-btn')?.addEventListener('click', captureCalibSample);
+    document.getElementById('calib-clear-btn')?.addEventListener('click', clearCalibSamples);
+    document.getElementById('calib-calibrate-btn')?.addEventListener('click', calibrateCamera);
+    document.getElementById('calib-save-btn')?.addEventListener('click', saveCalibration);
+    
+    // 鸟瞰图按钮
+    document.getElementById('birdeye-start-btn')?.addEventListener('click', startBirdeye);
+    document.getElementById('birdeye-stop-btn')?.addEventListener('click', stopBirdeye);
+    
+    // 标定文件刷新
+    document.getElementById('refresh-calib-files-btn')?.addEventListener('click', loadCalibFiles);
+    
+    // 初始化
+    scanCalibCameras();
+    loadCalibFiles();
+}
+
+// 扫描摄像头
+async function scanCalibCameras() {
+    try {
+        const response = await fetch('/api/calib/cameras');
+        const data = await response.json();
+        
+        const select = document.getElementById('calib-camera');
+        const birdeyeSelect = document.getElementById('birdeye-camera');
+        
+        if (select && data.cameras) {
+            select.innerHTML = data.cameras.map(cam => 
+                `<option value="${cam}">摄像头 ${cam}</option>`
+            ).join('');
+        }
+        
+        if (birdeyeSelect && data.cameras) {
+            birdeyeSelect.innerHTML = data.cameras.map(cam => 
+                `<option value="${cam}">摄像头 ${cam}</option>`
+            ).join('');
+        }
+    } catch (e) {
+        console.error('Failed to scan cameras:', e);
+    }
+}
+
+// 启动标定流
+async function startCalibStream() {
+    const camIndex = parseInt(document.getElementById('calib-camera')?.value || '0');
+    const resolution = document.getElementById('calib-resolution')?.value || '640x480';
+    const [width, height] = resolution.split('x').map(Number);
+    const boardW = parseInt(document.getElementById('calib-board-w')?.value || '9');
+    const boardH = parseInt(document.getElementById('calib-board-h')?.value || '9');
+    const squareMm = parseFloat(document.getElementById('calib-square-mm')?.value || '15');
+    
+    try {
+        const response = await fetch('/api/calib/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                cam_index: camIndex,
+                width, height,
+                board_w: boardW,
+                board_h: boardH,
+                square_mm: squareMm
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            toolsState.calibRunning = true;
+            updateCalibUI();
+            startCalibPreview();
+        } else {
+            alert('启动失败: ' + data.error);
+        }
+    } catch (e) {
+        console.error('Failed to start calibration:', e);
+        alert('启动失败');
+    }
+}
+
+// 停止标定流
+async function stopCalibStream() {
+    try {
+        await fetch('/api/calib/stop', { method: 'POST' });
+        toolsState.calibRunning = false;
+        updateCalibUI();
+    } catch (e) {
+        console.error('Failed to stop calibration:', e);
+    }
+}
+
+// 标定预览循环
+let calibPreviewInterval = null;
+
+function startCalibPreview() {
+    if (calibPreviewInterval) {
+        clearInterval(calibPreviewInterval);
+    }
+    
+    calibPreviewInterval = setInterval(async () => {
+        if (!toolsState.calibRunning) {
+            clearInterval(calibPreviewInterval);
+            return;
+        }
+        
+        // 更新预览图像
+        const img = document.getElementById('calib-preview');
+        if (img) {
+            img.src = `/api/calib/frame?t=${Date.now()}`;
+        }
+        
+        // 更新状态
+        try {
+            const response = await fetch('/api/calib/status');
+            const status = await response.json();
+            
+            toolsState.calibSamples = status.samples || 0;
+            toolsState.calibFound = status.found || false;
+            toolsState.calibHasResult = status.has_result || false;
+            
+            document.getElementById('calib-samples').textContent = toolsState.calibSamples;
+            document.getElementById('calib-found').textContent = toolsState.calibFound ? '已检测' : '未检测';
+            document.getElementById('calib-status-text').textContent = status.status || '空闲';
+            
+            // 更新按钮状态
+            document.getElementById('calib-capture-btn').disabled = !toolsState.calibFound;
+            document.getElementById('calib-calibrate-btn').disabled = toolsState.calibSamples < 3;
+            document.getElementById('calib-save-btn').disabled = !toolsState.calibHasResult;
+            
+            if (status.rmse) {
+                document.getElementById('calib-result').innerHTML = 
+                    `<span class="success">标定成功! RMSE = ${status.rmse.toFixed(3)} px</span>`;
+            }
+        } catch (e) {
+            console.error('Failed to get calibration status:', e);
+        }
+    }, 100);
+}
+
+// 更新标定 UI
+function updateCalibUI() {
+    document.getElementById('calib-start-btn').disabled = toolsState.calibRunning;
+    document.getElementById('calib-stop-btn').disabled = !toolsState.calibRunning;
+    document.getElementById('calib-capture-btn').disabled = !toolsState.calibRunning || !toolsState.calibFound;
+    document.getElementById('calib-clear-btn').disabled = toolsState.calibSamples === 0;
+    document.getElementById('calib-calibrate-btn').disabled = toolsState.calibSamples < 3;
+    document.getElementById('calib-save-btn').disabled = !toolsState.calibHasResult;
+    
+    if (!toolsState.calibRunning) {
+        document.getElementById('calib-status-text').textContent = '已停止';
+    }
+}
+
+// 采集标定样本
+async function captureCalibSample() {
+    try {
+        const response = await fetch('/api/calib/capture', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            // 短暂高亮提示
+            const samplesEl = document.getElementById('calib-samples');
+            samplesEl.style.color = '#22c55e';
+            setTimeout(() => samplesEl.style.color = '', 500);
+        } else {
+            console.warn('Capture failed:', data.error);
+        }
+    } catch (e) {
+        console.error('Failed to capture sample:', e);
+    }
+}
+
+// 清除标定样本
+async function clearCalibSamples() {
+    try {
+        await fetch('/api/calib/clear', { method: 'POST' });
+        toolsState.calibSamples = 0;
+        toolsState.calibHasResult = false;
+        updateCalibUI();
+        document.getElementById('calib-result').innerHTML = '';
+    } catch (e) {
+        console.error('Failed to clear samples:', e);
+    }
+}
+
+// 执行标定
+async function calibrateCamera() {
+    const resultEl = document.getElementById('calib-result');
+    resultEl.innerHTML = '正在标定...';
+    
+    try {
+        const response = await fetch('/api/calib/calibrate', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            toolsState.calibHasResult = true;
+            resultEl.innerHTML = `<span class="success">${data.message}</span>`;
+            updateCalibUI();
+        } else {
+            resultEl.innerHTML = `<span class="error">${data.error}</span>`;
+        }
+    } catch (e) {
+        resultEl.innerHTML = `<span class="error">标定失败: ${e.message}</span>`;
+    }
+}
+
+// 保存标定结果
+async function saveCalibration() {
+    const camIndex = parseInt(document.getElementById('calib-save-index')?.value || '0');
+    
+    try {
+        const response = await fetch('/api/calib/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cam_index: camIndex })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            alert(data.message);
+            loadCalibFiles();
+        } else {
+            alert('保存失败: ' + data.error);
+        }
+    } catch (e) {
+        console.error('Failed to save calibration:', e);
+        alert('保存失败');
+    }
+}
+
+// 加载标定文件列表
+async function loadCalibFiles() {
+    try {
+        const response = await fetch('/api/calibration-files');
+        const data = await response.json();
+        
+        toolsState.calibFiles = data.files || [];
+        
+        const tbody = document.getElementById('calib-files-tbody');
+        if (tbody) {
+            if (toolsState.calibFiles.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">暂无标定文件</td></tr>';
+            } else {
+                tbody.innerHTML = toolsState.calibFiles.map(f => `
+                    <tr>
+                        <td><code>${f.name}</code></td>
+                        <td>${f.camera_index ?? '--'}</td>
+                        <td>${f.board_size ? `${f.board_size[0]}x${f.board_size[1]}` : '--'}</td>
+                        <td>${f.square_size_mm ? `${f.square_size_mm} mm` : '--'}</td>
+                        <td>${f.rmse ? `${f.rmse.toFixed(3)} px` : '--'}</td>
+                        <td>${f.size || '--'}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+    } catch (e) {
+        console.error('Failed to load calibration files:', e);
+    }
+}
+
+// 加载鸟瞰图标定文件选项
+async function loadBirdeyeCalibFiles() {
+    try {
+        const response = await fetch('/api/calibration-files');
+        const data = await response.json();
+        
+        const select = document.getElementById('birdeye-calib-file');
+        if (select && data.files) {
+            select.innerHTML = '<option value="">-- 选择标定文件 --</option>' +
+                data.files.map(f => 
+                    `<option value="${f.path}">${f.name} (CAM ${f.camera_index ?? '?'})</option>`
+                ).join('');
+        }
+    } catch (e) {
+        console.error('Failed to load birdeye calibration files:', e);
+    }
+}
+
+// 启动鸟瞰图预览
+async function startBirdeye() {
+    const camIndex = parseInt(document.getElementById('birdeye-camera')?.value || '0');
+    const resolution = document.getElementById('birdeye-resolution')?.value || '640x480';
+    const [width, height] = resolution.split('x').map(Number);
+    const calibFile = document.getElementById('birdeye-calib-file')?.value || '';
+    const ppm = parseFloat(document.getElementById('birdeye-ppm')?.value || '4');
+    const gridMm = parseFloat(document.getElementById('birdeye-grid')?.value || '10');
+    const scale = parseFloat(document.getElementById('birdeye-scale')?.value || '0.4');
+    const mjpg = document.getElementById('birdeye-mjpg')?.checked || false;
+    
+    if (!calibFile) {
+        alert('请选择标定文件');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/birdeye/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                cam_index: camIndex,
+                calib_file: calibFile,
+                width, height,
+                pixels_per_mm: ppm,
+                grid_mm: gridMm,
+                preview_scale: scale,
+                use_mjpg: mjpg
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            toolsState.birdeyeRunning = true;
+            updateBirdeyeUI();
+            startBirdeyePreview();
+        } else {
+            alert('启动失败: ' + data.error);
+        }
+    } catch (e) {
+        console.error('Failed to start birdeye:', e);
+        alert('启动失败');
+    }
+}
+
+// 停止鸟瞰图预览
+async function stopBirdeye() {
+    try {
+        await fetch('/api/birdeye/stop', { method: 'POST' });
+        toolsState.birdeyeRunning = false;
+        updateBirdeyeUI();
+    } catch (e) {
+        console.error('Failed to stop birdeye:', e);
+    }
+}
+
+// 鸟瞰图预览循环
+let birdeyePreviewInterval = null;
+
+function startBirdeyePreview() {
+    if (birdeyePreviewInterval) {
+        clearInterval(birdeyePreviewInterval);
+    }
+    
+    birdeyePreviewInterval = setInterval(async () => {
+        if (!toolsState.birdeyeRunning) {
+            clearInterval(birdeyePreviewInterval);
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/birdeye/frame');
+            const data = await response.json();
+            
+            if (data.raw) {
+                document.getElementById('birdeye-raw').src = 'data:image/jpeg;base64,' + data.raw;
+            }
+            if (data.bird) {
+                document.getElementById('birdeye-bird').src = 'data:image/jpeg;base64,' + data.bird;
+            }
+        } catch (e) {
+            console.error('Failed to get birdeye frame:', e);
+        }
+    }, 100);
+}
+
+// 更新鸟瞰图 UI
+function updateBirdeyeUI() {
+    document.getElementById('birdeye-start-btn').disabled = toolsState.birdeyeRunning;
+    document.getElementById('birdeye-stop-btn').disabled = !toolsState.birdeyeRunning;
+    document.getElementById('birdeye-status-text').textContent = toolsState.birdeyeRunning ? '状态: 运行中' : '状态: 空闲';
+}
+
+// 在 DOMContentLoaded 后初始化工具页面
+document.addEventListener('DOMContentLoaded', function() {
+    // 等待原始 init 完成后再初始化工具页面
+    setTimeout(setupToolsPage, 100);
+});
+
+// Tools Page Functions (for external tool windows)
+const TOOL_PORTS = {
+    calibration: 7863,
+    birdeye: 7864
+};
+
+const TOOL_NAMES = {
+    calibration: '摄像头标定',
+    birdeye: '鸟瞰图预览'
+};
+
+// Check tool status
+function checkToolStatus() {
+    for (const [tool, port] of Object.entries(TOOL_PORTS)) {
+        const statusEl = document.getElementById(`${tool}-status`);
+        if (!statusEl) continue;
+        
+        fetch(`http://localhost:${port}/`, { mode: 'no-cors', timeout: 2000 })
+            .then(() => {
+                statusEl.textContent = '在线';
+                statusEl.classList.add('online');
+                statusEl.classList.remove('offline');
+            })
+            .catch(() => {
+                statusEl.textContent = '离线';
+                statusEl.classList.add('offline');
+                statusEl.classList.remove('online');
+            });
+    }
+}
+
+// Open tool in new window
+window.openTool = function(tool) {
+    const port = TOOL_PORTS[tool];
+    if (port) {
+        window.open(`http://localhost:${port}/`, '_blank');
+    }
+};
+
+// Open tool embedded
+window.openToolEmbed = function(tool) {
+    const port = TOOL_PORTS[tool];
+    const name = TOOL_NAMES[tool];
+    if (!port) return;
+    
+    const container = document.getElementById('tool-embed-container');
+    const iframe = document.getElementById('tool-iframe');
+    const title = document.getElementById('embed-title');
+    
+    if (container && iframe && title) {
+        title.textContent = name;
+        iframe.src = `http://localhost:${port}/`;
+        container.style.display = 'block';
+    }
+};
+
+// Close embedded tool
+window.closeToolEmbed = function() {
+    const container = document.getElementById('tool-embed-container');
+    const iframe = document.getElementById('tool-iframe');
+    
+    if (container && iframe) {
+        iframe.src = '';
+        container.style.display = 'none';
+    }
+};
+
+// Refresh calibration files
+window.refreshCalibFiles = function() {
+    const listEl = document.getElementById('calib-files-list');
+    if (!listEl) return;
+    
+    listEl.innerHTML = '<div class="loading">加载中...</div>';
+    
+    fetch('/api/calibration-files')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.files || data.files.length === 0) {
+                listEl.innerHTML = '<div class="loading">暂无标定文件</div>';
+                return;
+            }
+            
+            listEl.innerHTML = data.files.map(f => `
+                <div class="file-item">
+                    <span class="file-name">${f.name}</span>
+                    <span class="file-info">${f.camera_index !== undefined ? `摄像头 ${f.camera_index}` : ''} | ${f.size || '--'}</span>
+                </div>
+            `).join('');
+        })
+        .catch(e => {
+            listEl.innerHTML = '<div class="loading">加载失败</div>';
+        });
+};
 
 // Global functions for inline handlers
 window.replaySession = function(sessionId) {
@@ -987,6 +1876,9 @@ async function loadConfig() {
         const configResponse = await fetch('/api/config');
         const config = await configResponse.json();
         state.config = config;
+        
+        // 初始化摄像头索引（从配置加载）
+        initCameraIndices();
         
         // Load dynamic options for dropdowns
         await loadDynamicOptions();
