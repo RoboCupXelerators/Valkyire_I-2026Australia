@@ -77,20 +77,20 @@ class UnitedVision(Detect_Method):
         self.CalibrationKs = []
         self.CalibrationDists = []
         self.CalibrationModes = []
-        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", False))
-        self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
-        self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
-        self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
-        self.BBoxFusionStrength = float(getattr(Settings.VisionVals, "BBoxFusionStrength", 0.5))
-        self.BBoxLegacyReferenceAreaPx = float(getattr(Settings.VisionVals, "BBoxLegacyReferenceAreaPx", 12000.0))
-        self.BlueGoalWidthCM = float(getattr(Settings.VisionVals, "BlueGoalWidthCM", 90.0))
-        self.BlueGoalHeightCM = float(getattr(Settings.VisionVals, "BlueGoalHeightCM", 18.0))
-        self.YellowGoalWidthCM = float(getattr(Settings.VisionVals, "YellowGoalWidthCM", 90.0))
-        self.YellowGoalHeightCM = float(getattr(Settings.VisionVals, "YellowGoalHeightCM", 18.0))
+        self.EnableBBoxDistanceEstimate = True
+        self.BallDiameterCM = float(getattr(Settings.Vision, "BallDiameter", 4.2))
+        self.ChassisWidthCM = float(getattr(Settings.Vision, "ChassisWidth", 18.0))
+        self.ChassisHeightCM = float(getattr(Settings.Vision, "ChassisHeight", 3.5))
+        self.BBoxFusionStrength = 0.5
+        self.BBoxLegacyReferenceAreaPx = 12000.0
+        self.BlueGoalWidthCM = float(getattr(Settings.Vision, "GoalWidth", 90.0))
+        self.BlueGoalHeightCM = float(getattr(Settings.Vision, "GoalHeight", 18.0))
+        self.YellowGoalWidthCM = float(getattr(Settings.Vision, "GoalWidth", 90.0))
+        self.YellowGoalHeightCM = float(getattr(Settings.Vision, "GoalHeight", 18.0))
 
         # Use config folder name if provided; strip leading '/' to avoid
         # accidentally turning it into an absolute path.
-        calib_sub = _norm_rel_folder(getattr(Settings.VisionVals, "CalibrationFolder", None), "Calibration")
+        calib_sub = _norm_rel_folder(getattr(Settings.Vision, "CalibrationFolder", None), "Calibration")
         calib_dir = None
         try:
             if DATA_DIR is not None:
