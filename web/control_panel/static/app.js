@@ -168,24 +168,20 @@ let camLatencies = {};
 
 // 初始化摄像头索引（从配置加载）
 function initCameraIndices() {
-    if (state.config && state.config.VisionVals) {
-        const v = state.config.VisionVals;
+    // 新配置结构使用 Vision.CamPorts
+    if (state.config && state.config.Vision && state.config.Vision.CamPorts) {
+        // CamPorts 是 [Back, Left, Front, Right] 的顺序
+        const camPorts = state.config.Vision.CamPorts;
+        CAM_PORTS = camPorts;
         // 显示顺序: Back(后), Left(左), Front(前), Right(右)
         CAM_INDICES = [
-            v.Back ?? 0,
-            v.Left ?? 2,
-            v.Front ?? 4,
-            v.Right ?? 6
+            camPorts[0] ?? 0,  // Back
+            camPorts[1] ?? 2,  // Left
+            camPorts[2] ?? 4,  // Front
+            camPorts[3] ?? 6,  // Right
         ];
-        // CamPorts 顺序: Front, Right, Back, Left（与 Vision 模块一致）
-        CAM_PORTS = [
-            v.Front ?? 4,
-            v.Right ?? 6,
-            v.Back ?? 0,
-            v.Left ?? 2
-        ];
+        console.log('[Vision] CamPorts from config:', CAM_PORTS);
         console.log('[Vision] Display indices (Back,Left,Front,Right):', CAM_INDICES);
-        console.log('[Vision] CamPorts order (Front,Right,Back,Left):', CAM_PORTS);
     }
     // 更新 camLatencies 的键
     camLatencies = {};
