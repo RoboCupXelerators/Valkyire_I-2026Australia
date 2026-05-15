@@ -36,6 +36,10 @@ class ArisuIntelligence(VisionPreUntil):
         # Format: [[cam, x1, y1, x2, y2, conf], ...] in 640x640 space
         self.BallBBoxQueue = queue.Queue(maxsize=1)
         self.ChassisBBoxQueue = queue.Queue(maxsize=1)
+        # Goal BBox queue for dashboard overlay
+        # Format: [[cam, cls, x1, y1, x2, y2, conf], ...] in 640x640 space
+        # cls: 1 BlueGoal, 2 YellowGoal
+        self.GoalBBoxQueue = queue.Queue(maxsize=1)
 
         super().__init__()
 
@@ -204,6 +208,8 @@ class ArisuIntelligence(VisionPreUntil):
             # BBox outputs for dashboard overlay (in 640x640 space)
             BallBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam, x1, y1, x2, y2, conf]
             ChassisBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]
+            # Goal BBox: [cam, cls, x1, y1, x2, y2, conf], cls: 1=BlueGoal, 2=YellowGoal
+            GoalBBoxOutputs = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
             CameraIndex = 0
             for Bindings in BindingsList:
                 OutputBuffer = Bindings.output().get_buffer()
@@ -268,17 +274,30 @@ class ArisuIntelligence(VisionPreUntil):
                 # Goals: OutputBuffer[1] -> BlueGoal, OutputBuffer[2] -> YellowGoal
                 # Keep top-1 (by conf) for each cam; if both exist, pick higher.
                 best_goal = None
+                best_goal_cls = -1
+                best_goal_bbox = None  # (raw_x1, raw_y1, raw_x2, raw_y2, conf)
+                
+                # Debug: log OutputBuffer structure for goal detection
+                if Settings.Debug.FullLog and CameraIndex == 0:
+                    self.logger.debug(f"OutputBuffer len={len(OutputBuffer)}, shapes={[OutputBuffer[i].shape for i in range(min(4, len(OutputBuffer)))]}")
+                
                 try:
-                    if OutputBuffer[1].shape[0] > 0:
+                    if len(OutputBuffer) > 1 and OutputBuffer[1].shape[0] > 0:
                         for g in OutputBuffer[1]:
-                            if g[4] < 0.4:
+                            if g[4] < 0.25:  # Lower threshold for goals
                                 continue
                             # g: [ymin,xmin,ymax,xmax,conf] normalized
-                            y1 = int(g[0] * 640) - 80
-                            x1 = int(g[1] * 640)
-                            y2 = int(g[2] * 640) - 80
-                            x2 = int(g[3] * 640)
+                            # Raw bbox in 640x640 space (for dashboard overlay)
+                            raw_y1 = int(g[0] * 640)
+                            raw_x1 = int(g[1] * 640)
+                            raw_y2 = int(g[2] * 640)
+                            raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
+                            # Position calculation (with -80 offset)
+                            y1 = raw_y1 - 80
+                            x1 = raw_x1
+                            y2 = raw_y2 - 80
+                            x2 = raw_x2
                             cx = int((x1 + x2) / 2)
                             bottom_y = int(y2)
                             w = int(x2 - x1)
@@ -286,18 +305,26 @@ class ArisuIntelligence(VisionPreUntil):
                             cand = [CameraIndex, 1, cx, bottom_y, w, h, conf]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
+                                best_goal_cls = 1
+                                best_goal_bbox = (raw_x1, raw_y1, raw_x2, raw_y2, conf)
                 except Exception:
                     pass
                 try:
-                    if OutputBuffer[2].shape[0] > 0:
+                    if len(OutputBuffer) > 2 and OutputBuffer[2].shape[0] > 0:
                         for g in OutputBuffer[2]:
-                            if g[4] < 0.4:
+                            if g[4] < 0.25:  # Lower threshold for goals
                                 continue
-                            y1 = int(g[0] * 640) - 80
-                            x1 = int(g[1] * 640)
-                            y2 = int(g[2] * 640) - 80
-                            x2 = int(g[3] * 640)
+                            # Raw bbox in 640x640 space (for dashboard overlay)
+                            raw_y1 = int(g[0] * 640)
+                            raw_x1 = int(g[1] * 640)
+                            raw_y2 = int(g[2] * 640)
+                            raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
+                            # Position calculation (with -80 offset)
+                            y1 = raw_y1 - 80
+                            x1 = raw_x1
+                            y2 = raw_y2 - 80
+                            x2 = raw_x2
                             cx = int((x1 + x2) / 2)
                             bottom_y = int(y2)
                             w = int(x2 - x1)
@@ -305,31 +332,41 @@ class ArisuIntelligence(VisionPreUntil):
                             cand = [CameraIndex, 2, cx, bottom_y, w, h, conf]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
+                                best_goal_cls = 2
+                                best_goal_bbox = (raw_x1, raw_y1, raw_x2, raw_y2, conf)
                 except Exception:
                     pass
                 if best_goal is not None:
                     GoalOutputs.append(best_goal)
+                    # Store goal bbox for dashboard overlay
+                    if best_goal_bbox is not None:
+                        GoalBBoxOutputs[CameraIndex] = [CameraIndex, best_goal_cls, 
+                                                        best_goal_bbox[0], best_goal_bbox[1],
+                                                        best_goal_bbox[2], best_goal_bbox[3],
+                                                        best_goal_bbox[4]]
                 CameraIndex += 1
-                # Keep latest in size=1 queues
-                if self.ChassisQueue.full():
-                    try:
-                        _ = self.ChassisQueue.get_nowait()
-                    except Exception:
-                        pass
-                if self.BallQueue.full():
-                    try:
-                        _ = self.BallQueue.get_nowait()
-                    except Exception:
-                        pass
-                if self.GoalQueue.full():
-                    try:
-                        _ = self.GoalQueue.get_nowait()
-                    except Exception:
-                        pass
 
-                self.ChassisQueue.put(ChassisOutputs)
-                self.BallQueue.put(BallOutputs)
-                self.GoalQueue.put(GoalOutputs)
+            # Put outputs into queues AFTER processing all cameras
+            # Keep latest in size=1 queues
+            if self.ChassisQueue.full():
+                try:
+                    _ = self.ChassisQueue.get_nowait()
+                except Exception:
+                    pass
+            if self.BallQueue.full():
+                try:
+                    _ = self.BallQueue.get_nowait()
+                except Exception:
+                    pass
+            if self.GoalQueue.full():
+                try:
+                    _ = self.GoalQueue.get_nowait()
+                except Exception:
+                    pass
+
+            self.ChassisQueue.put(ChassisOutputs)
+            self.BallQueue.put(BallOutputs)
+            self.GoalQueue.put(GoalOutputs)
             
             # Put bbox outputs into queues for dashboard overlay
             if self.BallBBoxQueue.full():
@@ -342,8 +379,14 @@ class ArisuIntelligence(VisionPreUntil):
                     _ = self.ChassisBBoxQueue.get_nowait()
                 except Exception:
                     pass
+            if self.GoalBBoxQueue.full():
+                try:
+                    _ = self.GoalBBoxQueue.get_nowait()
+                except Exception:
+                    pass
             self.BallBBoxQueue.put(BallBBoxOutputs)
             self.ChassisBBoxQueue.put(ChassisBBoxOutputs)
+            self.GoalBBoxQueue.put(GoalBBoxOutputs)
             # print(ChassisList)
         
             # print(Output0)
