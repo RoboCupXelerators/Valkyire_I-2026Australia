@@ -229,8 +229,6 @@ BirdEyeCaptures
 
 # Large binary packages (download from official sources)
 packages/
-*.deb
-*.whl
 *.dtb
 
 # OTA update files
