@@ -125,9 +125,6 @@ PY
 
 - Hailo8 HEF 格式模型（由 Hailo 工具链编译得到）
 
-#### `yolov8n.bin` / `yolov8n_detect_bayese_640x640_nchw.bin`
-
-- 其它平台/推理框架使用的二进制模型（与 TensorRT 不同）
 
 ## 性能建议（Orin Nano 8GB）
 

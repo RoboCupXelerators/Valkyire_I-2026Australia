@@ -105,7 +105,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         if str(cfg.RoboInfo.Bit).upper() == "SIM":
             from utils.XeleratorSimBits import XeleratorSimBits
             from utils.XeleratorSimBits import Lidar as SimLidar
-            from vision_utils.XeleratorVision import XeleratorVision
+            from vision_utils.LunaIntelligence import SimYoloVision
 
             # Prefer config-driven settings (ReasonData/data/config.json -> Settings.Sim.*)
             # Env vars remain supported as overrides for quick debugging.
@@ -193,7 +193,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             Morse = None
             # Provide a lightweight vision provider in SIM (no subprocess)
             try:
-                globals()["vision"] = XeleratorVision(bits=Bits)
+                globals()["vision"] = SimYoloVision()
             except Exception:
                 globals()["vision"] = None
             logger.info(f"Simulator Bits loaded: unity={unity_ip}:{cmd_port}, status_port={status_port}, robot_id={robot_id}")

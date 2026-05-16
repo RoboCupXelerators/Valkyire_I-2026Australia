@@ -165,11 +165,17 @@ class CameraResourceManager:
 class ControlPanelApp:
     """控制面板应用状态"""
     
-    def __init__(self, vision=None, web_dir: Path = None, jpeg_quality: int = 75):
+    def __init__(self, vision=None, web_dir: Path = None, jpeg_quality: int = 75, bits=None):
         self.vision = vision
         self.web_dir = web_dir or _repo_root() / "web" / "control_panel"
         self.jpeg_quality = int(jpeg_quality)
         self.start_ts = time.time()
+        
+        # Bits 对象（用于模拟器环境下获取位姿和球位置）
+        self.bits = bits
+        
+        # 检测是否为模拟器环境
+        self._is_simulator = self._detect_simulator_mode()
         
         # 摄像头资源管理器
         self.camera_manager = CameraResourceManager()
@@ -193,6 +199,35 @@ class ControlPanelApp:
         # 注册 Vision 模块的摄像头
         if self.vision:
             self._register_vision_cameras()
+    
+    def _detect_simulator_mode(self) -> bool:
+        """检测是否运行在模拟器环境下"""
+        # 检查 Bits 类型
+        if self.bits is not None:
+            bits_type = type(self.bits).__name__
+            if bits_type == "XeleratorSimBits":
+                return True
+        
+        # 检查 vision 类型
+        if self.vision is not None:
+            vision_type = type(self.vision).__name__
+            if vision_type == "XeleratorVision":
+                return True
+        
+        # 检查环境变量
+        import os
+        if os.environ.get("ROBOCUPX_BITS", "").upper() == "SIM":
+            return True
+        
+        # 检查配置
+        try:
+            from ReasonData import Settings
+            if str(getattr(Settings.RoboInfo, "Bit", "")).upper() == "SIM":
+                return True
+        except Exception:
+            pass
+        
+        return False
     
     def _register_vision_cameras(self):
         """从 Vision 模块获取并注册摄像头索引"""
@@ -232,6 +267,7 @@ class ControlPanelApp:
             "ball_bboxes_640": [None, None, None, None],
             "chassis_bboxes_640": [None, None, None, None],
             "goal_bboxes_640": [None, None, None, None],
+            "is_simulator": self._is_simulator,
             # 性能指标 - 返回帧计数器，前端计算延时
             "perf": {
                 "preprocess_tf": 0,  # 预处理帧计数
@@ -241,69 +277,127 @@ class ControlPanelApp:
             },
         }
         
-        # Try to get robot state from global state module
-        try:
-            from robot_state import get_robot_state
-            robot_state = get_robot_state()
-            result["robot_x_cm"] = robot_state.get("x_cm", 0)
-            result["robot_y_cm"] = robot_state.get("y_cm", 0)
-            result["robot_yaw_deg"] = robot_state.get("yaw_deg", 0)
-            result["has_ball"] = robot_state.get("has_ball", False)
-        except Exception:
-            pass
-        
-        # Try to get data from vision module
-        if self.vision:
+        # 模拟器环境下优先从 Bits 获取数据
+        if self._is_simulator and self.bits:
             try:
-                ball_pos = self.vision.GetBallPos()
+                x, y, yaw = self.bits.GetPose()
+                result["robot_x_cm"] = round(x, 2)
+                result["robot_y_cm"] = round(y, 2)
+                result["robot_yaw_deg"] = round(yaw, 2)
+            except Exception:
+                pass
+            
+            try:
+                ball_pos = self.bits.GetBallPos()
                 if ball_pos:
                     result["ball_pos_cm"] = ball_pos
             except Exception:
                 pass
             
             try:
-                chassis_pos = self.vision.GetChassisPos()
-                if chassis_pos:
-                    result["chassis_list_cm"] = chassis_pos
+                result["has_ball"] = self.bits.HasBall()
             except Exception:
                 pass
             
             try:
-                blue_goal = self.vision.GetBlueGoalPos()
-                if blue_goal:
-                    result["blue_goal_pos_cm"] = blue_goal
+                enemies = self.bits.GetEnemyPos()
+                if enemies:
+                    result["chassis_list_cm"] = enemies
             except Exception:
                 pass
-            
-            try:
-                yellow_goal = self.vision.GetYellowGoalPos()
-                if yellow_goal:
-                    result["yellow_goal_pos_cm"] = yellow_goal
-            except Exception:
-                pass
-            
-            try:
-                ball_bboxes = self.vision.GetBallBBoxes()
-                if ball_bboxes:
-                    result["ball_bboxes_640"] = ball_bboxes
-            except Exception:
-                pass
-            
-            try:
-                chassis_bboxes = self.vision.GetChassisBBoxes()
-                if chassis_bboxes:
-                    result["chassis_bboxes_640"] = chassis_bboxes
-            except Exception:
-                pass
-            
-            try:
-                goal_bboxes = self.vision.GetGoalBBoxes()
-                if goal_bboxes:
-                    result["goal_bboxes_640"] = goal_bboxes
-            except Exception:
-                pass
-            
-            # 获取性能指标 - 直接返回帧计数器，前端计算延时
+        
+        # Try to get robot state from global state module
+        try:
+            from robot_state import get_robot_state
+            robot_state = get_robot_state()
+            # 如果 Bits 没有提供数据，使用 robot_state
+            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
+                result["robot_x_cm"] = robot_state.get("x_cm", 0)
+                result["robot_y_cm"] = robot_state.get("y_cm", 0)
+                result["robot_yaw_deg"] = robot_state.get("yaw_deg", 0)
+                result["has_ball"] = robot_state.get("has_ball", False)
+        except Exception:
+            pass
+        
+        # Try to get data from vision module
+        if self.vision:
+            # 模拟器环境使用小写方法名 (XeleratorVision)
+            if self._is_simulator:
+                try:
+                    ball_pos = self.vision.get_ball_pos()
+                    if ball_pos and result["ball_pos_cm"] == [0, 0]:
+                        result["ball_pos_cm"] = ball_pos
+                except Exception:
+                    pass
+                
+                try:
+                    chassis_pos = self.vision.get_chassis_pos()
+                    if chassis_pos and not result["chassis_list_cm"]:
+                        result["chassis_list_cm"] = chassis_pos
+                except Exception:
+                    pass
+                
+                try:
+                    goals = self.vision.get_goals_pos()
+                    if goals:
+                        if goals.get("blue_goal"):
+                            result["blue_goal_pos_cm"] = goals["blue_goal"]
+                        if goals.get("yellow_goal"):
+                            result["yellow_goal_pos_cm"] = goals["yellow_goal"]
+                except Exception:
+                    pass
+            else:
+                # 非模拟器环境使用大写方法名 (UnitedVision)
+                try:
+                    ball_pos = self.vision.GetBallPos()
+                    if ball_pos and result["ball_pos_cm"] == [0, 0]:
+                        result["ball_pos_cm"] = ball_pos
+                except Exception:
+                    pass
+                
+                try:
+                    chassis_pos = self.vision.GetChassisPos()
+                    if chassis_pos:
+                        result["chassis_list_cm"] = chassis_pos
+                except Exception:
+                    pass
+                
+                try:
+                    blue_goal = self.vision.GetBlueGoalPos()
+                    if blue_goal:
+                        result["blue_goal_pos_cm"] = blue_goal
+                except Exception:
+                    pass
+                
+                try:
+                    yellow_goal = self.vision.GetYellowGoalPos()
+                    if yellow_goal:
+                        result["yellow_goal_pos_cm"] = yellow_goal
+                except Exception:
+                    pass
+                
+                try:
+                    ball_bboxes = self.vision.GetBallBBoxes()
+                    if ball_bboxes:
+                        result["ball_bboxes_640"] = ball_bboxes
+                except Exception:
+                    pass
+                
+                try:
+                    chassis_bboxes = self.vision.GetChassisBBoxes()
+                    if chassis_bboxes:
+                        result["chassis_bboxes_640"] = chassis_bboxes
+                except Exception:
+                    pass
+                
+                try:
+                    goal_bboxes = self.vision.GetGoalBBoxes()
+                    if goal_bboxes:
+                        result["goal_bboxes_640"] = goal_bboxes
+                except Exception:
+                    pass
+                
+                # 获取性能指标 - 直接返回帧计数器，前端计算延时
             try:
                 result["perf"]["preprocess_tf"] = int(getattr(self.vision, 'PreProcessTF', 0))
                 result["perf"]["inference_tf"] = int(getattr(self.vision, 'InferTF', 0))
@@ -517,7 +611,58 @@ class ControlPanelApp:
         return {
             "local_ip": local_ip,
             "hostname": socket.gethostname(),
+            "is_simulator": self._is_simulator,
         }
+    
+    def get_simulator_state(self) -> dict:
+        """获取模拟器状态 - 在模拟器环境下提供位姿和球位置"""
+        if not self._is_simulator:
+            return {
+                "available": False,
+                "message": "Not running in simulator mode"
+            }
+        
+        result = {
+            "available": True,
+            "robot_pose": {"x_cm": 0, "y_cm": 0, "yaw_deg": 0},
+            "ball_pos": [0xFFF, 0xFFF],
+            "has_ball": False,
+            "enemy_positions": [],
+        }
+        
+        # 从 Bits 获取状态
+        if self.bits:
+            try:
+                x, y, yaw = self.bits.GetPose()
+                result["robot_pose"] = {"x_cm": round(x, 2), "y_cm": round(y, 2), "yaw_deg": round(yaw, 2)}
+            except Exception:
+                pass
+            
+            try:
+                result["ball_pos"] = self.bits.GetBallPos()
+            except Exception:
+                pass
+            
+            try:
+                result["has_ball"] = self.bits.HasBall()
+            except Exception:
+                pass
+            
+            try:
+                result["enemy_positions"] = self.bits.GetEnemyPos()
+            except Exception:
+                pass
+        
+        # 如果 Bits 不可用，尝试从 vision 获取
+        elif self.vision:
+            try:
+                ball_pos = self.vision.get_ball_pos() if hasattr(self.vision, 'get_ball_pos') else None
+                if ball_pos:
+                    result["ball_pos"] = ball_pos
+            except Exception:
+                pass
+        
+        return result
     
     def list_files(self, directory: str, extensions: list = None) -> list:
         try:
@@ -607,7 +752,35 @@ class ControlPanelApp:
     
     def calib_list_cameras(self) -> list:
         """列出可用摄像头 - 从 Vision 模块获取 CamPorts"""
-        # 如果 Vision 模块可用，直接返回 CamPorts
+        # 模拟器环境下，检查 XeleratorVision 的摄像头槽位
+        if self._is_simulator:
+            # XeleratorVision 使用默认的 4 个摄像头槽位
+            # 从配置获取摄像头槽位
+            config = self.get_config()
+            vision_cfg = config.get("Vision", {})
+            cam_ports = vision_cfg.get("CamPorts", [0, 2, 4, 6])
+            if cam_ports:
+                print(f"[ControlPanel] Simulator cameras from config: {cam_ports}")
+                return list(cam_ports)
+            
+            # 尝试从 XeleratorVision 获取摄像头槽位
+            if self.vision:
+                slots = getattr(self.vision, '_camera_slot_defaults', None)
+                if slots is not None:
+                    try:
+                        slots = slots()
+                        if slots:
+                            print(f"[ControlPanel] Simulator cameras from XeleratorVision: {slots}")
+                            return list(slots)
+                    except Exception:
+                        pass
+            
+            # 默认槽位
+            default_slots = [0, 2, 4, 6]
+            print(f"[ControlPanel] Simulator default cameras: {default_slots}")
+            return default_slots
+        
+        # 非模拟器环境：如果 Vision 模块可用，直接返回 CamPorts
         if self.vision:
             cam_ports = getattr(self.vision, 'CamPorts', None)
             if cam_ports:
@@ -635,12 +808,24 @@ class ControlPanelApp:
         if not self.vision:
             return None
         
-        # 获取 CamPorts 映射
-        cam_ports = getattr(self.vision, 'CamPorts', None)
-        if cam_ports is None:
+        frames = getattr(self.vision, "Frames", None)
+        if frames is None:
             return None
         
-        # cam_index 是摄像头索引（如 0, 2, 4, 6），需要转换为 Frames 列表中的位置
+        # 获取 CamPorts 映射（可能不存在于 XeleratorVision）
+        cam_ports = getattr(self.vision, 'CamPorts', None)
+        
+        # 模拟器环境：XeleratorVision 没有 CamPorts，直接使用索引
+        if cam_ports is None:
+            # 直接使用 cam_index 作为 Frames 索引（0-3）
+            if 0 <= cam_index < len(frames):
+                frame = frames[cam_index]
+                if frame is not None:
+                    return frame.copy()
+            return None
+        
+        # 非模拟器环境：cam_index 是摄像头端口号（如 0, 2, 4, 6）
+        # 需要转换为 Frames 列表中的位置
         try:
             # 查找 cam_index 在 CamPorts 中的位置
             frame_idx = cam_ports.index(cam_index)
@@ -648,8 +833,7 @@ class ControlPanelApp:
             # 如果找不到，假设 cam_index 就是 Frames 的索引
             frame_idx = cam_index
         
-        frames = getattr(self.vision, "Frames", None)
-        if frames is None or frame_idx < 0 or frame_idx >= len(frames):
+        if frame_idx < 0 or frame_idx >= len(frames):
             return None
         
         frame = frames[frame_idx]
@@ -678,12 +862,18 @@ class ControlPanelApp:
             if frames is None:
                 return {"success": False, "error": "Vision module not initialized. Frames not available."}
             
-            # 验证摄像头索引是否在 CamPorts 中
-            cam_ports = getattr(self.vision, 'CamPorts', [0, 2, 4, 6])
-            if cam_index not in cam_ports:
-                return {"success": False, "error": f"Camera {cam_index} not in Vision CamPorts {cam_ports}"}
-            
-            print(f"[Calibration] Using Vision module for camera {cam_index} (CamPorts: {cam_ports})")
+            # 验证摄像头索引
+            cam_ports = getattr(self.vision, 'CamPorts', None)
+            if cam_ports is not None:
+                # 非模拟器环境：验证索引是否在 CamPorts 中
+                if cam_index not in cam_ports:
+                    return {"success": False, "error": f"Camera {cam_index} not in Vision CamPorts {cam_ports}"}
+                print(f"[Calibration] Using Vision module for camera {cam_index} (CamPorts: {cam_ports})")
+            else:
+                # 模拟器环境：验证索引是否在 Frames 范围内
+                if cam_index < 0 or cam_index >= len(frames):
+                    return {"success": False, "error": f"Camera index {cam_index} out of range (0-{len(frames)-1})"}
+                print(f"[Calibration] Using Vision module for camera slot {cam_index} (simulator mode)")
             
             # 不打开摄像头，完全依赖 Vision 模块
             self.calib_session.cap = None
@@ -974,12 +1164,18 @@ class ControlPanelApp:
             if frames is None:
                 return {"success": False, "error": "Vision module not initialized. Frames not available."}
             
-            # 验证摄像头索引是否在 CamPorts 中
-            cam_ports = getattr(self.vision, 'CamPorts', [0, 2, 4, 6])
-            if cam_index not in cam_ports:
-                return {"success": False, "error": f"Camera {cam_index} not in Vision CamPorts {cam_ports}"}
-            
-            print(f"[BirdEye] Using Vision module for camera {cam_index} (CamPorts: {cam_ports})")
+            # 验证摄像头索引
+            cam_ports = getattr(self.vision, 'CamPorts', None)
+            if cam_ports is not None:
+                # 非模拟器环境：验证索引是否在 CamPorts 中
+                if cam_index not in cam_ports:
+                    return {"success": False, "error": f"Camera {cam_index} not in Vision CamPorts {cam_ports}"}
+                print(f"[BirdEye] Using Vision module for camera {cam_index} (CamPorts: {cam_ports})")
+            else:
+                # 模拟器环境：验证索引是否在 Frames 范围内
+                if cam_index < 0 or cam_index >= len(frames):
+                    return {"success": False, "error": f"Camera index {cam_index} out of range (0-{len(frames)-1})"}
+                print(f"[BirdEye] Using Vision module for camera slot {cam_index} (simulator mode)")
             
             # 不打开摄像头，完全依赖 Vision 模块
             self.birdeye_session.cap = None
@@ -1241,6 +1437,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json(app.get_state_dict())
             return
         
+        if path == '/api/simulator-state':
+            self._send_json(app.get_simulator_state())
+            return
+        
         if path == '/api/system-info':
             self._send_json(app.get_system_info())
             return
@@ -1441,14 +1641,30 @@ def main():
     ap.add_argument("--no-vision", action="store_true", help="Disable vision module")
     args = ap.parse_args()
     
-    # Initialize app
+    # Try to get Bits from LunaPre (simulator mode)
+    bits = None
+    vision = None
+    
+    try:
+        from LunaPre import Bits, vision as luna_vision, RUNTIME_IS_MOCK
+        bits = Bits
+        vision = luna_vision
+        print(f"[ControlPanel] Got Bits from LunaPre, type: {type(Bits).__name__}")
+        if vision is not None:
+            print(f"[ControlPanel] Got vision from LunaPre, type: {type(vision).__name__}")
+    except Exception as e:
+        print(f"[ControlPanel] Could not import from LunaPre: {e}")
+    
+    # Initialize app with bits
     app = ControlPanelApp(
         web_dir=Path(args.web_dir),
-        jpeg_quality=args.jpeg_quality
+        jpeg_quality=args.jpeg_quality,
+        bits=bits,
+        vision=vision,
     )
     
-    # Try to attach vision module
-    if not args.no_vision:
+    # Try to attach vision module if not already set
+    if not args.no_vision and app.vision is None:
         try:
             # 尝试导入 UnitedVision 类（Vision.py 中定义的类名）
             from Vision import UnitedVision
