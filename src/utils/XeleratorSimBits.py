@@ -56,6 +56,9 @@ class SimStatus:
     # optional relative ball position (meters in Unity, will be converted to cm)
     ball_x_m: float | None = None
     ball_y_m: float | None = None
+    # enemy robot positions (relative to this robot, in meters, will be converted to cm)
+    # list of (x_forward, y_left) pairs
+    enemies: list[tuple[float, float]] | None = None
 
 
 class XeleratorSimBits:
@@ -419,6 +422,26 @@ class XeleratorSimBits:
             by = float(self._status.ball_y_m) * self._unity_to_cm * self._pose_scale
             return [bx, by]
 
+    def GetEnemyPos(self):
+        """Return enemy robot positions relative to this robot.
+
+        Returns:
+            list of [x_forward_cm, y_left_cm] pairs for each detected enemy.
+            Empty list if no enemies detected or extension not provided.
+        
+        Positions are relative to this robot's frame (same as ball position).
+        """
+        with self._status_lock:
+            if self._status.enemies is None:
+                return []
+            # Convert to cm (Unity uses meters)
+            result = []
+            for ex, ey in self._status.enemies:
+                ex_cm = float(ex) * self._unity_to_cm * self._pose_scale
+                ey_cm = float(ey) * self._unity_to_cm * self._pose_scale
+                result.append([ex_cm, ey_cm])
+            return result
+
     # ===== scene-origin guesser (SIM convenience) =====
 
     @staticmethod
@@ -640,11 +663,32 @@ class XeleratorSimBits:
 
             ball_x = None
             ball_y = None
+            enemies = None
+            
+            # Parse ball position extension (8 bytes after base status)
             if len(data) >= self.ST_STRUCT.size + 8:
                 try:
                     ball_x, ball_y = struct.unpack_from("<ff", data, self.ST_STRUCT.size)
                 except Exception:
                     ball_x, ball_y = None, None
+            
+            # Parse enemy positions extension (after ball extension)
+            # Format: 1 byte enemy_count + N * 8 bytes (enemy positions as floats)
+            # Ball extension is 8 bytes, enemy extension starts after that
+            ball_ext_size = 8
+            enemy_ext_offset = self.ST_STRUCT.size + ball_ext_size
+            
+            if len(data) >= enemy_ext_offset + 1:
+                try:
+                    enemy_count = data[enemy_ext_offset]
+                    if enemy_count > 0 and len(data) >= enemy_ext_offset + 1 + enemy_count * 8:
+                        enemies = []
+                        for i in range(enemy_count):
+                            offset = enemy_ext_offset + 1 + i * 8
+                            ex, ey = struct.unpack_from("<ff", data, offset)
+                            enemies.append((float(ex), float(ey)))
+                except Exception:
+                    enemies = None
 
             with self._status_lock:
                 self._status.ts = time.time()
@@ -659,6 +703,7 @@ class XeleratorSimBits:
                 self._status.wz_rps = float(wz)
                 self._status.ball_x_m = ball_x
                 self._status.ball_y_m = ball_y
+                self._status.enemies = enemies
 
             self._rx_count += 1
 
