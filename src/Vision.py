@@ -165,11 +165,11 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread.start()
 
         # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
-        # self._goal_backend = hasattr(self, "GoalQueue")
-        # if self._goal_backend:
-        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
-        #     self.GoalDetectionThread.daemon = True
-        #     self.GoalDetectionThread.start()
+        self._goal_backend = hasattr(self, "GoalQueue")
+        if self._goal_backend:
+            self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+            self.GoalDetectionThread.daemon = True
+            self.GoalDetectionThread.start()
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -608,6 +608,7 @@ class UnitedVision(Detect_Method):
         Returns:
             list of length 4: each is None or (cam, cls, x1, y1, x2, y2, conf)
         """
+        self.GoalBBoxUpdate()
         hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
         if self._goal_bboxes is None:
             return [None, None, None, None]
@@ -617,6 +618,7 @@ class UnitedVision(Detect_Method):
 
     def GetGoalBBox(self, hold_seconds: float | None = None):
         """Return last best goal bbox (cam, cls, x1, y1, x2, y2, conf)."""
+        self.GoalBBoxUpdate()
         hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
         if self._goal_bbox is None:
             return None
@@ -767,6 +769,48 @@ class UnitedVision(Detect_Method):
             self._chassis_bbox_ts = time.time()
         self._update_bbox_distance_caches()
 
+    def GoalBBoxUpdate(self):
+        """Read GoalBBoxQueue if available and keep latest bbox."""
+        q = getattr(self, "GoalBBoxQueue", None)
+        if q is None:
+            return
+        try:
+            out = q.get_nowait()
+        except Exception:
+            return
+
+        bboxes = [None, None, None, None]
+        for i in range(4):
+            try:
+                cam, cls_id, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                if cls_id is None or int(cls_id) < 0:
+                    continue
+                bboxes[int(cam)] = (int(cam), int(cls_id), int(x1), int(y1), int(x2), int(y2), float(conf))
+            except Exception:
+                continue
+        self._goal_bboxes = bboxes
+        self._goal_bboxes_ts = time.time()
+
+        best = None
+        for i in range(4):
+            try:
+                cam, cls_id, x1, y1, x2, y2, conf = out[i]
+                if conf is None or conf <= 0:
+                    continue
+                if cls_id is None or int(cls_id) < 0:
+                    continue
+                cand = (int(cam), int(cls_id), int(x1), int(y1), int(x2), int(y2), float(conf))
+                if best is None or cand[6] > best[6]:
+                    best = cand
+            except Exception:
+                continue
+        if best is not None:
+            self._goal_bbox = best
+            self._goal_bbox_ts = time.time()
+        self._update_bbox_distance_caches()
+
     def GetChassisBBox(self, hold_seconds: float | None = None):
         """Return last chassis bbox (cam,x1,y1,x2,y2,conf)."""
         self.ChassisBBoxUpdate()
@@ -914,7 +958,7 @@ if __name__ == "__main__":
                 "blue_goal": blue_goal,
                 "yellow_goal": yellow_goal,
             }
-            # vision.logger.info(data)
+            vision.logger.info(data)
             pickled_data = pickle.dumps(data)
             # print(data)
             sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
