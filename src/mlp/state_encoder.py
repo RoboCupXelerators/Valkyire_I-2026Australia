@@ -1,14 +1,21 @@
 """状态特征编码器
 
 将多源传感器数据编码为MLP输入向量。
+
+支持两种输入模式:
+1. 传统 RobotState (向后兼容)
+2. 部署对齐的 DeployObservationV1 (推荐)
+
+参考: docs/MLP_POLICY_ROADMAP.md
 """
 
 import math
 import numpy as np
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Union
 from dataclasses import dataclass
 
 from .config import MLPConfig
+from .contracts import DeployObservationV1, EntityObservationV1
 
 
 @dataclass
@@ -58,8 +65,27 @@ class StateEncoder:
         self.angle_scale = 180.0  # 角度归一化到 [-1, 1]
         self.dist_scale = max(config.field_length, config.field_width) / 2.0
     
-    def encode(self, state: RobotState) -> np.ndarray:
+    def encode(self, state: Union[RobotState, DeployObservationV1]) -> np.ndarray:
         """编码状态为特征向量
+        
+        支持两种输入类型:
+        - RobotState: 传统状态结构 (向后兼容)
+        - DeployObservationV1: 部署对齐观测契约 (推荐)
+        
+        Args:
+            state: 机器人状态或部署观测
+            
+        Returns:
+            归一化的特征向量，维度为 config.state_dim
+        """
+        # 判断输入类型并路由到对应的编码方法
+        if isinstance(state, DeployObservationV1):
+            return self._encode_observation_v1(state)
+        else:
+            return self._encode_robot_state(state)
+    
+    def _encode_robot_state(self, state: RobotState) -> np.ndarray:
+        """编码传统 RobotState 为特征向量 (向后兼容)
         
         Args:
             state: 机器人状态
@@ -124,17 +150,203 @@ class StateEncoder:
         else:
             features.extend([0.0, 0.0])
         
-        # 转换为numpy数组并确保维度正确
-        features_array = np.array(features, dtype=np.float32)
+        return self._finalize_legacy_features(features)
+    
+    def _encode_observation_v1(self, obs: DeployObservationV1) -> np.ndarray:
+        """编码部署对齐观测契约 V1 为特征向量
         
-        # 裁剪或填充到指定维度
+        这是 actor 应该使用的主要编码方法。
+        所有字段都来自部署对齐的观测契约，确保训练与部署一致。
+        
+        Args:
+            obs: 部署对齐观测契约 V1
+            
+        Returns:
+            归一化的特征向量，维度为 config.state_dim
+        """
+        features = []
+        
+        # 1. 自身位姿 (3维) - 来自 FieldRobotPos
+        features.extend([
+            self._normalize_pos(obs.self_x),
+            self._normalize_pos(obs.self_y),
+            self._normalize_angle(obs.self_yaw),
+        ])
+        
+        # 2. 自身速度 (3维) - 来自 IL / chassis / estimator
+        # 注意: 速度数据可能无效，需要检查
+        if obs.velocity_valid:
+            features.extend([
+                self._normalize_speed(obs.self_vx),
+                self._normalize_speed(obs.self_vy),
+                self._normalize_angular_speed(obs.self_wz),
+            ])
+        else:
+            features.extend([0.0, 0.0, 0.0])
+        
+        # 3. 球位置（相对坐标）(2维) - 来自 RobotBallPos
+        if obs.has_ball:
+            # 持球时，球位置为特殊值
+            features.extend([0.0, 0.0])
+        elif not obs.ball_visible:
+            # 球不可见，使用特殊标记
+            features.extend([1.0, 1.0])
+        else:
+            features.extend([
+                self._normalize_dist(obs.ball_rel_x),
+                self._normalize_dist(obs.ball_rel_y),
+            ])
+        
+        # 4. 持球状态 (1维)
+        features.append(1.0 if obs.has_ball else 0.0)
+        
+        # 5. 球可见性/年龄 (2维) - 新增字段
+        features.append(1.0 if obs.ball_visible else 0.0)
+        # 数据年龄归一化 (假设最大 1000ms)
+        features.append(min(obs.ball_age_ms / 1000.0, 1.0) if obs.ball_age_ms >= 0 else 1.0)
+        
+        # 6. 敌方机器人位置 (max_enemies × 3 维) - 包含可见性
+        # 固定使用 config.max_enemies，确保输入维度由模型配置决定，而不是由单次观测决定。
+        enemy_features = self._encode_enemies_v1(obs.enemies, self.config.max_enemies)
+        features.extend(enemy_features)
+        
+        # 7. 边界距离 (4维) - 来自 DirectDistance
+        if obs.wall_valid:
+            features.extend([
+                self._normalize_dist(obs.wall_front),
+                self._normalize_dist(obs.wall_left),
+                self._normalize_dist(obs.wall_back),
+                self._normalize_dist(obs.wall_right),
+            ])
+        else:
+            features.extend([0.0, 0.0, 0.0, 0.0])
+        
+        # 8. 球门方向（归一化向量）(2维)
+        goal_dx = self.config.goal_x - obs.self_x
+        goal_dy = self.config.goal_y - obs.self_y
+        goal_dist = math.sqrt(goal_dx**2 + goal_dy**2)
+        if goal_dist > 0:
+            features.extend([
+                goal_dx / self.pos_scale,
+                goal_dy / self.pos_scale,
+            ])
+        else:
+            features.extend([0.0, 0.0])
+        
+        # 9. 比赛状态 (3维) - 占位
+        features.extend([
+            obs.referee_state / 10.0,  # 归一化
+            obs.penalty_state / 10.0,
+            obs.role / 10.0,
+        ])
+        
+        # 10. 历史信息 (3维) - 占位
+        features.extend([
+            obs.last_decision_id / 10.0,
+            obs.last_action_age_ms / 1000.0,
+            1.0 if obs.stuck_flag else 0.0,
+        ])
+        
+        return self._finalize_contract_features(features)
+
+    def _finalize_legacy_features(self, features: List[float]) -> np.ndarray:
+        """Finalize legacy RobotState features.
+
+        Legacy paths stay permissive for backward compatibility: they are padded
+        or truncated to the configured width.
+        """
+        features_array = np.array(features, dtype=np.float32)
         if len(features_array) > self.config.state_dim:
             features_array = features_array[:self.config.state_dim]
         elif len(features_array) < self.config.state_dim:
             padding = np.zeros(self.config.state_dim - len(features_array), dtype=np.float32)
             features_array = np.concatenate([features_array, padding])
-        
         return features_array
+
+    def _finalize_contract_features(self, features: List[float]) -> np.ndarray:
+        """Finalize DeployObservationV1 features.
+
+        Contract-driven paths must never silently truncate. If the configured
+        model width diverges from the contract width, fail fast so training and
+        deployment do not proceed with a partially dropped observation.
+        """
+        features_array = np.array(features, dtype=np.float32)
+        expected_dim = self.get_observation_dim()
+        actual_dim = len(features_array)
+
+        if actual_dim != expected_dim:
+            raise ValueError(
+                f"DeployObservationV1 encoded dim mismatch: actual={actual_dim}, "
+                f"expected={expected_dim}"
+            )
+
+        if self.config.state_dim != expected_dim:
+            raise ValueError(
+                f"MLPConfig.state_dim ({self.config.state_dim}) does not match "
+                f"DeployObservationV1 encoded dim ({expected_dim})."
+            )
+
+        return features_array
+    
+    def _encode_enemies_v1(self, enemies: List[EntityObservationV1], max_enemies: int) -> List[float]:
+        """编码敌方观测 (V1 契约版本)
+        
+        包含位置、可见性、数据年龄等信息。
+        
+        Args:
+            enemies: 敌方观测列表
+            max_enemies: 最大敌方数量
+            
+        Returns:
+            归一化的敌方特征列表 (每个敌人 3 维: rel_x, rel_y, visible)
+        """
+        features = []
+        
+        for i in range(max_enemies):
+            if i < len(enemies) and enemies[i].visible:
+                enemy = enemies[i]
+                features.extend([
+                    self._normalize_dist(enemy.rel_x),
+                    self._normalize_dist(enemy.rel_y),
+                    1.0,  # visible
+                ])
+            elif i < len(enemies):
+                # 有数据但不可见
+                enemy = enemies[i]
+                features.extend([
+                    self._normalize_dist(enemy.rel_x),
+                    self._normalize_dist(enemy.rel_y),
+                    0.0,  # not visible
+                ])
+            else:
+                # 填充无效位置 (3维)
+                features.extend([2.0, 2.0, 0.0])  # 特殊值表示无效
+        
+        return features
+    
+    def get_observation_dim(self) -> int:
+        """获取 DeployObservationV1 编码后的特征维度
+        
+        用于验证 config.state_dim 是否正确配置。
+        这里返回的是“当前 encoder 实际编码进去的字段维度”，而不是
+        契约 dataclass 所有字段的总数。
+        
+        Returns:
+            理论特征维度
+        """
+        # 计算理论维度
+        dim = 0
+        dim += 3   # 自身位姿
+        dim += 3   # 自身速度
+        dim += 2   # 球位置
+        dim += 1   # 持球状态
+        dim += 2   # 球可见性/年龄
+        dim += self.config.max_enemies * 3  # 敌方 (位置 + 可见性)
+        dim += 4   # 边界距离
+        dim += 2   # 球门方向
+        dim += 3   # 比赛状态
+        dim += 3   # 历史信息
+        return dim
     
     def _encode_enemies(self, enemies: List[Tuple[float, float]]) -> List[float]:
         """编码敌方机器人位置

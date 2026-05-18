@@ -9,12 +9,11 @@
 """
 
 import math
+import json
 import socket
-import struct
 import time
 import threading
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass
 
 import numpy as np
 
@@ -27,6 +26,12 @@ except ImportError:
 
 from .config import MLPConfig
 from .state_encoder import StateEncoder, RobotState
+from .contracts import (
+    DeployObservationV1,
+    EpisodeStatusV1,
+    ResetScenarioV1,
+    observation_from_simulator,
+)
 
 
 class SoccerSimEnv(gym.Env):
@@ -83,7 +88,9 @@ class SoccerSimEnv(gym.Env):
         
         # 状态缓存
         self._last_state: Optional[RobotState] = None
+        self._last_observation: Optional[DeployObservationV1] = None
         self._last_obs: Optional[np.ndarray] = None
+        self._last_episode_status: Optional[EpisodeStatusV1] = None
         self._last_ball_dist: float = 200.0  # 200cm = 最大可能距离
         self._last_has_ball: bool = False
         self._goal_scored: bool = False
@@ -158,7 +165,9 @@ class SoccerSimEnv(gym.Env):
         
         # 重置状态
         self._last_state = None
+        self._last_observation = None
         self._last_obs = None
+        self._last_episode_status = None
         self._last_ball_dist = 200.0  # 200cm = 最大可能距离
         self._last_has_ball = False
         self._goal_scored = False
@@ -211,65 +220,125 @@ class SoccerSimEnv(gym.Env):
         return obs, reward, terminated, truncated, info
     
     def _get_observation(self) -> Tuple[np.ndarray, dict]:
-        """获取当前观测"""
-        state = self._get_robot_state()
+        """获取当前观测
+
+        训练时优先走 DeployObservationV1 契约，再派生兼容的 RobotState，
+        确保后续 reward/调试逻辑还能沿用旧字段。
+        """
+        deploy_obs = self._get_deploy_observation()
+        self._last_observation = deploy_obs
+
+        state = self._robot_state_from_observation(deploy_obs)
         self._last_state = state
-        obs = self.encoder.encode(state)
-        
+        obs = self.encoder.encode(deploy_obs)
+
         info = {
-            "x": state.x,
-            "y": state.y,
-            "yaw": state.yaw,
-            "has_ball": state.has_ball,
-            "ball_dist": math.sqrt(state.ball_x**2 + state.ball_y**2),
+            "x": deploy_obs.self_x,
+            "y": deploy_obs.self_y,
+            "yaw": deploy_obs.self_yaw,
+            "has_ball": deploy_obs.has_ball,
+            "ball_visible": deploy_obs.ball_visible,
+            "ball_dist": math.sqrt(deploy_obs.ball_rel_x**2 + deploy_obs.ball_rel_y**2),
+            "enemy_count": len(deploy_obs.enemies),
         }
-        
+        if self._last_episode_status is not None:
+            info["episode_status"] = self._last_episode_status.to_dict()
+
         return obs, info
     
-    def _get_robot_state(self) -> RobotState:
-        """从仿真器获取机器人状态"""
+    def _get_deploy_observation(self) -> DeployObservationV1:
+        """从仿真器获取部署对齐观测。"""
         if self._bits is None:
-            return RobotState()
-        
+            return DeployObservationV1()
+
         try:
-            # 获取位姿
             x, y, yaw = self._bits.GetPose()
-            
-            # 获取球位置
             ball_pos = self._bits.GetBallPos()
-            ball_x, ball_y = ball_pos[0], ball_pos[1]
             has_ball = (ball_pos == [0xDDD, 0xDDD])
-            
-            # 获取边界距离（Lidar stub）
-            # 注意：仿真器Lidar返回mm，需要转换
-            try:
-                wall_dist_mm = [0.0, 0.0, 0.0, 0.0]  # 仿真器不提供lidar
-                # 通过位置计算边界距离
-                half_length = self.config.field_length / 2.0
-                half_width = self.config.field_width / 2.0
-                wall_dist_mm = [
-                    (half_length - x) * 10.0,   # front
-                    (half_width + y) * 10.0,    # left  
-                    (half_length + x) * 10.0,   # back
-                    (half_width - y) * 10.0,    # right
-                ]
-            except:
-                wall_dist_mm = [0.0, 0.0, 0.0, 0.0]
-            
-            # 敌方位置（目前仿真器未实现）
+            ball_missing = (ball_pos == [0xFFF, 0xFFF])
+            ball_x = 0.0 if (has_ball or ball_missing) else float(ball_pos[0])
+            ball_y = 0.0 if (has_ball or ball_missing) else float(ball_pos[1])
+
+            wall_dist_mm = self._estimate_wall_distances_mm(x, y)
             enemies = []
-            
-            return RobotState(
-                x=x, y=y, yaw=yaw,
-                ball_x=ball_x, ball_y=ball_y,
+            if hasattr(self._bits, "GetEnemyPos"):
+                try:
+                    enemies = list(self._bits.GetEnemyPos() or [])
+                except Exception:
+                    enemies = []
+
+            obs = observation_from_simulator(
+                self_x=float(x),
+                self_y=float(y),
+                self_yaw=float(yaw),
+                ball_x=ball_x,
+                ball_y=ball_y,
                 has_ball=has_ball,
-                enemies=enemies,
                 wall_dist=wall_dist_mm,
+                enemies=enemies,
             )
-            
+
+            vx, vy, wz_deg_s, valid = self._read_bits_velocity()
+            obs.self_vx = vx
+            obs.self_vy = vy
+            obs.self_wz = wz_deg_s
+            obs.velocity_valid = valid
+            return obs
         except Exception as e:
-            print(f"[GymEnv] Error getting robot state: {e}")
-            return RobotState()
+            print(f"[GymEnv] Error getting deploy observation: {e}")
+            return DeployObservationV1()
+
+    def _robot_state_from_observation(self, obs: DeployObservationV1) -> RobotState:
+        """Build a backward-compatible RobotState from DeployObservationV1."""
+        ball_x = 0.0 if obs.has_ball else obs.ball_rel_x
+        ball_y = 0.0 if obs.has_ball else obs.ball_rel_y
+        wall_dist_mm = [
+            obs.wall_front * 10.0,
+            obs.wall_left * 10.0,
+            obs.wall_back * 10.0,
+            obs.wall_right * 10.0,
+        ] if obs.wall_valid else [0.0, 0.0, 0.0, 0.0]
+
+        enemies = [(enemy.rel_x, enemy.rel_y) for enemy in obs.enemies if enemy.visible]
+        return RobotState(
+            x=obs.self_x,
+            y=obs.self_y,
+            yaw=obs.self_yaw,
+            vx=obs.self_vx if obs.velocity_valid else 0.0,
+            vy=obs.self_vy if obs.velocity_valid else 0.0,
+            wz=obs.self_wz if obs.velocity_valid else 0.0,
+            ball_x=ball_x,
+            ball_y=ball_y,
+            has_ball=obs.has_ball,
+            enemies=enemies,
+            wall_dist=wall_dist_mm,
+        )
+
+    def _estimate_wall_distances_mm(self, x: float, y: float) -> List[float]:
+        """Estimate wall distances in mm when the simulator does not expose lidar."""
+        half_length = self.config.field_length / 2.0
+        half_width = self.config.field_width / 2.0
+        return [
+            (half_length - x) * 10.0,   # front
+            (half_width + y) * 10.0,    # left
+            (half_length + x) * 10.0,   # back
+            (half_width - y) * 10.0,    # right
+        ]
+
+    def _read_bits_velocity(self) -> Tuple[float, float, float, bool]:
+        """Best-effort readback of simulator velocity without changing base components."""
+        try:
+            status_lock = getattr(self._bits, "_status_lock", None)
+            status = getattr(self._bits, "_status", None)
+            if status_lock is None or status is None:
+                return 0.0, 0.0, 0.0, False
+            with status_lock:
+                vx = float(getattr(status, "vx_mps", 0.0)) * 100.0
+                vy = float(getattr(status, "vy_mps", 0.0)) * 100.0
+                wz_deg_s = math.degrees(float(getattr(status, "wz_rps", 0.0)))
+            return vx, vy, wz_deg_s, True
+        except Exception:
+            return 0.0, 0.0, 0.0, False
     
     def _execute_action(self, action: np.ndarray):
         """执行动作"""
@@ -282,12 +351,12 @@ class SoccerSimEnv(gym.Env):
             # 反归一化
             vx = float(action[0]) * self.config.max_speed
             vy = float(action[1]) * self.config.max_speed
-            wz = float(action[2]) * self.config.max_angular_speed
+            wz_deg_s = float(action[2]) * self.config.max_angular_speed
             kick = float(action[3]) > 0.5
             dribble = float(action[4]) > 0.5
             
             # 发送速度命令
-            self._bits.SetTwist(vx / 100.0, vy / 100.0, wz)  # 转换为m/s
+            self._bits.SetTwist(vx / 100.0, vy / 100.0, math.radians(wz_deg_s))  # m/s, rad/s
             
             # 发送踢球/盘球命令
             if dribble:
@@ -515,6 +584,10 @@ class TrainingEnvController:
         self.ip = ip
         self.port = port
         self._socket = None
+        self._remote = (self.ip, self.port)
+        self._status_roundtrip_supported: Optional[bool] = None
+        self._last_status_probe_ts: float = 0.0
+        self._status_probe_interval_s: float = 2.0
     
     def connect(self):
         """创建UDP socket"""
@@ -545,11 +618,67 @@ class TrainingEnvController:
         
         try:
             data = cmd.encode('utf-8')
-            self._socket.sendto(data, (self.ip, self.port))
+            self._socket.sendto(data, self._remote)
             return True
         except Exception as e:
             print(f"[TrainingEnvController] Error sending command: {e}")
             return False
+
+    def send_json_command(self, cmd: str, payload: Dict[str, Any]) -> bool:
+        """Send a JSON payload command.
+
+        Protocol skeleton for M2:
+        `COMMAND {"json":"payload"}`
+        """
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return self.send_command(f"{cmd} {body}")
+
+    def request_text_response(self, cmd: str) -> Optional[str]:
+        """Send a command and wait for a single UDP text response."""
+        if not self.send_command(cmd):
+            return None
+        if self._socket is None:
+            return None
+        try:
+            data, _addr = self._socket.recvfrom(4096)
+            if not data:
+                return None
+            return data.decode("utf-8", errors="ignore").strip()
+        except socket.timeout:
+            self._status_roundtrip_supported = False
+            return None
+        except Exception as e:
+            self._status_roundtrip_supported = False
+            print(f"[TrainingEnvController] Error receiving response: {e}")
+            return None
+
+    def _parse_episode_status(self, text: str) -> Optional[EpisodeStatusV1]:
+        """Parse either future JSON status or the current CSV debug format."""
+        if not text:
+            return None
+        try:
+            if text.startswith("{"):
+                return EpisodeStatusV1.from_dict(json.loads(text))
+        except Exception:
+            pass
+
+        parts = [p.strip() for p in text.split(",")]
+        if len(parts) >= 3:
+            try:
+                running = parts[0] == "1"
+                elapsed_s = float(parts[1])
+                result = int(parts[2])
+                return EpisodeStatusV1(
+                    episode_id=0,
+                    is_running=running,
+                    is_done=not running and result != 0,
+                    result=result,
+                    elapsed_ms=int(elapsed_s * 1000.0),
+                    end_reason="legacy_csv",
+                )
+            except Exception:
+                return None
+        return None
     
     def reset_episode(self) -> bool:
         """重置回合
@@ -563,6 +692,10 @@ class TrainingEnvController:
             是否发送成功
         """
         return self.send_command("RESET")
+
+    def reset_scenario(self, scenario: ResetScenarioV1) -> bool:
+        """Send structured reset payload for future Unity protocol support."""
+        return self.send_json_command("RESET_SCENARIO", scenario.to_dict())
     
     def start_episode(self) -> bool:
         """开始新回合"""
@@ -582,6 +715,26 @@ class TrainingEnvController:
             是否发送成功
         """
         return self.send_command(f"SEED {seed}")
+
+    def get_episode_status(self) -> Optional[EpisodeStatusV1]:
+        """Query episode status.
+
+        Works with the future JSON protocol and degrades gracefully if Unity
+        still uses the legacy CSV status response.
+        """
+        now = time.time()
+        if self._status_roundtrip_supported is False:
+            if (now - self._last_status_probe_ts) < self._status_probe_interval_s:
+                return None
+
+        self._last_status_probe_ts = now
+        text = self.request_text_response("GET_EPISODE_STATUS")
+        if text is None:
+            text = self.request_text_response("STATUS")
+        if text is None:
+            return None
+        self._status_roundtrip_supported = True
+        return self._parse_episode_status(text)
 
 
 class TrainingSoccerSimEnv(SoccerSimEnv):
@@ -624,10 +777,19 @@ class TrainingSoccerSimEnv(SoccerSimEnv):
         # 设置随机种子
         if seed is not None:
             self._training_controller.set_seed(seed)
-        
-        # 发送重置命令到Unity
-        self._training_controller.reset_episode()
-        
+
+        # 优先使用结构化场景重置；失败时回退到传统 RESET。
+        scenario_payload = None
+        if options and isinstance(options, dict):
+            scenario_payload = options.get("scenario")
+
+        if isinstance(scenario_payload, ResetScenarioV1):
+            ok = self._training_controller.reset_scenario(scenario_payload)
+            if not ok:
+                self._training_controller.reset_episode()
+        else:
+            self._training_controller.reset_episode()
+
         # 记录开始时间
         self._episode_start_time = time.time()
         
@@ -636,6 +798,9 @@ class TrainingSoccerSimEnv(SoccerSimEnv):
         
         # 添加时间限制信息
         info["episode_time_limit"] = self._episode_time_limit
+        self._last_episode_status = self._training_controller.get_episode_status()
+        if self._last_episode_status is not None:
+            info["episode_status"] = self._last_episode_status.to_dict()
         
         return obs, info
     
@@ -645,6 +810,14 @@ class TrainingSoccerSimEnv(SoccerSimEnv):
         添加时间限制检查。
         """
         obs, reward, terminated, truncated, info = super().step(action)
+
+        status = self._training_controller.get_episode_status()
+        if status is not None:
+            self._last_episode_status = status
+            info["episode_status"] = status.to_dict()
+            if status.is_done:
+                terminated = bool(status.result > 0)
+                truncated = not terminated
         
         # 检查时间限制
         if self._episode_start_time is not None:

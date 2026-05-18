@@ -78,7 +78,7 @@ class UnitedVision(Detect_Method):
         self._queue_backend = hasattr(self, "BallQueue") and hasattr(self, "ChassisQueue")
 
         # Calibration for Pixel2CM/CM2Pixel. BlobBased already loads calibration
-        # via VisionPreUntil, but AI/TV pipelines historically relied on this class.
+        # via VisionPreUntil, but AI/TI pipelines historically relied on this class.
         self.PerspectiveMatrices = []
         self.P2CK = []
         self.P2CHB = []
@@ -145,7 +145,7 @@ class UnitedVision(Detect_Method):
                 self.CalibrationModes.append('missing')
 
 
-        # For AI/TV backends, run queue consumers to compute robot-frame positions.
+        # For AI/TI-style queue backends, run queue consumers to compute robot-frame positions.
         # For BlobBased, its own FindBall thread updates self.BallPos directly.
         self.MergedChassisList = []
         self.MergedGoalList = []  # list of all goal detections

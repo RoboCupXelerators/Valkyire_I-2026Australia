@@ -44,7 +44,7 @@ class Preference:
             "number": 1,
             "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
             "Bit": "SIM",           # SIM / AB(ArisuBits) / IL(IceLoongBits)
-            "Rec": "XV",            # AI(ArisuIntelligence) / TV(TunaVision) / XV(XeleratorVision) / BB(BlobBased)
+            "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
             "LidarType": "s1",      # s1 / s2
         },
         "Ports": {

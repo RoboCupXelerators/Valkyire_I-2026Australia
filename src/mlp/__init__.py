@@ -19,14 +19,27 @@
 """
 
 from .config import MLPConfig
+from .contracts import (
+    DeployObservationV1,
+    TruthStateV1,
+    DecisionPacketV1,
+    EpisodeStatusV1,
+    ResetScenarioV1,
+)
 from .state_encoder import StateEncoder, RobotState
 from .model import ActorCritic, create_model, load_model, save_model
 from .gym_env import SoccerSimEnv, MockSoccerSimEnv, make_env
 from .train import PPOTrainer
 from .inference import MLPInference, MLPController, run_mlp_strategy
+from .skill_executor import SkillExecutor, SkillExecutionResult
 
 __all__ = [
     "MLPConfig",
+    "DeployObservationV1",
+    "TruthStateV1",
+    "DecisionPacketV1",
+    "EpisodeStatusV1",
+    "ResetScenarioV1",
     "StateEncoder",
     "RobotState",
     "ActorCritic",
@@ -40,4 +53,6 @@ __all__ = [
     "MLPInference",
     "MLPController",
     "run_mlp_strategy",
+    "SkillExecutor",
+    "SkillExecutionResult",
 ]

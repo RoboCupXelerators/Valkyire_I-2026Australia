@@ -42,12 +42,12 @@ if _REC == 'AI':
     Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
 elif _REC == 'TI':
     Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
-elif _REC == 'TV':
-    Detect_Method = _safe_import(f'{_PKG}.TunaVision', 'TunaVision')
 elif _REC == 'XV':
     Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
 elif _REC in ('SY', 'SIMYOLO'):
-    Detect_Method = _safe_import(f'{_PKG}.SimYoloVision', 'SimYoloVision')
+    Detect_Method = _safe_import(f'{_PKG}.LunaIntelligence', 'SimYoloVision')
+elif _REC == 'TV':
+    logger.warning("vision_utils: Rec='TV' has been removed. Use 'TI', 'XV', or 'SY'.")
 
 if Detect_Method is None:
     # Raspberry Pi / missing-accelerator fallback: use the pure OpenCV blob detector.
@@ -72,4 +72,4 @@ __version__ = '0.2.0'
 # ReasonData 0.2.0(20250722A) Updated Preference instead QKjson
 
 
-__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'TunaVision', 'XeleratorVision', 'SimYoloVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']
+__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'XeleratorVision', 'SimYoloVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']

@@ -25,7 +25,8 @@
 
 - `AI` -> `ArisuIntelligence`
 - `TI` -> `TunaIntelligence`
-- `TV` -> `TunaVision`
+- `XV` -> `XeleratorVision`
+- `SY` -> `SimYoloVision`
 - 其他 -> `BlobBased`
 
 ## 依赖说明

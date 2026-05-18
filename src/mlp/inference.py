@@ -6,17 +6,28 @@
 import os
 import sys
 import time
+import math
 import threading
 import queue
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Union
 
 import numpy as np
 import torch
 
 from .config import MLPConfig
+from .contracts import (
+    DecisionPacketV1,
+    DeployObservationV1,
+    DribbleMode,
+    FaceMode,
+    IntentId,
+    ShootIntent,
+    observation_from_lunapre,
+)
 from .model import ActorCritic, load_model
 from .state_encoder import StateEncoder, RobotState
+from .skill_executor import SkillExecutor
 
 
 class MLPInference:
@@ -67,7 +78,7 @@ class MLPInference:
         self._smoothed_action = np.zeros(self.config.action_dim, dtype=np.float32)
         
         # 状态获取函数（可由外部设置）
-        self._state_getter: Optional[Callable[[], RobotState]] = None
+        self._state_getter: Optional[Callable[[], Union[RobotState, DeployObservationV1]]] = None
         
         # 动作执行函数（可由外部设置）
         self._action_executor: Optional[Callable[[Dict[str, Any]], None]] = None
@@ -79,7 +90,7 @@ class MLPInference:
         """加载模型"""
         return load_model(self.model_path, self.config)
     
-    def set_state_getter(self, getter: Callable[[], RobotState]):
+    def set_state_getter(self, getter: Callable[[], Union[RobotState, DeployObservationV1]]):
         """设置状态获取函数
         
         Args:
@@ -95,7 +106,7 @@ class MLPInference:
         """
         self._action_executor = executor
     
-    def infer(self, state: RobotState, deterministic: bool = True) -> Dict[str, Any]:
+    def infer(self, state: Union[RobotState, DeployObservationV1], deterministic: bool = True) -> Dict[str, Any]:
         """执行推理
         
         Args:
@@ -129,6 +140,15 @@ class MLPInference:
         self._last_action = action_np
         
         return decoded
+
+    def infer_packet(self, state: Union[RobotState, DeployObservationV1], deterministic: bool = True) -> DecisionPacketV1:
+        """Temporary adapter: map legacy low-level action output into a decision packet.
+
+        This keeps the new packet execution chain available before the model
+        architecture is upgraded to emit native high-level intents.
+        """
+        action = self.infer(state, deterministic=deterministic)
+        return self._legacy_action_to_packet(state, action)
     
     def infer_from_obs(self, obs: np.ndarray, deterministic: bool = True) -> Dict[str, Any]:
         """从观测向量推理
@@ -215,48 +235,73 @@ class MLPInference:
             if elapsed < period:
                 time.sleep(period - elapsed)
     
-    def _get_state_from_lunapre(self) -> RobotState:
-        """从LunaPre获取状态"""
+    def _get_state_from_lunapre(self) -> DeployObservationV1:
+        """从LunaPre获取部署对齐观测"""
         try:
-            # 导入LunaPre模块
-            from LunaPre import UnitedPosition, Bits, chassis
-            from Sensor import Lidar
-            
-            # 获取位姿
-            pos = UnitedPosition.FieldRobotPos()
-            x, y, yaw = pos[0], pos[1], pos[2]
-            
-            # 获取速度
-            vx = getattr(chassis, '_last_vx', 0.0)
-            vy = getattr(chassis, '_last_vy', 0.0)
-            wz = getattr(chassis, '_last_wz', 0.0)
-            
-            # 获取球位置
-            ball_pos = UnitedPosition.RobotBallPos()
-            ball_x, ball_y = ball_pos[0], ball_pos[1]
-            has_ball = (ball_pos == [0xDDD, 0xDDD])
-            
-            # 获取边界距离
-            wall_dist = UnitedPosition.DirectDistance()
-            
-            # 敌方位置
-            enemies = []
-            chassis_pos = UnitedPosition.FieldChassisPos()
-            if chassis_pos:
-                enemies = [(c[0], c[1]) for c in chassis_pos if len(c) >= 2]
-            
-            return RobotState(
-                x=x, y=y, yaw=yaw,
-                vx=vx, vy=vy, wz=wz,
-                ball_x=ball_x, ball_y=ball_y,
-                has_ball=has_ball,
-                enemies=enemies,
-                wall_dist=list(wall_dist) if wall_dist else [0.0, 0.0, 0.0, 0.0],
-            )
-            
+            obs = observation_from_lunapre()
+            try:
+                from LunaPre import chassis
+                obs.self_vx = float(getattr(chassis, '_last_vx', 0.0))
+                obs.self_vy = float(getattr(chassis, '_last_vy', 0.0))
+                obs.self_wz = float(getattr(chassis, '_last_wz', 0.0))
+                obs.velocity_valid = True
+            except Exception:
+                obs.velocity_valid = False
+            return obs
         except Exception as e:
             print(f"[MLPInference] Error getting state from LunaPre: {e}")
-            return RobotState()
+            return DeployObservationV1()
+
+    def _legacy_action_to_packet(
+        self,
+        state: Union[RobotState, DeployObservationV1],
+        action: Dict[str, Any],
+    ) -> DecisionPacketV1:
+        """Map current low-level action dict to a coarse high-level decision packet."""
+        try:
+            vx = float(action.get("vx", 0.0))
+            vy = float(action.get("vy", 0.0))
+            wz = float(action.get("wz", 0.0))
+        except Exception:
+            vx, vy, wz = 0.0, 0.0, 0.0
+
+        self_x = float(getattr(state, "self_x", getattr(state, "x", 0.0)))
+        self_y = float(getattr(state, "self_y", getattr(state, "y", 0.0)))
+        self_yaw = float(getattr(state, "self_yaw", getattr(state, "yaw", 0.0)))
+
+        # Approximate a short horizon target in field frame from the old robot-frame command.
+        horizon_s = 0.25
+        yaw_rad = math.radians(self_yaw)
+        dx = (vx * math.cos(yaw_rad) - vy * math.sin(yaw_rad)) * horizon_s
+        dy = (vx * math.sin(yaw_rad) + vy * math.cos(yaw_rad)) * horizon_s
+        target_x = self_x + dx
+        target_y = self_y + dy
+        target_yaw = self_yaw + wz * horizon_s
+
+        if action.get("kick"):
+            intent = IntentId.SHOOT
+            shoot_intent = ShootIntent.TRY_SHOOT
+        elif action.get("dribble"):
+            intent = IntentId.CARRY_TO_POSE
+            shoot_intent = ShootIntent.NONE
+        elif abs(vx) > 1e-3 or abs(vy) > 1e-3:
+            intent = IntentId.CARRY_TO_POSE
+            shoot_intent = ShootIntent.NONE
+        else:
+            intent = IntentId.SEARCH_BALL
+            shoot_intent = ShootIntent.NONE
+
+        packet = DecisionPacketV1(
+            intent_id=int(intent),
+            target_x=target_x,
+            target_y=target_y,
+            target_yaw=target_yaw,
+            face_mode=int(FaceMode.FACE_TARGET),
+            move_gain=1.0,
+            dribble_mode=int(DribbleMode.WEAK if action.get("dribble") else DribbleMode.OFF),
+            shoot_intent=int(shoot_intent),
+            )
+        return packet
     
     def close(self):
         """关闭推理引擎"""
@@ -295,6 +340,7 @@ class MLPController:
             config=config,
             device=device,
         )
+        self.skill_executor = SkillExecutor(self.config)
         
         # 设置动作执行器
         self.inference.set_action_executor(self._execute_action)
@@ -332,6 +378,19 @@ class MLPController:
                 
         except Exception as e:
             print(f"[MLPController] Error executing action: {e}")
+
+    def execute_decision_packet(self, packet: DecisionPacketV1):
+        """Execute a high-level decision packet via the new skill executor."""
+        result = self.skill_executor.execute(packet)
+        if not result.executed:
+            print(f"[MLPController] Decision packet execution failed: {result.status}")
+
+    def run_packet_once(self, deterministic: bool = True) -> DecisionPacketV1:
+        """Infer one decision packet and execute it immediately."""
+        state = self.inference._get_state_from_lunapre()
+        packet = self.inference.infer_packet(state, deterministic=deterministic)
+        self.execute_decision_packet(packet)
+        return packet
     
     def _apply_safety_limits(self, vx: float, vy: float, wz: float) -> Tuple[float, float, float]:
         """应用安全限制"""

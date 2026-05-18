@@ -384,7 +384,7 @@ linear_map = LinearMap
 
 
 
-def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
+def Slipsideshot(EnemyPos): #溜边 10,-90
     '''
     #### Yaw : 指南针 
     ##### <code>Yaw: int | [0,360]</code>
@@ -394,13 +394,14 @@ def Slipsideshot(EnemyPos,GoalPos): #溜边 10,-90
     ### GoalPos : 球门坐标
     '''
     peripheral.Dribble(True)
-    LocalPos = UnitedPosition.FieldBallPos()
-    LocalX,LocalY,_ = LocalPos
+    LocalX,LocalY,_ = UnitedPosition.FieldBallPos()
     EnemyX,EnemyY = EnemyPos
-    _ , GoalY = GoalPos
     GoalY = 80
-    AimX  = 40
-    AimY  = 80
+    AimX  = 80
+    AimY  = -40
+    if not EnemyPos:
+        EnemyX = 0
+        EnemyY = 0
     if LocalX > 0:
         k = 45
     else:

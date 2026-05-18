@@ -404,7 +404,7 @@ class Peripherals:
     def Dribble(self,Status):
         if self.Permission():
             if Status == True:
-                self.SetIO(self.cfg.Ports.Dribble,1.0)
+                self.SetIO(self.cfg.Ports.Dribble,0.2)
             elif Status == False:
                 self.SetIO(self.cfg.Ports.Dribble,0.0)
             else:
