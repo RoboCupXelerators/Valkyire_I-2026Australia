@@ -2283,6 +2283,14 @@ const controlState = {
     dribbleActive: false,
     currentDirection: null,
     keysPressed: new Set(),
+    mouseControlEnabled: false,
+    mouseCaptured: false,
+    mouseSensitivity: 12,
+    mouseAccumX: 0,
+    mouseAccumY: 0,
+    lastMouseMoveTime: 0,
+    mouseTurnWz: 0,
+    mouseTurnResetTimer: null,
 };
 
 // 初始化键盘控制页面
@@ -2318,9 +2326,152 @@ function setupControlPage() {
     // 键盘事件
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
+
+    // 鼠标控制
+    setupMouseControl();
     
     // 定期更新控制状态
     setInterval(updateControlStatus, 500);
+}
+
+function setupMouseControl() {
+    const captureArea = document.getElementById('mouse-capture-area');
+    const mouseControlCheckbox = document.getElementById('mouse-control-enabled');
+    const sensitivitySlider = document.getElementById('mouse-sensitivity');
+    const sensitivityValue = document.getElementById('mouse-sensitivity-value');
+
+    if (sensitivitySlider && sensitivityValue) {
+        sensitivitySlider.addEventListener('input', (e) => {
+            controlState.mouseSensitivity = parseInt(e.target.value);
+            sensitivityValue.textContent = controlState.mouseSensitivity;
+            updateMouseCaptureUI();
+        });
+    }
+
+    if (mouseControlCheckbox) {
+        mouseControlCheckbox.addEventListener('change', (e) => {
+            controlState.mouseControlEnabled = e.target.checked;
+            if (!controlState.mouseControlEnabled && controlState.mouseCaptured) {
+                exitPointerLock();
+            }
+            updateMouseCaptureUI();
+        });
+    }
+
+    if (captureArea) {
+        captureArea.addEventListener('click', () => {
+            if (controlState.enabled && controlState.mouseControlEnabled && !controlState.mouseCaptured) {
+                requestPointerLock();
+            }
+        });
+    }
+
+    document.addEventListener('pointerlockchange', handlePointerLockChange);
+    document.addEventListener('mousemove', handleMouseMove);
+}
+
+function requestPointerLock() {
+    const captureArea = document.getElementById('mouse-capture-area');
+    if (!captureArea) return;
+    captureArea.requestPointerLock = captureArea.requestPointerLock || captureArea.mozRequestPointerLock;
+    captureArea.requestPointerLock();
+}
+
+function exitPointerLock() {
+    document.exitPointerLock = document.exitPointerLock || document.mozExitPointerLock;
+    if (document.exitPointerLock) {
+        document.exitPointerLock();
+    }
+}
+
+function handlePointerLockChange() {
+    const captureArea = document.getElementById('mouse-capture-area');
+    const locked = document.pointerLockElement === captureArea || document.mozPointerLockElement === captureArea;
+
+    controlState.mouseCaptured = locked;
+    if (!locked) {
+        controlState.mouseAccumX = 0;
+        controlState.mouseAccumY = 0;
+        controlState.lastMouseMoveTime = 0;
+        controlState.mouseTurnWz = 0;
+        if (controlState.mouseTurnResetTimer) {
+            clearTimeout(controlState.mouseTurnResetTimer);
+            controlState.mouseTurnResetTimer = null;
+        }
+        if (controlState.enabled) {
+            sendCombinedControlVector();
+        }
+    }
+
+    updateMouseCaptureUI();
+}
+
+function handleMouseMove(e) {
+    if (state.currentPage !== 'control' || !controlState.enabled || !controlState.mouseCaptured) return;
+
+    const movementX = e.movementX || e.mozMovementX || 0;
+    const movementY = e.movementY || e.mozMovementY || 0;
+    const now = performance.now();
+    const deltaMs = controlState.lastMouseMoveTime > 0 ? Math.max(1, now - controlState.lastMouseMoveTime) : 16;
+    controlState.lastMouseMoveTime = now;
+
+    controlState.mouseAccumX += movementX;
+    controlState.mouseAccumY += movementY;
+
+    const posEl = document.getElementById('mouse-position');
+    if (posEl) {
+        posEl.textContent = `X: ${controlState.mouseAccumX}, Y: ${controlState.mouseAccumY}`;
+    }
+
+    const sensitivity = controlState.mouseSensitivity;
+    const maxTurnSpeed = controlState.turnSpeed;
+
+    if (Math.abs(movementX) >= 1) {
+        const movementSpeed = Math.abs(movementX) / deltaMs;
+        const direction = movementX > 0 ? -1 : 1;
+        const normalizedMagnitude = Math.min(
+            1,
+            (Math.abs(movementX) * (0.55 + sensitivity * 0.18)) / 18 + movementSpeed * (0.35 + sensitivity * 0.05)
+        );
+        const boostedTurnSpeed = maxTurnSpeed * (0.2 + normalizedMagnitude * 0.8);
+        controlState.mouseTurnWz = direction * boostedTurnSpeed;
+    }
+
+    if (controlState.mouseTurnResetTimer) {
+        clearTimeout(controlState.mouseTurnResetTimer);
+    }
+    controlState.mouseTurnResetTimer = setTimeout(() => {
+        controlState.mouseTurnWz = 0;
+        sendCombinedControlVector();
+    }, 120);
+
+    sendCombinedControlVector();
+}
+
+function updateMouseCaptureUI() {
+    const captureArea = document.getElementById('mouse-capture-area');
+    const hintEl = document.getElementById('mouse-hint');
+    const statusEl = document.getElementById('mouse-capture-status');
+
+    if (captureArea) {
+        captureArea.classList.toggle('captured', controlState.mouseCaptured);
+    }
+
+    if (hintEl) {
+        if (controlState.mouseCaptured) {
+            hintEl.textContent = `鼠标左右移动可连续调节转向速度（当前灵敏度 ${controlState.mouseSensitivity}），按 ESC 退出控制`;
+        } else if (controlState.enabled && controlState.mouseControlEnabled) {
+            hintEl.textContent = `点击此区域进入鼠标转向控制（当前灵敏度 ${controlState.mouseSensitivity}）`;
+        } else {
+            hintEl.textContent = '请先启用键盘控制与鼠标控制';
+        }
+    }
+
+    if (statusEl) {
+        statusEl.textContent = controlState.mouseCaptured ? '已捕获' : '未捕获';
+        statusEl.classList.toggle('active', controlState.mouseCaptured);
+        statusEl.classList.toggle('inactive', !controlState.mouseCaptured);
+    }
 }
 
 // 切换控制启用状态
@@ -2390,10 +2541,15 @@ function handleKeyDown(e) {
         toggleDribble();
         return;
     }
+
+    if (key === 'escape' && controlState.mouseCaptured) {
+        exitPointerLock();
+        return;
+    }
     
-    // 移键：更新组合方向
-    if (['w', 's', 'a', 'd', 'q', 'e'].includes(key)) {
-        updateControlVector();
+    // 移动键：更新组合方向
+    if (['w', 's', 'a', 'd'].includes(key)) {
+        sendCombinedControlVector();
     }
 }
 
@@ -2405,19 +2561,17 @@ function handleKeyUp(e) {
     // 取消高亮
     highlightKey(key, false);
     
-    // 移键：更新组合方向
-    if (['w', 's', 'a', 'd', 'q', 'e'].includes(key)) {
-        updateControlVector();
+    // 移动键：更新组合方向
+    if (['w', 's', 'a', 'd'].includes(key)) {
+        sendCombinedControlVector();
     }
 }
 
-// 更新控制向量（全键无冲）
-function updateControlVector() {
+// 发送键盘 + 鼠标的组合控制向量
+function sendCombinedControlVector() {
     const keys = controlState.keysPressed;
     const speed = controlState.speed;
-    const turnSpeed = controlState.turnSpeed;
     
-    // 计算线性速度 (vx, vy)
     let vx = 0, vy = 0, wz = 0;
     
     // W/S: 前后 (X方向)
@@ -2427,19 +2581,17 @@ function updateControlVector() {
     // A/D: 左右 (Y方向)
     if (keys.has('a')) vy += speed;
     if (keys.has('d')) vy -= speed;
+
+    // 鼠标负责转向
+    wz = controlState.mouseCaptured && controlState.mouseControlEnabled
+        ? controlState.mouseTurnWz
+        : 0;
     
-    // Q/E: 转向
-    if (keys.has('q')) wz += turnSpeed;
-    if (keys.has('e')) wz -= turnSpeed;
-    
-    // 发送控制向量
     if (vx === 0 && vy === 0 && wz === 0) {
-        // 没有按键按下，停止
         sendControlMoveVector(0, 0, 0);
         controlState.currentDirection = null;
     } else {
         sendControlMoveVector(vx, vy, wz);
-        // 更新方向显示
         updateDirectionDisplayFromVector(vx, vy, wz);
     }
     updateDirectionDisplay();
@@ -2491,8 +2643,6 @@ function highlightKey(key, active) {
         's': 's',
         'a': 'a',
         'd': 'd',
-        'q': 'q',
-        'e': 'e',
         ' ': 'space',
         'r': 'r',
     };
@@ -2596,6 +2746,8 @@ function updateControlUI() {
         enabledStatusEl.classList.toggle('active', controlState.enabled);
         enabledStatusEl.classList.toggle('inactive', !controlState.enabled);
     }
+
+    updateMouseCaptureUI();
 }
 
 // 更新方向显示

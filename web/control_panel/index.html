@@ -290,7 +290,7 @@
                         </div>
                         <div class="speed-control">
                             <label>速度</label>
-                            <input type="range" id="replay-speed" min="0.1" max="4" step="0.1" value="1">
+                            <input type="range" id="replay-speed" min="0.1" max="3" step="0.1" value="1.0">
                             <span id="speed-value">1.0x</span>
                         </div>
                         <div class="progress-bar">
@@ -1027,9 +1027,8 @@
                         <h3>键盘布局</h3>
                         <div class="keyboard-grid">
                             <div class="key-row">
-                                <div class="key" data-key="q">Q<br><span class="key-label">左转</span></div>
                                 <div class="key" data-key="w">W<br><span class="key-label">前进</span></div>
-                                <div class="key" data-key="e">E<br><span class="key-label">右转</span></div>
+                                <div class="key key-info">🖱️<br><span class="key-label">鼠标左右转向</span></div>
                             </div>
                             <div class="key-row">
                                 <div class="key" data-key="a">A<br><span class="key-label">左移</span></div>
@@ -1039,6 +1038,9 @@
                             <div class="key-row">
                                 <div class="key key-wide" data-key="space">SPACE<br><span class="key-label">弹射</span></div>
                                 <div class="key key-wide" data-key="r">R<br><span class="key-label">盘球</span></div>
+                            </div>
+                            <div class="key-row">
+                                <div class="key key-wide key-info">ESC<br><span class="key-label">退出鼠标控制</span></div>
                             </div>
                         </div>
                     </div>
@@ -1059,6 +1061,35 @@
                                 <span class="label">盘球状态</span>
                                 <span class="value" id="control-dribble-status">关闭</span>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- 鼠标控制 -->
+                    <div class="control-state">
+                        <h3>鼠标转向控制</h3>
+                        <div class="state-grid">
+                            <div class="state-item checkbox-item">
+                                <label>
+                                    <input type="checkbox" id="mouse-control-enabled">
+                                    启用鼠标转向
+                                </label>
+                            </div>
+                            <div class="state-item">
+                                <span class="label">捕获状态</span>
+                                <span class="value" id="mouse-capture-status">未捕获</span>
+                            </div>
+                            <div class="state-item">
+                                <span class="label">鼠标位置</span>
+                                <span class="value" id="mouse-position">X: 0, Y: 0</span>
+                            </div>
+                            <div class="state-item">
+                                <label>鼠标灵敏度</label>
+                                <input type="range" id="mouse-sensitivity" min="1" max="40" value="12">
+                                <span id="mouse-sensitivity-value">12</span>
+                            </div>
+                        </div>
+                        <div id="mouse-capture-area" class="mouse-capture-area" tabindex="0">
+                            <div class="mouse-hint" id="mouse-hint">点击后用鼠标左右转向，ESC 退出</div>
                         </div>
                     </div>
                 </div>
