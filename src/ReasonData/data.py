@@ -85,12 +85,13 @@ class Outputs(BaseModel):
             (('SessionId', 'Tick', 'RobotId'), False),
         )
 
-    def SetOutput(self, input1, input2, input3, input4,
+    @classmethod
+    def SetOutput(cls, input1, input2, input3, input4,
                   vx: float = 0, vy: float = 0, wz: float = 0,
                   kick: float = 0, dribble: float = 0, flags: int = 0,
                   robot_id: int = 1, session_id: str = "default"):
         """记录电机输出数据"""
-        Datas = Outputs(
+        Datas = cls(
             Tick = time.time(),
             RobotId = robot_id,
             SessionId = session_id,

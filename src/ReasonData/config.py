@@ -85,6 +85,17 @@ class Preference:
             "CatchVal": [6, 0],     # 抱球时的球位置
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "MaxSpeed": 500,        # 最大速度值
+            "Pos2PosPID": {
+                "Enabled": True,
+                "Kp": 1.5,
+                "Ki": 0.01,
+                "Kd": 0.12,
+                "OutputLimit": 220,
+                "ResetFrames": 300,
+                "ArrivalScale": 0.5,
+                "MinSpeedGain": 1.0,
+                "MaxSpeedGain": 6.0
+            },
         },
         "Network": {
             "Type": "Slave",        # Master / Slave
@@ -113,6 +124,11 @@ class Preference:
         "Debug": {
             "FullLog": False,
             "Beta": True,
+            "RecordMotion": False,
+            "RecordInterval": 1,
+            "RecordSessionId": None,
+            "RecordPos2Pos": False,
+            "Pos2PosRecordDir": "./Records/pos2pos",
         },
     }
 

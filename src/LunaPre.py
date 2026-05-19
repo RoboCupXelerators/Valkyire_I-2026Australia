@@ -17,12 +17,14 @@ import math
 import errno
 import os
 import pickle
+import csv
 import socket
 import subprocess
 import sys
 import threading
 import time
 import simple_pid
+from pathlib import Path
 
 from ReasonData import logger, Settings
 
@@ -286,16 +288,128 @@ class Positions:
         self.get_vision_data_process: threading.Thread | None = None
         self._vision_started = False
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
-        pan_P = 2.3
-        pan_I = 0.1
-        pan_D = 0.02
+        self._pos2pos_cfg = self._load_pos2pos_config()
         self.ResetFlag = 0
-        self.Position_X_PID = simple_pid.PID(pan_P, pan_I, pan_D, setpoint=0,output_limits=(-300,300),auto_mode=True)
-        self.Position_Y_PID = simple_pid.PID(pan_P, pan_I, pan_D, setpoint=0,output_limits=(-300,300),auto_mode=True)
+        self._last_pos2pos_record_ts = 0.0
+        self._pos2pos_header_written: set[str] = set()
+        self.Position_X_PID = self._build_pos2pos_pid()
+        self.Position_Y_PID = self._build_pos2pos_pid()
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
         if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
             self._vision_enabled = enable_vision_env
+
+    def _load_pos2pos_config(self) -> dict:
+        motion_cfg = getattr(cfg, "Motion", None)
+        pid_cfg = getattr(motion_cfg, "Pos2PosPID", None)
+        return {
+            "enabled": bool(getattr(pid_cfg, "Enabled", getattr(cfg.Debug, "Beta", True))),
+            "kp": float(getattr(pid_cfg, "Kp", 1.8)),
+            "ki": float(getattr(pid_cfg, "Ki", 0.03)),
+            "kd": float(getattr(pid_cfg, "Kd", 0.08)),
+            "output_limit": float(getattr(pid_cfg, "OutputLimit", 220)),
+            "reset_frames": int(getattr(pid_cfg, "ResetFrames", 300)),
+            "arrival_scale": float(getattr(pid_cfg, "ArrivalScale", 0.5)),
+            "min_speed_gain": float(getattr(pid_cfg, "MinSpeedGain", 1.0)),
+            "max_speed_gain": float(getattr(pid_cfg, "MaxSpeedGain", 6.0)),
+            "record_enabled": bool(getattr(cfg.Debug, "RecordPos2Pos", False)),
+            "record_dir": str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos")),
+        }
+
+    def _build_pos2pos_pid(self):
+        limit = abs(float(self._pos2pos_cfg["output_limit"]))
+        return simple_pid.PID(
+            self._pos2pos_cfg["kp"],
+            self._pos2pos_cfg["ki"],
+            self._pos2pos_cfg["kd"],
+            setpoint=0,
+            output_limits=(-limit, limit),
+            auto_mode=True,
+        )
+
+    def RefreshPos2PosPID(self):
+        """从配置重新加载 Pos2Pos PID，便于真实车现场调参。"""
+        self._pos2pos_cfg = self._load_pos2pos_config()
+        self.Position_X_PID = self._build_pos2pos_pid()
+        self.Position_Y_PID = self._build_pos2pos_pid()
+        self.ResetFlag = 0
+        logger.info(
+            "Pos2Pos PID refreshed: kp=%.3f ki=%.3f kd=%.3f limit=%.1f enabled=%s",
+            self._pos2pos_cfg["kp"],
+            self._pos2pos_cfg["ki"],
+            self._pos2pos_cfg["kd"],
+            self._pos2pos_cfg["output_limit"],
+            self._pos2pos_cfg["enabled"],
+        )
+
+    def _resolve_speed_gain(self, speed_gain: int | float | None) -> float:
+        if speed_gain is None:
+            return 1.0
+        gain = float(speed_gain)
+        gain = max(self._pos2pos_cfg["min_speed_gain"], gain)
+        gain = min(self._pos2pos_cfg["max_speed_gain"], gain)
+        return gain
+
+    def _record_pos2pos_sample(
+        self,
+        *,
+        aim_pos: list,
+        loc_pos: list,
+        error_xyz: list,
+        delta_xy: list,
+        speed_gain: float,
+        reached: bool,
+        mode: str,
+    ) -> None:
+        if not self._pos2pos_cfg.get("record_enabled", False):
+            return
+        try:
+            record_dir = Path(self._pos2pos_cfg["record_dir"]).expanduser()
+            if not record_dir.is_absolute():
+                repo_root = Path(__file__).resolve().parent.parent
+                record_dir = repo_root / record_dir
+            record_dir.mkdir(parents=True, exist_ok=True)
+            session_id = getattr(cfg.Debug, "RecordSessionId", None) or time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            csv_path = record_dir / f"pos2pos_{session_id}.csv"
+            fieldnames = [
+                "tick", "robot_id", "mode", "reached",
+                "aim_x", "aim_y", "aim_z",
+                "loc_x", "loc_y", "loc_z",
+                "err_x", "err_y", "err_z",
+                "cmd_x", "cmd_y", "speed_gain",
+                "pid_kp", "pid_ki", "pid_kd", "pid_limit",
+            ]
+            need_header = str(csv_path) not in self._pos2pos_header_written or not csv_path.exists()
+            with csv_path.open("a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                if need_header:
+                    writer.writeheader()
+                    self._pos2pos_header_written.add(str(csv_path))
+                writer.writerow({
+                    "tick": round(time.time(), 6),
+                    "robot_id": int(getattr(cfg.RoboInfo, "number", 1)),
+                    "mode": mode,
+                    "reached": int(reached),
+                    "aim_x": round(float(aim_pos[0]), 4),
+                    "aim_y": round(float(aim_pos[1]), 4),
+                    "aim_z": round(float(aim_pos[2]), 4),
+                    "loc_x": round(float(loc_pos[0]), 4),
+                    "loc_y": round(float(loc_pos[1]), 4),
+                    "loc_z": round(float(loc_pos[2]), 4),
+                    "err_x": round(float(error_xyz[0]), 4),
+                    "err_y": round(float(error_xyz[1]), 4),
+                    "err_z": round(float(error_xyz[2]), 4),
+                    "cmd_x": round(float(delta_xy[0]), 4),
+                    "cmd_y": round(float(delta_xy[1]), 4),
+                    "speed_gain": round(float(speed_gain), 4),
+                    "pid_kp": self._pos2pos_cfg["kp"],
+                    "pid_ki": self._pos2pos_cfg["ki"],
+                    "pid_kd": self._pos2pos_cfg["kd"],
+                    "pid_limit": self._pos2pos_cfg["output_limit"],
+                })
+        except Exception as e:
+            if Settings.Debug.FullLog:
+                logger.debug(f"Pos2Pos record failed: {e}")
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -546,7 +660,7 @@ class Positions:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
             time.sleep(self.WaitTime) # wait 1 second for starting lidar
-            if self.WarnedLidarCount >= cfg.Motion.MaxWarnCount:
+            if self.WarnedLidarCount >= cfg.Motion.ErrorRange/3:
                 a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
                 logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping chassis to prevent damage.")
                 lidar.stop()
@@ -828,8 +942,9 @@ class Positions:
         iErrorX = (iAimX) - (iLocX)
         iErrorY = (iAimY) - (iLocY)
         iErrorZ = (iAimZ) - (iLocZ)
-        if Settings.Debug.Beta:
-            if self.ResetFlag > 1000:
+        pid_enabled = bool(self._pos2pos_cfg.get("enabled", getattr(Settings.Debug, "Beta", True)))
+        if pid_enabled:
+            if self.ResetFlag > self._pos2pos_cfg["reset_frames"]:
                 self.Position_X_PID.reset()
                 self.Position_Y_PID.reset()
                 self.ResetFlag = 0
@@ -846,24 +961,52 @@ class Positions:
             iDeltaX = iErrorX
             iDeltaY = iErrorY
         iErrorRange = Settings.Motion.ErrorRange
+        iArrivalRange = max(1.0, float(iErrorRange) * float(self._pos2pos_cfg["arrival_scale"]))
+        resolved_speed_gain = self._resolve_speed_gain(speed_gain)
         iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
-        if iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and abs(iErrorRange) > iErrorZ:
+        if iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and abs(iErrorRange) > abs(iErrorZ):
             chassis.stop()
             self.ResetFlag = 0
             self.Position_X_PID.reset()
             self.Position_Y_PID.reset()
+            self._record_pos2pos_sample(
+                aim_pos=[iAimX, iAimY, iAimZ],
+                loc_pos=[iLocX, iLocY, iLocZ],
+                error_xyz=[iErrorX, iErrorY, iErrorZ],
+                delta_xy=[0.0, 0.0],
+                speed_gain=resolved_speed_gain,
+                reached=True,
+                mode="arrived",
+            )
             return True
-        elif iErrorRange/2 > abs(iErrorX) and iErrorRange/2 > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
+        elif iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
             self.ResetFlag = 0
             self.Position_X_PID.reset()
             self.Position_Y_PID.reset()
             chassis.FieldTurn(iAimZ)
             logger.debug("Position reached, adjusting orientation to %s degrees." % iAimZ)
+            self._record_pos2pos_sample(
+                aim_pos=[iAimX, iAimY, iAimZ],
+                loc_pos=[iLocX, iLocY, iLocZ],
+                error_xyz=[iErrorX, iErrorY, iErrorZ],
+                delta_xy=[0.0, 0.0],
+                speed_gain=resolved_speed_gain,
+                reached=False,
+                mode="turn_only",
+            )
         else:
-            if speed_gain:
-                chassis.FieldMoveVector(iDeltaX*speed_gain,iDeltaY*speed_gain,iAimZ)
-            else:
-                chassis.FieldMoveVector(iDeltaX,iDeltaY,iAimZ)
+            cmd_x = iDeltaX * resolved_speed_gain
+            cmd_y = iDeltaY * resolved_speed_gain
+            chassis.FieldMoveVector(cmd_x, cmd_y, iAimZ)
+            self._record_pos2pos_sample(
+                aim_pos=[iAimX, iAimY, iAimZ],
+                loc_pos=[iLocX, iLocY, iLocZ],
+                error_xyz=[iErrorX, iErrorY, iErrorZ],
+                delta_xy=[cmd_x, cmd_y],
+                speed_gain=resolved_speed_gain,
+                reached=False,
+                mode="tracking",
+            )
             return False
 
     def Move2Path(self, Posistions: list, iWaitMs: float):

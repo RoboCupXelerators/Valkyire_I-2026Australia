@@ -394,24 +394,24 @@ def Slipsideshot(EnemyPos): #溜边 10,-90
     ### GoalPos : 球门坐标
     '''
     peripheral.Dribble(True)
-    LocalX,LocalY,_ = UnitedPosition.FieldBallPos()
+    LocalX,LocalY,_ = UnitedPosition.FieldRobotPos()
     EnemyX,EnemyY = EnemyPos
-    GoalY = 80
+    GoalX = 90
     AimX  = 80
-    AimY  = -40
+    AimY  = 40
     if not EnemyPos:
         EnemyX = 0
         EnemyY = 0
     if LocalX > 0:
-        k = 45
-    else:
-        AimX = -AimX
         k = -45
+    else:
+        AimY = -AimY
+        k = 45
     Angle = (math.degrees(math.atan2(LocalX - EnemyX, LocalY - EnemyY)-270)) % 360
-    UnitedPosition.Pos2Pos([AimX,AimY,Angle],False,200)
+    UnitedPosition.Pos2Pos([AimX,AimY,Angle],10)
     if abs(AimX-LocalX)+abs(AimX-LocalX) < 5:
-        DeltaY = LocalY - GoalY
-        DeltaX = LocalX
+        DeltaX = LocalX - GoalX
+        DeltaY = LocalY
         Theta =((math.degrees(math.atan2(DeltaX, DeltaY)-270)) % 360) + 180 +k
         Compass = Theta
         for _ in range(20):
@@ -428,7 +428,7 @@ def OHMYBACK(HomePos=[0,-20,0]):
         peripheral.Dribble(True)
         iLocX,iLocY,_ = UnitedPosition.FieldRobotPos()
         try:
-            Cx ,Cy = UnitedPosition.FieldChassisPos()
+            Cx ,Cy = UnitedPosition.FieldChassisPos()[0]
         except:
             Cx = 0
             Cy = 0
