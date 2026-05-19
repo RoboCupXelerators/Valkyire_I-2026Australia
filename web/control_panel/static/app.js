@@ -52,6 +52,9 @@ function init() {
     
     // 初始化时设置为离线状态，直到成功连接到后端
     updateOnlineStatus(false);
+    
+    // 初始化键盘控制页面
+    setupControlPage();
 }
 
 function cacheElements() {
@@ -2268,6 +2271,399 @@ function pollOTALog() {
     };
     
     setTimeout(poll, 500);
+}
+
+// ==================== 键盘控制页面 ====================
+
+// 控制状态
+const controlState = {
+    enabled: false,
+    speed: 100,
+    turnSpeed: 50,
+    dribbleActive: false,
+    currentDirection: null,
+    keysPressed: new Set(),
+};
+
+// 初始化键盘控制页面
+function setupControlPage() {
+    // 启用/禁用按钮
+    const enableBtn = document.getElementById('control-enable-btn');
+    if (enableBtn) {
+        enableBtn.addEventListener('click', toggleControlEnable);
+    }
+    
+    // 速度滑块
+    const speedSlider = document.getElementById('control-speed');
+    const speedValue = document.getElementById('control-speed-value');
+    if (speedSlider && speedValue) {
+        speedSlider.addEventListener('input', (e) => {
+            controlState.speed = parseInt(e.target.value);
+            speedValue.textContent = controlState.speed;
+            updateControlSpeed();
+        });
+    }
+    
+    // 转向速度滑块
+    const turnSpeedSlider = document.getElementById('control-turn-speed');
+    const turnSpeedValue = document.getElementById('control-turn-speed-value');
+    if (turnSpeedSlider && turnSpeedValue) {
+        turnSpeedSlider.addEventListener('input', (e) => {
+            controlState.turnSpeed = parseInt(e.target.value);
+            turnSpeedValue.textContent = controlState.turnSpeed;
+            updateControlSpeed();
+        });
+    }
+    
+    // 键盘事件
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+    
+    // 定期更新控制状态
+    setInterval(updateControlStatus, 500);
+}
+
+// 切换控制启用状态
+async function toggleControlEnable() {
+    const btn = document.getElementById('control-enable-btn');
+    
+    try {
+        const response = await fetch('/api/control/enable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !controlState.enabled })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            controlState.enabled = data.enabled;
+            updateControlUI();
+        } else {
+            alert('操作失败: ' + data.error);
+        }
+    } catch (e) {
+        console.error('Failed to toggle control:', e);
+        alert('操作失败');
+    }
+}
+
+// 更新控制速度
+async function updateControlSpeed() {
+    if (!controlState.enabled) return;
+    
+    try {
+        await fetch('/api/control/speed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                speed: controlState.speed,
+                turn_speed: controlState.turnSpeed
+            })
+        });
+    } catch (e) {
+        console.error('Failed to update speed:', e);
+    }
+}
+
+// 处理键盘按下
+function handleKeyDown(e) {
+    // 只在控制页面且启用时响应
+    if (state.currentPage !== 'control' || !controlState.enabled) return;
+    
+    const key = e.key.toLowerCase();
+    
+    // 防止重复触发
+    if (controlState.keysPressed.has(key)) return;
+    controlState.keysPressed.add(key);
+    
+    // 高亮按键
+    highlightKey(key, true);
+    
+    // 处理特殊按键
+    if (key === ' ') {
+        e.preventDefault();
+        sendControlKick();
+        return;
+    }
+    if (key === 'r') {
+        toggleDribble();
+        return;
+    }
+    
+    // 移键：更新组合方向
+    if (['w', 's', 'a', 'd', 'q', 'e'].includes(key)) {
+        updateControlVector();
+    }
+}
+
+// 处理键盘释放
+function handleKeyUp(e) {
+    const key = e.key.toLowerCase();
+    controlState.keysPressed.delete(key);
+    
+    // 取消高亮
+    highlightKey(key, false);
+    
+    // 移键：更新组合方向
+    if (['w', 's', 'a', 'd', 'q', 'e'].includes(key)) {
+        updateControlVector();
+    }
+}
+
+// 更新控制向量（全键无冲）
+function updateControlVector() {
+    const keys = controlState.keysPressed;
+    const speed = controlState.speed;
+    const turnSpeed = controlState.turnSpeed;
+    
+    // 计算线性速度 (vx, vy)
+    let vx = 0, vy = 0, wz = 0;
+    
+    // W/S: 前后 (X方向)
+    if (keys.has('w')) vx += speed;
+    if (keys.has('s')) vx -= speed;
+    
+    // A/D: 左右 (Y方向)
+    if (keys.has('a')) vy += speed;
+    if (keys.has('d')) vy -= speed;
+    
+    // Q/E: 转向
+    if (keys.has('q')) wz += turnSpeed;
+    if (keys.has('e')) wz -= turnSpeed;
+    
+    // 发送控制向量
+    if (vx === 0 && vy === 0 && wz === 0) {
+        // 没有按键按下，停止
+        sendControlMoveVector(0, 0, 0);
+        controlState.currentDirection = null;
+    } else {
+        sendControlMoveVector(vx, vy, wz);
+        // 更新方向显示
+        updateDirectionDisplayFromVector(vx, vy, wz);
+    }
+    updateDirectionDisplay();
+}
+
+// 发送控制向量
+async function sendControlMoveVector(vx, vy, wz) {
+    try {
+        const response = await fetch('/api/control/move_vector', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ vx, vy, wz })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            controlState.currentVector = { vx, vy, wz };
+        }
+    } catch (e) {
+        console.error('Failed to send move vector:', e);
+    }
+}
+
+// 从向量更新方向显示
+function updateDirectionDisplayFromVector(vx, vy, wz) {
+    // 构建方向描述
+    const parts = [];
+    
+    // X方向
+    if (vx > 0) parts.push('前进');
+    else if (vx < 0) parts.push('后退');
+    
+    // Y方向
+    if (vy > 0) parts.push('左移');
+    else if (vy < 0) parts.push('右移');
+    
+    // 转向
+    if (wz > 0) parts.push('左转');
+    else if (wz < 0) parts.push('右转');
+    
+    controlState.currentDirection = parts.length > 0 ? parts.join('+') : null;
+}
+
+// 高亮按键
+function highlightKey(key, active) {
+    const keyMap = {
+        'w': 'w',
+        's': 's',
+        'a': 'a',
+        'd': 'd',
+        'q': 'q',
+        'e': 'e',
+        ' ': 'space',
+        'r': 'r',
+    };
+    
+    const dataKey = keyMap[key];
+    if (!dataKey) return;
+    
+    const keyEl = document.querySelector(`.key[data-key="${dataKey}"]`);
+    if (keyEl) {
+        if (active) {
+            keyEl.classList.add('active');
+        } else {
+            keyEl.classList.remove('active');
+        }
+    }
+}
+
+// 发送移动命令
+async function sendControlMove(direction) {
+    try {
+        const response = await fetch('/api/control/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ direction })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            controlState.currentDirection = direction;
+            updateDirectionDisplay();
+        }
+    } catch (e) {
+        console.error('Failed to send move command:', e);
+    }
+}
+
+// 发送弹射命令
+async function sendControlKick() {
+    try {
+        const response = await fetch('/api/control/kick', {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            // 短暂高亮提示
+            const statusEl = document.getElementById('control-status');
+            if (statusEl) {
+                statusEl.textContent = '状态: 弹射!';
+                statusEl.style.color = '#22c55e';
+                setTimeout(() => {
+                    statusEl.textContent = controlState.enabled ? '状态: 已启用' : '状态: 未启用';
+                    statusEl.style.color = '';
+                }, 500);
+            }
+        }
+    } catch (e) {
+        console.error('Failed to send kick command:', e);
+    }
+}
+
+// 切换盘球状态
+async function toggleDribble() {
+    try {
+        const response = await fetch('/api/control/dribble/toggle', {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            controlState.dribbleActive = data.dribble_active;
+            updateDribbleDisplay();
+        }
+    } catch (e) {
+        console.error('Failed to toggle dribble:', e);
+    }
+}
+
+// 更新控制 UI
+function updateControlUI() {
+    const btn = document.getElementById('control-enable-btn');
+    const statusEl = document.getElementById('control-status');
+    const enabledStatusEl = document.getElementById('control-enabled-status');
+    
+    if (btn) {
+        btn.textContent = controlState.enabled ? '🛑 禁用键盘控制' : '🎮 启用键盘控制';
+        btn.classList.toggle('btn-danger', controlState.enabled);
+        btn.classList.toggle('btn-primary', !controlState.enabled);
+    }
+    
+    if (statusEl) {
+        statusEl.textContent = controlState.enabled ? '状态: 已启用' : '状态: 未启用';
+        statusEl.style.color = controlState.enabled ? '#22c55e' : '';
+    }
+    
+    if (enabledStatusEl) {
+        enabledStatusEl.textContent = controlState.enabled ? '已启用' : '未启用';
+        enabledStatusEl.classList.toggle('active', controlState.enabled);
+        enabledStatusEl.classList.toggle('inactive', !controlState.enabled);
+    }
+}
+
+// 更新方向显示
+function updateDirectionDisplay() {
+    const el = document.getElementById('control-direction');
+    if (!el) return;
+    
+    const directionNames = {
+        'forward': '前进',
+        'backward': '后退',
+        'left': '左移',
+        'right': '右移',
+        'turn_left': '左转',
+        'turn_right': '右转',
+    };
+    
+    el.textContent = controlState.currentDirection ? directionNames[controlState.currentDirection] || controlState.currentDirection : '--';
+}
+
+// 更新盘球显示
+function updateDribbleDisplay() {
+    const el = document.getElementById('control-dribble-status');
+    if (!el) return;
+    
+    el.textContent = controlState.dribbleActive ? '开启' : '关闭';
+    el.classList.toggle('active', controlState.dribbleActive);
+    el.classList.toggle('inactive', !controlState.dribbleActive);
+    
+    // 更新 R 键显示
+    const rKey = document.querySelector('.key[data-key="r"]');
+    if (rKey) {
+        rKey.classList.toggle('active', controlState.dribbleActive);
+    }
+}
+
+// 更新控制状态（从服务器获取）
+async function updateControlStatus() {
+    if (state.currentPage !== 'control') return;
+    
+    try {
+        const response = await fetch('/api/control/status');
+        const data = await response.json();
+        
+        controlState.enabled = data.enabled;
+        controlState.speed = data.speed;
+        controlState.turnSpeed = data.turn_speed;
+        controlState.dribbleActive = data.dribble_active;
+        
+        // 更新滑块
+        const speedSlider = document.getElementById('control-speed');
+        const speedValue = document.getElementById('control-speed-value');
+        if (speedSlider && speedValue) {
+            speedSlider.value = controlState.speed;
+            speedValue.textContent = controlState.speed;
+        }
+        
+        const turnSpeedSlider = document.getElementById('control-turn-speed');
+        const turnSpeedValue = document.getElementById('control-turn-speed-value');
+        if (turnSpeedSlider && turnSpeedValue) {
+            turnSpeedSlider.value = controlState.turnSpeed;
+            turnSpeedValue.textContent = controlState.turnSpeed;
+        }
+        
+        updateControlUI();
+        updateDribbleDisplay();
+    } catch (e) {
+        console.error('Failed to update control status:', e);
+    }
 }
 
 async function saveConfig() {

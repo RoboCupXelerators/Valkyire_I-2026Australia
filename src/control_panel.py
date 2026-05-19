@@ -177,6 +177,13 @@ class ControlPanelApp:
         # 检测是否为模拟器环境
         self._is_simulator = self._detect_simulator_mode()
         
+        # 键盘控制状态
+        self._control_lock = threading.Lock()
+        self._control_enabled = False
+        self._control_speed = 100  # 默认移动速度
+        self._control_turn_speed = 100  # 默认转向速度
+        self._dribble_active = False  # 盘球状态
+        
         # 摄像头资源管理器
         self.camera_manager = CameraResourceManager()
         
@@ -1104,6 +1111,153 @@ class ControlPanelApp:
                 "rmse": self.calib_session.result.get("rmse") if self.calib_session.result else None,
             }
     
+    # ==================== 键盘控制 ====================
+    
+    def control_enable(self, enabled: bool) -> dict:
+        """启用/禁用键盘控制"""
+        with self._control_lock:
+            self._control_enabled = enabled
+            if not enabled:
+                # 禁用时停止机器人
+                self._control_stop()
+            return {"success": True, "enabled": enabled}
+    
+    def control_set_speed(self, speed: int, turn_speed: int = None) -> dict:
+        """设置移动速度和转向速度"""
+        with self._control_lock:
+            self._control_speed = max(0, min(300, speed))
+            if turn_speed is not None:
+                self._control_turn_speed = max(0, min(150, turn_speed))
+        return {"success": True, "speed": self._control_speed, "turn_speed": self._control_turn_speed}
+    
+    def control_get_status(self) -> dict:
+        """获取控制状态"""
+        return {
+            "enabled": self._control_enabled,
+            "speed": self._control_speed,
+            "turn_speed": self._control_turn_speed,
+            "dribble_active": self._dribble_active,
+        }
+    
+    def _get_chassis_and_peripheral(self):
+        """获取 chassis 和 peripheral 对象"""
+        try:
+            from LunaPre import chassis, peripheral
+            return chassis, peripheral
+        except Exception:
+            return None, None
+    
+    def _control_stop(self):
+        """停止机器人移动"""
+        chassis, _ = self._get_chassis_and_peripheral()
+        if chassis:
+            try:
+                chassis.stop()
+            except Exception as e:
+                print(f"[ControlPanel] Error stopping chassis: {e}")
+    
+    def control_move(self, direction: str) -> dict:
+        """控制机器人移动（单方向，保留兼容性）
+        
+        direction: 'forward', 'backward', 'left', 'right', 'turn_left', 'turn_right', 'stop'
+        """
+        with self._control_lock:
+            if not self._control_enabled:
+                return {"success": False, "error": "Control not enabled"}
+            
+            chassis, _ = self._get_chassis_and_peripheral()
+            if not chassis:
+                return {"success": False, "error": "Chassis not available"}
+            
+            speed = self._control_speed
+            turn_speed = self._control_turn_speed
+            
+            try:
+                if direction == 'forward':
+                    chassis.RobotMoveVector(speed, 0, 0)
+                elif direction == 'backward':
+                    chassis.RobotMoveVector(-speed, 0, 0)
+                elif direction == 'left':
+                    chassis.RobotMoveVector(0, speed, 0)
+                elif direction == 'right':
+                    chassis.RobotMoveVector(0, -speed, 0)
+                elif direction == 'turn_left':
+                    chassis.RobotTurn(turn_speed)
+                elif direction == 'turn_right':
+                    chassis.RobotTurn(-turn_speed)
+                elif direction == 'stop':
+                    chassis.stop()
+                else:
+                    return {"success": False, "error": f"Unknown direction: {direction}"}
+                
+                return {"success": True, "direction": direction}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    
+    def control_move_vector(self, vx: int, vy: int, wz: int) -> dict:
+        """控制机器人移动（全键无冲，支持组合方向）
+        
+        vx: X方向速度 (前进为正)
+        vy: Y方向速度 (左移为正)
+        wz: 角速度 (左转为正)
+        """
+        with self._control_lock:
+            if not self._control_enabled:
+                return {"success": False, "error": "Control not enabled"}
+            
+            chassis, _ = self._get_chassis_and_peripheral()
+            if not chassis:
+                return {"success": False, "error": "Chassis not available"}
+            
+            try:
+                chassis.RobotMoveVector(vx, vy, wz)
+                return {"success": True, "vx": vx, "vy": vy, "wz": wz}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    
+    def control_kick(self) -> dict:
+        """弹射（踢球）"""
+        with self._control_lock:
+            if not self._control_enabled:
+                return {"success": False, "error": "Control not enabled"}
+            
+            _, peripheral = self._get_chassis_and_peripheral()
+            if not peripheral:
+                return {"success": False, "error": "Peripheral not available"}
+            
+            try:
+                peripheral.ShootBall()
+                return {"success": True, "action": "kick"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    
+    def control_dribble(self, active: bool) -> dict:
+        """控制盘球
+        
+        active: True 开启盘球 (PWM 0.2), False 关闭盘球
+        """
+        with self._control_lock:
+            if not self._control_enabled:
+                return {"success": False, "error": "Control not enabled"}
+            
+            _, peripheral = self._get_chassis_and_peripheral()
+            if not peripheral:
+                return {"success": False, "error": "Peripheral not available"}
+            
+            try:
+                if active:
+                    peripheral.Dribble(0.35)  # PWM 0.2
+                else:
+                    peripheral.Dribble(False)
+                self._dribble_active = active
+                return {"success": True, "dribble_active": active}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+    
+    def control_dribble_toggle(self) -> dict:
+        """切换盘球状态"""
+        return self.control_dribble(not self._dribble_active)
+    
     # ==================== 鸟瞰图预览 ====================
     
     def _load_calibration(self, calib_file: str) -> dict:
@@ -1622,6 +1776,58 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         
         if path == '/api/birdeye/stop':
             result = app.birdeye_stop()
+            self._send_json(result)
+            return
+        
+        # Keyboard Control API
+        if path == '/api/control/status':
+            self._send_json(app.control_get_status())
+            return
+        
+        if path == '/api/control/enable':
+            data = self._parse_json_body()
+            result = app.control_enable(data.get('enabled', True))
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/speed':
+            data = self._parse_json_body()
+            result = app.control_set_speed(
+                speed=data.get('speed', 100),
+                turn_speed=data.get('turn_speed')
+            )
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/move':
+            data = self._parse_json_body()
+            result = app.control_move(data.get('direction', 'stop'))
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/kick':
+            result = app.control_kick()
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/dribble':
+            data = self._parse_json_body()
+            result = app.control_dribble(data.get('active', True))
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/dribble/toggle':
+            result = app.control_dribble_toggle()
+            self._send_json(result)
+            return
+        
+        if path == '/api/control/move_vector':
+            data = self._parse_json_body()
+            result = app.control_move_vector(
+                vx=data.get('vx', 0),
+                vy=data.get('vy', 0),
+                wz=data.get('wz', 0)
+            )
             self._send_json(result)
             return
         

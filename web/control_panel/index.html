@@ -38,6 +38,10 @@
                     <span class="icon">🔧</span>
                     <span class="label">工具</span>
                 </li>
+                <li class="nav-item" data-page="control">
+                    <span class="icon">🎮</span>
+                    <span class="label">控制</span>
+                </li>
             </ul>
             <div class="status-bar">
                 <div class="status-item">
@@ -982,6 +986,81 @@
                             <tr><td colspan="6">加载中...</td></tr>
                         </tbody>
                     </table>
+                </div>
+            </div>
+
+            <!-- 键盘控制页面 -->
+            <div id="page-control" class="page">
+                <header class="page-header">
+                    <h1>键盘控制</h1>
+                    <span class="status" id="control-status">状态: 未启用</span>
+                </header>
+                
+                <div class="control-container">
+                    <!-- 控制开关 -->
+                    <div class="control-panel">
+                        <div class="control-enable-section">
+                            <button class="btn btn-primary btn-large" id="control-enable-btn">🎮 启用键盘控制</button>
+                            <p class="hint">启用后，使用键盘控制机器人移动</p>
+                        </div>
+                        
+                        <!-- 速度设置 -->
+                        <div class="control-settings">
+                            <h3>速度设置</h3>
+                            <div class="setting-row">
+                                <div class="setting-item">
+                                    <label>移动速度</label>
+                                    <input type="range" id="control-speed" min="20" max="300" value="100">
+                                    <span id="control-speed-value">100</span>
+                                </div>
+                                <div class="setting-item">
+                                    <label>转向速度</label>
+                                    <input type="range" id="control-turn-speed" min="10" max="150" value="50">
+                                    <span id="control-turn-speed-value">50</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 键盘布局说明 -->
+                    <div class="keyboard-layout">
+                        <h3>键盘布局</h3>
+                        <div class="keyboard-grid">
+                            <div class="key-row">
+                                <div class="key" data-key="q">Q<br><span class="key-label">左转</span></div>
+                                <div class="key" data-key="w">W<br><span class="key-label">前进</span></div>
+                                <div class="key" data-key="e">E<br><span class="key-label">右转</span></div>
+                            </div>
+                            <div class="key-row">
+                                <div class="key" data-key="a">A<br><span class="key-label">左移</span></div>
+                                <div class="key" data-key="s">S<br><span class="key-label">后退</span></div>
+                                <div class="key" data-key="d">D<br><span class="key-label">右移</span></div>
+                            </div>
+                            <div class="key-row">
+                                <div class="key key-wide" data-key="space">SPACE<br><span class="key-label">弹射</span></div>
+                                <div class="key key-wide" data-key="r">R<br><span class="key-label">盘球</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 状态显示 -->
+                    <div class="control-state">
+                        <h3>状态</h3>
+                        <div class="state-grid">
+                            <div class="state-item">
+                                <span class="label">控制状态</span>
+                                <span class="value" id="control-enabled-status">未启用</span>
+                            </div>
+                            <div class="state-item">
+                                <span class="label">当前方向</span>
+                                <span class="value" id="control-direction">--</span>
+                            </div>
+                            <div class="state-item">
+                                <span class="label">盘球状态</span>
+                                <span class="value" id="control-dribble-status">关闭</span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>
