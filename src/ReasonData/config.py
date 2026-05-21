@@ -63,7 +63,7 @@ class Preference:
             # 模型路径 (统一配置，相对于项目根目录)
             "ModelPath": "YOLO_Models/models/yolov8nForX5.pt",
             "EnginePath": "YOLO_Models/models/yolov8nForX5.engine",
-            "HailoModelPath": "YOLO_Models/models/ArisuModel_v1.2s.hef",
+            "HailoModelPath": "/yolov8s.hef",
             # 标定文件夹
             "CalibrationFolder": "Calibration",
             # 目标物理尺寸 (cm) - 用于bbox距离估计
@@ -72,6 +72,7 @@ class Preference:
             "ChassisHeight": 18.0,
             "GoalWidth": 90.0,
             "GoalHeight": 18.0,
+            "MinBallBBoxArea": 40,
             # 录制配置
             "Record": False,
             "RecordDir": "./Records",
@@ -83,6 +84,9 @@ class Preference:
         },
         "Motion": {
             "CatchVal": [6, 0],     # 抱球时的球位置
+            "CatchBBoxSize": 90,    # 近距离视觉框大于该值时辅助判断持球
+            "CatchBBoxXMargin": 4,  # bbox 持球判定允许的前向余量
+            "CatchBBoxYTol": 2,     # bbox 持球判定允许的横向误差
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "MaxSpeed": 500,        # 最大速度值
             "Move2PathPointTimeoutS": 12.0,
@@ -185,8 +189,17 @@ class Preference:
         with open(CACHE_FILE, "r") as f:
             old_cfg = _json.load(f)
 
-        # 创建新配置，保留旧值
+        # 创建新配置，先保留现有新格式值，再兼容旧字段映射。
         new_cfg = _json.loads(_json.dumps(self.DEFAULT_CONFIG))
+
+        def merge_existing(dst, src):
+            for key, value in src.items():
+                if isinstance(value, dict) and isinstance(dst.get(key), dict):
+                    merge_existing(dst[key], value)
+                else:
+                    dst[key] = value
+
+        merge_existing(new_cfg, old_cfg)
         
         # 迁移映射表
         migrations = {

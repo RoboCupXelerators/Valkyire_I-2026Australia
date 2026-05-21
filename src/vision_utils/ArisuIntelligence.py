@@ -93,7 +93,9 @@ class ArisuIntelligence(VisionPreUntil):
                 self._hailo_init_error = None
 
                 with VDevice(self.HailoParams) as hat:
-                    infer_model = hat.create_infer_model(str(MODEL_DIR)+Settings.Vision.HailoModelPath)
+                    model_path_raw = str(Settings.Vision.HailoModelPath)
+                    model_path = MODEL_DIR / model_path_raw.lstrip("/")
+                    infer_model = hat.create_infer_model(str(model_path))
                     infer_model.set_batch_size(4)
                     self.InputShape = infer_model.input().shape
                     self.OutputShape = infer_model.output().shape
@@ -227,10 +229,10 @@ class ArisuIntelligence(VisionPreUntil):
                         # Store bbox in 640x640 space for dashboard
                         BallBBoxOutputs[CameraIndex] = [CameraIndex, raw_x1, raw_y1, raw_x2, raw_y2, Ball_Confidence]
                         
-                        Ball_Y_Min = int(_ball[0] * 640) - 80 + 15
-                        Ball_X_Min = int(_ball[1] * 640) + 15
-                        Ball_Y_Max = int(_ball[2] * 640) - 80 -15
-                        Ball_X_Max = int(_ball[3] * 640) -15
+                        Ball_Y_Min = raw_y1 - 80
+                        Ball_X_Min = raw_x1
+                        Ball_Y_Max = raw_y2 - 80
+                        Ball_X_Max = raw_x2
                         Ball_Bottom_Y = Ball_Y_Max
                         Ball_Width = Ball_X_Max - Ball_X_Min
                         Ball_Height = Ball_Y_Max - Ball_Y_Min
@@ -391,4 +393,3 @@ class ArisuIntelligence(VisionPreUntil):
         
             # print(Output0)
             # time.sleep(0.01)
-
