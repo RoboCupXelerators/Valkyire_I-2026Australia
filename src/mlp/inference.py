@@ -10,7 +10,7 @@ import math
 import threading
 import queue
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, Union
+from typing import Optional, Dict, Any, Callable, Union, Tuple
 
 import numpy as np
 import torch

@@ -85,16 +85,26 @@ class Preference:
             "CatchVal": [6, 0],     # 抱球时的球位置
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "MaxSpeed": 500,        # 最大速度值
+            "Move2PathPointTimeoutS": 12.0,
+            "RestrictedArea": {
+                # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPos，不依赖雷达原始距离。
+                "XLimit": 90.0,
+                "YLimit": 70.0,
+                "GoalBoxWidth": 25.0,
+                "GoalBoxYHalf": 50.0,
+                "Clearance": 5.0
+            },
             "Pos2PosPID": {
                 "Enabled": True,
-                "Kp": 1.5,
-                "Ki": 0.01,
-                "Kd": 0.12,
-                "OutputLimit": 220,
+                "Kp": 1.1,
+                "Ki": 0.0,
+                "Kd": 0.08,
+                "OutputLimit": 160,
+                "SampleTime": 0.02,
                 "ResetFrames": 300,
-                "ArrivalScale": 0.5,
-                "MinSpeedGain": 1.0,
-                "MaxSpeedGain": 6.0
+                "ArrivalScale": 0.8,
+                "MinSpeedGain": 0.25,
+                "MaxSpeedGain": 4.0
             },
         },
         "Network": {

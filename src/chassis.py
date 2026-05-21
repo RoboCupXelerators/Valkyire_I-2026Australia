@@ -339,7 +339,8 @@ class Car:
         if Settings.Debug.Beta:
             self.Yaw_PID.setpoint = Normaled_Facing
             SpeedZ = self.Yaw_PID(Normaled_Yaw)
-            logger.error(f"PID output: {SpeedZ}, Yaw: {Normaled_Yaw}, FacingAngle: {Normaled_Facing}")
+            if getattr(Settings.Debug, "FullLog", False):
+                logger.debug(f"Yaw PID output: {SpeedZ}, Yaw: {Normaled_Yaw}, FacingAngle: {Normaled_Facing}")
         else:
             SpeedZ = Error * KpW
         if abs(Error) < Settings.Motion.ErrorRange:

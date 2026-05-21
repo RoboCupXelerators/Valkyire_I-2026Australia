@@ -208,6 +208,15 @@ class XeleratorSimBits:
         side_default_offset = "180" if self.robot_id >= 3 else "0"
         self._side_yaw_offset_deg = float(os.environ.get("XEL_SIDE_YAW_OFFSET_DEG", side_default_offset))
 
+        # ===== Match recording support =====
+        # Optional callback for recording match data to database.
+        # These fields are read by the RX thread, so they must exist before
+        # the thread is started.
+        self._recorder_callback: Optional[Callable] = None
+        self._record_every: int = 1  # Record every N status updates
+        self._record_counter: int = 0
+        self._recording_enabled: bool = False
+
         # NOTE: start threads AFTER calibration attributes are ready.
         # Otherwise debug printing in _tx_loop may call GetPose() before these exist.
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
@@ -215,14 +224,6 @@ class XeleratorSimBits:
 
         self._tx_thread = threading.Thread(target=self._tx_loop, daemon=True)
         self._tx_thread.start()
-
-        # ===== Match recording support =====
-        # Optional callback for recording match data to database
-        # Set via SetRecorder() or enable via EnableRecording()
-        self._recorder_callback: Optional[Callable] = None
-        self._record_every: int = 1  # Record every N status updates
-        self._record_counter: int = 0
-        self._recording_enabled: bool = False
 
     # ===== Match recording API =====
 
@@ -348,8 +349,13 @@ class XeleratorSimBits:
             w3 = float(w3)
             w4 = float(w4)
 
+            # Car.SetMotor calls SetWheelSpeed in physical port order:
+            #   left-front, left-back, right-front, right-back.
+            # RobotMoveVector's logical wheel equations are:
+            #   LF=x-y-z, LB=x+y-z, RB=x+y+z, RF=x-y+z.
+            # Reconstruct the chassis vector using the incoming physical order.
             sx = (w1 + w2 + w3 + w4) * 0.25
-            sy = (-w1 + w2 + w3 - w4) * 0.25
+            sy = (-w1 + w2 - w3 + w4) * 0.25
             sz = (-w1 - w2 + w3 + w4) * 0.25
 
             self.SetTwist(sx * self._wheel_to_v, sy * self._wheel_to_v, sz * self._wheel_to_wz)

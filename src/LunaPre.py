@@ -308,6 +308,7 @@ class Positions:
             "ki": float(getattr(pid_cfg, "Ki", 0.03)),
             "kd": float(getattr(pid_cfg, "Kd", 0.08)),
             "output_limit": float(getattr(pid_cfg, "OutputLimit", 220)),
+            "sample_time": float(getattr(pid_cfg, "SampleTime", 0.02)),
             "reset_frames": int(getattr(pid_cfg, "ResetFrames", 300)),
             "arrival_scale": float(getattr(pid_cfg, "ArrivalScale", 0.5)),
             "min_speed_gain": float(getattr(pid_cfg, "MinSpeedGain", 1.0)),
@@ -324,6 +325,7 @@ class Positions:
             self._pos2pos_cfg["kd"],
             setpoint=0,
             output_limits=(-limit, limit),
+            sample_time=max(0.0, float(self._pos2pos_cfg["sample_time"])),
             auto_mode=True,
         )
 
@@ -334,11 +336,12 @@ class Positions:
         self.Position_Y_PID = self._build_pos2pos_pid()
         self.ResetFlag = 0
         logger.info(
-            "Pos2Pos PID refreshed: kp=%.3f ki=%.3f kd=%.3f limit=%.1f enabled=%s",
+            "Pos2Pos PID refreshed: kp={:.3f} ki={:.3f} kd={:.3f} limit={:.1f} sample_time={:.3f} enabled={}",
             self._pos2pos_cfg["kp"],
             self._pos2pos_cfg["ki"],
             self._pos2pos_cfg["kd"],
             self._pos2pos_cfg["output_limit"],
+            self._pos2pos_cfg["sample_time"],
             self._pos2pos_cfg["enabled"],
         )
 
@@ -922,6 +925,12 @@ class Positions:
                 ChassisAngleList.append(0)
         return ChassisAngleList
 
+    @staticmethod
+    def _angle_error_deg(current: float, target: float) -> float:
+        """Signed shortest yaw error in degrees."""
+
+        return (float(target) - float(current) + 180.0) % 360.0 - 180.0
+
     def Pos2Pos(self, AimPos: list, speed_gain: int | None = None) -> bool:
         '''
         `非阻塞函数`
@@ -939,9 +948,10 @@ class Positions:
             Morse("No Position Data!")
             return False
         iAimX,iAimY,iAimZ = AimPos
+        iAimZ = float(iAimZ) % 360.0
         iErrorX = (iAimX) - (iLocX)
         iErrorY = (iAimY) - (iLocY)
-        iErrorZ = (iAimZ) - (iLocZ)
+        iErrorZ = self._angle_error_deg(iLocZ, iAimZ)
         pid_enabled = bool(self._pos2pos_cfg.get("enabled", getattr(Settings.Debug, "Beta", True)))
         if pid_enabled:
             if self.ResetFlag > self._pos2pos_cfg["reset_frames"]:
@@ -1009,7 +1019,14 @@ class Positions:
             )
             return False
 
-    def Move2Path(self, Posistions: list, iWaitMs: float):
+    def Move2Path(
+        self,
+        Posistions: list,
+        iWaitMs: float,
+        *,
+        timeout_s: float | None = None,
+        tick_s: float = 0.02,
+    ):
         '''
         `阻塞函数`
 
@@ -1019,16 +1036,35 @@ class Positions:
             Posistions 移动路径列表
             iWaitMs 每次移动后等待时间
         '''
-        for i in Posistions:
-            while (1):
-                if self.Pos2Pos(i):
-                    time.sleep(iWaitMs)
-                    if i == Posistions[-1]:
+        if not Posistions:
+            return True
+
+        point_timeout = float(timeout_s) if timeout_s is not None else float(
+            getattr(getattr(cfg, "Motion", object()), "Move2PathPointTimeoutS", 12.0)
+        )
+        tick_s = max(0.005, float(tick_s))
+
+        for idx, target in enumerate(Posistions):
+            start_t = time.time()
+            while True:
+                if self.Pos2Pos(target):
+                    time.sleep(max(0.0, float(iWaitMs)))
+                    if idx == len(Posistions) - 1:
                         return True
-                    else:
-                        break
-                else:
-                    pass
+                    break
+
+                if point_timeout > 0 and time.time() - start_t > point_timeout:
+                    chassis.stop()
+                    logger.warning(
+                        "Move2Path timeout at point {}/{} target={} current={}",
+                        idx + 1,
+                        len(Posistions),
+                        target,
+                        self.FieldRobotPos(),
+                    )
+                    return False
+
+                time.sleep(tick_s)
 
     def Cover2Start(self):
         '''
@@ -1057,35 +1093,96 @@ class Positions:
         except Exception:
             return False
 
-    def RestrictedArea(self):
-        Distance = self.DirectDistance()
+    def _restricted_area_params(self) -> dict:
+        """Return coordinate-space safety limits in field centimeters."""
 
-        # Simulator / no-lidar fallback: if we don't have valid wall distances,
-        # do not run boundary-avoidance logic (it would generate bogus commands).
-        if Distance == [0xfff, 0xfff, 0xfff, 0xfff]:
+        field_long = float(getattr(cfg.Bounds, "Long", 260))
+        field_short = float(getattr(cfg.Bounds, "Short", 200))
+        safety_cfg = getattr(getattr(cfg, "Motion", None), "RestrictedArea", None)
+
+        x_limit = float(getattr(safety_cfg, "XLimit", min(90.0, field_long / 2.0 - 40.0)))
+        y_limit = float(getattr(safety_cfg, "YLimit", min(70.0, field_short / 2.0 - 30.0)))
+        goal_box_width = float(getattr(safety_cfg, "GoalBoxWidth", 25.0))
+        goal_box_y_half = float(getattr(safety_cfg, "GoalBoxYHalf", 50.0))
+        clearance = float(getattr(safety_cfg, "Clearance", max(3.0, cfg.Motion.ErrorRange / 2.0)))
+
+        return {
+            "x_limit": max(1.0, x_limit),
+            "y_limit": max(1.0, y_limit),
+            "goal_box_x_min": max(0.0, x_limit - goal_box_width),
+            "goal_box_y_half": max(0.0, min(goal_box_y_half, y_limit)),
+            "clearance": max(0.0, clearance),
+        }
+
+    @staticmethod
+    def _clamp(value: float, lower: float, upper: float) -> float:
+        return max(lower, min(upper, value))
+
+    def ProjectSafePose(self, pose: list | tuple | None):
+        """Project an unsafe field pose to the nearest legal coordinate.
+
+        Returns:
+            list | None: a safe `[x, y, yaw]` target when correction is needed,
+            otherwise `None`.
+        """
+
+        if not pose or len(pose) < 3 or list(pose[:3]) == [0xfff, 0xfff, 0xfff]:
+            return None
+
+        x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
+        params = self._restricted_area_params()
+        x_limit = params["x_limit"]
+        y_limit = params["y_limit"]
+        goal_box_x_min = params["goal_box_x_min"]
+        goal_box_y_half = params["goal_box_y_half"]
+        clearance = params["clearance"]
+
+        target_x = self._clamp(x, -x_limit + clearance, x_limit - clearance)
+        target_y = self._clamp(y, -y_limit + clearance, y_limit - clearance)
+        corrected = (target_x != x) or (target_y != y)
+
+        in_goal_box = abs(target_x) > goal_box_x_min and abs(target_y) < goal_box_y_half
+        if in_goal_box:
+            sign_x = 1.0 if target_x >= 0 else -1.0
+            sign_y = 1.0 if target_y >= 0 else -1.0
+
+            retreat_x = sign_x * max(0.0, goal_box_x_min - clearance)
+            sidestep_y = sign_y * min(y_limit - clearance, goal_box_y_half + clearance)
+
+            retreat_cost = abs(target_x - retreat_x)
+            sidestep_cost = abs(target_y - sidestep_y)
+            sidestep_has_room = goal_box_y_half + clearance <= y_limit - clearance
+            if retreat_cost <= sidestep_cost or not sidestep_has_room:
+                target_x = retreat_x
+            else:
+                target_y = sidestep_y
+            corrected = True
+
+        if not corrected:
+            return None
+
+        return [target_x, target_y, yaw]
+
+    def IsPoseInRestrictedArea(self, pose: list | tuple | None) -> bool:
+        """Pure coordinate-space restricted-area predicate."""
+
+        return self.ProjectSafePose(pose) is not None
+
+    def RestrictedArea(self):
+        """Coordinate-based boundary/restricted-area guard.
+
+        The legacy method name is kept for strategy compatibility. Internally it
+        only consumes `FieldRobotPos()`, so the guard stays stable when the pose
+        source changes from lidar to simulator truth or fused localization.
+        """
+
+        robo_pos = self.FieldRobotPos()
+        safe_target = self.ProjectSafePose(robo_pos)
+        if safe_target is None:
             return True
 
-        if Distance[0] == 0:
-            return False
-        else:
-            x_max = 90
-            x_min = -x_max
-            y_max = 70
-            y_min = -y_max
-            rsct_width = 25
-            rsct_height = 80
-            robo_pos = UnitedPosition.FieldRobotPos()
-            robo_abs_pos = [abs(robo_pos[0]), abs(robo_pos[1])]
-            rst = True
-            if (robo_pos[0] > x_max or robo_pos[0] < x_min
-                or (robo_abs_pos[0] > x_max - rsct_width
-                    and robo_abs_pos[1] < rsct_height / 2 + 10)):
-                UnitedPosition.Pos2Pos([0, robo_pos[1], robo_pos[2]])
-                rst = False
-            if (robo_pos[1] > y_max or robo_pos[1] < y_min):
-                UnitedPosition.Pos2Pos([robo_pos[0], 0, robo_pos[2]])
-                rst = False
-            return rst
+        self.Pos2Pos(safe_target)
+        return False
 
     def Stop(self):
         '''

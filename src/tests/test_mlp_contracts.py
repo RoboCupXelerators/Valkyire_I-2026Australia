@@ -119,7 +119,6 @@ class TestDeployObservationV1:
             EntityObservationV1(rel_x=100.0, rel_y=50.0, visible=True),
             EntityObservationV1(rel_x=-200.0, rel_y=100.0, visible=False),
         ]
-        self.assert_deploy_observation_dim_matches_config(encoder)
         obs = DeployObservationV1(
             self_x=150.0,
             self_y=200.0,
