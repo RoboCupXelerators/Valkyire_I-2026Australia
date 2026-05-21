@@ -1,4 +1,5 @@
 import threading
+import math
 import numpy as np
 import cv2
 import time
@@ -185,23 +186,18 @@ class UnitedVision(Detect_Method):
 
     def ApplyPerspectiveTransform(self, px_x, px_y, Matrix):
         # OpenCV image plane: origin is top-left, +x right, +y down.
-        # This function only applies the homography; it does NOT convert to robot frame.
+        # This only applies the homography saved by the legacy calibrator.
         Point = np.array([px_x, px_y, 1], dtype=np.float64)
         Transformed = Matrix @ Point
         Transformed /= Transformed[2]
-        return int(Transformed[0]), int(Transformed[1])
+        return float(Transformed[0]), float(Transformed[1])
 
     def Pixel2CM(self, px_x, px_y, CamIndex):
-        # Step 1: image pixel -> board plane (still camera/board coordinates)
+        # Legacy Jetson/Pixel2CM convention:
+        # image pixel -> calibrated plane pixel -> calibrated plane cm.
         plane_x_px, plane_y_px = self.ApplyPerspectiveTransform(px_x, px_y, self.PerspectiveMatrices[CamIndex])
-
-        # Step 2: board-plane pixels -> board-plane centimeters
-        # P2CK: scale, P2CHB/P2CVB: offsets. Y is flipped here so that later
-        # conversion to robot frame can be named explicitly.
-        plane_y_cm = -round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
-        plane_x_cm = -round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
-
-        # IMPORTANT: return value is NOT robot-frame. It is still per-camera plane cm.
+        plane_x_cm = round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
+        plane_y_cm = round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
         return plane_x_cm, plane_y_cm
 
     def CM2Pixel(self, plane_x_cm, plane_y_cm, CamIndex):
@@ -242,8 +238,25 @@ class UnitedVision(Detect_Method):
             return None
         return float(sum(candidates) / len(candidates))
 
-    @staticmethod
-    def _to_robot_frame(plane_x_cm: float, plane_y_cm: float, cam_index: int) -> tuple[float, float]:
+    def _camera_direction(self, cam_index: int) -> str:
+        try:
+            port = int(self.CamPorts[int(cam_index)])
+        except Exception:
+            port = int(cam_index)
+
+        direction_by_port = {
+            int(getattr(Settings.VisionVals, "Back", 0)): "back",
+            int(getattr(Settings.VisionVals, "Left", 2)): "left",
+            int(getattr(Settings.VisionVals, "Front", 4)): "front",
+            int(getattr(Settings.VisionVals, "Right", 6)): "right",
+        }
+        if port in direction_by_port:
+            return direction_by_port[port]
+
+        # Default CamPorts order is [back, left, front, right].
+        return ("back", "left", "front", "right")[int(cam_index) % 4]
+
+    def _to_robot_frame(self, plane_x_cm: float, plane_y_cm: float, cam_index: int) -> tuple[float, float]:
         """Convert per-camera plane cm into robot-frame cm.
 
         Robot frame convention used across the codebase:
@@ -252,15 +265,21 @@ class UnitedVision(Detect_Method):
 
         Note: the sign/axis mapping depends on the camera mounting direction.
         """
-        if cam_index == 0:
-            return -plane_x_cm, plane_y_cm
-        if cam_index == 1:
-            return plane_y_cm, plane_x_cm
-        if cam_index == 2:
-            return plane_x_cm, -plane_y_cm
-        if cam_index == 3:
-            return -plane_y_cm, -plane_x_cm
-        return plane_x_cm, plane_y_cm
+        # CameraIndex is the inference batch slot. Resolve it through CamPorts,
+        # whose physical order is back/left/front/right on the real machine.
+        # Pixel2CM returns a camera-local plane: plane_y is outward distance and
+        # plane_x is lateral displacement for the mounted camera.  Robot-frame Y
+        # is y_left; keep the second component positive on the robot's left.
+        direction = self._camera_direction(cam_index)
+        if direction == "front":
+            return plane_y_cm, -plane_x_cm
+        if direction == "left":
+            return plane_x_cm, plane_y_cm
+        if direction == "back":
+            return -plane_y_cm, plane_x_cm
+        if direction == "right":
+            return -plane_x_cm, -plane_y_cm
+        return plane_x_cm, -plane_y_cm
 
     def _bbox_distance_legacy(self, bbox_w_px: float, bbox_h_px: float, real_scale_cm: float | None):
         """Fallback distance estimate when intrinsics are unavailable.
@@ -430,8 +449,8 @@ class UnitedVision(Detect_Method):
             for i in range(4):
                 try:
                     CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
-                    # Ignore padded/dummy outputs
-                    if Confidence is None or Confidence <= 0:
+                    # Ignore padded/dummy outputs and clipped edge boxes.
+                    if Confidence is None or Confidence <= 0 or ChassisWidth <= 0 or ChassisHeight <= 0:
                         continue
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     (CX, CY), _ = self._fuse_detection_position(
@@ -630,8 +649,15 @@ class UnitedVision(Detect_Method):
             for i in range(4):
                 try:
                     CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = OutputBuffer[i]
-                    # Ignore padded/dummy outputs
-                    if Confidence is None or Confidence <= 0:
+                    # Ignore padded/dummy outputs and clipped edge boxes.
+                    min_ball_bbox_area = getattr(Settings.Vision, "MinBallBBoxArea", 40)
+                    if (
+                        Confidence is None
+                        or Confidence <= 0
+                        or BallWidth <= 0
+                        or BallHeight <= 0
+                        or BallWidth * BallHeight < min_ball_bbox_area
+                    ):
                         continue
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
@@ -641,8 +667,17 @@ class UnitedVision(Detect_Method):
                 except:
                     continue
             if Balls:
-                # pick the most confident one
-                Balls = sorted(Balls, key=lambda x: x[4], reverse=True)
+                # Pick the closest plausible ball, with a small continuity bias.
+                # Confidence alone hops between different balls in cluttered scenes.
+                last_pos = getattr(self, "BallPosRaw", [0, 0])
+                last_recent = (time.time() - getattr(self, "_ball_pos_ts", 0.0)) <= self.ball_hold_seconds
+                def ball_score(ball):
+                    robot_dist = math.hypot(float(ball[0]), float(ball[1]))
+                    continuity = 0.0
+                    if last_recent and last_pos not in ([0, 0], [0xfff, 0xfff], [0xddd, 0xddd]):
+                        continuity = math.hypot(float(ball[0]) - float(last_pos[0]), float(ball[1]) - float(last_pos[1]))
+                    return robot_dist + continuity * 0.4 - float(ball[4]) * 5.0
+                Balls = sorted(Balls, key=ball_score)
                 Ball = Balls[0]
                 robot_x_cm = Ball[0]
                 robot_y_cm = Ball[1]

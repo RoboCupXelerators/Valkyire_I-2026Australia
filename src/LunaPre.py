@@ -630,10 +630,32 @@ class Positions:
         # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
         elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
-        elif abs(self.ballPos[1]-cfg.Motion.CatchVal[1]) <= cfg.Motion.ErrorRange/5 and round(abs(self.ballPos[0]-cfg.Motion.CatchVal[0]),0) <= cfg.Motion.ErrorRange/20:
-            self.ballPosOut = [0xddd,0xddd]
         else:
-            self.ballPosOut = self.ballPos
+            catch_val = getattr(cfg.Motion, "CatchVal", [6, 0])
+            catch_x = catch_val[0] if len(catch_val) > 0 else 6
+            catch_y = catch_val[1] if len(catch_val) > 1 else 0
+            error_range = getattr(cfg.Motion, "ErrorRange", 10)
+            x_tol = getattr(cfg.Motion, "CatchXTol", error_range / 20)
+            y_tol = getattr(cfg.Motion, "CatchYTol", error_range / 5)
+            bbox_caught = False
+            try:
+                ball_debug = self.vision_data.get("ball_debug") if isinstance(self.vision_data, dict) else None
+                bbox = ball_debug.get("bbox") if isinstance(ball_debug, dict) else None
+                bbox_size = max(float(bbox[0]), float(bbox[1])) if bbox and len(bbox) >= 2 else 0.0
+                bbox_caught = (
+                    bbox_size >= getattr(cfg.Motion, "CatchBBoxSize", 90)
+                    and 0 <= self.ballPos[0] <= catch_x + getattr(cfg.Motion, "CatchBBoxXMargin", 4)
+                    and abs(self.ballPos[1] - catch_y) <= getattr(cfg.Motion, "CatchBBoxYTol", 5)
+                )
+            except Exception:
+                bbox_caught = False
+            if (
+                abs(self.ballPos[1] - catch_y) <= y_tol
+                and round(abs(self.ballPos[0] - catch_x), 0) <= x_tol
+            ) or bbox_caught:
+                self.ballPosOut = [0xddd,0xddd]
+            else:
+                self.ballPosOut = self.ballPos
         if Settings.Debug.FullLog:
             logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
