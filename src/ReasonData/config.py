@@ -89,7 +89,34 @@ class Preference:
             "CatchBBoxYTol": 2,     # bbox 持球判定允许的横向误差
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "MaxSpeed": 500,        # 最大速度值
+            "NormalizeWheelOutput": True,
+            "EnableTractionControl": True,
+            "TractionPlanarAccelLimit": 600.0,
+            "TractionAngularAccelLimit": 900.0,
+            "TractionDtMax": 0.08,
+            "EnableWheelSlewLimit": True,
+            "TractionWheelSlewRate": 1800.0,
+            "EnableCoupledWheelAllocator": True,
+            "WheelAllocatorSaturationMode": "preserve_twist",
+            "EnableTurnTranslationDerate": True,
+            "TurnTranslationScaleWz": 120.0,
+            "TurnTranslationMinScale": 0.6,
             "Move2PathPointTimeoutS": 12.0,
+            "LockBallSlipMaxAngle": 82,
+            "LockBallSlipAcquireKpX": 4.2,
+            "LockBallSlipAcquireKpY": 3.1,
+            "LockBallSlipAcquireKpW": 1.7,
+            "LockBallSlipAcquireMaxX": 135,
+            "LockBallSlipAcquireMaxY": 105,
+            "LockBallSlipAcquireMaxW": 175,
+            "LockBallSlipPidKpX": 3.6,
+            "LockBallSlipPidKpY": 2.6,
+            "LockBallSlipPidKpW": 1.1,
+            "LockBallSlipPidMaxX": 135,
+            "LockBallSlipPidMaxY": 95,
+            "LockBallSlipPidMaxW": 85,
+            "LockBallSlipLostHoldSeconds": 0.18,
+            "LockBallSlipDribblePower": 0.35,
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPos，不依赖雷达原始距离。
                 "XLimit": 90.0,
@@ -127,6 +154,7 @@ class Preference:
             "PortBase": 20001,
             "PortStride": 10,
             "MultiRobotMode": "per_port",  # per_port / hub
+            "SceneControlPort": 20100,
             # 运动参数缩放
             "WheelToV": 0.008,
             "WheelToWz": 0.02,
@@ -435,6 +463,8 @@ class _CompatSim:
     def PortStride(self): return self._s.Sim.PortStride
     @property
     def MultiRobotMode(self): return self._s.Sim.MultiRobotMode
+    @property
+    def SceneControlPort(self): return self._s.Sim.SceneControlPort
     @property
     def CmdPort(self): return self._s.Sim.PortBase
     @property

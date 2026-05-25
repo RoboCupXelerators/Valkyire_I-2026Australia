@@ -22,6 +22,10 @@ sys.path.insert(0, "src")
 os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 from LunaPre import Bits, UnitedPosition, chassis, logger  # noqa: E402
+try:
+    from utils.XeleratorSceneControl import XeleratorSceneControl  # noqa: E402
+except Exception:  # pragma: no cover - simulator can still run without scene control.
+    XeleratorSceneControl = None
 
 
 INVALID_POSE = [0xFFF, 0xFFF, 0xFFF]
@@ -51,6 +55,13 @@ def _env_axes(name: str, default: list[str]) -> list[str]:
     raw = str(os.environ.get(name, "")).strip().lower()
     axes = [x.strip() for x in raw.split(",") if x.strip()] if raw else list(default)
     return [axis for axis in axes if axis in {"x", "y", "w"}] or list(default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return bool(default)
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _angle_diff_deg(current: float, start: float) -> float:
@@ -89,6 +100,44 @@ def wait_for_sim(timeout_s: float) -> bool:
     return False
 
 
+def build_scene_control() -> XeleratorSceneControl | None:
+    if XeleratorSceneControl is None or not _env_bool("SIM_SCENE_CONTROL", True):
+        return None
+
+    ctl = XeleratorSceneControl(timeout_s=_env_float("SIM_SCENE_TIMEOUT_S", 1.0))
+    try:
+        ctl.ping()
+        if _env_bool("SIM_SCENE_RULES_OFF", True):
+            ctl.set_rules(penalties=False, lack=False, pushing=False)
+        if _env_bool("SIM_SCENE_APPLY_TUNING", True):
+            ctl.set_robot_tuning(
+                robot_id=int(_env_float("SIM_SCENE_TUNING_ROBOT_ID", 0)),
+                linear_scale=_env_float("SIM_ROBOT_LINEAR_SCALE", 0.26),
+                lateral_scale=_env_float("SIM_ROBOT_LATERAL_SCALE", 0.167),
+                angular_scale=_env_float("SIM_ROBOT_ANGULAR_SCALE", 2.20),
+            )
+        logger.info("[SimMotion] scene control connected on {}:{}", ctl.host, ctl.port)
+        return ctl
+    except Exception as exc:
+        logger.warning("[SimMotion] scene control unavailable: {}", exc)
+        return None
+
+
+def reset_scene_for_trial(ctl: XeleratorSceneControl | None) -> None:
+    if ctl is None:
+        return
+
+    robot_id = int(_env_float("SIM_SCENE_ROBOT_ID", 1))
+    robot_x = _env_float("SIM_SCENE_ROBOT_X_CM", -70.0)
+    robot_y = _env_float("SIM_SCENE_ROBOT_Y_CM", 0.0)
+    robot_yaw = _env_float("SIM_SCENE_ROBOT_YAW_DEG", 0.0)
+    ball_x = _env_float("SIM_SCENE_BALL_X_CM", 55.0)
+    ball_y = _env_float("SIM_SCENE_BALL_Y_CM", 35.0)
+    ctl.set_robot(robot_id, robot_x, robot_y, robot_yaw, active=True)
+    ctl.set_ball(ball_x, ball_y)
+    time.sleep(_env_float("SIM_SCENE_SETTLE_S", 0.15))
+
+
 def write_phase(
     writer: csv.DictWriter,
     *,
@@ -113,13 +162,11 @@ def write_phase(
         pose = _safe_pose()
         status = getattr(Bits, "_status", None)
         if pose != INVALID_POSE and prev_pose != INVALID_POSE:
-            dt = max(1e-6, now - prev_t)
+            phase_elapsed = now - phase_start
+            phase_dt = max(1e-6, phase_elapsed)
             dx = pose[0] - start_pose[0]
             dy = pose[1] - start_pose[1]
             dyaw = _angle_diff_deg(pose[2], start_pose[2])
-            step_dx = pose[0] - prev_pose[0]
-            step_dy = pose[1] - prev_pose[1]
-            step_dyaw = _angle_diff_deg(pose[2], prev_pose[2])
             writer.writerow(
                 {
                     "axis": axis,
@@ -127,7 +174,7 @@ def write_phase(
                     "phase": phase,
                     "sample_index": sample_index,
                     "t": round(now, 6),
-                    "phase_elapsed_s": round(now - phase_start, 6),
+                    "phase_elapsed_s": round(phase_elapsed, 6),
                     "cmd_vx": round(cmd[0], 4),
                     "cmd_vy": round(cmd[1], 4),
                     "cmd_wz": round(cmd[2], 4),
@@ -140,10 +187,10 @@ def write_phase(
                     "phase_dx_cm": round(dx, 4),
                     "phase_dy_cm": round(dy, 4),
                     "phase_dyaw_deg": round(dyaw, 4),
-                    "est_vx_cm_s": round(step_dx / dt, 4),
-                    "est_vy_cm_s": round(step_dy / dt, 4),
-                    "est_wz_deg_s": round(step_dyaw / dt, 4),
-                    "est_speed_cm_s": round((step_dx * step_dx + step_dy * step_dy) ** 0.5 / dt, 4),
+                    "est_vx_cm_s": round(dx / phase_dt, 4),
+                    "est_vy_cm_s": round(dy / phase_dt, 4),
+                    "est_wz_deg_s": round(dyaw / phase_dt, 4),
+                    "est_speed_cm_s": round((dx * dx + dy * dy) ** 0.5 / phase_dt, 4),
                 }
             )
             sample_index += 1
@@ -167,6 +214,8 @@ def main() -> int:
 
     if not wait_for_sim(warmup_s):
         return 2
+
+    scene_control = build_scene_control()
 
     fields = [
         "axis",
@@ -203,6 +252,7 @@ def main() -> int:
                 for level in levels:
                     for sign, phase in ((1, "forward"), (-1, "backward")):
                         cmd = _command(axis, sign, level)
+                        reset_scene_for_trial(scene_control)
                         logger.info("[SimMotion] phase axis={} level={} phase={} cmd={}", axis, level, phase, cmd)
                         sample_index = write_phase(
                             writer,

@@ -116,7 +116,7 @@ def compare(real: dict, sim: dict) -> list[dict]:
     return rows
 
 
-def recommend(rows: list[dict], current_linear: float, current_angular: float) -> dict:
+def recommend(rows: list[dict], current_linear: float, current_lateral: float, current_angular: float) -> dict:
     by_axis: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         ratio = float(row["sim_over_real"])
@@ -132,15 +132,23 @@ def recommend(rows: list[dict], current_linear: float, current_angular: float) -
                 "median_sim_over_real": med_ratio,
                 "suggested": current_angular / med_ratio if med_ratio else current_angular,
             }
-        else:
+        elif axis == "x":
             rec[axis] = {
                 "current": current_linear,
                 "median_sim_over_real": med_ratio,
                 "suggested": current_linear / med_ratio if med_ratio else current_linear,
             }
+        else:
+            rec[axis] = {
+                "current": current_lateral,
+                "median_sim_over_real": med_ratio,
+                "suggested": current_lateral / med_ratio if med_ratio else current_lateral,
+            }
     if "x" in rec and "y" in rec:
         rec["linear_combined"] = {
-            "current": current_linear,
+            "current_x": current_linear,
+            "current_y": current_lateral,
+            "note": "x and y now use separate simulator scales; treat this as a quick planar summary, not a single scale.",
             "suggested": statistics.median([rec["x"]["suggested"], rec["y"]["suggested"]]),
         }
     return rec
@@ -152,6 +160,7 @@ def main() -> int:
     parser.add_argument("--sim", type=Path)
     parser.add_argument("--out", type=Path, default=Path("Records/sim_motion/motion_compare_latest.json"))
     parser.add_argument("--current-linear", type=float, default=0.48)
+    parser.add_argument("--current-lateral", type=float, default=None)
     parser.add_argument("--current-angular", type=float, default=1.36)
     args = parser.parse_args()
 
@@ -169,7 +178,12 @@ def main() -> int:
             "real_file": str(args.real),
             "sim_file": str(args.sim),
             "comparisons": rows,
-            "recommendations": recommend(rows, args.current_linear, args.current_angular),
+            "recommendations": recommend(
+                rows,
+                args.current_linear,
+                args.current_lateral if args.current_lateral is not None else args.current_linear,
+                args.current_angular,
+            ),
         }
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
