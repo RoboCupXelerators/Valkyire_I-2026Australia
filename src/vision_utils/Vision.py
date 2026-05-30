@@ -144,6 +144,7 @@ class UnitedVision(Detect_Method):
         self.MergedGoalList = []  # list of all goal detections
         self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
         self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
+        self.BallPos = [0, 0]
         self.BallPosRaw = [0, 0]
         self.ChassisPosRaw = []
         self.BlueGoalPosRaw = None
@@ -714,7 +715,7 @@ class UnitedVision(Detect_Method):
             time.sleep(0.01)
 
     def GetBallPos(self):
-        return self.BallPos
+        return getattr(self, "BallPos", [0, 0])
 
     def BallBBoxUpdate(self):
         """Read TunaIntelligence.BallBBoxQueue if available and keep latest bbox."""

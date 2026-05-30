@@ -123,7 +123,9 @@ class Preference:
                 "YLimit": 70.0,
                 "GoalBoxWidth": 25.0,
                 "GoalBoxYHalf": 50.0,
-                "Clearance": 5.0
+                "Clearance": 5.0,
+                "RecoveryClearance": 16.0,
+                "RecoveryExtra": 3.0
             },
             "Pos2PosPID": {
                 "Enabled": True,

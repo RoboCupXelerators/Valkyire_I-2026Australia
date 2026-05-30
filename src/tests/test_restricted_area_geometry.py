@@ -26,6 +26,14 @@ def test_boundary_pose_projects_inside_coordinate_limits():
     assert target[2] == 30
 
 
+def test_boundary_recovery_target_is_beyond_pos2pos_arrival_slop():
+    target = UnitedPosition.ProjectSafePose([0, 68, 0])
+
+    assert target is not None
+    assert target[1] < 60
+    assert abs(68 - target[1]) > 8
+
+
 def test_goal_box_pose_retreats_by_coordinate_geometry():
     target = UnitedPosition.ProjectSafePose([80, 0, 0])
 

@@ -49,6 +49,9 @@ class OffenceConfig:
     deep_shoot_x_cm: float = float(os.environ.get("OFFENCE_DEEP_SHOOT_X", "58"))
     search_speed_gain: float = float(os.environ.get("OFFENCE_SEARCH_GAIN", "1.4"))
     carry_speed_gain: float = float(os.environ.get("OFFENCE_CARRY_GAIN", "2.2"))
+    boundary_recovery_speed_gain: float = float(os.environ.get("OFFENCE_BOUNDARY_RECOVERY_GAIN", "1.2"))
+    # 1 => attack +X, -1 => attack -X, 0 => auto from SIM robot id.
+    attack_direction: float = float(os.environ.get("OFFENCE_ATTACK_SIGN", "0"))
 
 
 class RuleOffenceStrategy:
@@ -66,21 +69,65 @@ class RuleOffenceStrategy:
 
         self.field_long = float(getattr(Settings.Bounds, "Long", 260))
         self.field_short = float(getattr(Settings.Bounds, "Short", 200))
-        self.goal_x = self.field_long / 2.0
+        self.attack_dir = self._resolve_attack_direction()
+        self.goal_x = self.attack_dir * self.field_long / 2.0
         self.goal_y = 0.0
-        self.home = list(getattr(Settings.CheckPoints, "Home", [-70, 0, 0]))
+        self.home = self._resolve_home()
         self.search_points = self._build_search_points()
+
+    def _resolve_attack_direction(self) -> float:
+        if self.cfg.attack_direction > 0:
+            return 1.0
+        if self.cfg.attack_direction < 0:
+            return -1.0
+
+        try:
+            bit_mode = str(getattr(Settings.RoboInfo, "Bit", "")).upper()
+            robot_id = int(
+                os.environ.get(
+                    "XEL_ROBOT_ID",
+                    str(getattr(getattr(Settings, "Sim", object()), "RobotId", getattr(Settings.RoboInfo, "number", 1))),
+                )
+            )
+            if bit_mode == "SIM" and robot_id >= 3:
+                return -1.0
+        except Exception:
+            pass
+        return 1.0
+
+    def _resolve_home(self) -> list[float]:
+        home = list(getattr(Settings.CheckPoints, "Home", [-70, 0, 0]))
+        while len(home) < 3:
+            home.append(0.0)
+
+        # Default config is written for +X attack. In SIM, enemy-side robots
+        # attack -X, so mirror default own-half waypoints.
+        if self.attack_dir < 0 and float(home[0]) * self.attack_dir > 0:
+            home[0] = -float(home[0])
+            home[2] = (float(home[2]) + 180.0) % 360.0
+
+        safe_home = [float(home[0]), float(home[1]), float(home[2])]
+        try:
+            projected = UnitedPosition.ProjectSafePose(safe_home)
+            if projected is not None:
+                safe_home = projected
+        except Exception:
+            pass
+        return [float(safe_home[0]), float(safe_home[1]), float(safe_home[2])]
 
     def step(self) -> None:
         """Run one strategy tick."""
 
         self._enemy_cache = None
 
-        if not UnitedPosition.RestrictedArea():
+        pose = UnitedPosition.FieldRobotPos()
+        safe_target = self._project_recovery_pose(pose)
+        if safe_target is not None:
             self._set_state("avoid_wall")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(safe_target, self.cfg.boundary_recovery_speed_gain)
             return
 
-        pose = UnitedPosition.FieldRobotPos()
         ball = UnitedPosition.RobotBallPos()
 
         if ball == BALL_NOT_FOUND:
@@ -96,11 +143,12 @@ class RuleOffenceStrategy:
     def _build_search_points(self) -> list[list[float]]:
         half_y = min(55.0, self.field_short / 2.0 - 35.0)
         home_x = float(self.home[0]) if self.home else -70.0
+        search_yaw = 0.0 if self.attack_dir > 0 else 180.0
         return [
-            [home_x, 0.0, 0.0],
-            [-45.0, half_y, 0.0],
-            [-15.0, 0.0, 0.0],
-            [-45.0, -half_y, 0.0],
+            [home_x, 0.0, search_yaw],
+            [-45.0 * self.attack_dir, half_y, search_yaw],
+            [-15.0 * self.attack_dir, 0.0, search_yaw],
+            [-45.0 * self.attack_dir, -half_y, search_yaw],
         ]
 
     def _search_ball(self, pose: list | tuple | None) -> None:
@@ -116,15 +164,9 @@ class RuleOffenceStrategy:
             self._search_idx = (self._search_idx + 1) % len(self.search_points)
 
     def _approach_ball(self, ball: list | tuple) -> None:
-        bx, by = float(ball[0]), float(ball[1])
-        distance = math.hypot(bx, by)
         self._set_state("approach_ball")
-
-        if distance > 70.0 and abs(by) < 45.0:
-            self._set_dribble(0.35)
-        else:
-            self._set_dribble(0.65)
-
+        # LockBallSlip owns dribbler power while acquiring the ball. Setting it
+        # here as well makes the IO command oscillate between two values.
         lockball.LockBallSlip()
 
     def _play_with_ball(self, pose: list | tuple | None) -> None:
@@ -132,7 +174,8 @@ class RuleOffenceStrategy:
 
         if not _valid_pose(pose):
             self._set_state("secure_ball_no_pose")
-            self._face_goal_and_shoot_if_ready(0.0)
+            fallback_goal_yaw = 0.0 if self.attack_dir > 0 else 180.0
+            self._face_goal_and_shoot_if_ready(fallback_goal_yaw)
             return
 
         x, y, _ = float(pose[0]), float(pose[1]), float(pose[2])
@@ -157,7 +200,8 @@ class RuleOffenceStrategy:
 
         x = float(pose[0])
         y = float(pose[1])
-        attack_ready = x >= self.cfg.deep_shoot_x_cm or (x >= 20.0 and abs(y) <= 32.0)
+        progress = self.attack_dir * x
+        attack_ready = progress >= self.cfg.deep_shoot_x_cm or (progress >= 20.0 and abs(y) <= 32.0)
         if not attack_ready:
             return False
 
@@ -182,15 +226,75 @@ class RuleOffenceStrategy:
 
     def _select_carry_target(self, pose: list | tuple) -> list[float]:
         x, y = float(pose[0]), float(pose[1])
-        lane_candidates = [-48.0, -24.0, 0.0, 24.0, 48.0]
-        max_y = self.field_short / 2.0 - 28.0
+        safety = self._restricted_params()
+        clearance = float(safety.get("clearance", 5.0))
+        x_guard = max(1.0, float(safety.get("x_limit", self.field_long / 2.0)) - clearance)
+        y_guard = max(1.0, float(safety.get("y_limit", self.field_short / 2.0)) - clearance)
+        goal_box_x_min = float(safety.get("goal_box_x_min", x_guard + 1.0))
+        goal_box_y_half = float(safety.get("goal_box_y_half", 0.0))
 
-        best_y = min(lane_candidates, key=lambda lane_y: self._lane_cost([x, y], [self.goal_x, lane_y]))
+        side_lane = min(y_guard, goal_box_y_half + max(5.0, clearance))
+        lane_candidates = [-side_lane, -24.0, 0.0, 24.0, side_lane]
+        max_y = min(self.field_short / 2.0 - 28.0, y_guard)
+
+        progress = self.attack_dir * x
+        target_progress = max(progress + 22.0, self.cfg.carry_x_cm)
+        target_progress = min(target_progress, self.field_long / 2.0 - 18.0, x_guard)
+        target_x = self.attack_dir * target_progress
+
+        if abs(target_x) > goal_box_x_min:
+            legal_lanes = [
+                lane_y
+                for lane_y in lane_candidates
+                if abs(lane_y) >= goal_box_y_half + clearance and abs(lane_y) <= max_y
+            ]
+            if legal_lanes:
+                lane_candidates = legal_lanes
+            else:
+                target_x = math.copysign(max(0.0, goal_box_x_min - clearance), target_x)
+
+        best_y = min(lane_candidates, key=lambda lane_y: self._lane_cost([x, y], [target_x, lane_y]))
         best_y = _clamp(best_y, -max_y, max_y)
 
-        target_x = max(x + 22.0, self.cfg.carry_x_cm)
-        target_x = min(target_x, self.goal_x - 18.0)
-        return [target_x, best_y]
+        # If we are still in the center lane, do not command a diagonal that
+        # cuts through the goal box. First move sideways just before the box,
+        # then advance down the side lane on later ticks.
+        if abs(target_x) > goal_box_x_min and abs(y) < goal_box_y_half + clearance:
+            pre_box_x = math.copysign(max(0.0, goal_box_x_min - clearance), target_x)
+            if target_x >= 0:
+                target_x = min(target_x, pre_box_x)
+            else:
+                target_x = max(target_x, pre_box_x)
+
+        safe_target = self._project_strategy_target([target_x, best_y, float(pose[2])])
+        return [safe_target[0], safe_target[1]]
+
+    def _restricted_params(self) -> dict:
+        try:
+            return dict(UnitedPosition._restricted_area_params())
+        except Exception:
+            return {
+                "x_limit": min(90.0, self.field_long / 2.0 - 40.0),
+                "y_limit": min(70.0, self.field_short / 2.0 - 30.0),
+                "goal_box_x_min": 65.0,
+                "goal_box_y_half": 50.0,
+                "clearance": 5.0,
+            }
+
+    def _project_recovery_pose(self, pose: list | tuple | None):
+        if not _valid_pose(pose):
+            return None
+        try:
+            return UnitedPosition.ProjectSafePose(pose)
+        except Exception:
+            return None
+
+    def _project_strategy_target(self, target: list[float]) -> list[float]:
+        try:
+            projected = UnitedPosition.ProjectSafePose(target)
+        except Exception:
+            projected = None
+        return projected if projected is not None else target
 
     def _best_goal_aim_y(self, pose: list | tuple) -> float:
         """Pick a near-post/far-post aim point based on open lanes."""

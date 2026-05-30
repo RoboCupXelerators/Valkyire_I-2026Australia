@@ -8,9 +8,9 @@ import time
 # - from an installed package layout (ReasonData/vision_utils are top-level)
 # - directly from this repo (modules live under ./src)
 try:
-    from ReasonData import Settings  # type: ignore
+    from ReasonData import Settings, logger  # type: ignore
 except Exception:  # pragma: no cover
-    from src.ReasonData import Settings  # type: ignore
+    from src.ReasonData import Settings, logger  # type: ignore
 
 try:
     from vision_utils import Detect_Method, DATA_DIR  # type: ignore
@@ -29,6 +29,7 @@ class UnitedVision(Detect_Method):
     def __init__(self):
 
         super().__init__()
+        self.logger = getattr(self, "logger", logger)
 
         # Ensure CamPorts is available (XeleratorVision backend doesn't have it)
         if not hasattr(self, 'CamPorts'):
@@ -153,6 +154,7 @@ class UnitedVision(Detect_Method):
         self.MergedGoalList = []  # list of all goal detections
         self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
         self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
+        self.BallPos = [0, 0]
         self.BallPosRaw = [0, 0]
         self.ChassisPosRaw = []
         self.BlueGoalPosRaw = None
@@ -751,7 +753,7 @@ class UnitedVision(Detect_Method):
             time.sleep(0.01)
 
     def GetBallPos(self):
-        return self.BallPos
+        return getattr(self, "BallPos", [0, 0])
 
     def GetBallDebug(self):
         return self.BallDebug

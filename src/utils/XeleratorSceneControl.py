@@ -133,6 +133,27 @@ class XeleratorSceneControl:
                 payload[key] = float(value)
         return self.request("set_robot_tuning", **payload)
 
+    def set_dribble(self, robot_id: int, enabled: bool, *, strength: float = 0.7) -> dict[str, Any]:
+        return self.request(
+            "set_dribble",
+            robot_id=int(robot_id),
+            active=bool(enabled),
+            dribble=bool(enabled),
+            strength=float(strength),
+        )
+
+    def kick(self, robot_id: int, *, strength: float = 1.0) -> dict[str, Any]:
+        return self.request("kick", robot_id=int(robot_id), strength=float(strength))
+
+    def reset_score(self) -> dict[str, Any]:
+        return self.request("reset_score")
+
+    def kickoff_ally(self) -> dict[str, Any]:
+        return self.request("kickoff_ally")
+
+    def kickoff_enemy(self) -> dict[str, Any]:
+        return self.request("kickoff_enemy")
+
 
 def main() -> int:
     import argparse
@@ -150,6 +171,7 @@ def main() -> int:
     parser.add_argument("--linear-scale", type=float, default=None)
     parser.add_argument("--lateral-scale", type=float, default=None)
     parser.add_argument("--angular-scale", type=float, default=None)
+    parser.add_argument("--strength", type=float, default=1.0)
     parser.add_argument("--no-reset-velocity", action="store_true")
     parser.add_argument("--rules-off", action="store_true")
     args = parser.parse_args()
@@ -166,6 +188,18 @@ def main() -> int:
             lateral_scale=args.lateral_scale,
             angular_scale=args.angular_scale,
         )
+    elif args.cmd == "set_dribble":
+        response = ctl.set_dribble(args.robot_id, True, strength=args.strength)
+    elif args.cmd == "dribble_off":
+        response = ctl.set_dribble(args.robot_id, False, strength=0.0)
+    elif args.cmd == "kick":
+        response = ctl.kick(args.robot_id, strength=args.strength)
+    elif args.cmd == "reset_score":
+        response = ctl.reset_score()
+    elif args.cmd == "kickoff_ally":
+        response = ctl.kickoff_ally()
+    elif args.cmd == "kickoff_enemy":
+        response = ctl.kickoff_enemy()
     elif args.cmd == "rules_off" or args.rules_off:
         response = ctl.set_rules(penalties=False, lack=False, pushing=False)
     elif args.cmd == "ping":

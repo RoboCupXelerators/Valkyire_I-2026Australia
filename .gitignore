@@ -235,3 +235,6 @@ packages/
 .ota_backup/
 .ota_state.json
 packages_lock.json
+
+run_*/
+sim_offence_*

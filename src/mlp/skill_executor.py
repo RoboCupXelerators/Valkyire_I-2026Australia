@@ -40,14 +40,13 @@ class SkillExecutor:
             return SkillExecutionResult(False, f"runtime_import_failed: {e}")
 
         self._apply_dribble_mode(peripheral, packet.dribble_mode)
+        intent = packet.intent_id
 
-        if packet.shoot_intent == ShootIntent.TRY_SHOOT:
+        if packet.shoot_intent == ShootIntent.TRY_SHOOT and intent != IntentId.SHOOT:
             try:
                 peripheral.ShootBall()
             except Exception:
                 pass
-
-        intent = packet.intent_id
 
         if intent == IntentId.SEARCH_BALL:
             chassis.stop()
@@ -72,6 +71,13 @@ class SkillExecutor:
             return SkillExecutionResult(True, "pos2pos")
 
         if intent == IntentId.AVOID_WALL:
+            if abs(float(packet.target_x)) > 1e-6 or abs(float(packet.target_y)) > 1e-6:
+                target_yaw = self._resolve_target_yaw(UnitedPosition, packet)
+                UnitedPosition.Pos2Pos(
+                    [float(packet.target_x), float(packet.target_y), float(target_yaw)],
+                    speed_gain=self._resolve_move_gain(packet.move_gain),
+                )
+                return SkillExecutionResult(True, "avoid_wall_pos2pos")
             chassis.stop()
             return SkillExecutionResult(True, "avoid_wall_stop")
 

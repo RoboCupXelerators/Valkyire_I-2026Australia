@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import socket
 import struct
@@ -154,6 +155,14 @@ class XeleratorSimBits:
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
         self._send_period = 1.0 / float(hz)
+        self._ball_status_fallback = str(os.environ.get("XEL_SIM_BALL_STATUS_FALLBACK", "0")).lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self._scene_control = None
+        self._scene_status_cache = None
+        self._scene_status_cache_ts = 0.0
 
         # Convert wheel-speed commands (strategy code) into twist for Unity controller.
         self._twist_from_wheels = str(os.environ.get("XEL_TWIST_FROM_WHEELS", "1")).lower() not in {"0", "false", "no"}
@@ -200,12 +209,11 @@ class XeleratorSimBits:
         self._yaw_zero_at_start = str(os.environ.get("XEL_YAW_ZERO_AT_START", "0")).lower() in {"1", "true", "yes"}
         self._yaw_zero_deg: float | None = None
 
-        # In this simulator layout, robotId 3/4 are spawned on the opposite half
-        # of the field from robotId 1/2. To keep the strategy-side yaw convention
-        # consistent across both team sides, add a default 180° readback offset
-        # for enemy-side robots. This affects GetYaw()/GetPose() only; Unity physics
-        # and command execution are unchanged.
-        side_default_offset = "180" if self.robot_id >= 3 else "0"
+        # Enemy-side robots are already reset in Unity with a 180 degree heading.
+        # Adding another readback offset makes field-frame movement run backward,
+        # so keep the default readback physical. The env override is retained for
+        # old scenes/calibrations that still need an extra yaw correction.
+        side_default_offset = "0"
         self._side_yaw_offset_deg = float(os.environ.get("XEL_SIDE_YAW_OFFSET_DEG", side_default_offset))
 
         # ===== Match recording support =====
@@ -421,12 +429,62 @@ class XeleratorSimBits:
         with self._status_lock:
             if self._status.has_ball:
                 return [0xDDD, 0xDDD]
-            if self._status.ball_x_m is None or self._status.ball_y_m is None:
-                return [0xFFF, 0xFFF]
-            # Ball relative position is robot-frame; do NOT apply origin shift.
-            bx = float(self._status.ball_x_m) * self._unity_to_cm * self._pose_scale
-            by = float(self._status.ball_y_m) * self._unity_to_cm * self._pose_scale
-            return [bx, by]
+            ball_x_m = self._status.ball_x_m
+            ball_y_m = self._status.ball_y_m
+            if ball_x_m is None or ball_y_m is None:
+                ball_x_m = None
+                ball_y_m = None
+            else:
+                # Ball relative position is robot-frame; do NOT apply origin shift.
+                bx = float(ball_x_m) * self._unity_to_cm * self._pose_scale
+                by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
+                return [bx, by]
+
+        if self._ball_status_fallback:
+            fallback = self._get_scene_ball_pos_fallback()
+            if fallback is not None:
+                return fallback
+        return [0xFFF, 0xFFF]
+
+    def _get_scene_ball_pos_fallback(self) -> list[float] | None:
+        """Debug-only fallback: synthesize RobotBallPos from scene-control state."""
+
+        try:
+            now = time.time()
+            if self._scene_status_cache is None or now - self._scene_status_cache_ts > 0.08:
+                if self._scene_control is None:
+                    from utils.XeleratorSceneControl import XeleratorSceneControl
+
+                    self._scene_control = XeleratorSceneControl(timeout_s=0.08)
+                self._scene_status_cache = self._scene_control.status()
+                self._scene_status_cache_ts = now
+
+            status = self._scene_status_cache
+            if not isinstance(status, dict) or not status.get("ok", False):
+                return None
+            ball = status.get("ball")
+            robots = status.get("robots") or []
+            if not isinstance(ball, dict):
+                return None
+
+            robot = None
+            for item in robots:
+                if int(item.get("id", -1)) == int(self.robot_id):
+                    robot = item
+                    break
+            if not isinstance(robot, dict) or not robot.get("active", True):
+                return None
+
+            dx = float(ball.get("x_cm", 0.0)) - float(robot.get("x_cm", 0.0))
+            dy = float(ball.get("y_cm", 0.0)) - float(robot.get("y_cm", 0.0))
+            yaw = math.radians(float(robot.get("yaw_deg", 0.0)))
+            c = math.cos(yaw)
+            s = math.sin(yaw)
+            rel_x = dx * c + dy * s
+            rel_y = -dx * s + dy * c
+            return [rel_x, rel_y]
+        except Exception:
+            return None
 
     def GetEnemyPos(self):
         """Return enemy robot positions relative to this robot.

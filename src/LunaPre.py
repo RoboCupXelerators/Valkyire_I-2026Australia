@@ -296,7 +296,12 @@ class Positions:
         self.Position_Y_PID = self._build_pos2pos_pid()
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
-        if RUNTIME_IS_MOCK or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}):
+        bit_mode = str(getattr(getattr(cfg, "RoboInfo", object()), "Bit", "")).upper()
+        if (
+            RUNTIME_IS_MOCK
+            or bit_mode == "SIM"
+            or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"})
+        ):
             self._vision_enabled = enable_vision_env
 
     def _load_pos2pos_config(self) -> dict:
@@ -1127,6 +1132,13 @@ class Positions:
         goal_box_width = float(getattr(safety_cfg, "GoalBoxWidth", 25.0))
         goal_box_y_half = float(getattr(safety_cfg, "GoalBoxYHalf", 50.0))
         clearance = float(getattr(safety_cfg, "Clearance", max(3.0, cfg.Motion.ErrorRange / 2.0)))
+        recovery_clearance = float(getattr(safety_cfg, "RecoveryClearance", 0.0))
+        if recovery_clearance <= 0.0:
+            pid_cfg = getattr(getattr(cfg, "Motion", None), "Pos2PosPID", None)
+            arrival_scale = float(getattr(pid_cfg, "ArrivalScale", 0.8))
+            arrival_range = float(getattr(cfg.Motion, "ErrorRange", 10.0)) * arrival_scale
+            recovery_extra = float(getattr(safety_cfg, "RecoveryExtra", 3.0))
+            recovery_clearance = clearance + arrival_range + recovery_extra
 
         return {
             "x_limit": max(1.0, x_limit),
@@ -1134,6 +1146,7 @@ class Positions:
             "goal_box_x_min": max(0.0, x_limit - goal_box_width),
             "goal_box_y_half": max(0.0, min(goal_box_y_half, y_limit)),
             "clearance": max(0.0, clearance),
+            "recovery_clearance": max(clearance, recovery_clearance),
         }
 
     @staticmethod
@@ -1158,22 +1171,43 @@ class Positions:
         goal_box_x_min = params["goal_box_x_min"]
         goal_box_y_half = params["goal_box_y_half"]
         clearance = params["clearance"]
+        recovery_clearance = params["recovery_clearance"]
 
-        target_x = self._clamp(x, -x_limit + clearance, x_limit - clearance)
-        target_y = self._clamp(y, -y_limit + clearance, y_limit - clearance)
-        corrected = (target_x != x) or (target_y != y)
+        guard_x = max(0.0, x_limit - clearance)
+        guard_y = max(0.0, y_limit - clearance)
+        recover_x = max(0.0, x_limit - recovery_clearance)
+        recover_y = max(0.0, y_limit - recovery_clearance)
+
+        target_x = x
+        target_y = y
+        corrected = False
+
+        if x > guard_x:
+            target_x = recover_x
+            corrected = True
+        elif x < -guard_x:
+            target_x = -recover_x
+            corrected = True
+
+        if y > guard_y:
+            target_y = recover_y
+            corrected = True
+        elif y < -guard_y:
+            target_y = -recover_y
+            corrected = True
 
         in_goal_box = abs(target_x) > goal_box_x_min and abs(target_y) < goal_box_y_half
         if in_goal_box:
             sign_x = 1.0 if target_x >= 0 else -1.0
             sign_y = 1.0 if target_y >= 0 else -1.0
 
-            retreat_x = sign_x * max(0.0, goal_box_x_min - clearance)
-            sidestep_y = sign_y * min(y_limit - clearance, goal_box_y_half + clearance)
+            retreat_x = sign_x * max(0.0, goal_box_x_min - recovery_clearance)
+            sidestep_limit = max(0.0, y_limit - recovery_clearance)
+            sidestep_y = sign_y * min(sidestep_limit, goal_box_y_half + recovery_clearance)
 
             retreat_cost = abs(target_x - retreat_x)
             sidestep_cost = abs(target_y - sidestep_y)
-            sidestep_has_room = goal_box_y_half + clearance <= y_limit - clearance
+            sidestep_has_room = sidestep_limit > goal_box_y_half
             if retreat_cost <= sidestep_cost or not sidestep_has_room:
                 target_x = retreat_x
             else:
