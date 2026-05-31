@@ -97,21 +97,30 @@ class RuleTeacher:
         return self._decide_approach(obs, reasons)
 
     def project_safe_pose(self, pose: list[float] | tuple[float, ...] | None) -> list[float] | None:
+        """检查位姿是否安全，返回修正后的目标位置
+        
+        只在真正出界时才触发修正，避免在禁区边缘反复震荡
+        """
         if not pose or len(pose) < 3:
             return None
 
         x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])
         cfg = self.config
-        goal_box_x_min = max(0.0, cfg.x_limit - cfg.goal_box_width)
+        
+        # 边界限制
         guard_x = max(0.0, cfg.x_limit - cfg.clearance)
         guard_y = max(0.0, cfg.y_limit - cfg.clearance)
         recover_x = max(0.0, cfg.x_limit - cfg.recovery_clearance)
         recover_y = max(0.0, cfg.y_limit - cfg.recovery_clearance)
+        
+        # 禁区边界
+        goal_box_x_min = max(0.0, cfg.x_limit - cfg.goal_box_width)
 
         target_x = x
         target_y = y
         corrected = False
 
+        # X 方向出界检测
         if x > guard_x:
             target_x = recover_x
             corrected = True
@@ -119,6 +128,7 @@ class RuleTeacher:
             target_x = -recover_x
             corrected = True
 
+        # Y 方向出界检测
         if y > guard_y:
             target_y = recover_y
             corrected = True
@@ -126,16 +136,25 @@ class RuleTeacher:
             target_y = -recover_y
             corrected = True
 
-        if abs(target_x) > goal_box_x_min and abs(target_y) < cfg.goal_box_y_half:
-            sign_x = 1.0 if target_x >= 0 else -1.0
-            sign_y = 1.0 if target_y >= 0 else -1.0
-            retreat_x = sign_x * max(0.0, goal_box_x_min - cfg.recovery_clearance)
-            sidestep_limit = max(0.0, cfg.y_limit - cfg.recovery_clearance)
-            sidestep_y = sign_y * min(sidestep_limit, cfg.goal_box_y_half + cfg.recovery_clearance)
-            if abs(target_x - retreat_x) <= abs(target_y - sidestep_y) or sidestep_limit <= cfg.goal_box_y_half:
-                target_x = retreat_x
-            else:
-                target_y = sidestep_y
+        # 禁区检测：只有在真正进入禁区时才修正
+        # 禁区条件：X 超过禁区线 且 Y 在禁区范围内
+        in_goal_box = abs(x) > goal_box_x_min and abs(y) < cfg.goal_box_y_half
+        
+        if in_goal_box:
+            # 禁区修正策略：优先后退（X方向），不侧移到更远的地方
+            sign_x = 1.0 if x >= 0 else -1.0
+            
+            # 往后退到禁区线外面
+            retreat_x = sign_x * max(0.0, goal_box_x_min - cfg.clearance)
+            target_x = retreat_x
+            
+            # Y 方向：保持当前位置或往中间走（不往外走！）
+            # 只有当 Y 在禁区边缘时才需要往中间移动
+            if abs(y) > cfg.goal_box_y_half - cfg.clearance:
+                # 接近禁区 Y 边缘，往中间移动一点
+                target_y = y * 0.8  # 收缩到 80%，保持方向但靠近中间
+                target_y = _clamp(target_y, -cfg.goal_box_y_half, cfg.goal_box_y_half)
+            
             corrected = True
 
         if not corrected:
@@ -230,34 +249,37 @@ class RuleTeacher:
         x_guard = max(1.0, cfg.x_limit - cfg.clearance)
         y_guard = max(1.0, cfg.y_limit - cfg.clearance)
         goal_box_x_min = max(0.0, cfg.x_limit - cfg.goal_box_width)
-        side_lane = min(y_guard, cfg.goal_box_y_half + max(5.0, cfg.clearance))
-        lane_candidates = [-side_lane, -24.0, 0.0, 24.0, side_lane]
         max_y = min(cfg.field_short / 2.0 - 28.0, y_guard)
 
+        # 优先往中间移动，以便满足射门条件
+        # 如果 Y 位置偏离中间太多，强制往中间走
+        center_threshold = 30.0  # 超过这个距离就优先往中间走
+        
+        # 目标 X: 向前推进
         target_x = max(x + 22.0, cfg.carry_x_cm)
         target_x = min(target_x, cfg.field_long / 2.0 - 18.0, x_guard)
+        
+        # 如果在禁区附近，限制 X
         if abs(target_x) > goal_box_x_min:
-            legal_lanes = [
-                lane_y
-                for lane_y in lane_candidates
-                if abs(lane_y) >= cfg.goal_box_y_half + cfg.clearance and abs(lane_y) <= max_y
-            ]
-            if legal_lanes:
-                lane_candidates = legal_lanes
-            else:
-                target_x = math.copysign(max(0.0, goal_box_x_min - cfg.clearance), target_x)
+            target_x = math.copysign(max(0.0, goal_box_x_min - cfg.clearance), target_x)
 
-        best_y = min(lane_candidates, key=lambda lane_y: self._lane_cost(obs, [target_x, lane_y]))
-        best_y = _clamp(best_y, -max_y, max_y)
+        # 目标 Y: 优先往中间走
+        if abs(y) > center_threshold:
+            # 偏离中间太多，强制往中间移动
+            # 选择一个介于当前位置和中间的目标
+            target_y = y * 0.3  # 往中间收缩到 30%
+            target_y = _clamp(target_y, -max_y, max_y)
+        else:
+            # 已经接近中间，选择最佳射门通道
+            lane_candidates = [-24.0, 0.0, 24.0]
+            best_y = min(lane_candidates, key=lambda lane_y: self._lane_cost(obs, [target_x, lane_y]))
+            target_y = _clamp(best_y, -max_y, max_y)
 
-        if abs(target_x) > goal_box_x_min and abs(y) < cfg.goal_box_y_half + cfg.clearance:
-            pre_box_x = math.copysign(max(0.0, goal_box_x_min - cfg.clearance), target_x)
-            target_x = min(target_x, pre_box_x) if target_x >= 0 else max(target_x, pre_box_x)
-
-        safe_target = self.project_safe_pose([target_x, best_y, obs.self_yaw])
+        # 检查安全
+        safe_target = self.project_safe_pose([target_x, target_y, obs.self_yaw])
         if safe_target is not None:
             return [safe_target[0], safe_target[1]]
-        return [target_x, best_y]
+        return [target_x, target_y]
 
     def _decision(
         self,
