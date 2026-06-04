@@ -3,6 +3,8 @@
 The old defence entrypoint was a blocking loop. This version mirrors
 `offence.RuleOffenceStrategy`: one `step()` call performs one control tick, so
 multi-robot runners can sample traces and stop cleanly.
+
+v5 fix: avoid_wall caches recovery target and exits on arrival or stuck timeout.
 """
 
 from __future__ import annotations
@@ -35,13 +37,17 @@ class DefenceConfig:
     guard_x_cm: float = float(os.environ.get("DEFENCE_GUARD_X", "58"))
     guard_y_cm: float = float(os.environ.get("DEFENCE_GUARD_Y", "0"))
     intercept_offset_cm: float = float(os.environ.get("DEFENCE_INTERCEPT_OFFSET", "28"))
-    chase_distance_cm: float = float(os.environ.get("DEFENCE_CHASE_DISTANCE", "82"))
-    chase_progress_cm: float = float(os.environ.get("DEFENCE_CHASE_PROGRESS", "18"))
+    chase_distance_cm: float = float(os.environ.get("DEFENCE_CHASE_DISTANCE", "55"))
+    chase_progress_cm: float = float(os.environ.get("DEFENCE_CHASE_PROGRESS", "10"))
+    chase_retreat_cm: float = float(os.environ.get("DEFENCE_CHASE_RETREAT", "-20"))
     hold_speed_gain: float = float(os.environ.get("DEFENCE_HOLD_GAIN", "1.1"))
     intercept_speed_gain: float = float(os.environ.get("DEFENCE_INTERCEPT_GAIN", "1.7"))
     recovery_speed_gain: float = float(os.environ.get("DEFENCE_BOUNDARY_RECOVERY_GAIN", "1.2"))
     clear_cooldown_s: float = float(os.environ.get("DEFENCE_CLEAR_COOLDOWN", "0.8"))
     attack_direction: float = float(os.environ.get("DEFENCE_ATTACK_SIGN", os.environ.get("OFFENCE_ATTACK_SIGN", "0")))
+    # v5: avoid_wall stuck timeout
+    stuck_timeout_s: float = float(os.environ.get("DEFENCE_STUCK_TIMEOUT", "1.5"))
+    stuck_move_cm: float = float(os.environ.get("DEFENCE_STUCK_MOVE", "3.0"))
 
 
 class RuleDefenceStrategy:
@@ -54,6 +60,12 @@ class RuleDefenceStrategy:
         self._last_logged_state = None
         self._last_dribble = None
         self._last_clear_ts = -999.0
+
+        # v5: avoid_wall recovery state
+        self._recovery_target: list[float] | None = None
+        self._recovery_arrived = False
+        self._recovery_start_ts: float | None = None
+        self._recovery_start_pose: list[float] | None = None
 
         self.field_long = float(getattr(Settings.Bounds, "Long", 260))
         self.field_short = float(getattr(Settings.Bounds, "Short", 200))
@@ -90,8 +102,44 @@ class RuleDefenceStrategy:
 
     def step(self) -> None:
         pose = UnitedPosition.FieldRobotPos()
+
+        # v5: avoid_wall with cached target and stuck timeout
+        if self._recovery_target is not None and not self._recovery_arrived:
+            # Check stuck timeout
+            if self._recovery_start_ts is not None:
+                elapsed = time.time() - self._recovery_start_ts
+                if elapsed > self.cfg.stuck_timeout_s and self._recovery_start_pose is not None:
+                    if _valid_pose(pose) and _valid_pose(self._recovery_start_pose):
+                        dx = float(pose[0]) - float(self._recovery_start_pose[0])
+                        dy = float(pose[1]) - float(self._recovery_start_pose[1])
+                        moved = math.hypot(dx, dy)
+                        if moved < self.cfg.stuck_move_cm:
+                            # Stuck: abandon recovery, reset state
+                            self._recovery_target = None
+                            self._recovery_arrived = False
+                            self._recovery_start_ts = None
+                            self._recovery_start_pose = None
+                            self._hold_home()
+                            return
+
+            # Continue moving to cached target
+            arrived = UnitedPosition.Pos2Pos(self._recovery_target, self.cfg.recovery_speed_gain)
+            if arrived:
+                self._recovery_arrived = True
+                self._recovery_target = None
+                self._recovery_start_ts = None
+                self._recovery_start_pose = None
+            self._set_state("avoid_wall")
+            self._set_dribble(False)
+            return
+
+        # Check if we need to start recovery (only if not already in recovery)
         safe_target = self._project_recovery_pose(pose)
         if safe_target is not None:
+            self._recovery_target = safe_target
+            self._recovery_arrived = False
+            self._recovery_start_ts = time.time()
+            self._recovery_start_pose = list(pose) if _valid_pose(pose) else None
             self._set_state("avoid_wall")
             self._set_dribble(False)
             UnitedPosition.Pos2Pos(safe_target, self.cfg.recovery_speed_gain)
@@ -144,15 +192,22 @@ class RuleDefenceStrategy:
         ball_distance = math.hypot(bx_rel, by_rel)
         ball_progress = self.attack_dir * float(ball_field[0])
 
-        if ball_distance <= self.cfg.chase_distance_cm and ball_progress <= self.cfg.chase_progress_cm:
+        # Tier 1: Ball deep in our half → aggressive challenge
+        if ball_progress >= abs(self.cfg.chase_retreat_cm) and ball_distance <= self.cfg.chase_distance_cm:
             self._set_state("challenge_ball")
             lockball.LockBallSlip()
             return
 
-        target = self._intercept_target(ball_field)
-        self._set_state("intercept_lane")
-        self._set_dribble(False)
-        UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
+        # Tier 2: Ball near midfield but close to us → intercept (position, don't chase)
+        if ball_distance <= self.cfg.chase_distance_cm and ball_progress <= self.cfg.chase_progress_cm:
+            target = self._intercept_target(ball_field)
+            self._set_state("intercept_lane")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
+            return
+
+        # Tier 3: Ball in enemy half or far away → hold home position
+        self._hold_home()
 
     def _intercept_target(self, ball_field: list | tuple) -> list[float]:
         ball_progress = self.attack_dir * float(ball_field[0])
@@ -168,6 +223,17 @@ class RuleDefenceStrategy:
 
     def _project_recovery_pose(self, pose: list | tuple | None):
         if not _valid_pose(pose):
+            return None
+        # Only trigger ProjectSafePose when truly near field boundary.
+        # ProjectSafePose's goal-box check is too aggressive for defensive
+        # positions (e.g. x=-67, y=50 triggers a false positive), so we
+        # gate it with a simple boundary proximity check first.
+        x, y = float(pose[0]), float(pose[1])
+        half_long = self.field_long / 2.0
+        half_short = self.field_short / 2.0
+        margin = 20.0  # cm from edge to start caring
+        near_boundary = abs(x) > (half_long - margin) or abs(y) > (half_short - margin)
+        if not near_boundary:
             return None
         try:
             return UnitedPosition.ProjectSafePose(pose)

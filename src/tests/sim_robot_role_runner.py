@@ -54,7 +54,7 @@ def _write_jsonl(path: Path | None, row: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one SIM robot role.")
     parser.add_argument("--robot-id", type=int, required=True)
-    parser.add_argument("--role", choices=["offence", "defence", "idle"], default="offence")
+    parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha"], default="offence")
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--trace", default="")
     parser.add_argument("--tick", type=float, default=0.03)
@@ -84,6 +84,10 @@ def main() -> int:
             from defence import RuleDefenceStrategy  # noqa: E402
 
             strategy = RuleDefenceStrategy()
+        elif args.role == "alpha":
+            from alpha import AlphaController  # noqa: E402
+
+            strategy = AlphaController()
 
         deadline = time.time() + max(0.1, float(args.duration))
         while time.time() < deadline:
@@ -95,6 +99,10 @@ def main() -> int:
                 strategy.step()
                 state = getattr(strategy, "state", "defence")
                 tick_s = float(getattr(strategy.cfg, "loop_dt", args.tick))
+            elif args.role == "alpha":
+                strategy.step()
+                state = getattr(strategy, "current_mode_name", "alpha")
+                tick_s = float(args.tick)
             else:
                 chassis.stop()
                 peripheral.Dribble(False)

@@ -187,12 +187,28 @@ class RuleOffenceStrategy:
             if self._face_goal_and_shoot_if_ready(goal_yaw):
                 return
 
-        carry_target = self._select_carry_target(pose)
+        # v25: Carry toward goal using Pos2Pos with simple target
         self._set_state("carry_to_lane")
-        UnitedPosition.Pos2Pos(
-            [carry_target[0], carry_target[1], goal_yaw],
-            self.cfg.carry_speed_gain,
+        # Simple target: move toward goal at a fixed depth
+        target_x = self.attack_dir * min(
+            abs(x) + 30.0,  # advance 30cm from current position
+            self.field_long / 2.0 - 20.0  # don't go past field boundary
         )
+        target_y = aim_y * 0.5  # drift toward center
+        
+        # v26: Bypass Pos2Pos and call FieldMoveVector directly
+        error_x = target_x - x
+        error_y = target_y - y
+        speed_x = error_x * self.cfg.carry_speed_gain
+        speed_y = error_y * self.cfg.carry_speed_gain
+        
+        # Log every 2 seconds
+        now = time.time()
+        if not hasattr(self, '_carry_log_ts') or now - self._carry_log_ts > 2.0:
+            self._carry_log_ts = now
+            logger.info(f"[v26] carry: cur=({x:.1f},{y:.1f}) tgt=({target_x:.1f},{target_y:.1f}) err=({error_x:.1f},{error_y:.1f}) spd=({speed_x:.1f},{speed_y:.1f})")
+        
+        chassis.FieldMoveVector(speed_x, speed_y, goal_yaw)
 
     def _can_shoot(self, pose: list | tuple, aim: list[float]) -> bool:
         if time.time() - self._last_shot_ts < self.cfg.shot_cooldown_s:
@@ -201,9 +217,13 @@ class RuleOffenceStrategy:
         x = float(pose[0])
         y = float(pose[1])
         progress = self.attack_dir * x
-        attack_ready = progress >= self.cfg.deep_shoot_x_cm or (progress >= 20.0 and abs(y) <= 32.0)
+        attack_ready = progress >= 30.0  # v23: shoot if past midfield
         if not attack_ready:
             return False
+
+        # v23: if very close to goal (progress >= 60), always shoot regardless of lane
+        if progress >= 60.0:
+            return True
 
         return self._lane_is_open([x, y], aim)
 
@@ -283,6 +303,12 @@ class RuleOffenceStrategy:
 
     def _project_recovery_pose(self, pose: list | tuple | None):
         if not _valid_pose(pose):
+            return None
+        x, y = float(pose[0]), float(pose[1])
+        half_long = self.field_long / 2.0
+        half_short = self.field_short / 2.0
+        near_boundary = (abs(x) > half_long - 20.0 or abs(y) > half_short - 20.0)
+        if not near_boundary:
             return None
         try:
             return UnitedPosition.ProjectSafePose(pose)

@@ -83,6 +83,37 @@ def _spawn_robot(
     env["DEFENCE_ATTACK_SIGN"] = attack_sign
     env["XEL_SIM_BALL_STATUS_FALLBACK"] = "1"
     env.setdefault("OFFENCE_LOG_EVERY", "1.0")
+    env.setdefault("LUNAPRE_FULL_LOG", "1")  # enable Pos2Pos PID debug logs
+
+    # === Robot-specific strategy differentiation ===
+    if robot_id == 1:
+        # R1: Aggressive striker - quick shots, fast approach
+        env["OFFENCE_APPROACH_STUCK_S"] = "2.5"  # faster stuck detection
+        env["OFFENCE_SHOOT_YAW_TOL"] = "15"  # looser aim, quicker shots
+        env["OFFENCE_CARRY_GAIN"] = "2.8"  # faster carry
+        env["OFFENCE_POUNCE_DIST"] = "50"  # pounce from further
+        env["OFFENCE_DROP_BACK_DIST"] = "25"  # shorter drop back
+        env["OFFENCE_DEEP_SHOOT_X"] = "35"  # shoot from closer range
+    elif robot_id == 2:
+        # R2: Midfield interceptor - aggressive defence
+        env["DEFENCE_CHASE_DISTANCE"] = "100"  # larger intercept range
+        env["DEFENCE_GUARD_X"] = "40"  # start from near midfield
+        env["DEFENCE_INTERCEPT_GAIN"] = "1.8"  # faster intercept
+        env["DEFENCE_CHASE_PROGRESS"] = "20"  # intercept further up field
+        env["DEFENCE_HOLD_GAIN"] = "1.3"  # faster home return
+    elif robot_id == 3:
+        # R3: Deep striker - carry deeper before shooting
+        env["OFFENCE_DEEP_SHOOT_X"] = "30"  # shoot from very close
+        env["OFFENCE_CARRY_X"] = "100"  # carry deeper into enemy half
+        env["OFFENCE_SHOOT_YAW_TOL"] = "5"  # precise aim
+        env["OFFENCE_APPROACH_STUCK_S"] = "4.0"  # more patient
+        env["OFFENCE_CARRY_GAIN"] = "2.5"  # fast carry
+    elif robot_id == 4:
+        # R4: Goalkeeper - stay deep, only challenge in box
+        env["DEFENCE_GUARD_X"] = "75"  # deeper home position (near goal)
+        env["DEFENCE_CHASE_RETREAT"] = "-45"  # only challenge very deep balls
+        env["DEFENCE_CHASE_DISTANCE"] = "60"  # larger chase range for goalkeeper
+        env["DEFENCE_HOLD_GAIN"] = "0.9"  # slower, steady positioning
 
     trace = out_dir / f"robot_{robot_id}_{role}.jsonl"
     log_path = out_dir / f"robot_{robot_id}_{role}.log"

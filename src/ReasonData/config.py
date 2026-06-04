@@ -116,7 +116,7 @@ class Preference:
             "LockBallSlipPidMaxY": 95,
             "LockBallSlipPidMaxW": 85,
             "LockBallSlipLostHoldSeconds": 0.18,
-            "LockBallSlipDribblePower": 0.35,
+            "LockBallSlipDribblePower": 0.75,
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPos，不依赖雷达原始距离。
                 "XLimit": 90.0,
@@ -162,7 +162,7 @@ class Preference:
             "WheelToWz": 0.02,
             "YawOffsetDeg": 0.0,
             "KickStrength": 1.0,
-            "DribbleScale": 1.0,
+            "DribbleScale": 3.0,
             "MoveScale": 1.0,
         },
         "Debug": {
