@@ -87,7 +87,7 @@ def main() -> int:
         elif args.role == "alpha":
             from alpha import AlphaController  # noqa: E402
 
-            strategy = AlphaController()
+            strategy = AlphaController(attack_dir=-1 if int(args.robot_id) >= 3 else 1)
 
         deadline = time.time() + max(0.1, float(args.duration))
         while time.time() < deadline:
@@ -101,7 +101,8 @@ def main() -> int:
                 tick_s = float(getattr(strategy.cfg, "loop_dt", args.tick))
             elif args.role == "alpha":
                 strategy.step()
-                state = getattr(strategy, "current_mode_name", "alpha")
+                state_attr = getattr(strategy, "current_mode_name", None)
+                state = state_attr() if callable(state_attr) else (state_attr or getattr(strategy, "state", "alpha"))
                 tick_s = float(args.tick)
             else:
                 chassis.stop()

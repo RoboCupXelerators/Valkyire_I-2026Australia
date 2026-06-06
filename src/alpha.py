@@ -57,16 +57,22 @@ BALL_MEDIUM_DIST = 80.0
 DEEP_PROGRESS_THRESHOLD = 30.0
 SHOOT_PROGRESS_THRESHOLD = 50.0
 SHOOT_ALIGNMENT_THRESHOLD = 25.0
+DIRECT_SHOT_ALIGNMENT_DEG = 8.0
+DIRECT_SHOT_MIN_PROGRESS = 68.0
+COMMITTED_SHOT_PROGRESS = 78.0
+STALLED_SHOT_MIN_PROGRESS = 24.0
+STALLED_SHOT_ALIGNMENT_DEG = 35.0
 
 # 运动参数
-STRIKE_SPEED_GAIN = 2.5
-LATERAL_SPEED_GAIN = 2.0
-INTERCEPT_SPEED_GAIN = 1.5
-RECOVER_SPEED_GAIN = 2.0
+STRIKE_SPEED_GAIN = 1.6
+LATERAL_SPEED_GAIN = 1.4
+INTERCEPT_SPEED_GAIN = 1.4
+RECOVER_SPEED_GAIN = 1.6
 POSITIONING_SPEED_GAIN = 1.0
-CARRY_DRIBBLE_POWER = 0.75
+CARRY_DRIBBLE_POWER = 0.72
+SECURE_DRIBBLE_POWER = 0.82
 APPROACH_DRIBBLE_POWER = 0.35
-MAX_FIELD_SPEED = 100.0
+MAX_FIELD_SPEED = 72.0
 
 # 场地参数
 FIELD_LONG = 260.0
@@ -74,16 +80,18 @@ FIELD_SHORT = 200.0
 GOAL_HALF_WIDTH = 24.0
 
 # 模式切换滞后
-MODE_SWITCH_FRAMES = 3
+MODE_SWITCH_FRAMES = 2
 
 # 射门冷却
 SHOT_COOLDOWN_S = 0.8
-SHOOT_YAW_TOLERANCE_DEG = 8.0
+SHOOT_YAW_TOLERANCE_DEG = 12.0  # v5.2: 放宽角度容差
 
 # v5: 卡死检测
 STUCK_CHECK_FRAMES = 60
 STUCK_POSITION_THRESHOLD = 3.0
 STUCK_ESCAPE_DURATION_S = 0.5
+CARRY_STALL_S = 1.0
+CARRY_STALL_MOVE_CM = 3.0
 
 # v5: 边界保护分级
 BOUNDARY_DANGER_DIST = 15.0
@@ -95,8 +103,14 @@ BALL_PREDICTION_FRAMES = 5
 BALL_PREDICTION_MAX_DIST = 80.0
 
 # v5: 持球稳定性
-BALL_EDGE_DIST = 15.0
+BALL_EDGE_DIST = 12.0
 STABILITY_SPEED_FACTOR = 0.6
+POSSESSION_GRACE_S = 0.22
+POSSESSION_GRACE_DIST = 28.0
+POSSESSION_SETTLE_S = 0.45
+SETTLE_CARRY_SPEED = 24.0
+LATERAL_TARGET_Y = 12.0
+LATERAL_CARRY_Y_LIMIT = 42.0
 
 # v5: 站位参数
 POSITIONING_DEFENSE_X = -40.0
@@ -262,10 +276,12 @@ class AlphaFeatures:
 
         # 持球稳定性
         ball_stability = 1.0
-        if ball_held and robot_ball and robot_ball != BALL_HELD and robot_ball != BALL_NOT_FOUND:
-            br = abs(float(robot_ball[0]))
-            if br > BALL_EDGE_DIST:
-                ball_stability = max(0.3, 1.0 - (br - BALL_EDGE_DIST) / 30.0)
+        if robot_ball and robot_ball != BALL_HELD and robot_ball != BALL_NOT_FOUND:
+            bx = float(robot_ball[0])
+            by = abs(float(robot_ball[1]))
+            lateral_margin = max(0.0, by - BALL_EDGE_DIST)
+            forward_margin = max(0.0, abs(bx - 8.0) - 18.0)
+            ball_stability = max(0.3, 1.0 - (lateral_margin + 0.5 * forward_margin) / 32.0)
 
         # 球是否朝己方球门运动
         ball_toward_own_goal = False
@@ -329,9 +345,14 @@ class AlphaStrategy:
         self._escaping_stuck = False
         self._escape_start_time: Optional[float] = None
         self._escape_direction = 1
+        self._carry_stall_since: Optional[float] = None
+        self._carry_stall_direction = 1
 
         # 球丢失计时
         self._ball_lost_since: Optional[float] = None
+        self._last_possession_ts = -999.0
+        self._possession_started_ts: Optional[float] = None
+        self._had_possession = False
 
         # 子状态
         self._sub_state = ""
@@ -359,12 +380,66 @@ class AlphaStrategy:
         if self._last_dribble == power: return
         peripheral.Dribble(power)
         self._last_dribble = power
+        # LockBallSlip caches its last Dribble() command. Alpha sometimes
+        # releases the dribbler directly before handing acquisition back to
+        # LockBallSlip; keep that cache truthful so LockBallSlip will re-enable
+        # the dribbler instead of silently assuming it is still on.
+        try:
+            lockball._lockball_dribble_state = power if power else False
+        except Exception:
+            pass
 
     def get_mode_name(self, mode: int = None) -> str:
         if mode is None: mode = self.current_mode
         return {MODE_STRIKING: "STRIKING", MODE_LATERAL_DRIBBLE: "LATERAL_DRIBBLE",
                 MODE_INTERCEPT: "INTERCEPT", MODE_RECOVER: "RECOVER",
                 MODE_POSITIONING: "POSITIONING"}.get(mode, "UNKNOWN")
+
+    def _attack_yaw(self) -> float:
+        return 0.0 if self.attack_dir >= 0 else 180.0
+
+    def _possession_age(self, now: Optional[float] = None) -> float:
+        if self._possession_started_ts is None:
+            return 999.0
+        return (time.time() if now is None else now) - self._possession_started_ts
+
+    def _clear_possession_tracking(self) -> None:
+        self._had_possession = False
+        self._possession_started_ts = None
+
+    def _apply_possession_grace(self, f: Dict[str, Any], now: float) -> None:
+        f['raw_ball_held'] = f['ball_held']
+        f['possession_grace'] = False
+        if f['ball_held']:
+            if not self._had_possession:
+                self._possession_started_ts = now
+            self._had_possession = True
+            self._last_possession_ts = now
+            return
+
+        carry_context = (
+            self.current_mode in (MODE_STRIKING, MODE_LATERAL_DRIBBLE)
+            or self._pending_mode in (MODE_STRIKING, MODE_LATERAL_DRIBBLE)
+            or self.state in ("striking", "lateral_dribble")
+        )
+        if not carry_context:
+            self._clear_possession_tracking()
+            return
+        if now - self._last_possession_ts > POSSESSION_GRACE_S:
+            self._clear_possession_tracking()
+            return
+        if f.get('dist_rb', 999.0) > POSSESSION_GRACE_DIST:
+            self._clear_possession_tracking()
+            return
+        if f.get('ball_stability', 1.0) < 0.45:
+            self._clear_possession_tracking()
+            return
+
+        f['ball_held'] = True
+        f['possession_grace'] = True
+        if not self._had_possession:
+            self._possession_started_ts = now
+        self._had_possession = True
 
     # ====================================================================
     # 核心循环
@@ -377,12 +452,16 @@ class AlphaStrategy:
             return self.current_mode
 
         now = time.time()
+        self._apply_possession_grace(features, now)
         self._position_history.append((features['robot_pos'][0], features['robot_pos'][1], now))
         if len(self._position_history) > STUCK_CHECK_FRAMES + 10:
             self._position_history.pop(0)
 
-        # 卡死检测
-        if self._check_stuck():
+        if features['ball_held']:
+            self._stuck_since = None
+        elif features['ball_found'] and features['dist_rb'] <= BALL_CLOSE_DIST:
+            self._stuck_since = None
+        elif self._check_stuck():
             self._execute_stuck_escape(features)
             return self.current_mode
 
@@ -393,7 +472,11 @@ class AlphaStrategy:
             return self.current_mode
 
         # 紧急回防
-        if features['ball_toward_own_goal'] and not features['ball_held']:
+        if (
+            features['ball_toward_own_goal']
+            and not features['ball_held']
+            and features['dist_rb'] > BALL_CLOSE_DIST
+        ):
             self._execute_defensive_intercept(features)
             self._set_mode(MODE_RECOVER)
             return self.current_mode
@@ -438,6 +521,10 @@ class AlphaStrategy:
             # 4b. 持球不稳定 → 稳住
             if f['ball_stability'] < 0.5:
                 return MODE_LATERAL_DRIBBLE
+            # 4c. 已经正对球门时直接推进。持球状态下 R-B-G 角会退化，
+            # 所以这里优先用机器人朝向来避免无意义的横向盘带。
+            if f['alignment_to_goal'] <= 18.0 and f['ball_stability'] >= 0.7:
+                return MODE_STRIKING
             # 5. 进攻质量高 → 冲刺
             if f['attack_quality'] >= 0.7:
                 return MODE_STRIKING
@@ -486,7 +573,21 @@ class AlphaStrategy:
     # ---- STRIKING ----
     def _execute_striking(self, f: Dict[str, Any]) -> None:
         self.state = "striking"
-        if self._can_shoot(f) and self._execute_shot(f):
+        if not f['ball_held']:
+            self._carry_stall_since = None
+            self._execute_intercept(f)
+            return
+
+        carry_stalled = self._is_carry_stalled(f)
+        if self._can_shoot(f, carry_stalled=carry_stalled) and self._execute_shot(f):
+            return
+
+        if self._possession_age() < POSSESSION_SETTLE_S and f['boundary_danger_level'] < 1:
+            self._sub_state = "settle_carry"
+            self._set_dribble(SECURE_DRIBBLE_POWER)
+            speed_x = self.attack_dir * SETTLE_CARRY_SPEED
+            speed_y = _clamp(-f['robot_pos'][1] * 0.25, -12.0, 12.0)
+            chassis.FieldMoveVector(speed_x, speed_y, f['robot_yaw'], KpW=0.35)
             return
 
         dribble_power = self._calc_dynamic_dribble_power(f)
@@ -503,6 +604,14 @@ class AlphaStrategy:
         target_x = self.attack_dir * min(abs(f['robot_pos'][0]) + 30.0, FIELD_LONG / 2.0 - 20.0)
         aim_y = self._best_goal_aim_y(f['robot_pos'])
         target_y = aim_y * 0.3 + boundary_adjust_y
+        if carry_stalled:
+            self._sub_state = "carry_unblock"
+            target_y = _clamp(
+                f['robot_pos'][1] + self._carry_stall_direction * 28.0,
+                -LATERAL_CARRY_Y_LIMIT,
+                LATERAL_CARRY_Y_LIMIT,
+            )
+            target_x = f['robot_pos'][0] + self.attack_dir * 12.0
 
         speed_x = (target_x - f['robot_pos'][0]) * STRIKE_SPEED_GAIN * speed_factor
         speed_y = (target_y - f['robot_pos'][1]) * STRIKE_SPEED_GAIN * speed_factor
@@ -514,6 +623,11 @@ class AlphaStrategy:
     # ---- LATERAL_DRIBBLE ----
     def _execute_lateral_dribble(self, f: Dict[str, Any]) -> None:
         self.state = "lateral_dribble"
+        if not f['ball_held']:
+            self._carry_stall_since = None
+            self._execute_intercept(f)
+            return
+
         self._lateral_phase += 1
 
         if self._can_shoot(f) and self._execute_shot(f):
@@ -525,14 +639,12 @@ class AlphaStrategy:
         if self._lateral_phase < 30:
             # 阶段1：横向调整
             self._sub_state = "lateral_adjust"
-            if f['ball_field_pos']:
-                lateral_dir = 1.0 if f['ball_field_pos'][1] > f['robot_pos'][1] else -1.0
+            if abs(f['robot_pos'][1]) > LATERAL_CARRY_Y_LIMIT:
+                target_y = _clamp(f['robot_pos'][1] * 0.45, -LATERAL_CARRY_Y_LIMIT, LATERAL_CARRY_Y_LIMIT)
             else:
-                lateral_dir = 1.0
-            if abs(f['robot_pos'][1]) > FIELD_SHORT / 2.0 - BOUNDARY_CAUTION_DIST:
-                lateral_dir = -1.0 if f['robot_pos'][1] > 0 else 1.0
-            speed_x = self.attack_dir * 15.0
-            speed_y = lateral_dir * 30.0
+                target_y = LATERAL_TARGET_Y if f['robot_pos'][1] <= 0 else -LATERAL_TARGET_Y
+            speed_x = self.attack_dir * 12.0
+            speed_y = _clamp((target_y - f['robot_pos'][1]) * LATERAL_SPEED_GAIN, -24.0, 24.0)
 
         elif self._lateral_phase < 80:
             # 阶段2：斜向推进
@@ -558,26 +670,32 @@ class AlphaStrategy:
             speed_y *= STABILITY_SPEED_FACTOR
         speed_x, speed_y = _limit_speed(speed_x, speed_y, MAX_FIELD_SPEED)
 
-        goal_yaw = self._calc_goal_yaw(f['robot_pos'], f['robot_pos'][1] * 0.5)
+        if self._possession_age() < POSSESSION_SETTLE_S or f['boundary_danger_level'] >= 1:
+            goal_yaw = f['robot_yaw']
+        else:
+            goal_yaw = self._calc_goal_yaw(f['robot_pos'], f['robot_pos'][1] * 0.5)
         chassis.FieldMoveVector(speed_x, speed_y, goal_yaw)
 
     # ---- INTERCEPT ----
     def _execute_intercept(self, f: Dict[str, Any]) -> None:
         self.state = "intercept"
-        self._set_dribble(APPROACH_DRIBBLE_POWER)
+        # LockBallSlip owns the dribbler while acquiring the ball. Alpha should
+        # not also write Dribble() here, otherwise the IO oscillates every tick.
+        self._last_dribble = None
+        approach_yaw = self._attack_yaw()
 
         if not f['ball_found'] or f['dist_rb'] > BALL_FAR_DIST:
             ball_field = UnitedPosition.FieldBallPos()
             if ball_field and ball_field[0] < 1000:
                 target_x = float(ball_field[0]) - self.attack_dir * 10.0
                 target_y = float(ball_field[1])
-                UnitedPosition.Pos2Pos([target_x, target_y, 0], INTERCEPT_SPEED_GAIN)
+                UnitedPosition.Pos2Pos([target_x, target_y, approach_yaw], INTERCEPT_SPEED_GAIN)
             return
 
         if f['dist_rb'] > BALL_CLOSE_DIST and f['ball_field_pos']:
             target_x = f['ball_field_pos'][0] - self.attack_dir * 5.0
             target_y = f['ball_field_pos'][1]
-            UnitedPosition.Pos2Pos([target_x, target_y, 0], INTERCEPT_SPEED_GAIN)
+            UnitedPosition.Pos2Pos([target_x, target_y, approach_yaw], INTERCEPT_SPEED_GAIN)
             self._sub_state = "approaching"
             return
 
@@ -587,14 +705,19 @@ class AlphaStrategy:
     # ---- RECOVER: v5 球丢失后主动追球 ----
     def _execute_recover(self, f: Dict[str, Any]) -> None:
         self.state = "recover"
-        self._set_dribble(APPROACH_DRIBBLE_POWER)
+        if f.get('dist_rb', 999.0) <= BALL_CLOSE_DIST:
+            self._execute_intercept(f)
+            return
+
+        self._set_dribble(False)
+        approach_yaw = self._attack_yaw()
 
         # 优先用预测位置拦截
         if f['ball_predicted_pos']:
             target_x = f['ball_predicted_pos'][0] - self.attack_dir * 5.0
             target_y = f['ball_predicted_pos'][1]
             self._sub_state = "predict_intercept"
-            UnitedPosition.Pos2Pos([target_x, target_y, 0], RECOVER_SPEED_GAIN)
+            UnitedPosition.Pos2Pos([target_x, target_y, approach_yaw], RECOVER_SPEED_GAIN)
             return
 
         # 用 FieldBallPos 追球
@@ -603,12 +726,12 @@ class AlphaStrategy:
             target_x = float(ball_field[0]) - self.attack_dir * 8.0
             target_y = float(ball_field[1])
             self._sub_state = "field_chase"
-            UnitedPosition.Pos2Pos([target_x, target_y, 0], RECOVER_SPEED_GAIN)
+            UnitedPosition.Pos2Pos([target_x, target_y, approach_yaw], RECOVER_SPEED_GAIN)
             return
 
         # 球完全不可见 → 向中场移动
         self._sub_state = "search"
-        UnitedPosition.Pos2Pos([0.0, 0.0, 0], POSITIONING_SPEED_GAIN)
+        UnitedPosition.Pos2Pos([0.0, 0.0, approach_yaw], POSITIONING_SPEED_GAIN)
 
     # ---- POSITIONING: v5 无球站位 ----
     def _execute_positioning(self, f: Dict[str, Any]) -> None:
@@ -625,13 +748,13 @@ class AlphaStrategy:
             target_x = self.attack_dir * POSITIONING_MIDFIELD_X
 
         target_y = _clamp(f['robot_pos'][1], -POSITIONING_Y_SPREAD, POSITIONING_Y_SPREAD)
-        UnitedPosition.Pos2Pos([target_x, target_y, 0], POSITIONING_SPEED_GAIN)
+        UnitedPosition.Pos2Pos([target_x, target_y, self._attack_yaw()], POSITIONING_SPEED_GAIN)
         self._sub_state = "positioning"
 
     # ---- 紧急回防 ----
     def _execute_defensive_intercept(self, f: Dict[str, Any]) -> None:
         self.state = "defensive_intercept"
-        self._set_dribble(APPROACH_DRIBBLE_POWER)
+        self._set_dribble(False)
 
         if f['ball_predicted_pos']:
             target_x, target_y = f['ball_predicted_pos'][0], f['ball_predicted_pos'][1]
@@ -645,7 +768,7 @@ class AlphaStrategy:
 
     def _execute_intercept_emergency(self) -> None:
         self.state = "intercept_emergency"
-        self._set_dribble(APPROACH_DRIBBLE_POWER)
+        self._last_dribble = None
         lockball.LockBallSlip()
 
     # ---- 边界保护 ----
@@ -665,10 +788,14 @@ class AlphaStrategy:
     # 卡死检测与脱困
     # ====================================================================
     def _check_stuck(self) -> bool:
+        # 如果正在脱困，检查是否完成
         if self._escaping_stuck:
-            if time.time() - self._escape_start_time > STUCK_ESCAPE_DURATION_S:
+            if self._escape_start_time and time.time() - self._escape_start_time > STUCK_ESCAPE_DURATION_S:
                 self._escaping_stuck = False
                 self._escape_start_time = None
+                self._stuck_since = None
+                self._position_history.clear()  # 清空历史，重新开始检测
+                return False
             return True
 
         if len(self._position_history) < STUCK_CHECK_FRAMES:
@@ -682,9 +809,11 @@ class AlphaStrategy:
             return False
 
         displacement = math.sqrt((x1 - x0)**2 + (y1 - y0)**2)
+        
+        # 只有当位移非常小且持续一段时间才判定为卡死
         if displacement < STUCK_POSITION_THRESHOLD:
             self._stuck_since = self._stuck_since or time.time()
-            if time.time() - self._stuck_since > 0.5:
+            if time.time() - self._stuck_since > 1.0:  # 增加到1秒
                 return True
         else:
             self._stuck_since = None
@@ -705,27 +834,64 @@ class AlphaStrategy:
         goal_yaw = f.get('robot_yaw', 0) if f else 0
         chassis.FieldMoveVector(speed_x, speed_y, goal_yaw)
 
+    def _is_carry_stalled(self, f: Dict[str, Any]) -> bool:
+        if not f.get('ball_held', False):
+            self._carry_stall_since = None
+            return False
+        if len(self._position_history) < STUCK_CHECK_FRAMES:
+            return False
+
+        recent = self._position_history[-STUCK_CHECK_FRAMES:]
+        x0, y0, _ = recent[0]
+        x1, y1, _ = recent[-1]
+        moved = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2)
+        if moved >= CARRY_STALL_MOVE_CM:
+            self._carry_stall_since = None
+            return False
+
+        now = time.time()
+        self._carry_stall_since = self._carry_stall_since or now
+        if now - self._carry_stall_since < CARRY_STALL_S:
+            return False
+
+        self._carry_stall_direction = -1 if f['robot_pos'][1] > 0 else 1
+        if abs(f['robot_pos'][1]) > LATERAL_CARRY_Y_LIMIT * 0.7:
+            self._carry_stall_direction = -1 if f['robot_pos'][1] > 0 else 1
+        return True
+
     # ====================================================================
     # 动态运球功率
     # ====================================================================
     def _calc_dynamic_dribble_power(self, f: Dict[str, Any]) -> float:
         base = CARRY_DRIBBLE_POWER
+        if self._possession_age() < POSSESSION_SETTLE_S:
+            base = max(base, SECURE_DRIBBLE_POWER)
         if f.get('ball_stability', 1.0) < 0.7:
-            base = min(1.0, base + 0.15)
+            base = max(base, SECURE_DRIBBLE_POWER)
         if f.get('alignment_to_goal', 0) > 30.0:
-            base = min(1.0, base + 0.1)
+            base = min(0.9, base + 0.06)
         if f.get('boundary_danger_level', -1) >= 0:
-            base = min(1.0, base + 0.1)
+            base = min(0.9, base + 0.06)
         return base
 
     # ====================================================================
     # 射门逻辑
     # ====================================================================
-    def _can_shoot(self, f: Dict[str, Any]) -> bool:
+    def _can_shoot(self, f: Dict[str, Any], carry_stalled: bool = False) -> bool:
         if not f['ball_held']: return False
+        if f.get('possession_grace', False): return False
         if time.time() - self._last_shot_ts < SHOT_COOLDOWN_S: return False
-        if f['progress'] < SHOOT_PROGRESS_THRESHOLD: return False
-        return True
+        if (
+            carry_stalled
+            and f['progress'] >= STALLED_SHOT_MIN_PROGRESS
+            and f['alignment_to_goal'] <= STALLED_SHOT_ALIGNMENT_DEG
+        ):
+            return True
+        if f['alignment_to_goal'] <= DIRECT_SHOT_ALIGNMENT_DEG and f['progress'] >= DIRECT_SHOT_MIN_PROGRESS:
+            return True
+        if f['progress'] >= COMMITTED_SHOT_PROGRESS and f['alignment_to_goal'] <= SHOOT_ALIGNMENT_THRESHOLD:
+            return True
+        return False
 
     def _execute_shot(self, f: Dict[str, Any]) -> bool:
         aim_y = self._best_goal_aim_y(f['robot_pos'])
@@ -767,6 +933,14 @@ class AlphaController:
     def step(self) -> None:
         self.step_count += 1
         self.strategy.step()
+
+    @property
+    def state(self) -> str:
+        return self.strategy.state
+
+    @property
+    def current_mode_name(self) -> str:
+        return self.strategy.get_mode_name()
 
     def run_step(self) -> Dict[str, Any]:
         self.step_count += 1

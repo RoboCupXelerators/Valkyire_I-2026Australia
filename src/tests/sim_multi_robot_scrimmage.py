@@ -60,8 +60,16 @@ def _write_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 
 def _place_robots(ctl: XeleratorSceneControl, robots: list[int], ball: tuple[float, float]) -> None:
+    try:
+        ctl.reset_score()
+    except Exception:
+        pass
     active = set(robots)
     for robot_id in (1, 2, 3, 4):
+        try:
+            ctl.set_dribble(robot_id, False, strength=0.0)
+        except Exception:
+            pass
         x, y, yaw = DEFAULT_LAYOUT[robot_id]
         ctl.set_robot(robot_id, x, y, yaw, active=robot_id in active)
     ctl.set_ball(ball[0], ball[1], reset_velocity=True)
@@ -216,6 +224,12 @@ def main() -> int:
     parser.add_argument("--ball-y", type=float, default=0.0)
     parser.add_argument("--output", default=os.environ.get("SIM_SCRIMMAGE_OUTPUT", "Records/multi_robot_scrimmage"))
     parser.add_argument("--rules-on", action="store_true", help="Leave penalties/lack/pushing enabled.")
+    parser.add_argument(
+        "--startup-grace",
+        type=float,
+        default=float(os.environ.get("SIM_SCRIMMAGE_STARTUP_GRACE", "15.0")),
+        help="Extra seconds allowed for robot subprocess startup and Unity UDP handshake.",
+    )
     args = parser.parse_args()
 
     robots = _parse_robots(args.robots)
@@ -247,7 +261,7 @@ def main() -> int:
                 out_dir=out_dir,
             )
 
-        deadline = time.time() + max(0.2, float(args.duration)) + 8.0
+        deadline = time.time() + max(0.2, float(args.duration)) + max(1.0, float(args.startup_grace))
         while time.time() < deadline and any(proc.poll() is None for proc in processes.values()):
             try:
                 status = ctl.status()
