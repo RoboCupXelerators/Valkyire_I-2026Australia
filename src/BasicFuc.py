@@ -58,8 +58,8 @@ class LockSeries:
     def __init__(self):
         self.D_time = 0
         import simple_pid
-        catch_val = getattr(Settings.Motion, "CatchVal", [6, 0])
-        catch_x = catch_val[0] if len(catch_val) > 0 else 6
+        catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
+        catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         catch_y = catch_val[1] if len(catch_val) > 1 else 0
         self.catch_x = catch_x
         self.max_lock_angle = getattr(Settings.Motion, "LockBallSlipMaxAngle", 85)
@@ -277,8 +277,9 @@ class LockSeries:
                 pid_w = -self.pan_w(angle)
                 capture_x_scale, capture_w_scale, capture_bbox = self._capture_control()
                 SpeedX = pid_x * capture_x_scale * self._alignment_speed_x_scale(iBY)
+                sim_bits = str(getattr(getattr(Settings, "RoboInfo", object()), "Bit", "")).upper() == "SIM"
                 if (
-                    capture_bbox >= self.capture_push_bbox
+                    (capture_bbox >= self.capture_push_bbox or sim_bits)
                     and iBX > self.catch_x
                     and abs(iBY) <= self.capture_push_y
                 ):

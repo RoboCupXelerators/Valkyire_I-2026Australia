@@ -83,9 +83,11 @@ class Preference:
             "Home": [-70, 0, 0],    # 默认回位点
         },
         "Motion": {
-            "CatchVal": [6, 0],     # 抱球时的球位置
+            "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "CatchBBoxSize": 90,    # 近距离视觉框大于该值时辅助判断持球
-            "CatchBBoxXMargin": 4,  # bbox 持球判定允许的前向余量
+            "CatchXTol": 1.5,       # 持球判定前向容差，需与 Unity dribbler 窗口一致
+            "CatchYTol": 2.0,       # 持球判定横向容差
+            "CatchBBoxXMargin": 1.5,  # bbox 持球判定允许的前向余量
             "CatchBBoxYTol": 2,     # bbox 持球判定允许的横向误差
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "MaxSpeed": 500,        # 最大速度值

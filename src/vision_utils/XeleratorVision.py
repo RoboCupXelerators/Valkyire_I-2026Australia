@@ -222,8 +222,12 @@ class XeleratorVision:
         return [0xFFF, 0xFFF]
 
     def get_chassis_pos(self):
-        # Unity simulator currently doesn't provide opponent detections.
-        return []
+        if self.bits is None or not hasattr(self.bits, "GetEnemyPos"):
+            return []
+        try:
+            return self.bits.GetEnemyPos()
+        except Exception:
+            return []
 
     def get_goals_pos(self):
         # Unity simulator currently doesn't provide goal detections.

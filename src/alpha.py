@@ -57,9 +57,9 @@ BALL_MEDIUM_DIST = 80.0
 DEEP_PROGRESS_THRESHOLD = 30.0
 SHOOT_PROGRESS_THRESHOLD = 50.0
 SHOOT_ALIGNMENT_THRESHOLD = 25.0
-DIRECT_SHOT_ALIGNMENT_DEG = 8.0
-DIRECT_SHOT_MIN_PROGRESS = 68.0
-COMMITTED_SHOT_PROGRESS = 78.0
+DIRECT_SHOT_ALIGNMENT_DEG = 15.0
+DIRECT_SHOT_MIN_PROGRESS = 45.0
+COMMITTED_SHOT_PROGRESS = 55.0
 STALLED_SHOT_MIN_PROGRESS = 24.0
 STALLED_SHOT_ALIGNMENT_DEG = 35.0
 
@@ -111,6 +111,9 @@ POSSESSION_SETTLE_S = 0.45
 SETTLE_CARRY_SPEED = 24.0
 LATERAL_TARGET_Y = 12.0
 LATERAL_CARRY_Y_LIMIT = 42.0
+BLOCKING_ENEMY_FORWARD_CM = 55.0
+BLOCKING_ENEMY_LATERAL_CM = 35.0
+BLOCKING_ENEMY_DODGE_CM = 34.0
 
 # v5: 站位参数
 POSITIONING_DEFENSE_X = -40.0
@@ -299,6 +302,30 @@ class AlphaFeatures:
             depth_quality = min(1.0, max(0.0, progress / (FIELD_LONG / 2.0)))
             attack_quality = 0.6 * angle_quality + 0.4 * depth_quality
 
+        enemies = UnitedPosition.FieldChassisPos()
+        blocking_enemy = None
+        best_block_dist = 9999.0
+        for enemy in enemies or []:
+            if not enemy or len(enemy) < 2:
+                continue
+            ex, ey = float(enemy[0]), float(enemy[1])
+            forward_gap = attack_dir * (ex - robot_x)
+            lateral_gap = ey - robot_y
+            if forward_gap < -5.0 or forward_gap > BLOCKING_ENEMY_FORWARD_CM:
+                continue
+            if abs(lateral_gap) > BLOCKING_ENEMY_LATERAL_CM:
+                continue
+            dist = math.hypot(forward_gap, lateral_gap)
+            if dist < best_block_dist:
+                best_block_dist = dist
+                blocking_enemy = {
+                    'x': ex,
+                    'y': ey,
+                    'forward_gap': forward_gap,
+                    'lateral_gap': lateral_gap,
+                    'dist': dist,
+                }
+
         return {
             'robot_pos': [robot_x, robot_y, robot_yaw],
             'ball_field_pos': ball_field_pos,
@@ -322,6 +349,8 @@ class AlphaFeatures:
             'ball_stability': ball_stability,
             'ball_toward_own_goal': ball_toward_own_goal,
             'attack_quality': attack_quality,
+            'enemies': enemies or [],
+            'blocking_enemy': blocking_enemy,
         }
 
 
@@ -402,6 +431,38 @@ class AlphaStrategy:
         if self._possession_started_ts is None:
             return 999.0
         return (time.time() if now is None else now) - self._possession_started_ts
+
+    def _apply_blocking_enemy_dodge(self, target_y: float, f: Dict[str, Any]) -> float:
+        blocker = f.get('blocking_enemy')
+        if not blocker:
+            return target_y
+
+        robot_y = float(f['robot_pos'][1])
+        lateral_gap = float(blocker.get('lateral_gap', 0.0))
+        if abs(lateral_gap) < 6.0:
+            side = -1.0 if robot_y > 0 else 1.0
+        else:
+            side = -1.0 if lateral_gap > 0 else 1.0
+
+        self._sub_state = "enemy_dodge"
+        return _clamp(robot_y + side * BLOCKING_ENEMY_DODGE_CM, -LATERAL_CARRY_Y_LIMIT, LATERAL_CARRY_Y_LIMIT)
+
+    def _apply_blocking_enemy_speed(self, speed_x: float, speed_y: float, f: Dict[str, Any]) -> Tuple[float, float]:
+        if not f.get('blocking_enemy'):
+            return speed_x, speed_y
+
+        max_forward = 8.0
+        if speed_x * self.attack_dir > max_forward:
+            speed_x = self.attack_dir * max_forward
+
+        if abs(speed_y) < 28.0:
+            lateral_gap = float(f['blocking_enemy'].get('lateral_gap', 0.0))
+            if abs(lateral_gap) < 6.0:
+                side = -1.0 if float(f['robot_pos'][1]) > 0 else 1.0
+            else:
+                side = -1.0 if lateral_gap > 0 else 1.0
+            speed_y = side * 28.0
+        return speed_x, speed_y
 
     def _clear_possession_tracking(self) -> None:
         self._had_possession = False
@@ -604,6 +665,7 @@ class AlphaStrategy:
         target_x = self.attack_dir * min(abs(f['robot_pos'][0]) + 30.0, FIELD_LONG / 2.0 - 20.0)
         aim_y = self._best_goal_aim_y(f['robot_pos'])
         target_y = aim_y * 0.3 + boundary_adjust_y
+        target_y = self._apply_blocking_enemy_dodge(target_y, f)
         if carry_stalled:
             self._sub_state = "carry_unblock"
             target_y = _clamp(
@@ -615,6 +677,7 @@ class AlphaStrategy:
 
         speed_x = (target_x - f['robot_pos'][0]) * STRIKE_SPEED_GAIN * speed_factor
         speed_y = (target_y - f['robot_pos'][1]) * STRIKE_SPEED_GAIN * speed_factor
+        speed_x, speed_y = self._apply_blocking_enemy_speed(speed_x, speed_y, f)
         speed_x, speed_y = _limit_speed(speed_x, speed_y, MAX_FIELD_SPEED)
 
         goal_yaw = self._calc_goal_yaw(f['robot_pos'], aim_y)
@@ -651,6 +714,7 @@ class AlphaStrategy:
             self._sub_state = "lateral_advance"
             target_x = self.attack_dir * min(abs(f['robot_pos'][0]) + 20.0, FIELD_LONG / 2.0 - 20.0)
             target_y = f['robot_pos'][1] * 0.6
+            target_y = self._apply_blocking_enemy_dodge(target_y, f)
             speed_x = (target_x - f['robot_pos'][0]) * LATERAL_SPEED_GAIN
             speed_y = (target_y - f['robot_pos'][1]) * LATERAL_SPEED_GAIN
         else:
@@ -668,6 +732,7 @@ class AlphaStrategy:
         if f['ball_stability'] < 0.7:
             speed_x *= STABILITY_SPEED_FACTOR
             speed_y *= STABILITY_SPEED_FACTOR
+        speed_x, speed_y = self._apply_blocking_enemy_speed(speed_x, speed_y, f)
         speed_x, speed_y = _limit_speed(speed_x, speed_y, MAX_FIELD_SPEED)
 
         if self._possession_age() < POSSESSION_SETTLE_S or f['boundary_danger_level'] >= 1:

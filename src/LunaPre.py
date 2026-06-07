@@ -107,7 +107,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         if str(cfg.RoboInfo.Bit).upper() == "SIM":
             from utils.XeleratorSimBits import XeleratorSimBits
             from utils.XeleratorSimBits import Lidar as SimLidar
-            from vision_utils.LunaIntelligence import SimYoloVision
+            from vision_utils.XeleratorVision import XeleratorVision
 
             # Prefer config-driven settings (ReasonData/data/config.json -> Settings.Sim.*)
             # Env vars remain supported as overrides for quick debugging.
@@ -193,11 +193,10 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             Odometer = None
             referee = None
             Morse = None
-            # Provide a lightweight vision provider in SIM (no subprocess)
-            try:
-                globals()["vision"] = SimYoloVision()
-            except Exception:
-                globals()["vision"] = None
+            # Provide a lightweight vision provider in SIM (no subprocess).
+            # It reads ball/enemy extensions from XeleratorSimBits, while full
+            # camera/YOLO pipelines can still be started explicitly by tests.
+            globals()["vision"] = XeleratorVision(Bits)
             logger.info(f"Simulator Bits loaded: unity={unity_ip}:{cmd_port}, status_port={status_port}, robot_id={robot_id}")
             return
 
@@ -620,6 +619,7 @@ class Positions:
             `0xfff` stand for `NoBallFounded`
             `0xddd` stand for `CatchBall`
         '''
+        sim_ball_from_bits = False
         # Simulator fast-path: if Bits can provide relative ball position directly,
         # do not rely on Vision UDP server.
         try:
@@ -627,6 +627,7 @@ class Positions:
                 # NOTE: SIM Bits.GetBallPos() is already the robot-frame relative position in cm
                 # (x_forward, y_left). Do NOT subtract pose here.
                 self.ballPos = Bits.GetBallPos()
+                sim_ball_from_bits = str(getattr(Settings.RoboInfo, "Bit", "")).upper() == "SIM"
             else:
                 # 20251017 already changed X,Y dimension
                 self.ballPos = self._get_ball_pos()
@@ -638,9 +639,16 @@ class Positions:
         # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
         elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
+        elif sim_ball_from_bits:
+            # In SIM, [0xDDD,0xDDD] must come from Unity StatusFlags.HasBall.
+            # A ball near the 8.5cm geometric target can still be separated
+            # from the robot collider surface, so the legacy vision geometry
+            # heuristic would make strategy enter carry mode before physical
+            # possession is actually true.
+            self.ballPosOut = self.ballPos
         else:
-            catch_val = getattr(cfg.Motion, "CatchVal", [6, 0])
-            catch_x = catch_val[0] if len(catch_val) > 0 else 6
+            catch_val = getattr(cfg.Motion, "CatchVal", [8.5, 0])
+            catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
             catch_y = catch_val[1] if len(catch_val) > 1 else 0
             error_range = getattr(cfg.Motion, "ErrorRange", 10)
             x_tol = getattr(cfg.Motion, "CatchXTol", error_range / 20)
@@ -813,24 +821,21 @@ class Positions:
         ChassisRawList = self._get_chassis_pos()
         SelfX, SelfY, SelfZ = self.FieldRobotPos()
         OutputDistanceList = []
+        th = math.radians(float(SelfZ))
+        cos_yaw = math.cos(th)
+        sin_yaw = math.sin(th)
         for c in ChassisRawList:
-            cDistance = math.sqrt(c[0]**2 + c[1]**2)
-            if c[1] == 0:
-                ChassisRltAngle = 0
-            try:
-                ChassisRltAngle =  -int(math.degrees(math.atan2(c[0],c[1])) - 90)
-            except ZeroDivisionError:
-                ChassisRltAngle =  0
-            ChassisAngleAngle = ChassisRltAngle + SelfZ
-            if ChassisAngleAngle > 360:
-                ChassisAbsAngle = ChassisAngleAngle - 360
-            else:
-                ChassisAbsAngle = ChassisAngleAngle
+            if len(c) < 2:
+                continue
+            rel_x = float(c[0])
+            rel_y = float(c[1])
+            dx = rel_x * cos_yaw - rel_y * sin_yaw
+            dy = rel_x * sin_yaw + rel_y * cos_yaw
             AbsChassisCache = [
-                cDistance * math.sin(math.radians(ChassisAbsAngle)) + SelfY,
-                cDistance * math.cos(math.radians(ChassisAbsAngle)) + SelfX,
-                c[2],
-                c[3]
+                SelfX + dx,
+                SelfY + dy,
+                c[2] if len(c) > 2 else 0,
+                c[3] if len(c) > 3 else 0
                 ]
             OutputDistanceList.append(AbsChassisCache)
         return OutputDistanceList

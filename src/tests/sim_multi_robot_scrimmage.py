@@ -4,7 +4,8 @@ Start Unity Play mode first, then run from Software:
     python src/tests/sim_multi_robot_scrimmage.py
 
 The runner starts one Python subprocess per robot. That mirrors the real
-deployment shape and avoids sharing LunaPre globals across robots.
+deployment shape and avoids sharing LunaPre globals across robots. Match rules
+are enabled by default; use --rules-off only for isolated debug experiments.
 """
 
 from __future__ import annotations
@@ -29,6 +30,18 @@ DEFAULT_LAYOUT = {
     2: (-70.0, 60.0, 0.0),
     3: (60.0, 30.0, 180.0),
     4: (70.0, -60.0, 180.0),
+}
+
+STAGGERED_LAYOUT = {
+    1: (-60.0, -30.0, 0.0),
+    2: (-85.0, 65.0, 0.0),
+    3: (85.0, 45.0, 180.0),
+    4: (95.0, -65.0, 180.0),
+}
+
+LAYOUTS = {
+    "default": DEFAULT_LAYOUT,
+    "staggered": STAGGERED_LAYOUT,
 }
 
 
@@ -59,7 +72,12 @@ def _write_jsonl(path: Path, row: dict[str, Any]) -> None:
         fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def _place_robots(ctl: XeleratorSceneControl, robots: list[int], ball: tuple[float, float]) -> None:
+def _place_robots(
+    ctl: XeleratorSceneControl,
+    robots: list[int],
+    ball: tuple[float, float],
+    layout: dict[int, tuple[float, float, float]],
+) -> None:
     try:
         ctl.reset_score()
     except Exception:
@@ -70,7 +88,7 @@ def _place_robots(ctl: XeleratorSceneControl, robots: list[int], ball: tuple[flo
             ctl.set_dribble(robot_id, False, strength=0.0)
         except Exception:
             pass
-        x, y, yaw = DEFAULT_LAYOUT[robot_id]
+        x, y, yaw = layout[robot_id]
         ctl.set_robot(robot_id, x, y, yaw, active=robot_id in active)
     ctl.set_ball(ball[0], ball[1], reset_velocity=True)
 
@@ -195,6 +213,132 @@ def _trace_summary(path: Path) -> dict[str, Any]:
     }
 
 
+def _is_rule_event(event: str) -> bool:
+    normalized = event.strip().lower()
+    if not normalized:
+        return False
+    return (
+        "lack of progress" in normalized
+        or "pushing" in normalized
+        or "penalty" in normalized
+    )
+
+
+def _scene_summary(path: Path) -> dict[str, Any]:
+    statuses: list[dict[str, Any]] = []
+    errors: list[str] = []
+    if not path.exists():
+        return {
+            "frames": 0,
+            "errors": ["scene trace missing"],
+            "multi_possession_frames": 0,
+            "max_holders": 0,
+        }
+
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                errors.append(f"bad jsonl row: {exc}")
+                continue
+            if "error" in row:
+                errors.append(str(row["error"]))
+                continue
+            status = row.get("status")
+            if isinstance(status, dict):
+                statuses.append(status)
+
+    holder_counts: dict[str, int] = {}
+    multi_possession_frames = 0
+    max_holders = 0
+    first_multi_possession = None
+    ball_xs: list[float] = []
+    ball_ys: list[float] = []
+    ball_speeds: list[float] = []
+    rule_counts: dict[str, int] = {}
+    event_counts: dict[str, int] = {}
+    first_rule_event = None
+    previous_event_key = None
+
+    for idx, status in enumerate(statuses):
+        rules = status.get("rules") if isinstance(status.get("rules"), dict) else {}
+        if rules:
+            key = ",".join(
+                f"{name}={str(bool(rules.get(name))).lower()}"
+                for name in ("penalties", "lack", "pushing")
+            )
+            rule_counts[key] = rule_counts.get(key, 0) + 1
+
+        score = status.get("score") if isinstance(status.get("score"), dict) else {}
+        event = str(score.get("last_event", "")).strip() if score else ""
+        event_time = score.get("last_time") if score else None
+        event_key = (event, event_time)
+        if event and event_key != previous_event_key:
+            event_counts[event] = event_counts.get(event, 0) + 1
+            if _is_rule_event(event) and first_rule_event is None:
+                first_rule_event = {
+                    "frame": idx,
+                    "time": status.get("time"),
+                    "event": event,
+                    "event_time": event_time,
+                    "ball": status.get("ball"),
+                }
+        previous_event_key = event_key
+
+        ball = status.get("ball") if isinstance(status.get("ball"), dict) else {}
+        if ball:
+            ball_xs.append(float(ball.get("x_cm", 0.0)))
+            ball_ys.append(float(ball.get("y_cm", 0.0)))
+            ball_speeds.append(float(ball.get("speed_cm_s", 0.0)))
+
+        robots = status.get("robots") if isinstance(status.get("robots"), list) else []
+        holders = [int(robot.get("id", -1)) for robot in robots if robot.get("has_ball")]
+        key = ",".join(str(holder) for holder in holders) if holders else "none"
+        holder_counts[key] = holder_counts.get(key, 0) + 1
+        max_holders = max(max_holders, len(holders))
+        if len(holders) > 1:
+            multi_possession_frames += 1
+            if first_multi_possession is None:
+                first_multi_possession = {
+                    "frame": idx,
+                    "time": status.get("time"),
+                    "holders": holders,
+                    "ball": ball,
+                }
+
+    start_ball = None
+    end_ball = None
+    final_score = None
+    if statuses:
+        start_ball = statuses[0].get("ball")
+        end_ball = statuses[-1].get("ball")
+        final_score = statuses[-1].get("score")
+
+    return {
+        "frames": len(statuses),
+        "errors": errors,
+        "holder_counts": holder_counts,
+        "multi_possession_frames": multi_possession_frames,
+        "max_holders": max_holders,
+        "first_multi_possession": first_multi_possession,
+        "rule_counts": rule_counts,
+        "event_counts": event_counts,
+        "first_rule_event": first_rule_event,
+        "ball_start": start_ball,
+        "ball_end": end_ball,
+        "ball_x_min": round(min(ball_xs), 3) if ball_xs else None,
+        "ball_x_max": round(max(ball_xs), 3) if ball_xs else None,
+        "ball_y_min": round(min(ball_ys), 3) if ball_ys else None,
+        "ball_y_max": round(max(ball_ys), 3) if ball_ys else None,
+        "ball_speed_max": round(max(ball_speeds), 3) if ball_speeds else None,
+        "final_score": final_score,
+    }
+
+
 def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
     lines = [
         "# Multi-Robot Scrimmage",
@@ -203,9 +347,41 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
         f"- ok: {report['ok']}",
         f"- output: {out_dir}",
         "",
-        "## Robots",
+        "## Scene",
         "",
     ]
+    scene = report.get("scene_summary", {})
+    if scene:
+        score = scene.get("final_score") or {}
+        lines.extend(
+            [
+                f"- frames={scene.get('frames')} multi_possession_frames={scene.get('multi_possession_frames')} "
+                f"max_holders={scene.get('max_holders')}",
+                f"- ball_x={scene.get('ball_x_min')}..{scene.get('ball_x_max')} "
+                f"ball_y={scene.get('ball_y_min')}..{scene.get('ball_y_max')} "
+                f"max_speed={scene.get('ball_speed_max')}",
+                f"- score ally={score.get('ally')} enemy={score.get('enemy')} "
+                f"last_event={score.get('last_event', '')}",
+            ]
+        )
+        if scene.get("rule_counts"):
+            lines.append(f"- rules={scene.get('rule_counts')}")
+        if scene.get("event_counts"):
+            lines.append(f"- events={scene.get('event_counts')}")
+        if scene.get("errors"):
+            lines.append(f"- scene_errors={scene.get('errors')}")
+        if scene.get("first_multi_possession"):
+            lines.append(f"- first_multi_possession={scene.get('first_multi_possession')}")
+        if scene.get("first_rule_event"):
+            lines.append(f"- first_rule_event={scene.get('first_rule_event')}")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Robots",
+            "",
+        ]
+    )
     for robot in report["robots"]:
         lines.append(
             f"- R{robot['robot_id']} {robot['role']}: exit={robot['exit_code']} "
@@ -222,8 +398,28 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_DURATION", "8.0")))
     parser.add_argument("--ball-x", type=float, default=0.0)
     parser.add_argument("--ball-y", type=float, default=0.0)
+    parser.add_argument(
+        "--layout",
+        choices=sorted(LAYOUTS),
+        default=os.environ.get("SIM_SCRIMMAGE_LAYOUT", "default"),
+        help="Initial robot layout. 'default' preserves the centered clash; 'staggered' offsets enemies so one alpha can acquire first.",
+    )
     parser.add_argument("--output", default=os.environ.get("SIM_SCRIMMAGE_OUTPUT", "Records/multi_robot_scrimmage"))
-    parser.add_argument("--rules-on", action="store_true", help="Leave penalties/lack/pushing enabled.")
+    parser.add_argument(
+        "--rules-off",
+        action="store_true",
+        help="Disable penalties/lack/pushing for isolated debug experiments.",
+    )
+    parser.add_argument(
+        "--rules-on",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--allow-no-possession",
+        action="store_true",
+        help="Do not fail when no robot ever gets strict Unity possession.",
+    )
     parser.add_argument(
         "--startup-grace",
         type=float,
@@ -234,6 +430,7 @@ def main() -> int:
 
     robots = _parse_robots(args.robots)
     roles = _parse_roles(args.roles, robots)
+    layout = LAYOUTS.get(args.layout, DEFAULT_LAYOUT)
     out_dir = Path(args.output) / time.strftime("run_%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     scene_trace = out_dir / "scene_status.jsonl"
@@ -248,9 +445,18 @@ def main() -> int:
     try:
         ctl = XeleratorSceneControl(timeout_s=float(os.environ.get("SIM_SCENE_TIMEOUT_S", "1.0")))
         ctl.ping()
-        if not args.rules_on:
-            ctl.set_rules(penalties=False, lack=False, pushing=False)
-        _place_robots(ctl, robots, (float(args.ball_x), float(args.ball_y)))
+        rules_enabled = args.rules_on or not args.rules_off
+        report["rules_requested"] = {
+            "penalties": rules_enabled,
+            "lack": rules_enabled,
+            "pushing": rules_enabled,
+        }
+        report["rules_response"] = ctl.set_rules(
+            penalties=rules_enabled,
+            lack=rules_enabled,
+            pushing=rules_enabled,
+        )
+        _place_robots(ctl, robots, (float(args.ball_x), float(args.ball_y)), layout)
         time.sleep(0.3)
 
         for robot_id in robots:
@@ -301,10 +507,15 @@ def main() -> int:
             )
         report["robots"] = robot_reports
         report["scene_trace"] = str(scene_trace)
+        report["scene_summary"] = _scene_summary(scene_trace)
+        scene_summary = report["scene_summary"]
+        possession_ok = args.allow_no_possession or scene_summary.get("max_holders", 0) > 0
+        rule_event_ok = scene_summary.get("first_rule_event") is None
         report["ok"] = all(
             item["exit_code"] == 0 and item["trace_summary"]["frames"] > 5
             for item in robot_reports
-        )
+        ) and scene_summary.get("multi_possession_frames", 0) == 0 and possession_ok and rule_event_ok
+        report["possession_required"] = not args.allow_no_possession
         return 0 if report["ok"] else 1
     finally:
         for proc in processes.values():

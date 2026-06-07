@@ -54,7 +54,7 @@ def _write_jsonl(path: Path | None, row: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one SIM robot role.")
     parser.add_argument("--robot-id", type=int, required=True)
-    parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha"], default="offence")
+    parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha", "lambda"], default="offence")
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--trace", default="")
     parser.add_argument("--tick", type=float, default=0.03)
@@ -88,6 +88,10 @@ def main() -> int:
             from alpha import AlphaController  # noqa: E402
 
             strategy = AlphaController(attack_dir=-1 if int(args.robot_id) >= 3 else 1)
+        elif args.role == "lambda":
+            from lambda_strategy import LambdaController  # noqa: E402
+
+            strategy = LambdaController(attack_dir=-1 if int(args.robot_id) >= 3 else 1)
 
         deadline = time.time() + max(0.1, float(args.duration))
         while time.time() < deadline:
@@ -104,6 +108,10 @@ def main() -> int:
                 state_attr = getattr(strategy, "current_mode_name", None)
                 state = state_attr() if callable(state_attr) else (state_attr or getattr(strategy, "state", "alpha"))
                 tick_s = float(args.tick)
+            elif args.role == "lambda":
+                strategy.step()
+                state = getattr(strategy, "state", "lambda")
+                tick_s = float(args.tick)
             else:
                 chassis.stop()
                 peripheral.Dribble(False)
@@ -118,6 +126,9 @@ def main() -> int:
                 "pose": _pose(UnitedPosition),
                 "ball": UnitedPosition.RobotBallPos(),
                 "enemies": UnitedPosition.FieldChassisPos(),
+                "cmd_vx": round(float(getattr(chassis, "_last_vx", 0.0)), 3),
+                "cmd_vy": round(float(getattr(chassis, "_last_vy", 0.0)), 3),
+                "cmd_wz": round(float(getattr(chassis, "_last_wz", 0.0)), 3),
                 "rx_count": int(getattr(Bits, "_rx_count", 0)),
                 "tx_count": int(getattr(Bits, "_tx_count", 0)),
             }

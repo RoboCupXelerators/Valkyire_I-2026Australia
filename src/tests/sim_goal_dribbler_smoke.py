@@ -41,6 +41,26 @@ def _wait_for(
     return last
 
 
+def _wait_for_dribble_on(
+    ctl: XeleratorSceneControl,
+    robot_id: int,
+    pred: Callable[[dict[str, Any]], bool],
+    *,
+    strength: float = 0.7,
+    timeout_s: float = 2.0,
+    interval_s: float = 0.05,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_s
+    last: dict[str, Any] = {}
+    while time.time() < deadline:
+        ctl.set_dribble(robot_id, True, strength=strength)
+        time.sleep(interval_s)
+        last = ctl.status()
+        if pred(last):
+            return last
+    return last
+
+
 def _score(status: dict[str, Any]) -> dict[str, Any]:
     score = status.get("score")
     return score if isinstance(score, dict) else {}
@@ -142,7 +162,7 @@ def main() -> int:
         )
 
         _prepare_single_robot(ctl)
-        ctl.set_ball(8.0, 0.0, reset_velocity=True)
+        ctl.set_ball(8.5, 0.0, reset_velocity=True)
         ctl.set_dribble(1, False, strength=0.0)
         status = _wait_for(
             ctl,
@@ -157,10 +177,11 @@ def main() -> int:
             {"robot": r1, "ball": status.get("ball")},
         )
 
-        ctl.set_dribble(1, True, strength=0.7)
-        status = _wait_for(
+        status = _wait_for_dribble_on(
             ctl,
+            1,
             lambda st: bool(_robot(st, 1).get("has_ball")),
+            strength=0.7,
             timeout_s=float(args.timeout),
         )
         r1 = _robot(status, 1)
@@ -185,7 +206,7 @@ def main() -> int:
             {"robot": r1, "ball": status.get("ball")},
         )
 
-        ctl.set_ball(-8.0, 0.0, reset_velocity=True)
+        ctl.set_ball(-8.5, 0.0, reset_velocity=True)
         ctl.set_dribble(1, True, strength=0.7)
         status = _wait_for(
             ctl,
