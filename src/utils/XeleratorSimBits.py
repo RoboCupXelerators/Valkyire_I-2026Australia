@@ -438,6 +438,8 @@ class XeleratorSimBits:
                 # Ball relative position is robot-frame; do NOT apply origin shift.
                 bx = float(ball_x_m) * self._unity_to_cm * self._pose_scale
                 by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
+                if not math.isfinite(bx) or not math.isfinite(by):
+                    return [0xFFF, 0xFFF]
                 return [bx, by]
 
         if self._ball_status_fallback:
@@ -482,6 +484,8 @@ class XeleratorSimBits:
             s = math.sin(yaw)
             rel_x = dx * c + dy * s
             rel_y = -dx * s + dy * c
+            if not math.isfinite(rel_x) or not math.isfinite(rel_y):
+                return None
             return [rel_x, rel_y]
         except Exception:
             return None

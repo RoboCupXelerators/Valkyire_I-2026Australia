@@ -114,6 +114,9 @@ LATERAL_CARRY_Y_LIMIT = 42.0
 BLOCKING_ENEMY_FORWARD_CM = 55.0
 BLOCKING_ENEMY_LATERAL_CM = 35.0
 BLOCKING_ENEMY_DODGE_CM = 34.0
+BLOCKING_ENEMY_FORWARD_CAP_CM = 28.0
+BLOCKING_EDGE_FORWARD_CAP_CM = 36.0
+BLOCKING_ENEMY_MIN_LATERAL_CM = 32.0
 
 # v5: 站位参数
 POSITIONING_DEFENSE_X = -40.0
@@ -438,6 +441,14 @@ class AlphaStrategy:
             return target_y
 
         robot_y = float(f['robot_pos'][1])
+        if abs(robot_y) > LATERAL_CARRY_Y_LIMIT * 0.95:
+            self._sub_state = "enemy_dodge_infield"
+            return _clamp(
+                robot_y - math.copysign(BLOCKING_ENEMY_DODGE_CM, robot_y),
+                -LATERAL_CARRY_Y_LIMIT,
+                LATERAL_CARRY_Y_LIMIT,
+            )
+
         lateral_gap = float(blocker.get('lateral_gap', 0.0))
         if abs(lateral_gap) < 6.0:
             side = -1.0 if robot_y > 0 else 1.0
@@ -451,17 +462,20 @@ class AlphaStrategy:
         if not f.get('blocking_enemy'):
             return speed_x, speed_y
 
-        max_forward = 8.0
+        robot_y = float(f['robot_pos'][1])
+        max_forward = BLOCKING_EDGE_FORWARD_CAP_CM if abs(robot_y) > LATERAL_CARRY_Y_LIMIT * 0.95 else BLOCKING_ENEMY_FORWARD_CAP_CM
         if speed_x * self.attack_dir > max_forward:
             speed_x = self.attack_dir * max_forward
 
-        if abs(speed_y) < 28.0:
+        if abs(speed_y) < BLOCKING_ENEMY_MIN_LATERAL_CM:
             lateral_gap = float(f['blocking_enemy'].get('lateral_gap', 0.0))
-            if abs(lateral_gap) < 6.0:
-                side = -1.0 if float(f['robot_pos'][1]) > 0 else 1.0
+            if abs(robot_y) > LATERAL_CARRY_Y_LIMIT * 0.95:
+                side = -1.0 if robot_y > 0 else 1.0
+            elif abs(lateral_gap) < 6.0:
+                side = -1.0 if robot_y > 0 else 1.0
             else:
                 side = -1.0 if lateral_gap > 0 else 1.0
-            speed_y = side * 28.0
+            speed_y = side * BLOCKING_ENEMY_MIN_LATERAL_CM
         return speed_x, speed_y
 
     def _clear_possession_tracking(self) -> None:

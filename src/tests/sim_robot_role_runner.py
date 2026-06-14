@@ -54,10 +54,17 @@ def _write_jsonl(path: Path | None, row: dict) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one SIM robot role.")
     parser.add_argument("--robot-id", type=int, required=True)
-    parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha", "lambda"], default="offence")
+    parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha", "lambda", "mlp"], default="offence")
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--trace", default="")
     parser.add_argument("--tick", type=float, default=0.03)
+    parser.add_argument(
+        "--mlp-model",
+        default=os.environ.get(
+            "MLP_MODEL_PATH",
+            "logs/mlp/offline_bc/bc_20260608_161239/model_best.pt",
+        ),
+    )
     args = parser.parse_args()
 
     _set_env(args.robot_id)
@@ -68,6 +75,7 @@ def main() -> int:
     trace_path = Path(args.trace) if args.trace else None
     ok = False
     strategy = None
+    mlp_last_action = None
     started = time.time()
 
     try:
@@ -92,6 +100,17 @@ def main() -> int:
             from lambda_strategy import LambdaController  # noqa: E402
 
             strategy = LambdaController(attack_dir=-1 if int(args.robot_id) >= 3 else 1)
+        elif args.role == "mlp":
+            from mlp.config import MLPConfig  # noqa: E402
+            from mlp.inference import MLPController  # noqa: E402
+
+            model_path = Path(args.mlp_model)
+            if not model_path.is_absolute():
+                model_path = Path.cwd() / model_path
+            if not model_path.exists():
+                logger.error("[SimRobotRole] MLP model not found: {}", model_path)
+                return 3
+            strategy = MLPController(str(model_path), config=MLPConfig(), role="offence", device="cpu")
 
         deadline = time.time() + max(0.1, float(args.duration))
         while time.time() < deadline:
@@ -111,6 +130,12 @@ def main() -> int:
             elif args.role == "lambda":
                 strategy.step()
                 state = getattr(strategy, "state", "lambda")
+                tick_s = float(args.tick)
+            elif args.role == "mlp":
+                obs = strategy.inference._get_state_from_lunapre()
+                mlp_last_action = strategy.inference.infer(obs, deterministic=True)
+                strategy._execute_action(mlp_last_action)
+                state = "mlp"
                 tick_s = float(args.tick)
             else:
                 chassis.stop()
@@ -132,6 +157,14 @@ def main() -> int:
                 "rx_count": int(getattr(Bits, "_rx_count", 0)),
                 "tx_count": int(getattr(Bits, "_tx_count", 0)),
             }
+            if mlp_last_action is not None:
+                row["mlp_action"] = {
+                    "vx": round(float(mlp_last_action.get("vx", 0.0)), 3),
+                    "vy": round(float(mlp_last_action.get("vy", 0.0)), 3),
+                    "wz": round(float(mlp_last_action.get("wz", 0.0)), 3),
+                    "kick": bool(mlp_last_action.get("kick", False)),
+                    "dribble": bool(mlp_last_action.get("dribble", False)),
+                }
             _write_jsonl(trace_path, row)
             time.sleep(max(0.005, tick_s))
 

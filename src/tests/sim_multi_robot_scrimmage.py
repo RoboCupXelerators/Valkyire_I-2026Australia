@@ -44,6 +44,8 @@ LAYOUTS = {
     "staggered": STAGGERED_LAYOUT,
 }
 
+DEFAULT_BALL = (-12.0, 0.0)
+
 
 def _parse_robots(value: str) -> list[int]:
     robots: list[int] = []
@@ -224,6 +226,17 @@ def _is_rule_event(event: str) -> bool:
     )
 
 
+def _score_total(score: dict[str, Any] | None) -> int:
+    if not isinstance(score, dict):
+        return 0
+    try:
+        ally = int(score.get("ally", 0))
+        enemy = int(score.get("enemy", 0))
+    except (TypeError, ValueError):
+        return 0
+    return ally + enemy
+
+
 def _scene_summary(path: Path) -> dict[str, Any]:
     statuses: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -313,10 +326,12 @@ def _scene_summary(path: Path) -> dict[str, Any]:
     start_ball = None
     end_ball = None
     final_score = None
+    final_score_total = 0
     if statuses:
         start_ball = statuses[0].get("ball")
         end_ball = statuses[-1].get("ball")
         final_score = statuses[-1].get("score")
+        final_score_total = _score_total(final_score)
 
     return {
         "frames": len(statuses),
@@ -336,6 +351,7 @@ def _scene_summary(path: Path) -> dict[str, Any]:
         "ball_y_max": round(max(ball_ys), 3) if ball_ys else None,
         "ball_speed_max": round(max(ball_speeds), 3) if ball_speeds else None,
         "final_score": final_score,
+        "final_score_total": final_score_total,
     }
 
 
@@ -364,10 +380,18 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
                 f"last_event={score.get('last_event', '')}",
             ]
         )
+        if report.get("ended_after_goal") is not None:
+            lines.append(f"- ended_after_goal={report.get('ended_after_goal')}")
         if scene.get("rule_counts"):
             lines.append(f"- rules={scene.get('rule_counts')}")
         if scene.get("event_counts"):
             lines.append(f"- events={scene.get('event_counts')}")
+        if scene.get("goal_required") is not None:
+            lines.append(
+                f"- goal_required={scene.get('goal_required')} "
+                f"goal_ok={scene.get('goal_ok')} target_goals={scene.get('target_goals')} "
+                f"total_goals={scene.get('final_score_total')}"
+            )
         if scene.get("errors"):
             lines.append(f"- scene_errors={scene.get('errors')}")
         if scene.get("first_multi_possession"):
@@ -395,9 +419,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a Unity multi-robot scrimmage.")
     parser.add_argument("--robots", default=os.environ.get("SIM_SCRIMMAGE_ROBOTS", "1,3"))
     parser.add_argument("--roles", default=os.environ.get("SIM_SCRIMMAGE_ROLES", "auto"))
-    parser.add_argument("--duration", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_DURATION", "8.0")))
-    parser.add_argument("--ball-x", type=float, default=0.0)
-    parser.add_argument("--ball-y", type=float, default=0.0)
+    parser.add_argument("--duration", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_DURATION", "15.0")))
+    parser.add_argument("--ball-x", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_BALL_X", str(DEFAULT_BALL[0]))))
+    parser.add_argument("--ball-y", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_BALL_Y", str(DEFAULT_BALL[1]))))
     parser.add_argument(
         "--layout",
         choices=sorted(LAYOUTS),
@@ -419,6 +443,22 @@ def main() -> int:
         "--allow-no-possession",
         action="store_true",
         help="Do not fail when no robot ever gets strict Unity possession.",
+    )
+    parser.add_argument(
+        "--allow-no-goal",
+        action="store_true",
+        help="Do not fail when the scrimmage ends 0-0.",
+    )
+    parser.add_argument(
+        "--continue-after-goal",
+        action="store_true",
+        help="Keep running for the full duration after a goal instead of ending the smoke run early.",
+    )
+    parser.add_argument(
+        "--target-goals",
+        type=int,
+        default=int(os.environ.get("SIM_SCRIMMAGE_TARGET_GOALS", "1")),
+        help="Number of total goals required before ending early or passing the goal check.",
     )
     parser.add_argument(
         "--startup-grace",
@@ -468,14 +508,24 @@ def main() -> int:
             )
 
         deadline = time.time() + max(0.2, float(args.duration)) + max(1.0, float(args.startup_grace))
+        ended_after_goal = False
+        stop_after_goal_at: float | None = None
         while time.time() < deadline and any(proc.poll() is None for proc in processes.values()):
             try:
                 status = ctl.status()
                 _write_jsonl(scene_trace, {"t_wall": time.time(), "status": status})
+                target_goals = max(1, int(args.target_goals))
+                if not args.allow_no_goal and not args.continue_after_goal and _score_total(status.get("score")) >= target_goals:
+                    if stop_after_goal_at is None:
+                        stop_after_goal_at = time.time() + 0.5
             except Exception as exc:
                 _write_jsonl(scene_trace, {"t_wall": time.time(), "error": str(exc)})
+            if stop_after_goal_at is not None and time.time() >= stop_after_goal_at:
+                ended_after_goal = True
+                break
             time.sleep(0.25)
 
+        report["ended_after_goal"] = ended_after_goal
         for proc in processes.values():
             if proc.poll() is None:
                 proc.terminate()
@@ -510,12 +560,29 @@ def main() -> int:
         report["scene_summary"] = _scene_summary(scene_trace)
         scene_summary = report["scene_summary"]
         possession_ok = args.allow_no_possession or scene_summary.get("max_holders", 0) > 0
+        target_goals = max(1, int(args.target_goals))
+        goal_ok = args.allow_no_goal or int(scene_summary.get("final_score_total", 0)) >= target_goals
         rule_event_ok = scene_summary.get("first_rule_event") is None
-        report["ok"] = all(
-            item["exit_code"] == 0 and item["trace_summary"]["frames"] > 5
+        scene_summary["goal_required"] = not args.allow_no_goal
+        scene_summary["target_goals"] = 0 if args.allow_no_goal else target_goals
+        scene_summary["goal_ok"] = goal_ok
+        robot_process_ok = all(
+            (
+                item["exit_code"] == 0
+                or (ended_after_goal and item["exit_code"] is not None and item["exit_code"] != 2)
+            )
+            and item["trace_summary"]["frames"] > 5
             for item in robot_reports
-        ) and scene_summary.get("multi_possession_frames", 0) == 0 and possession_ok and rule_event_ok
+        )
+        report["ok"] = (
+            robot_process_ok
+            and scene_summary.get("multi_possession_frames", 0) == 0
+            and possession_ok
+            and goal_ok
+            and rule_event_ok
+        )
         report["possession_required"] = not args.allow_no_possession
+        report["goal_required"] = not args.allow_no_goal
         return 0 if report["ok"] else 1
     finally:
         for proc in processes.values():

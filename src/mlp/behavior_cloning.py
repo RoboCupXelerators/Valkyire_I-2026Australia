@@ -26,6 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from .config import MLPConfig
 from .model import ActorCritic, create_model, save_model, load_model
+from .training_plots import export_results
 
 
 class TransitionDataset(Dataset):
@@ -90,6 +91,9 @@ class BehaviorCloningTrainer:
         # TensorBoard
         self.writer: Optional[SummaryWriter] = None
         self.log_path: Optional[Path] = None
+        self.training_history: List[Dict[str, float]] = []
+        self.results_csv_path: Optional[Path] = None
+        self.results_png_path: Optional[Path] = None
     
     def setup_logging(self, log_dir: str = None):
         """设置日志"""
@@ -302,6 +306,10 @@ class BehaviorCloningTrainer:
             if self.writer:
                 self.writer.add_scalar("epoch/train_loss", train_stats["loss"], epoch)
                 self.writer.add_scalar("epoch/val_loss", val_stats["val_loss"], epoch)
+                self.writer.add_scalar("epoch/train_continuous_loss", train_stats["continuous_loss"], epoch)
+                self.writer.add_scalar("epoch/val_continuous_loss", val_stats["val_continuous_loss"], epoch)
+                self.writer.add_scalar("epoch/train_discrete_loss", train_stats["discrete_loss"], epoch)
+                self.writer.add_scalar("epoch/val_discrete_loss", val_stats["val_discrete_loss"], epoch)
             
             # 打印进度
             print(f"[BC] Epoch {epoch+1}/{n_epochs} | "
@@ -316,6 +324,21 @@ class BehaviorCloningTrainer:
                 print(f"[BC] New best model saved! Val Loss: {best_val_loss:.4f}")
             else:
                 patience_counter += 1
+
+            self.training_history.append(
+                {
+                    "epoch": float(epoch + 1),
+                    "train_loss": float(train_stats["loss"]),
+                    "val_loss": float(val_stats["val_loss"]),
+                    "best_val_loss": float(best_val_loss),
+                    "train_continuous_loss": float(train_stats["continuous_loss"]),
+                    "val_continuous_loss": float(val_stats["val_continuous_loss"]),
+                    "train_discrete_loss": float(train_stats["discrete_loss"]),
+                    "val_discrete_loss": float(val_stats["val_discrete_loss"]),
+                    "lr": float(self.optimizer.param_groups[0]["lr"]),
+                }
+            )
+            self.export_training_results()
             
             # 定期保存
             if (epoch + 1) % save_every == 0:
@@ -331,6 +354,10 @@ class BehaviorCloningTrainer:
         
         print(f"[BC] Training completed!")
         print(f"[BC] Best Val Loss: {best_val_loss:.4f}")
+        if self.results_csv_path:
+            print(f"[BC] Results CSV: {self.results_csv_path}")
+        if self.results_png_path:
+            print(f"[BC] Results plot: {self.results_png_path}")
     
     def save_model(self, filename: str):
         """保存模型"""
@@ -339,6 +366,19 @@ class BehaviorCloningTrainer:
         
         path = self.log_path / filename
         save_model(self.model, str(path))
+
+    def export_training_results(self):
+        """Export YOLO-like static training curves."""
+        if self.log_path is None or not self.training_history:
+            return
+
+        csv_path, png_path = export_results(
+            self.log_path,
+            self.training_history,
+            title="Behavior Cloning Loss",
+        )
+        self.results_csv_path = csv_path
+        self.results_png_path = png_path
     
     def load_model(self, path: str):
         """加载模型"""

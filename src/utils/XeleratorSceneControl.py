@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import time
 from typing import Any
 
 
@@ -29,11 +30,23 @@ class XeleratorSceneControl:
         message = {"cmd": cmd}
         message.update(payload)
         data = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(self.timeout_s)
-            sock.sendto(data, (self.host, self.port))
-            raw, _ = sock.recvfrom(65535)
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        attempts = max(1, int(os.environ.get("XEL_SCENE_CONTROL_RETRIES", "4")))
+        last_error: OSError | None = None
+        for attempt in range(attempts):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.settimeout(self.timeout_s)
+                    sock.sendto(data, (self.host, self.port))
+                    raw, _ = sock.recvfrom(65535)
+                return json.loads(raw.decode("utf-8", errors="replace"))
+            except (ConnectionResetError, socket.timeout, OSError) as exc:
+                last_error = exc
+                if attempt + 1 >= attempts:
+                    break
+                time.sleep(0.15 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+        raise TimeoutError(f"scene-control request timed out: {cmd}")
 
     def ping(self) -> dict[str, Any]:
         return self.request("ping")

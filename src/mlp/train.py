@@ -22,6 +22,7 @@ from .config import MLPConfig
 from .model import ActorCritic, create_model, save_model, load_model
 from .gym_env import make_env
 from .state_encoder import StateEncoder
+from .training_plots import export_results
 
 
 class RolloutBuffer:
@@ -113,6 +114,10 @@ class PPOTrainer:
         
         # TensorBoard
         self.writer: Optional[SummaryWriter] = None
+        self.log_path: Optional[Path] = None
+        self.training_history: List[dict] = []
+        self.results_csv_path: Optional[Path] = None
+        self.results_png_path: Optional[Path] = None
     
     def setup_logging(self, log_dir: str = None):
         """设置日志"""
@@ -393,6 +398,17 @@ class PPOTrainer:
                     self.writer.add_scalar(f"train/{key}", value, self.global_step)
                 self.writer.add_scalar("train/mean_reward", mean_reward, self.global_step)
                 self.writer.add_scalar("train/mean_length", mean_length, self.global_step)
+
+            row = {
+                "step": float(self.global_step),
+                "mean_reward": float(mean_reward),
+                "mean_length": float(mean_length),
+                "lr": float(self.optimizer.param_groups[0]["lr"]),
+            }
+            for key, value in stats.items():
+                row[key] = float(value)
+            self.training_history.append(row)
+            self.export_training_results()
             
             # 打印进度
             elapsed = time.time() - start_time
@@ -417,6 +433,10 @@ class PPOTrainer:
         
         print(f"[PPO] Training completed!")
         print(f"[PPO] Best reward: {self.best_reward:.2f}")
+        if self.results_csv_path:
+            print(f"[PPO] Results CSV: {self.results_csv_path}")
+        if self.results_png_path:
+            print(f"[PPO] Results plot: {self.results_png_path}")
         
         # 最终保存
         self.save_checkpoint(final=True)
@@ -435,6 +455,19 @@ class PPOTrainer:
         
         save_model(self.model, str(path))
         print(f"[PPO] Saved model to {path}")
+
+    def export_training_results(self):
+        """Export YOLO-like static training curves."""
+        if self.log_path is None or not self.training_history:
+            return
+
+        csv_path, png_path = export_results(
+            self.log_path,
+            self.training_history,
+            title="PPO Training Results",
+        )
+        self.results_csv_path = csv_path
+        self.results_png_path = png_path
     
     def load_checkpoint(self, path: str):
         """加载检查点"""

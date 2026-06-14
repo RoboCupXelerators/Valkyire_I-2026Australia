@@ -14,7 +14,7 @@ Python maps these automatically from `XEL_ROBOT_ID` when `Settings.Sim.MultiRobo
 Start Unity Play mode, then run from `Software`:
 
 ```powershell
-python src\tests\sim_multi_robot_scrimmage.py --robots 1,3 --duration 8
+python src\tests\sim_multi_robot_scrimmage.py --robots 1,3 --duration 15
 ```
 
 This starts one subprocess per robot:
@@ -29,6 +29,14 @@ Records/multi_robot_scrimmage/run_YYYYMMDD_HHMMSS/
 ```
 
 The run writes per-robot JSONL traces, per-robot logs, `scene_status.jsonl`, `summary.json`, and `report.md`.
+
+By default the runner starts with the ball near midfield but slightly on the ally side (`-12,0` cm), runs for up to 15 seconds, and fails if the Unity score is still 0-0. Once a goal is detected it records a short tail and ends the smoke run early; use `--continue-after-goal` for full-duration post-goal rule debugging, or `--allow-no-goal` for lower-level possession/motion debugging.
+
+For a livelier iteration run, ask for multiple goals before early exit:
+
+```powershell
+python src\tests\sim_multi_robot_scrimmage.py --robots 1,3 --duration 30 --target-goals 3
+```
 
 For this debugging runner, `XEL_SIM_BALL_STATUS_FALLBACK=1` is enabled in each robot subprocess. If the normal UDP vision packet does not include a ball position, the Python side synthesizes `RobotBallPos` from scene-control ball and robot poses. This keeps scrimmage debugging focused on multi-robot control instead of Unity camera/occlusion quirks.
 

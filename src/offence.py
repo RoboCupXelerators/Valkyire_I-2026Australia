@@ -50,6 +50,11 @@ class OffenceConfig:
     search_speed_gain: float = float(os.environ.get("OFFENCE_SEARCH_GAIN", "1.4"))
     carry_speed_gain: float = float(os.environ.get("OFFENCE_CARRY_GAIN", "2.2"))
     boundary_recovery_speed_gain: float = float(os.environ.get("OFFENCE_BOUNDARY_RECOVERY_GAIN", "1.2"))
+    feint_duration_s: float = float(os.environ.get("OFFENCE_FEINT_DURATION", "0.65"))
+    feint_y_cm: float = float(os.environ.get("OFFENCE_FEINT_Y", "22"))
+    feint_forward_cm_s: float = float(os.environ.get("OFFENCE_FEINT_FORWARD", "22"))
+    feint_side_speed_cm_s: float = float(os.environ.get("OFFENCE_FEINT_SIDE_SPEED", "58"))
+    carry_lane_wave_cm: float = float(os.environ.get("OFFENCE_CARRY_LANE_WAVE", "18"))
     # 1 => attack +X, -1 => attack -X, 0 => auto from SIM robot id.
     attack_direction: float = float(os.environ.get("OFFENCE_ATTACK_SIGN", "0"))
 
@@ -66,6 +71,9 @@ class RuleOffenceStrategy:
         self._search_idx = 0
         self._last_dribble = None
         self._enemy_cache = None
+        self._possession_started_ts = 0.0
+        self._possession_feint_side = 1.0
+        self._was_holding_ball = False
 
         self.field_long = float(getattr(Settings.Bounds, "Long", 260))
         self.field_short = float(getattr(Settings.Bounds, "Short", 200))
@@ -131,13 +139,17 @@ class RuleOffenceStrategy:
         ball = UnitedPosition.RobotBallPos()
 
         if ball == BALL_NOT_FOUND:
+            self._clear_possession_action()
             self._search_ball(pose)
             return
 
         if ball == BALL_HELD:
+            if not self._was_holding_ball:
+                self._start_possession_action(pose)
             self._play_with_ball(pose)
             return
 
+        self._clear_possession_action()
         self._approach_ball(ball)
 
     def _build_search_points(self) -> list[list[float]]:
@@ -182,19 +194,23 @@ class RuleOffenceStrategy:
         aim_y = self._best_goal_aim_y(pose)
         goal_yaw = UnitedPosition.Pos2Angle([x, y], [self.goal_x, aim_y]) % 360
 
+        if self._feint_with_ball(pose, goal_yaw):
+            return
+
         if self._can_shoot(pose, [self.goal_x, aim_y]):
             self._set_state("shoot_window")
             if self._face_goal_and_shoot_if_ready(goal_yaw):
                 return
 
-        # v25: Carry toward goal using Pos2Pos with simple target
-        self._set_state("carry_to_lane")
-        # Simple target: move toward goal at a fixed depth
+        self._set_state("zigzag_carry")
         target_x = self.attack_dir * min(
-            abs(x) + 30.0,  # advance 30cm from current position
-            self.field_long / 2.0 - 20.0  # don't go past field boundary
+            abs(x) + 34.0,
+            self.field_long / 2.0 - 20.0
         )
-        target_y = aim_y * 0.5  # drift toward center
+        wave_phase = int(max(0.0, self.attack_dir * x + 40.0) / 24.0)
+        wave_side = 1.0 if wave_phase % 2 == 0 else -1.0
+        target_y = aim_y * 0.45 + wave_side * self.cfg.carry_lane_wave_cm
+        target_y = _clamp(target_y, -self.field_short / 2.0 + 24.0, self.field_short / 2.0 - 24.0)
         
         # v26: Bypass Pos2Pos and call FieldMoveVector directly
         error_x = target_x - x
@@ -206,9 +222,49 @@ class RuleOffenceStrategy:
         now = time.time()
         if not hasattr(self, '_carry_log_ts') or now - self._carry_log_ts > 2.0:
             self._carry_log_ts = now
-            logger.info(f"[v26] carry: cur=({x:.1f},{y:.1f}) tgt=({target_x:.1f},{target_y:.1f}) err=({error_x:.1f},{error_y:.1f}) spd=({speed_x:.1f},{speed_y:.1f})")
+            logger.info(f"[fun] zigzag: cur=({x:.1f},{y:.1f}) tgt=({target_x:.1f},{target_y:.1f}) err=({error_x:.1f},{error_y:.1f}) spd=({speed_x:.1f},{speed_y:.1f})")
         
         chassis.FieldMoveVector(speed_x, speed_y, goal_yaw)
+
+    def _start_possession_action(self, pose: list | tuple | None) -> None:
+        self._was_holding_ball = True
+        self._possession_started_ts = time.time()
+        side = 1.0
+        if _valid_pose(pose):
+            y = float(pose[1])
+            side = -1.0 if y > 0 else 1.0
+            enemies = self._field_enemies()
+            if enemies:
+                nearest = min(enemies, key=lambda enemy: math.hypot(float(enemy[0]) - float(pose[0]), float(enemy[1]) - y))
+                gap_y = float(nearest[1]) - y
+                if abs(gap_y) > 4.0:
+                    side = -1.0 if gap_y > 0 else 1.0
+        self._possession_feint_side = side
+
+    def _clear_possession_action(self) -> None:
+        self._was_holding_ball = False
+        self._possession_started_ts = 0.0
+
+    def _feint_with_ball(self, pose: list | tuple, goal_yaw: float) -> bool:
+        elapsed = time.time() - self._possession_started_ts
+        if elapsed < 0.0 or elapsed > max(0.0, self.cfg.feint_duration_s):
+            return False
+
+        x, y = float(pose[0]), float(pose[1])
+        side = self._possession_feint_side
+        if elapsed > self.cfg.feint_duration_s * 0.55:
+            side = -side
+
+        self._set_state("feint_dribble")
+        forward = self.attack_dir * self.cfg.feint_forward_cm_s
+        lateral = side * self.cfg.feint_side_speed_cm_s
+        if abs(y) > max(4.0, self.cfg.feint_y_cm):
+            lateral = -math.copysign(abs(lateral), y)
+        if abs(y) > self.field_short / 2.0 - 35.0:
+            lateral = -math.copysign(abs(lateral), y)
+        logger.debug("[fun] feint x={:.1f} y={:.1f} side={:.0f}", x, y, side)
+        chassis.FieldMoveVector(forward, lateral, goal_yaw, KpW=0.45)
+        return True
 
     def _can_shoot(self, pose: list | tuple, aim: list[float]) -> bool:
         if time.time() - self._last_shot_ts < self.cfg.shot_cooldown_s:
