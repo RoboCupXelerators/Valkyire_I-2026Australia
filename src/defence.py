@@ -276,14 +276,32 @@ class RuleDefenceStrategy:
             pass
 
 
+_defence_strategy = None
+
+
+def DefenceStep() -> None:
+    """老式非阻塞防守入口：每轮调用一次。"""
+
+    global _defence_strategy
+    if _defence_strategy is None:
+        _defence_strategy = RuleDefenceStrategy()
+    _defence_strategy.step()
+
+
+def DefenceStop() -> None:
+    global _defence_strategy
+    if _defence_strategy is not None:
+        _defence_strategy.stop()
+        _defence_strategy = None
+
+
 def main() -> None:
-    strategy = RuleDefenceStrategy()
     try:
         while True:
-            strategy.step()
-            time.sleep(strategy.cfg.loop_dt)
+            DefenceStep()
+            time.sleep(_defence_strategy.cfg.loop_dt if _defence_strategy else DefenceConfig().loop_dt)
     finally:
-        strategy.stop()
+        DefenceStop()
 
 
 if __name__ == "__main__":

@@ -469,14 +469,32 @@ class RuleOffenceStrategy:
             pass
 
 
+_offence_strategy = None
+
+
+def OffenceStep() -> None:
+    """老式非阻塞进攻入口：每轮调用一次。"""
+
+    global _offence_strategy
+    if _offence_strategy is None:
+        _offence_strategy = RuleOffenceStrategy()
+    _offence_strategy.step()
+
+
+def OffenceStop() -> None:
+    global _offence_strategy
+    if _offence_strategy is not None:
+        _offence_strategy.stop()
+        _offence_strategy = None
+
+
 def main() -> None:
-    strategy = RuleOffenceStrategy()
     try:
         while True:
-            strategy.step()
-            time.sleep(strategy.cfg.loop_dt)
+            OffenceStep()
+            time.sleep(_offence_strategy.cfg.loop_dt if _offence_strategy else OffenceConfig().loop_dt)
     finally:
-        strategy.stop()
+        OffenceStop()
 
 
 if __name__ == "__main__":

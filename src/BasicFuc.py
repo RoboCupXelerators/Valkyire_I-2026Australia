@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from LunaPre import *
+import math
 import os
 import time
 
@@ -600,53 +601,73 @@ def Slipsideshot(EnemyPos): #溜边 10,-90
         peripheral.ShootBall()
         logger.success("Ball is in possession, start shotting.")
 
-def OHMYBACK(HomePos=[0,-20,0]):
-    #正常
-    if UnitedPosition.FieldBallPos() == [0xddd,0xddd]:
-        peripheral.Dribble(True)
-        iLocX,iLocY,_ = UnitedPosition.FieldRobotPos()
-        try:
-            Cx ,Cy = UnitedPosition.FieldChassisPos()[0]
-        except:
-            Cx = 0
-            Cy = 0
-        if [Cx ,Cy] == [0,0]:
-            if iLocX > 0:
-                Angle = 90
-            else:
-                Angle = 270
-        else:
-            Fangle =(-int(math.degrees(math.atan2(Cy,Cx)) - 90)+ compass())%360
-            CDistance = math.sqrt(Cx**2 + Cy**2)
-            ChassisX = CDistance * math.sin(math.radians(Fangle))+iLocX
-            ChassisY = CDistance * math.cos(math.radians(Fangle))+iLocY
-            Angle = (math.degrees(math.atan2(iLocX - ChassisX, iLocY - ChassisY)-270)) % 360
-        if iLocX > 0:
-            ShootY = 65
-        else:
-            ShootY = -65
-        if abs(ShootY - iLocX) < 5 :
-            if abs(iLocY - 75) < 5:
-                X,Y,_ = UnitedPosition.FieldRobotPos()
-                DeltaY = cfg.Bounds.Long/2 - Y
-                DeltaX = X
-                Theta = math.atan2(DeltaY, DeltaX)
-                Theta = math.degrees(Theta)
-                Aim = Theta - 90
-                Compass = compass()
-                deltaT = abs(Aim - Compass)
-                if deltaT < 8:
-                    peripheral.ShootBall()
-                else:
-                    chassis.stop()
-                    time.sleep(0.5)
-                    chassis.FieldTurn(Aim)
-                    peripheral.ShootBall()
-                
-            else:
-                UnitedPosition.Pos2Pos([85,ShootY,Angle],5)
-        else:
-            UnitedPosition.Pos2Pos([85,ShootY,Angle],5)
-    else:
-        NormalShoot(x=0,HomePos=HomePos)
+def _AngleErrorDeg(current, target):
+    return ((float(target) - float(current) + 180.0) % 360.0) - 180.0
+
+
+def _Clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def OhMyBackStep(
+    HomePos=[0, -20, 0],
+    edge_y=65,
+    corner_x=85,
+    arrive_cm=5,
+    speed_gain=5,
+    attack_dir=1,
+    dribble_power=0.8,
+):
+    """老式非阻塞边路角落射门组件。
+
+    每次调用只执行一个 tick：
+    - 没持球：交给 NormalShoot/LockBallSlip 抢球
+    - 持球但没到边路角落：沿边带球
+    - 到角落：转向球门，角度够就射门
+    """
+
+    if UnitedPosition.FieldBallPos() != [0xDDD, 0xDDD]:
+        return NormalShoot(x=0, HomePos=HomePos)
+
+    peripheral.Dribble(dribble_power)
+
+    try:
+        local_x, local_y, _ = UnitedPosition.FieldRobotPos()
+    except Exception:
+        lockball.LockBallSlip()
+        return False
+
+    local_x = float(local_x)
+    local_y = float(local_y)
+    attack_dir = 1 if attack_dir >= 0 else -1
+    shoot_y = edge_y if local_y >= 0 else -edge_y
+    target_x = attack_dir * abs(corner_x)
+    target_y = shoot_y
+
+    carry_angle = UnitedPosition.Pos2Angle([local_x, local_y], [target_x, target_y]) % 360
+    at_corner = abs(target_x - local_x) < arrive_cm and abs(target_y - local_y) < arrive_cm
+    if not at_corner:
+        UnitedPosition.Pos2Pos([target_x, target_y, carry_angle], speed_gain)
+        return False
+
+    goal_x = attack_dir * (float(getattr(cfg.Bounds, "Long", 260)) / 2.0)
+    aim = UnitedPosition.Pos2Angle([local_x, local_y], [goal_x, 0.0]) % 360
+    yaw = compass()
+    err = _AngleErrorDeg(yaw, aim)
+
+    if abs(err) < 8:
+        peripheral.ShootBall()
+        peripheral.Dribble(False)
+        logger.success("OhMyBack shot.")
+        return True
+
+    chassis.FieldMoveVector(0, 0, aim, KpW=_Clamp(abs(err) / 45.0, 0.35, 1.0))
+    return False
+
+
+def OHMYBACK(HomePos=[0, -20, 0]):
+    return OhMyBackStep(HomePos=HomePos)
+
+
+OhMyBack = OhMyBackStep
         
