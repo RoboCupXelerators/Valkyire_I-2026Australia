@@ -26,7 +26,6 @@ def main() -> None:
         print(f"  [{i}] {p}")
 
     keys = [
-        "ROBOCUPX_USE_MOCK",
         "ROBOCUPX_BITS",
         "ROBOCUPX_ENABLE_VISION",
         "PYTHONPATH",

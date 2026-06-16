@@ -29,7 +29,6 @@ import torch
 
 # 设置环境变量
 os.environ["ROBOCUPX_BITS"] = "SIM"
-os.environ["ROBOCUPX_USE_MOCK"] = "0"
 
 from LunaPre import UnitedPosition, chassis
 

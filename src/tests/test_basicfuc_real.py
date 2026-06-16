@@ -81,9 +81,10 @@ try:
         cfg,
         lidar,
         Bits,
-        RUNTIME_IS_MOCK,
     )
     record_test("LunaPre 导入", True)
+    # 判断运行环境: SIM 为仿真器, AB/IL 为真机
+    IS_SIM_MODE = str(getattr(cfg.RoboInfo, "Bit", "SIM")).upper() == "SIM"
 except ImportError as e:
     record_test("LunaPre 导入", False, str(e))
     print("无法继续测试，请确保在正确的环境下运行")
@@ -330,10 +331,10 @@ except Exception as e:
 print("\n[6] 硬件连接测试")
 print("-" * 40)
 
-# 检查是否在模拟环境
-if RUNTIME_IS_MOCK:
-    print("警告: 当前运行在 Mock 模式，跳过硬件测试")
-    record_test("硬件模式", False, "Mock 模式，非真机环境")
+# 检查是否在仿真环境
+if IS_SIM_MODE:
+    print("当前运行在 SIM 模式（Unity 仿真器）")
+    record_test("硬件模式", False, "SIM 仿真器环境")
 else:
     record_test("硬件模式", True, "真机环境")
     
@@ -489,7 +490,7 @@ print("输入 'y' 执行，其他键跳过")
 # user_input = input(">>> ").strip().lower()
 user_input = 'n'  # 默认跳过，真机测试时改为交互
 
-if user_input == 'y' and not RUNTIME_IS_MOCK:
+if user_input == 'y' and not IS_SIM_MODE:
     print("\n执行 LockBallSlip 测试...")
     try:
         result = lockball.LockBallSlip()

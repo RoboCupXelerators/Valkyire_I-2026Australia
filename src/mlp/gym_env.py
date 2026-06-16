@@ -113,7 +113,6 @@ class SoccerSimEnv(gym.Env):
             # 导入仿真器Bits
             import os
             os.environ["ROBOCUPX_BITS"] = "SIM"
-            os.environ["ROBOCUPX_USE_MOCK"] = "0"
             
             from utils.XeleratorSimBits import XeleratorSimBits
             
