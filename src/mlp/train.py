@@ -76,17 +76,14 @@ class PPOTrainer:
         self,
         config: MLPConfig,
         device: str = "auto",
-        use_mock_env: bool = False,
     ):
         """初始化训练器
         
         Args:
             config: MLP配置
             device: 计算设备 ("auto", "cuda", "cpu")
-            use_mock_env: 是否使用mock环境（用于测试）
         """
         self.config = config
-        self.use_mock_env = use_mock_env
         
         # 设置设备
         if device == "auto":
@@ -101,7 +98,7 @@ class PPOTrainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=config.learning_rate)
         
         # 创建环境
-        self.env = make_env(config, mock=use_mock_env)
+        self.env = make_env(config)
         
         # 经验缓冲区
         self.buffer = RolloutBuffer()
@@ -377,7 +374,7 @@ class PPOTrainer:
             self.setup_logging()
         
         print(f"[PPO] Starting training for {total_timesteps} timesteps")
-        print(f"[PPO] Device: {self.device}, Mock env: {self.use_mock_env}")
+        print(f"[PPO] Device: {self.device}")
         
         start_time = time.time()
         
@@ -494,7 +491,6 @@ def main():
     parser.add_argument("--clip-eps", type=float, default=0.2, help="PPO clip epsilon")
     parser.add_argument("--entropy-coef", type=float, default=0.01, help="Entropy coefficient")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto/cuda/cpu)")
-    parser.add_argument("--mock", action="store_true", help="Use mock environment")
     parser.add_argument("--log-dir", type=str, default=None, help="Log directory")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     
@@ -513,7 +509,7 @@ def main():
     )
     
     # 创建训练器
-    trainer = PPOTrainer(config, device=args.device, use_mock_env=args.mock)
+    trainer = PPOTrainer(config, device=args.device)
     
     # 设置日志
     if args.log_dir:

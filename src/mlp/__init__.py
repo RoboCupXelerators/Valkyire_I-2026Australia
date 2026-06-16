@@ -12,10 +12,10 @@
 
 使用方法：
     # 训练模型
-    python -m mlp.train --mock --timesteps 100000
+    python -m mlp.train --timesteps 100000
     
     # 推理
-    python -m mlp.inference --model logs/mlp/ppo_xxx/model_best.pt --mock
+    python -m mlp.inference --model logs/mlp/ppo_xxx/model_best.pt
 """
 
 from importlib import import_module
@@ -35,7 +35,6 @@ from .skill_executor import SkillExecutor, SkillExecutionResult
 
 _LAZY_EXPORTS = {
     "SoccerSimEnv": (".gym_env", "SoccerSimEnv"),
-    "MockSoccerSimEnv": (".gym_env", "MockSoccerSimEnv"),
     "make_env": (".gym_env", "make_env"),
     "PPOTrainer": (".train", "PPOTrainer"),
     "MLPInference": (".inference", "MLPInference"),
@@ -68,7 +67,6 @@ __all__ = [
     "load_model",
     "save_model",
     "SoccerSimEnv",
-    "MockSoccerSimEnv",
     "make_env",
     "PPOTrainer",
     "MLPInference",

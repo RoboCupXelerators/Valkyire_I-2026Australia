@@ -464,112 +464,6 @@ class SoccerSimEnv(gym.Env):
         return self._last_state
 
 
-class MockSoccerSimEnv(gym.Env):
-    """Mock环境（用于无仿真器时的测试）
-    
-    提供一个简单的模拟环境，不需要Unity仿真器。
-    """
-    
-    def __init__(self, config: MLPConfig = None):
-        super().__init__()
-        
-        self.config = config or MLPConfig()
-        self.encoder = StateEncoder(self.config)
-        
-        # 动作和观测空间
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0,
-            shape=(self.config.action_dim,),
-            dtype=np.float32
-        )
-        self.observation_space = spaces.Box(
-            low=-2.0, high=2.0,
-            shape=(self.config.state_dim,),
-            dtype=np.float32
-        )
-        
-        # 模拟状态
-        self._x = 0.0
-        self._y = 0.0
-        self._yaw = 0.0
-        self._ball_x = 50.0
-        self._ball_y = 30.0
-        self._has_ball = False
-        self._episode_steps = 0
-    
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        self._x = 0.0
-        self._y = 0.0
-        self._yaw = 0.0
-        self._ball_x = 50.0 + self.np_random.uniform(-30, 30)
-        self._ball_y = 30.0 + self.np_random.uniform(-30, 30)
-        self._has_ball = False
-        self._episode_steps = 0
-        return self._get_obs(), {}
-    
-    def step(self, action):
-        # 简单物理模拟
-        vx = action[0] * 100  # cm/s
-        vy = action[1] * 100
-        wz = action[2] * 30   # deg/s
-        
-        # 更新位置
-        dt = 0.02
-        self._yaw += wz * dt
-        self._yaw = self._yaw % 360
-        
-        # 转换到场地坐标系
-        yaw_rad = math.radians(self._yaw)
-        dx = (vx * math.cos(yaw_rad) - vy * math.sin(yaw_rad)) * dt
-        dy = (vx * math.sin(yaw_rad) + vy * math.cos(yaw_rad)) * dt
-        
-        self._x += dx
-        self._y += dy
-        
-        # 边界限制
-        self._x = np.clip(self._x, -130, 130)
-        self._y = np.clip(self._y, -100, 100)
-        
-        # 更新球位置（如果持球）
-        if self._has_ball:
-            self._ball_x = 10  # 球在机器人前方
-            self._ball_y = 0
-        else:
-            # 检查是否接近球
-            ball_dist = math.sqrt(self._ball_x**2 + self._ball_y**2)
-            if ball_dist < 20:
-                self._has_ball = True
-        
-        # 计算奖励
-        reward = 0.0
-        terminated = False
-        
-        if self._has_ball:
-            reward += 0.1
-        
-        # 进球检测
-        if self._has_ball and self._x > 120:
-            reward += 100.0
-            terminated = True
-        
-        self._episode_steps += 1
-        truncated = self._episode_steps >= 500
-        
-        return self._get_obs(), reward, terminated, truncated, {}
-    
-    def _get_obs(self):
-        state = RobotState(
-            x=self._x, y=self._y, yaw=self._yaw,
-            ball_x=self._ball_x, ball_y=self._ball_y,
-            has_ball=self._has_ball,
-        )
-        return self.encoder.encode(state)
-    
-    def close(self):
-        pass
-
-
 class TrainingEnvController:
     """训练环境控制器
     
@@ -834,19 +728,16 @@ class TrainingSoccerSimEnv(SoccerSimEnv):
         super().close()
 
 
-def make_env(config: MLPConfig = None, mock: bool = False, training: bool = False) -> gym.Env:
+def make_env(config: MLPConfig = None, training: bool = False) -> gym.Env:
     """创建环境
     
     Args:
         config: MLP配置
-        mock: 是否使用mock环境
         training: 是否使用训练环境（带Unity环境管理器集成）
         
     Returns:
         Gym环境实例
     """
-    if mock:
-        return MockSoccerSimEnv(config)
     if training:
         return TrainingSoccerSimEnv(config)
     return SoccerSimEnv(config)

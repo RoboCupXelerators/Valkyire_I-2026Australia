@@ -67,17 +67,17 @@ def test_env_controller():
     print("\n控制器测试完成")
 
 
-def test_mock_env():
-    """测试Mock环境"""
+def test_sim_env():
+    """测试仿真环境"""
     print("\n" + "=" * 60)
-    print("测试 Mock 环境")
+    print("测试仿真环境")
     print("=" * 60)
     
-    from mlp.gym_env import MockSoccerSimEnv
+    from mlp.gym_env import SoccerSimEnv
     from mlp.config import MLPConfig
     
     config = MLPConfig()
-    env = MockSoccerSimEnv(config)
+    env = SoccerSimEnv(config)
     
     print("\n初始化环境...")
     obs, info = env.reset(seed=42)
@@ -96,7 +96,7 @@ def test_mock_env():
             break
     
     env.close()
-    print("\nMock环境测试完成")
+    print("\n仿真环境测试完成")
 
 
 def test_training_env():
@@ -152,8 +152,8 @@ def main():
     # 2. 测试环境控制器
     test_env_controller()
     
-    # 3. 测试Mock环境
-    test_mock_env()
+    # 3. 测试仿真环境
+    test_sim_env()
     
     # 4. 测试训练环境（需要Unity）
     print("\n是否测试Unity训练环境? (需要Unity场景运行)")
