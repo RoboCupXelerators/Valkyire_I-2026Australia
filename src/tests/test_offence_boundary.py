@@ -1,4 +1,4 @@
-"""Offence boundary and restricted-area target tests."""
+"""Offence role branch tests."""
 
 from __future__ import annotations
 
@@ -9,133 +9,142 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from LunaPre import UnitedPosition  # noqa: E402
 import offence  # noqa: E402
-from offence import OffenceConfig, RuleOffenceStrategy  # noqa: E402
+from offence import BALL_HELD, BALL_NOT_FOUND, OffenceConfig, RuleOffenceStrategy  # noqa: E402
 
 
-def test_carry_target_avoids_goal_box_and_boundary():
-    strategy = RuleOffenceStrategy()
+def test_offence_searches_from_home_when_ball_not_visible(monkeypatch):
+    calls = {}
+    strategy = RuleOffenceStrategy(OffenceConfig(loop_dt=0.01))
+    home = list(offence.Settings.CheckPoints.Home)
 
-    target = strategy._select_carry_target([55.0, 0.0, 0.0])
-
-    assert target[0] <= 60.0
-    assert abs(target[1]) >= 55.0
-    assert UnitedPosition.ProjectSafePose([target[0], target[1], 0.0]) is None
-
-
-def test_carry_target_path_does_not_cut_through_goal_box():
-    strategy = RuleOffenceStrategy()
-    start = [55.0, 0.0, 0.0]
-    target = strategy._select_carry_target(start)
-
-    for idx in range(1, 11):
-        ratio = idx / 10.0
-        pose = [
-            start[0] + (target[0] - start[0]) * ratio,
-            start[1] + (target[1] - start[1]) * ratio,
-            0.0,
-        ]
-        assert UnitedPosition.ProjectSafePose(pose) is None
-
-
-def test_carry_target_advances_after_side_lane_is_reached():
-    strategy = RuleOffenceStrategy()
-
-    target = strategy._select_carry_target([60.0, 56.0, 0.0])
-
-    assert target[0] > 65.0
-    assert abs(target[1]) >= 55.0
-    assert UnitedPosition.ProjectSafePose([target[0], target[1], 0.0]) is None
-
-
-def test_enemy_side_carry_target_attacks_negative_x():
-    strategy = RuleOffenceStrategy(OffenceConfig(attack_direction=-1.0))
-
-    target = strategy._select_carry_target([-55.0, 0.0, 180.0])
-
-    assert target[0] >= -60.0
-    assert abs(target[1]) >= 55.0
-    assert UnitedPosition.ProjectSafePose([target[0], target[1], 180.0]) is None
-
-
-def test_enemy_side_advances_after_side_lane_is_reached():
-    strategy = RuleOffenceStrategy(OffenceConfig(attack_direction=-1.0))
-
-    target = strategy._select_carry_target([-60.0, -56.0, 180.0])
-
-    assert target[0] < -65.0
-    assert abs(target[1]) >= 55.0
-    assert UnitedPosition.ProjectSafePose([target[0], target[1], 180.0]) is None
-
-
-def test_enemy_side_shoot_window_uses_negative_x():
-    strategy = RuleOffenceStrategy(OffenceConfig(attack_direction=-1.0))
-
-    assert strategy.goal_x < 0
-    assert strategy._can_shoot([-58.0, 0.0, 180.0], [strategy.goal_x, 0.0])
-    assert not strategy._can_shoot([58.0, 0.0, 0.0], [strategy.goal_x, 0.0])
-
-
-def test_search_points_stay_outside_restricted_area():
-    for direction in (1.0, -1.0):
-        strategy = RuleOffenceStrategy(OffenceConfig(attack_direction=direction))
-        for target in strategy.search_points:
-            assert UnitedPosition.ProjectSafePose(target) is None
-
-
-def test_held_ball_step_does_not_command_goal_box_cut(monkeypatch):
-    captured = {}
-    strategy = RuleOffenceStrategy()
-    strategy._last_shot_ts = 10**12
-
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [55.0, 0.0, 0.0])
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: offence.BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "Pos2Angle", lambda _start, _end: 0.0)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda _status: None)
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_NOT_FOUND)
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.setdefault("dribble", value))
 
     def fake_pos2pos(target, speed_gain=None):
-        captured["target"] = target
-        captured["speed_gain"] = speed_gain
+        calls["target"] = target
+        calls["speed_gain"] = speed_gain
         return False
 
     monkeypatch.setattr(offence.UnitedPosition, "Pos2Pos", fake_pos2pos)
 
     strategy.step()
 
-    assert strategy.state == "carry_to_lane"
-    assert captured["target"][0] <= 60.0
-    assert abs(captured["target"][1]) >= 55.0
+    assert strategy.state == "search_ball"
+    assert calls["dribble"] == 0.7
+    assert calls["target"] == [home[0] + 20, home[1], 0]
+    assert calls["speed_gain"] == 4.5
 
 
-def test_offence_boundary_recovery_does_not_pick_arrival_edge():
+def test_offence_locks_visible_ball(monkeypatch):
+    calls = []
     strategy = RuleOffenceStrategy()
 
-    target = strategy._project_recovery_pose([0.0, 68.0, 0.0])
-
-    assert target is not None
-    assert target[1] < 60.0
-    assert abs(68.0 - target[1]) > 8.0
-
-
-def test_unsafe_pose_turns_dribbler_off_before_recovery(monkeypatch):
-    captured = {}
-    strategy = RuleOffenceStrategy()
-
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [69.0, -19.0, 0.0])
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: offence.BALL_HELD)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda status: captured.setdefault("dribble", status))
-
-    def fake_pos2pos(target, speed_gain=None):
-        captured["target"] = target
-        captured["speed_gain"] = speed_gain
-        return False
-
-    monkeypatch.setattr(offence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [30, -8])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.lockball, "LockBallSlip", lambda: calls.append(("lock", None)))
+    monkeypatch.setattr(offence.logger, "warning", lambda _value: calls.append(("warning", _value)))
 
     strategy.step()
 
-    assert strategy.state == "avoid_wall"
-    assert captured["dribble"] is False
-    assert captured["target"][0] < 60.0
+    assert strategy.state == "lock_ball"
+    assert calls == [("warning", 1), ("dribble", 0.7), ("lock", None)]
+
+
+def test_offence_turns_to_goal_when_ball_is_held(monkeypatch):
+    calls = []
+    strategy = RuleOffenceStrategy(OffenceConfig(quick_shot_x_cm=10, ohmyback_y_cm=90))
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 725)
+    monkeypatch.setattr(offence, "TurnTo_with_ball", lambda angle: calls.append(("turn", angle)) or False)
+
+    strategy.step()
+
+    assert strategy.state == "turn_to_goal"
+    assert calls == [("turn", 5)]
+
+
+def test_offence_shoots_after_turning_to_goal(monkeypatch):
+    calls = []
+    strategy = RuleOffenceStrategy(OffenceConfig(quick_shot_x_cm=10, ohmyback_y_cm=90))
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 90)
+    monkeypatch.setattr(offence, "TurnTo_with_ball", lambda _angle: True)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    strategy.step()
+
+    assert strategy.state == "quick_shot"
+    assert calls == ["shoot", "stop"]
+
+
+def test_offence_uses_ohmyback_on_wide_ball(monkeypatch):
+    calls = []
+    strategy = RuleOffenceStrategy(OffenceConfig(ohmyback_y_cm=30))
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 45, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence, "OhMyBackStep", lambda **kwargs: calls.append(kwargs) or False)
+
+    strategy.step()
+
+    assert strategy.state == "oh_my_back"
+    assert calls and calls[0]["attack_dir"] == 1
+
+
+def test_offence_can_use_slip_side(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 35, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[10, -10]])
+    monkeypatch.setattr(offence, "Slipsideshot", lambda enemy: calls.append(enemy))
+
+    state = offence._offence_tick(OffenceConfig(ohmyback_y_cm=90, slip_y_cm=20), trick_slot=0)
+
+    assert state == "slip_side"
+    assert calls == [[10, -10]]
+
+
+def test_offence_feint_drive_when_no_trick_slot(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 15)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args: calls.append(("move", args)))
+
+    state = offence._offence_tick(OffenceConfig(ohmyback_y_cm=90, quick_shot_x_cm=90), trick_slot=1)
+
+    assert state == "feint_drive"
+    assert calls == [("dribble", 0.8), ("move", (45, -0.0, 15))]
+
+
+def test_offence_stop_clears_outputs(monkeypatch):
+    calls = []
+    offence._offence_strategy = RuleOffenceStrategy()
+
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append(("stop", None)))
+    monkeypatch.setattr(offence.UnitedPosition, "Stop", lambda: calls.append(("united_stop", None)))
+
+    offence.OffenceStop()
+
+    assert calls == [
+        ("dribble", False),
+        ("stop", None),
+        ("united_stop", None),
+        ("stop", None),
+    ]
+    assert offence._offence_strategy is None
