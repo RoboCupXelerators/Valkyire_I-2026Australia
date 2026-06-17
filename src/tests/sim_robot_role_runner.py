@@ -85,9 +85,9 @@ def main() -> int:
             return 2
 
         if args.role == "offence":
-            from offence import RuleOffenceStrategy  # noqa: E402
+            import offence  # noqa: E402
 
-            strategy = RuleOffenceStrategy()
+            strategy = offence
         elif args.role == "defence":
             from defence import RuleDefenceStrategy  # noqa: E402
 
@@ -115,9 +115,9 @@ def main() -> int:
         deadline = time.time() + max(0.1, float(args.duration))
         while time.time() < deadline:
             if args.role == "offence":
-                strategy.step()
+                strategy.OffenceStep()
                 state = getattr(strategy, "state", "offence")
-                tick_s = float(getattr(strategy.cfg, "loop_dt", args.tick))
+                tick_s = float(getattr(strategy, "OFFENCE_DT", args.tick))
             elif args.role == "defence":
                 strategy.step()
                 state = getattr(strategy, "state", "defence")
@@ -173,7 +173,10 @@ def main() -> int:
     finally:
         try:
             if strategy is not None:
-                strategy.stop()
+                if args.role == "offence":
+                    strategy.OffenceStop()
+                else:
+                    strategy.stop()
             else:
                 peripheral.Dribble(False)
                 chassis.stop()

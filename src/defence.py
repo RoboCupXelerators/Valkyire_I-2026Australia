@@ -1,7 +1,7 @@
 """Rule-based defensive role.
 
-The old defence entrypoint was a blocking loop. This version mirrors
-`offence.RuleOffenceStrategy`: one `step()` call performs one control tick, so
+The old defence entrypoint was a blocking loop. This version keeps
+one `step()` call as one control tick, so
 multi-robot runners can sample traces and stop cleanly.
 
 v5 fix: avoid_wall caches recovery target and exits on arrival or stuck timeout.
