@@ -1850,9 +1850,9 @@ def main():
     # Try to get Bits from LunaPre (simulator mode)
     bits = None
     vision = None
-    
+
     try:
-        from LunaPre import Bits, vision as luna_vision, RUNTIME_IS_MOCK
+        from LunaPre import Bits, vision as luna_vision
         bits = Bits
         vision = luna_vision
         print(f"[ControlPanel] Got Bits from LunaPre, type: {type(Bits).__name__}")

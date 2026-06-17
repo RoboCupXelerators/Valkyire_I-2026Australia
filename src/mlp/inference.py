@@ -500,7 +500,6 @@ def main():
     parser.add_argument("--role", type=str, default="offence", help="Role (offence/defence)")
     parser.add_argument("--device", type=str, default="auto", help="Device")
     parser.add_argument("--hz", type=float, default=30.0, help="Inference frequency")
-    parser.add_argument("--mock", action="store_true", help="Use mock state getter")
     
     args = parser.parse_args()
     
@@ -512,21 +511,8 @@ def main():
         device=args.device,
     )
     
-    if args.mock:
-        # 使用mock状态获取器
-        def mock_state_getter():
-            return RobotState(
-                x=np.random.uniform(-50, 50),
-                y=np.random.uniform(-50, 50),
-                yaw=np.random.uniform(0, 360),
-                ball_x=np.random.uniform(20, 100),
-                ball_y=np.random.uniform(-50, 50),
-                has_ball=False,
-            )
-        inference.set_state_getter(mock_state_getter)
-    else:
-        # 从LunaPre获取状态
-        inference.set_state_getter(inference._get_state_from_lunapre)
+    # 从LunaPre获取状态
+    inference.set_state_getter(inference._get_state_from_lunapre)
     
     # 设置动作打印回调
     inference.action_callback = lambda action: print(

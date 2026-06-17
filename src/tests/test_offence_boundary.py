@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-os.environ.setdefault("ROBOCUPX_USE_MOCK", "1")
+os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

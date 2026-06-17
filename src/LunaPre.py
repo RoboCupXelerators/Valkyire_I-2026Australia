@@ -34,64 +34,18 @@ from Sensor import Lidar
 from chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 
 
-# When runtime objects fall back to MockBits (no hardware), this flag becomes True.
-# It is used to disable heavy subsystems (Vision subprocess, etc.) by default.
-RUNTIME_IS_MOCK = False
 
 
-class _MockBits:
-    """在开发机/无外设时用于让模块可导入的 Mock Bits。"""
-
-    def GetYaw(self):
-        return 0
-
-    def SetMotor(self, *args, **kwargs):
-        return None
-
-    def SetWheelSpeed(self, *args, **kwargs):
-        return None
-
-    def VirtualPorts(self, *args, **kwargs):
-        return None
-
-    def SetIO(self, *args, **kwargs):
-        return None
-
-    def GetKey(self):
-        return 0
-
-def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
+def _init_runtime(*, auto_start_lidar: bool = True):
     """初始化 Bits / chassis / peripheral / lidar 等全局对象。
 
-    目的：
-    - 比赛机：按 Settings 初始化真实硬件。
-    - 开发机：允许用 Mock 初始化，避免 import 直接失败。
+    支持的硬件类型：
+    - SIM: Unity 仿真器 (XeleratorSimBits + XeleratorVision)
+    - AB: Arisu Bit (比赛机)
+    - IL: IceLoong Bit (比赛机)
     """
 
     global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee
-
-    def _use_mock(reason: str) -> None:
-        """Switch module-level runtime objects to mock implementations."""
-
-        global Bits, lidar, chassis, compass, peripheral, key, Odometer, referee, Morse, RUNTIME_IS_MOCK
-
-        logger.warning(f"Using MockBits: {reason}")
-        RUNTIME_IS_MOCK = True
-        Bits = _MockBits()
-        lidar = Lidar(Bits.GetYaw, auto_start=False)
-        chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
-        compass = Bits.GetYaw
-        peripheral = Peripherals(Bits.VirtualPorts)
-        key = Key(Bits.GetKey)
-        referee = None
-        Morse = None
-        Odometer = None
-        return
-
-    # If running on dev machine, allow user to force mock via env
-    if os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"}:
-        _use_mock("ROBOCUPX_USE_MOCK=1")
-        return
 
     try:
         # Simulator runtime: UDP bridge to Unity (SoccerSimulatorForXels)
@@ -204,13 +158,6 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             logger.error("Initializing Arisu Bit... Nice to See You Again, Arisu!")
             from utils.ArisuBits import ArisBit
 
-            # avoid starting hardware on dev machines
-            dev_path = getattr(Settings.Ports, "ArisuPort", "/dev/arisbit")
-            if not os.path.exists(str(dev_path)):
-                if allow_mock:
-                    _use_mock(f"Arisu device not found: {dev_path}")
-                    return
-
             Bits = ArisBit()
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
             chassis = Car(Bits.SetMotor, Bits.GetYaw, Bits.get_motor_encoder)
@@ -226,13 +173,7 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
         if cfg.RoboInfo.Bit == "IL":
             from utils.IceLoongBits import IceLoongBits
 
-            dev_path = getattr(Settings.Ports, "IceLoongPort", "/dev/iceloong")
-            if not os.path.exists(str(dev_path)):
-                if allow_mock:
-                    _use_mock(f"IceLoong device not found: {dev_path}")
-                    return
-
-            Bits = IceLoongBits(port=dev_path)
+            Bits = IceLoongBits()
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
             peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
             chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
@@ -244,19 +185,17 @@ def _init_runtime(*, allow_mock: bool = True, auto_start_lidar: bool = True):
             logger.info("IceLoongBits Bit loaded.")
             return
 
-        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}")
+        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL")
 
     except Exception as e:
-        if not allow_mock:
-            logger.error(f"Failed to init runtime: {e}")
-            raise
-
-        logger.warning(f"Init runtime failed, fallback to MockBits: {e}")
-        _use_mock(str(e))
+        logger.error(f"Failed to init runtime: {e}")
+        raise RuntimeError(
+            f"Runtime initialization failed. Ensure config.RoboInfo.Bit is set correctly (SIM/AB/IL). Error: {e}"
+        ) from e
 
 
-# 默认初始化：开发机可导入（allow_mock=True），且不自动启动 ROS2 lidar（避免无 ROS 环境卡死）
-_init_runtime(allow_mock=False, auto_start_lidar=True)
+# 默认初始化：直接初始化硬件，不再支持 mock fallback
+_init_runtime(auto_start_lidar=True)
 
 Beta_Func = False
 
@@ -296,11 +235,7 @@ class Positions:
         enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
         self._vision_enabled = True
         bit_mode = str(getattr(getattr(cfg, "RoboInfo", object()), "Bit", "")).upper()
-        if (
-            RUNTIME_IS_MOCK
-            or bit_mode == "SIM"
-            or (os.environ.get("ROBOCUPX_USE_MOCK", "").lower() in {"1", "true", "yes"})
-        ):
+        if bit_mode == "SIM":
             self._vision_enabled = enable_vision_env
 
     def _load_pos2pos_config(self) -> dict:

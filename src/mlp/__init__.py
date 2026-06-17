@@ -1,21 +1,21 @@
 """MLP决策模块
 
-用于机器人对抗的神经网络决策系统，基于强化学习训练。
+用于机器人对抗的神经网络决策系统。
 
-模块结构：
+模块结构（推理框架）：
 - config.py: 配置参数
+- contracts.py: 数据契约定义
 - state_encoder.py: 状态特征提取器
-- model.py: MLP网络定义（Actor-Critic）
-- gym_env.py: Gym环境包装器，封装仿真器为RL可用接口
-- train.py: 训练脚本（PPO算法）
+- model.py: MLP网络定义
 - inference.py: 推理引擎
+- skill_executor.py: 技能执行器
+
+训练相关代码已迁移至 TreeDiagramDataset 项目。
 
 使用方法：
-    # 训练模型
-    python -m mlp.train --mock --timesteps 100000
-    
     # 推理
-    python -m mlp.inference --model logs/mlp/ppo_xxx/model_best.pt --mock
+    from mlp import MLPInference, MLPController
+    inference = MLPInference(model_path)
 """
 
 from importlib import import_module
@@ -34,10 +34,6 @@ from .skill_executor import SkillExecutor, SkillExecutionResult
 
 
 _LAZY_EXPORTS = {
-    "SoccerSimEnv": (".gym_env", "SoccerSimEnv"),
-    "MockSoccerSimEnv": (".gym_env", "MockSoccerSimEnv"),
-    "make_env": (".gym_env", "make_env"),
-    "PPOTrainer": (".train", "PPOTrainer"),
     "MLPInference": (".inference", "MLPInference"),
     "MLPController": (".inference", "MLPController"),
     "run_mlp_strategy": (".inference", "run_mlp_strategy"),
@@ -54,6 +50,7 @@ def __getattr__(name: str):
     globals()[name] = value
     return value
 
+
 __all__ = [
     "MLPConfig",
     "DeployObservationV1",
@@ -67,10 +64,6 @@ __all__ = [
     "create_model",
     "load_model",
     "save_model",
-    "SoccerSimEnv",
-    "MockSoccerSimEnv",
-    "make_env",
-    "PPOTrainer",
     "MLPInference",
     "MLPController",
     "run_mlp_strategy",
