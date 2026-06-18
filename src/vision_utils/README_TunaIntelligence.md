@@ -1,5 +1,8 @@
 # TunaIntelligence（Jetson Nano / Orin 系列）
 
+> Coordinate, pose, sentinel, and live-debug semantics are documented in
+> [`../../docs/interface_semantics.md`](../../docs/interface_semantics.md).
+
 ## 目标
 
 在 Jetson 平台上使用 YOLOv8 + TensorRT 进行推理，并保持与 `ArisuIntelligence` 相同的接口：

@@ -35,7 +35,6 @@
 我继续检查了 `Software/src` 的启动入口和环境变量入口，结果如下：
 
 - **不是“隐藏变量”很多**，主要就是这些显式变量在影响行为：
-  - `ROBOCUPX_USE_MOCK`
   - `ROBOCUPX_BITS`
   - `ROBOCUPX_ENABLE_VISION`
   - `XEL_UNITY_IP`

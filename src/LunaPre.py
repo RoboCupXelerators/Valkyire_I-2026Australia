@@ -194,7 +194,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
         ) from e
 
 
-# 默认初始化：直接初始化硬件，不再支持 mock fallback
+# 默认初始化：直接初始化硬件，不再支持离线替身后端
 _init_runtime(auto_start_lidar=True)
 
 Beta_Func = False
@@ -509,7 +509,7 @@ class Positions:
         '''
         iAimX = AimPos[0]
         iAimY = AimPos[1]
-        iLocX, iLocY, _ = self.FieldRobotPos()
+        iLocX, iLocY = self.FieldRobotPosition()
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         try:
@@ -611,6 +611,25 @@ class Positions:
             logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
 
+    def BallState(self, ball_pos: list | None = None) -> str:
+        """Return the semantic ball state: ``lost``, ``held``, or ``free``.
+
+        This is the canonical wrapper for the legacy sentinel values returned by
+        ``RobotBallPos()``:
+
+        - ``[0xFFF, 0xFFF]`` means the ball is not visible.
+        - ``[0xDDD, 0xDDD]`` means the robot has possession.
+        - any other ``[x, y]`` means the ball is free in robot frame.
+        """
+
+        if ball_pos is None:
+            ball_pos = self.RobotBallPos()
+        if ball_pos == [0xFFF, 0xFFF]:
+            return "lost"
+        if ball_pos == [0xDDD, 0xDDD]:
+            return "held"
+        return "free"
+
     def DirectDistance(self):
         '''
         `非阻塞函数`
@@ -652,15 +671,15 @@ class Positions:
         '''
         `非阻塞函数`
 
-        Get the [Absolute] Position of the Robot
+        Legacy alias for ``FieldRobotPose()``.
 
-        获取[机器人几何中心]相对于[场地几何中心]的位置 [x_forward,y_left,yaw]
+        获取[机器人几何中心]相对于[场地几何中心]的姿态 [x_forward,y_left,yaw]
 
         #### Args:
             lower: `bool`, choose to using lower data
 
         #### Returns:
-            RobotPosition: [0,0]
+            RobotPose: [x, y, yaw]
         #### Note:
             `0xfff` stand for `No Position`
         '''
@@ -696,7 +715,7 @@ class Positions:
         else:
             X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
         self.LidarPos = [Y/10,X/10,compass()]
-        logger.info("[Absolute] Robot Position: %s"%self.LidarPos)
+        logger.info("[Field] Robot Pose: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
         try:
             if Odometer:# if use odometer datas
@@ -705,6 +724,26 @@ class Positions:
         except:
             pass
         return self.LidarPos
+
+    def FieldRobotPose(self, lower: bool | None = False):
+        """Return robot field-frame pose ``[x_forward, y_left, yaw]``.
+
+        Use **Pose** when yaw is included. ``FieldRobotPos()`` is kept for
+        compatibility and returns the same value.
+        """
+
+        return self.FieldRobotPos(lower)
+
+    def FieldRobotPosition(self, lower: bool | None = False):
+        """Return robot field-frame position ``[x_forward, y_left]``.
+
+        Use **Position** only for coordinates without heading.
+        """
+
+        pose = self.FieldRobotPose(lower)
+        if pose == [0xfff, 0xfff, 0xfff] or len(pose) < 2:
+            return [0xfff, 0xfff]
+        return [pose[0], pose[1]]
 
     # Documented API: Robot_Chassis_Pos (robot frame)
     def RobotChassisPos(self):
@@ -725,7 +764,7 @@ class Positions:
         if not goals:
             return {"blue_goal": None, "yellow_goal": None}
 
-        self_pos = self.FieldRobotPos()
+        self_pos = self.FieldRobotPose()
         result = {}
         for color in ["blue_goal", "yellow_goal"]:
             goal_pos = goals.get(color)
@@ -754,7 +793,7 @@ class Positions:
         '''
         # TODO 20260503 This method is to be tested.
         ChassisRawList = self._get_chassis_pos()
-        SelfX, SelfY, SelfZ = self.FieldRobotPos()
+        SelfX, SelfY, SelfZ = self.FieldRobotPose()
         OutputDistanceList = []
         th = math.radians(float(SelfZ))
         cos_yaw = math.cos(th)
@@ -823,17 +862,19 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        BallX, BallY = self.RobotBallPos()
-        if [BallX, BallY] == [0xfff,0xfff]:
+        ball_pos = self.RobotBallPos()
+        BallX, BallY = ball_pos
+        ball_state = self.BallState(ball_pos)
+        if ball_state == "lost":
             self.BallDistance = 0xfff
-        elif [BallX, BallY] == [0xddd,0xddd]:
+        elif ball_state == "held":
             self.BallDistance = 0xddd
         else:
             # RobotBallPos is *relative* to robot center in robot frame (cm), so distance
             # is just the norm of that vector (do NOT mix with field pose).
             self.BallDistance = math.sqrt((BallX) ** 2 + (BallY) ** 2)
         if self.FullLog:
-            logger.debug("[Absolute] Ball Distance: %s" % self.BallDistance)
+            logger.debug("[RobotFrame] Ball Distance: %s" % self.BallDistance)
         return self.BallDistance
 
     def FieldBallPos(self):
@@ -851,13 +892,15 @@ class Positions:
             `0xfff` stand for `NoBall`
             `0xddd` stand for `CatchBall`
         '''
-        ballX, ballY = self.RobotBallPos()
-        if [ballX,ballY] == [0xfff,0xfff]:
+        ball_pos = self.RobotBallPos()
+        ballX, ballY = ball_pos
+        ball_state = self.BallState(ball_pos)
+        if ball_state == "lost":
             return [0xfff,0xfff]
-        if [ballX,ballY] == [0xddd,0xddd]:
+        if ball_state == "held":
             return [0xddd,0xddd]
         else:
-            SelfX, SelfY, SelfZ = self.FieldRobotPos()
+            SelfX, SelfY, SelfZ = self.FieldRobotPose()
             # Convert robot-frame relative (x_forward, y_left) into field-frame delta using yaw.
             # yaw=0 => robot forward aligns with +x_forward.
             th = math.radians(float(SelfZ))
@@ -909,7 +952,7 @@ class Positions:
             True 到达目标值
             False 未到达目标值
         '''
-        iLocX, iLocY, iLocZ = self.FieldRobotPos()
+        iLocX, iLocY, iLocZ = self.FieldRobotPose()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
             chassis.stop()
             Morse("No Position Data!")
@@ -1027,7 +1070,7 @@ class Positions:
                         idx + 1,
                         len(Posistions),
                         target,
-                        self.FieldRobotPos(),
+                        self.FieldRobotPose(),
                     )
                     return False
 
@@ -1168,11 +1211,11 @@ class Positions:
         """Coordinate-based boundary/restricted-area guard.
 
         The legacy method name is kept for strategy compatibility. Internally it
-        only consumes `FieldRobotPos()`, so the guard stays stable when the pose
+        only consumes `FieldRobotPose()`, so the guard stays stable when the pose
         source changes from lidar to simulator truth or fused localization.
         """
 
-        robo_pos = self.FieldRobotPos()
+        robo_pos = self.FieldRobotPose()
         safe_target = self.ProjectSafePose(robo_pos)
         if safe_target is None:
             return True

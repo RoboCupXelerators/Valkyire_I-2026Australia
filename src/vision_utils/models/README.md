@@ -1,5 +1,8 @@
 # Vision Models 说明（TunaIntelligence / Hailo）
 
+> Coordinate, pose, sentinel, and live-debug semantics are documented in
+> [`../../../docs/interface_semantics.md`](../../../docs/interface_semantics.md).
+
 本目录同时包含 **Jetson(TensorRT)** 和 **Hailo8** 两套推理所用的模型文件。
 
 ## 当前文件与用途
