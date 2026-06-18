@@ -110,6 +110,8 @@ def _init_runtime(*, auto_start_lidar: bool = True):
                 sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
                 sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
                 sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
+                sim_vision_noise_level = float(getattr(sim_cfg, "VisionNoiseLevel", 0.0))
+                sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", 0))
             except Exception:
                 sim_twist_from_wheels = True
                 sim_wheel_to_v = 0.008
@@ -119,6 +121,8 @@ def _init_runtime(*, auto_start_lidar: bool = True):
                 sim_kick_strength = 1.0
                 sim_dribble_scale = 1.0
                 sim_planar_move_scale = 1.0
+                sim_vision_noise_level = 0.0
+                sim_vision_noise_seed = 0
 
             # Env overrides (optional)
             if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
@@ -130,6 +134,8 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             os.environ.setdefault("XEL_SIM_KICK_STRENGTH", str(sim_kick_strength))
             os.environ.setdefault("XEL_SIM_DRIBBLE_SCALE", str(sim_dribble_scale))
             os.environ.setdefault("XEL_SIM_PLANAR_MOVE_SCALE", str(sim_planar_move_scale))
+            os.environ.setdefault("XEL_SIM_VISION_NOISE_LEVEL", str(sim_vision_noise_level))
+            os.environ.setdefault("XEL_SIM_VISION_NOISE_SEED", str(sim_vision_noise_seed))
 
             Bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
             # Simulator lidar: compute wall distances from pose

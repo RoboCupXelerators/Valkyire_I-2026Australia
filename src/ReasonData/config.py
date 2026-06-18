@@ -166,6 +166,10 @@ class Preference:
             "KickStrength": 1.0,
             "DribbleScale": 3.0,
             "MoveScale": 1.0,
+            # Lightweight SIM vision disturbance. Keep only two knobs:
+            # intensity 0..1 and deterministic seed.
+            "VisionNoiseLevel": 0.0,
+            "VisionNoiseSeed": 0,
         },
         "Debug": {
             "FullLog": False,
@@ -489,6 +493,10 @@ class _CompatSim:
     def DribbleStrengthScale(self): return self._s.Sim.DribbleScale
     @property
     def PlanarMoveSpeedScale(self): return self._s.Sim.MoveScale
+    @property
+    def VisionNoiseLevel(self): return getattr(self._s.Sim, "VisionNoiseLevel", 0.0)
+    @property
+    def VisionNoiseSeed(self): return getattr(self._s.Sim, "VisionNoiseSeed", 0)
     @property
     def UnityToCm(self): return 100.0
     @property

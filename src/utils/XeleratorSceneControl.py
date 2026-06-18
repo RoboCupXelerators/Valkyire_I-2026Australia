@@ -155,6 +155,13 @@ class XeleratorSceneControl:
             strength=float(strength),
         )
 
+    def set_dribbler_mode(self, robot_id: int, mode: str) -> dict[str, Any]:
+        return self.request(
+            "set_dribbler_mode",
+            robot_id=int(robot_id),
+            dribbler_mode=str(mode),
+        )
+
     def kick(self, robot_id: int, *, strength: float = 1.0) -> dict[str, Any]:
         return self.request("kick", robot_id=int(robot_id), strength=float(strength))
 
@@ -185,6 +192,7 @@ def main() -> int:
     parser.add_argument("--lateral-scale", type=float, default=None)
     parser.add_argument("--angular-scale", type=float, default=None)
     parser.add_argument("--strength", type=float, default=1.0)
+    parser.add_argument("--dribbler-mode", default="contact_realistic")
     parser.add_argument("--no-reset-velocity", action="store_true")
     parser.add_argument("--rules-off", action="store_true")
     args = parser.parse_args()
@@ -205,6 +213,8 @@ def main() -> int:
         response = ctl.set_dribble(args.robot_id, True, strength=args.strength)
     elif args.cmd == "dribble_off":
         response = ctl.set_dribble(args.robot_id, False, strength=0.0)
+    elif args.cmd == "set_dribbler_mode":
+        response = ctl.set_dribbler_mode(args.robot_id, args.dribbler_mode)
     elif args.cmd == "kick":
         response = ctl.kick(args.robot_id, strength=args.strength)
     elif args.cmd == "reset_score":

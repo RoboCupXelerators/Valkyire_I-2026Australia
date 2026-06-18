@@ -178,6 +178,18 @@ class XeleratorSimBits:
         self._rx_count = 0
         self._last_debug_t = 0.0
 
+        # Lightweight realistic vision disturbance for strategy simulation.
+        # Two public knobs are intentionally enough:
+        #   XEL_SIM_VISION_NOISE_LEVEL: 0..1, where 0 is deterministic truth.
+        #   XEL_SIM_VISION_NOISE_SEED: reproducible pseudo-random seed.
+        self._vision_noise_level = self._clamp01_float(os.environ.get("XEL_SIM_VISION_NOISE_LEVEL", "0"))
+        self._vision_noise_seed = int(float(os.environ.get("XEL_SIM_VISION_NOISE_SEED", "0")))
+        self._vision_rng = None
+        if self._vision_noise_level > 0.0:
+            import random
+
+            self._vision_rng = random.Random(self._vision_noise_seed)
+
         # ===== Coordinate calibration (Unity -> SoccerSoftware) =====
         # Unity StatusPacket already uses x_forward=pos.z, y_left=-pos.x in *Unity units*.
         # Unity units are meters for physics, while SoccerSoftware historically uses centimeters.
@@ -404,6 +416,64 @@ class XeleratorSimBits:
 
     # ===== extra helpers for simulator =====
 
+    @staticmethod
+    def _clamp01_float(value) -> float:
+        try:
+            v = float(value)
+        except Exception:
+            return 0.0
+        if not math.isfinite(v):
+            return 0.0
+        return max(0.0, min(1.0, v))
+
+    def _status_planar_speed_mps_locked(self) -> float:
+        return math.hypot(float(self._status.vx_mps), float(self._status.vy_mps))
+
+    def _vision_dropout(self, speed_mps: float, *, multiplier: float = 1.0) -> bool:
+        level = self._vision_noise_level
+        if level <= 0.0 or self._vision_rng is None:
+            return False
+
+        # Dropout rises with robot speed. At ~2 m/s and level=1, ball observations
+        # can drop around 30% of frames; enemy observations use a smaller multiplier.
+        speed_norm = min(1.0, max(0.0, speed_mps / 2.0))
+        p = min(0.85, 0.30 * level * speed_norm * max(0.0, multiplier))
+        return self._vision_rng.random() < p
+
+    def _vision_noise_cm(self, *, multiplier: float = 1.0) -> float:
+        level = self._vision_noise_level
+        if level <= 0.0 or self._vision_rng is None:
+            return 0.0
+        # Level=1 gives roughly camera-derived position noise, not wild chaos.
+        sigma = 5.0 * level * max(0.0, multiplier)
+        return self._vision_rng.gauss(0.0, sigma)
+
+    def _apply_noisy_ball_observation(self, value: list[float], speed_mps: float) -> list[float] | list[int]:
+        if self._vision_noise_level <= 0.0:
+            return value
+        if self._vision_dropout(speed_mps):
+            return [0xFFF, 0xFFF]
+
+        noisy = [
+            float(value[0]) + self._vision_noise_cm(),
+            float(value[1]) + self._vision_noise_cm(),
+        ]
+        return noisy
+
+    def _apply_noisy_enemy_observations(self, values: list[list[float]], speed_mps: float) -> list[list[float]]:
+        if self._vision_noise_level <= 0.0 or not values:
+            return values
+        if self._vision_dropout(speed_mps, multiplier=0.6):
+            return []
+
+        noisy = []
+        for x_cm, y_cm in values:
+            noisy.append([
+                float(x_cm) + self._vision_noise_cm(multiplier=1.3),
+                float(y_cm) + self._vision_noise_cm(multiplier=1.3),
+            ])
+        return noisy
+
     def GetPose(self):
         """Return (x_forward_cm, y_left_cm, yaw_deg)."""
         with self._status_lock:
@@ -429,6 +499,7 @@ class XeleratorSimBits:
         with self._status_lock:
             if self._status.has_ball:
                 return [0xDDD, 0xDDD]
+            speed_mps = self._status_planar_speed_mps_locked()
             ball_x_m = self._status.ball_x_m
             ball_y_m = self._status.ball_y_m
             if ball_x_m is None or ball_y_m is None:
@@ -440,12 +511,12 @@ class XeleratorSimBits:
                 by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
                 if not math.isfinite(bx) or not math.isfinite(by):
                     return [0xFFF, 0xFFF]
-                return [bx, by]
+                return self._apply_noisy_ball_observation([bx, by], speed_mps)
 
         if self._ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
             if fallback is not None:
-                return fallback
+                return self._apply_noisy_ball_observation(fallback, 0.0)
         return [0xFFF, 0xFFF]
 
     def _get_scene_ball_pos_fallback(self) -> list[float] | None:
@@ -502,13 +573,14 @@ class XeleratorSimBits:
         with self._status_lock:
             if self._status.enemies is None:
                 return []
+            speed_mps = self._status_planar_speed_mps_locked()
             # Convert to cm (Unity uses meters)
             result = []
             for ex, ey in self._status.enemies:
                 ex_cm = float(ex) * self._unity_to_cm * self._pose_scale
                 ey_cm = float(ey) * self._unity_to_cm * self._pose_scale
                 result.append([ex_cm, ey_cm])
-            return result
+            return self._apply_noisy_enemy_observations(result, speed_mps)
 
     # ===== scene-origin guesser (SIM convenience) =====
 
