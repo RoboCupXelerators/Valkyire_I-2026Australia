@@ -90,16 +90,16 @@
 
 这些接口是后续策略输入设计的基准面。
 
-### 3.2 当前 MLP 方案的问题
+### 3.2 MLP 方案的关键约束
 
-当前 `src/mlp` 仍偏向“动作控制器”思路:
+早期 `src/mlp` 偏向“动作控制器”思路:
 
 - 输出空间是 `vx / vy / wz / kick / dribble`
 - `MLPInference` 最后直接调用 `chassis.RobotMoveVector`
 - `gym_env` 主要围绕低层动作执行来设计
 
-这不符合最终目标。  
-真正需要的是“高层技能决策器”。
+这条 legacy action 路径仍保留为兼容模式，但长期主路线应是“高层技能决策器”。
+也就是: MLP 输出 `DecisionPacketV1`，再由 `SkillExecutor` 把策略意图翻译成现有控制函数能执行的动作。
 
 ### 3.3 当前训练环境的问题
 
@@ -116,30 +116,53 @@
 ## 4.1 策略栈结构
 
 ```text
-IL + AI/TI + LunaPre
+Vision / LunaPre / Unity SIM
         |
         v
-Observation Adapter
+DeployObservationV1
+  - self pose / velocity
+  - ball rel pos + visible / age / confidence
+  - enemies rel pos + visible / age / confidence
         |
         v
-Policy Network
+StateEncoder
+  - 44-dim actor input
+  - strict dim guard
         |
         v
-Decision Packet
+MLPActor
+  - legacy_action: vx / vy / wz / kick / dribble
+  - decision_packet: continuous target + categorical intent heads
         |
         v
-Skill Executor
+DecisionPacketV1
         |
         v
-PID / chassis / peripheral
+SkillExecutor
+        |
+        v
+BasicFuc / LunaPre / chassis / peripheral
+```
+
+训练、评估和调试可以使用更丰富的真值链路，但这条链路不应直接喂给 actor:
+
+```text
+Unity truth / reset / episode state
+        |
+        v
+TruthStateV1 / ResetScenarioV1 / EpisodeStatusV1
+        |
+        v
+reward / critic / teacher / regression tests / debug UI
 ```
 
 其中:
 
-- `Observation Adapter` 负责统一真实机与模拟器输入
-- `Policy Network` 负责高层决策
-- `Decision Packet` 是中间契约，不直接等于电机指令
-- `Skill Executor` 负责把决策翻译成当前代码库能执行的控制流程
+- `DeployObservationV1` 是部署侧和模拟器侧共同遵守的 actor 输入契约。
+- `StateEncoder` 负责把稀疏、带质量标记的观测压成固定 44 维向量。
+- `MLPActor` 可以走旧的低层动作模式，也可以走新的 `decision_packet` 模式。
+- `DecisionPacketV1` 是中间契约，不直接等于电机指令。
+- `SkillExecutor` 负责把决策翻译成当前代码库能执行的控制流程。
 
 ## 4.2 部署对齐观测契约 v1
 
@@ -153,6 +176,7 @@ PID / chassis / peripheral
 | 球观测 | `ball_rel_x, ball_rel_y` | `RobotBallPos` | 不可见时使用哨兵或 mask |
 | 球观测 | `ball_visible` | 由 `RobotBallPos` 推导 | 非真值 |
 | 球观测 | `ball_age_ms` | 观测层新增 | 必补 |
+| 球观测 | `ball_confidence` | 视觉/模拟器观测质量 | 用于 noisy vision / YOLO 置信度 |
 | 球观测 | `has_ball` | `RobotBallPos == [0xDDD,0xDDD]` | 已存在 |
 | 边界 | `wall_front, wall_left, wall_back, wall_right` | `DirectDistance` | lidar / stub |
 | 敌方 | `enemy_i_rel_x, enemy_i_rel_y` | `RobotChassisPos` 或 `FieldChassisPos` | 最多 N 个 |
@@ -620,40 +644,49 @@ SET_DOMAIN_RANDOMIZATION {json payload}
 
 ## 12. 当前契约落地状态
 
-**更新日期**: 2026-05-18  
-**里程碑**: M1 接口统一 (部分完成)
+**更新日期**: 2026-06-19
+**里程碑**: M2 Decision Packet + observation-quality foundation
 
 ### 12.1 已完成
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `src/mlp/contracts.py` | ✅ 新增 | 部署对齐契约定义 |
-| `src/mlp/state_encoder.py` | ✅ 更新 | 支持 DeployObservationV1 |
-| `src/tests/test_mlp_contracts.py` | ✅ 新增 | 契约单元测试 |
+| `src/mlp/contracts.py` | ✅ 已落地 | `DeployObservationV1`、`DecisionPacketV1`、truth/reset/episode 契约 |
+| `src/mlp/state_encoder.py` | ✅ 已落地 | 支持 `DeployObservationV1`，默认 44 维并做严格维度检查 |
+| `src/mlp/model.py` | ✅ 已落地 | 支持 `legacy_action` 与 `decision_packet` 两种输出模式 |
+| `src/mlp/inference.py` | ✅ 已落地 | 支持 `DecisionPacketV1` 推理、固定频率循环和技能执行入口 |
+| `src/mlp/skill_executor.py` | ✅ 已落地 | 把高层决策包翻译到现有控制栈 |
+| `src/tests/test_mlp_contracts.py` | ✅ 已落地 | 契约、编码器和基础推理测试 |
+| `src/tests/test_mlp_output_modes.py` | ✅ 已落地 | 输出模式、决策包解析和推理循环测试 |
 
 ### 12.2 已定义契约
 
 | 契约 | 状态 | 说明 |
 |------|------|------|
-| `DeployObservationV1` | ✅ 完成 | actor 观测契约，对齐 IL + AI/TI + LunaPre |
+| `DeployObservationV1` | ✅ 完成 | actor 观测契约，包含球/敌方 visible、age、confidence |
 | `TruthStateV1` | ✅ 完成 | trainer/critic 真值契约 |
-| `DecisionPacketV1` | ✅ 完成 | 高层决策包契约 |
+| `DecisionPacketV1` | ✅ 完成 | 高层决策包契约，可由 MLP 原生输出 |
 | `EpisodeStatusV1` | ✅ 完成 | episode 状态契约 |
 | `ResetScenarioV1` | ✅ 完成 | 场景重置契约 |
 
-### 12.3 占位字段 (待后续对接)
+### 12.3 已接入与待继续对接
 
-以下字段已定义但需要后续实现对接:
+以下字段已经进入 actor 契约与编码器:
+
+**DeployObservationV1 actor 输入**:
+- `ball_visible`, `ball_age_ms`, `ball_confidence`
+- `enemies[i].visible`, `enemies[i].age_ms`, `enemies[i].confidence`
+- `last_decision_id`, `last_action_age_ms`, `stuck_flag`
+
+以下字段仍需要后续接入真实数据源或训练环境:
 
 **DeployObservationV1**:
 - `velocity_valid`: 速度数据有效性标记 (真实侧可能不稳定)
-- `ball_age_ms`: 球数据年龄 (观测层需新增)
-- `enemies[i].age_ms`, `enemies[i].confidence`: 敌方观测质量 (观测层需新增)
-- `blue_goal`, `yellow_goal`: 球门观测 (需对接 FieldGoalsPos)
+- `blue_goal`, `yellow_goal`: 球门观测 (需对接 `FieldGoalsPos`)
 - `teammates`: 队友观测 (需队内通信)
 - `referee_state`, `penalty_state`: 裁判状态 (需对接裁判盒)
-- `role`: 角色ID (需配置/通信)
-- `last_decision_id`, `last_action_age_ms`, `stuck_flag`: 历史信息 (策略层缓存)
+- `role`: 角色 ID (需配置/通信)
+- 真实 YOLO/雷达链路中的 `confidence` 需要继续从实际检测置信度映射，而不是只用默认值。
 
 **TruthStateV1**:
 - `enemies_true`, `teammates_true`: 敌方/队友真值 (Unity 协议需实现)
@@ -664,7 +697,7 @@ SET_DOMAIN_RANDOMIZATION {json payload}
 
 ### 12.4 编码维度说明
 
-当前 `DeployObservationV1` 编码后理论维度为 **35 维**:
+当前 `DeployObservationV1` 默认编码维度为 **44 维**:
 
 | 特征组 | 维度 | 说明 |
 |--------|------|------|
@@ -672,43 +705,42 @@ SET_DOMAIN_RANDOMIZATION {json payload}
 | 自身速度 | 3 | vx, vy, wz |
 | 球位置 | 2 | rel_x, rel_y |
 | 持球状态 | 1 | has_ball |
-| 球可见性/年龄 | 2 | visible, age |
-| 敌方 (×4) | 12 | rel_x, rel_y, visible × 4 |
+| 球质量 | 3 | visible, age, confidence |
+| 敌方 (×4) | 20 | rel_x, rel_y, visible, age, confidence × 4 |
 | 边界距离 | 4 | front, left, back, right |
 | 球门方向 | 2 | dx, dy |
 | 比赛状态 | 3 | referee, penalty, role |
 | 历史信息 | 3 | last_decision, last_action_age, stuck |
 
-当前 `config.state_dim = 24`，编码器会自动填充/裁剪。  
-后续应更新 `config.state_dim = 35` 以匹配新契约。
+`MLPConfig.state_dim` 已更新为 44。编码器会在 `strict_dim=True` 时阻止字段数量变化后静默训练，避免模型输入和契约漂移。
 
 ### 12.5 下一步工作
 
 按优先级:
 
-1. **Unity 协议实现** (Agent B)
+1. **Unity 训练协议实现**
    - 实现 `RESET_SCENARIO` 协议
    - 实现 `GET_EPISODE_STATUS` 协议
    - 实现 `GET_TRUTH_STATE` 协议
    - 文件: `SoccerSimulatorForXels/Assets/Scripts/XelTrainingEnv.cs`
 
-2. **观测层对接** (Agent A)
-   - 补充 `ball_age_ms` 计时逻辑
-   - 补充敌方 `visible/age/confidence` 推导
+2. **真实视觉/模拟视觉质量对接**
+   - 将 YOLO 置信度映射到 `ball_confidence` 和 `enemy.confidence`
+   - 将帧延迟、丢包率、机器人速度相关丢检注入 `age/confidence`
    - 对接 `FieldGoalsPos` 球门观测
 
-3. **高层动作与执行器** (Agent C)
-   - 实现 `Skill Executor`
-   - 把动作空间从 `vx/vy/wz` 改为 `intent + target`
-   - 文件: `src/mlp/inference.py`, 新增 `src/mlp/skill_executor.py`
+3. **训练数据与 teacher 对齐**
+   - 让行为克隆数据优先标注 `DecisionPacketV1`
+   - 保留 `legacy_action` 作为兼容和回归对照
+   - 补 reward / curriculum / scenario seed 的一致性测试
 
-4. **配置更新**
-   - 更新 `config.state_dim = 35`
-   - 更新 `config.action_dim` 以匹配 DecisionPacketV1
+4. **模型结构评估**
+   - 先用当前前馈 MLP 建 baseline
+   - 如果 partial observability 明显影响策略，再加多帧堆叠或轻量 GRU
 
 ### 12.6 向后兼容性
 
 - `RobotState` 仍然可用，`StateEncoder.encode()` 自动检测输入类型
-- 现有 `gym_env` 和训练代码无需立即修改
-- 建议新代码使用 `DeployObservationV1`
+- `legacy_action` 输出模式仍然可用，旧训练脚本无需立即全部迁移
+- 新的训练和部署代码应优先使用 `DeployObservationV1` + `decision_packet`
 
