@@ -67,6 +67,7 @@ class MLPInference:
         
         # 加载模型
         self.model = self._load_model()
+        self.model.to(self.device)
         self.model.eval()
         
         # 推理状态
@@ -98,7 +99,7 @@ class MLPInference:
         """
         self._state_getter = getter
     
-    def set_action_executor(self, executor: Callable[[Dict[str, Any]], None]):
+    def set_action_executor(self, executor: Callable[[Any], None]):
         """设置动作执行函数
         
         Args:
@@ -116,6 +117,9 @@ class MLPInference:
         Returns:
             解码后的动作字典
         """
+        if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+            return self.infer_packet(state, deterministic=deterministic).to_dict()
+
         # 编码状态
         state_vec = self.encoder.encode(state)
         
@@ -142,11 +146,15 @@ class MLPInference:
         return decoded
 
     def infer_packet(self, state: Union[RobotState, DeployObservationV1], deterministic: bool = True) -> DecisionPacketV1:
-        """Temporary adapter: map legacy low-level action output into a decision packet.
+        """Infer a high-level decision packet.
 
-        This keeps the new packet execution chain available before the model
-        architecture is upgraded to emit native high-level intents.
+        In legacy mode this adapts the old low-level action output. In
+        decision_packet mode the model emits the packet action vector natively.
         """
+        if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+            action_np = self._infer_action_vector(state, deterministic=deterministic)
+            return self.encoder.decode_decision_packet(action_np)
+
         action = self.infer(state, deterministic=deterministic)
         return self._legacy_action_to_packet(state, action)
     
@@ -166,6 +174,16 @@ class MLPInference:
             action, _, _ = self.model.get_action(state_tensor, deterministic=deterministic)
         
         action_np = action.cpu().numpy()[0]
+
+        if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+            continuous_dim = self.config.decision_continuous_dim
+            self._smoothed_action[:continuous_dim] = (
+                self.config.action_smoothing * self._smoothed_action[:continuous_dim] +
+                (1 - self.config.action_smoothing) * action_np[:continuous_dim]
+            )
+            self._smoothed_action[continuous_dim:] = action_np[continuous_dim:]
+            self._last_action = action_np
+            return self.encoder.decode_decision_packet(self._smoothed_action).to_dict()
         
         # 动作平滑
         self._smoothed_action = (
@@ -178,6 +196,31 @@ class MLPInference:
     def get_action(self) -> Optional[np.ndarray]:
         """获取最近的动作（用于外部调用）"""
         return self._last_action
+
+    def _infer_action_vector(
+        self,
+        state: Union[RobotState, DeployObservationV1],
+        deterministic: bool = True,
+    ) -> np.ndarray:
+        state_vec = self.encoder.encode(state)
+        state_tensor = torch.FloatTensor(state_vec).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            action, _, _ = self.model.get_action(state_tensor, deterministic=deterministic)
+        action_np = action.cpu().numpy()[0]
+        if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+            continuous_dim = self.config.decision_continuous_dim
+            self._smoothed_action[:continuous_dim] = (
+                self.config.action_smoothing * self._smoothed_action[:continuous_dim] +
+                (1 - self.config.action_smoothing) * action_np[:continuous_dim]
+            )
+            self._smoothed_action[continuous_dim:] = action_np[continuous_dim:]
+        else:
+            self._smoothed_action = (
+                self.config.action_smoothing * self._smoothed_action +
+                (1 - self.config.action_smoothing) * action_np
+            )
+        self._last_action = action_np
+        return self._smoothed_action
     
     def start_loop(self, hz: float = 30.0):
         """启动推理循环
@@ -219,13 +262,20 @@ class MLPInference:
                     state = self._get_state_from_lunapre()
                 
                 # 推理
-                action = self.infer(state, deterministic=True)
-                
-                # 执行动作
-                if self._action_executor:
-                    self._action_executor(action)
-                elif self.action_callback:
-                    self.action_callback(action)
+                if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+                    packet = self.infer_packet(state, deterministic=True)
+                    if self._action_executor:
+                        self._action_executor(packet)
+                    elif self.action_callback:
+                        self.action_callback(packet.to_dict())
+                else:
+                    action = self.infer(state, deterministic=True)
+
+                    # 执行动作
+                    if self._action_executor:
+                        self._action_executor(action)
+                    elif self.action_callback:
+                        self.action_callback(action)
                 
             except Exception as e:
                 print(f"[MLPInference] Error in inference loop: {e}")
@@ -343,7 +393,10 @@ class MLPController:
         self.skill_executor = SkillExecutor(self.config)
         
         # 设置动作执行器
-        self.inference.set_action_executor(self._execute_action)
+        if getattr(self.config, "output_mode", "legacy_action") == "decision_packet":
+            self.inference.set_action_executor(self.execute_decision_packet)
+        else:
+            self.inference.set_action_executor(self._execute_action)
         
         # 控制状态
         self._enabled = False

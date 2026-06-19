@@ -173,6 +173,7 @@ class DeployObservationV1:
     # 观测质量
     ball_visible: bool = False   # 球是否可见 (非真值，由观测层推导)
     ball_age_ms: int = -1        # 球数据年龄 (ms)
+    ball_confidence: float = 0.0 # 球观测置信度 [0, 1]
     has_ball: bool = False       # 是否持球 (RobotBallPos == [0xDDD, 0xDDD])
     
     # ==================== 边界距离 ====================
@@ -227,6 +228,7 @@ class DeployObservationV1:
             'ball_rel_y': self.ball_rel_y,
             'ball_visible': self.ball_visible,
             'ball_age_ms': self.ball_age_ms,
+            'ball_confidence': self.ball_confidence,
             'has_ball': self.has_ball,
             
             # 边界
@@ -280,6 +282,7 @@ class DeployObservationV1:
             ball_rel_y=float(data.get('ball_rel_y', 0.0)),
             ball_visible=bool(data.get('ball_visible', False)),
             ball_age_ms=int(data.get('ball_age_ms', -1)),
+            ball_confidence=float(data.get('ball_confidence', 0.0)),
             has_ball=bool(data.get('has_ball', False)),
             
             # 边界
@@ -603,6 +606,7 @@ def _normalize_ball_observation(ball_pos: Any) -> Dict[str, Any]:
         'ball_rel_y': 0.0,
         'ball_visible': False,
         'ball_age_ms': -1,
+        'ball_confidence': 0.0,
         'has_ball': False,
     }
 
@@ -616,12 +620,14 @@ def _normalize_ball_observation(ball_pos: Any) -> Dict[str, Any]:
     if (bx, by) == _BALL_HAS_POSSESSION_SENTINEL:
         result['has_ball'] = True
         result['ball_age_ms'] = 0
+        result['ball_confidence'] = 1.0
         return result
 
     result['ball_rel_x'] = float(bx)
     result['ball_rel_y'] = float(by)
     result['ball_visible'] = not (bx == 0 and by == 0)
     result['ball_age_ms'] = 0 if result['ball_visible'] else -1
+    result['ball_confidence'] = 1.0 if result['ball_visible'] else 0.0
     return result
 
 

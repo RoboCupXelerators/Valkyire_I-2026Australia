@@ -15,7 +15,15 @@ from typing import List, Optional, Tuple, Dict, Any, Union
 from dataclasses import dataclass
 
 from .config import MLPConfig
-from .contracts import DeployObservationV1, EntityObservationV1
+from .contracts import (
+    DecisionPacketV1,
+    DeployObservationV1,
+    DribbleMode,
+    EntityObservationV1,
+    FaceMode,
+    IntentId,
+    ShootIntent,
+)
 
 
 @dataclass
@@ -200,12 +208,13 @@ class StateEncoder:
         # 4. 持球状态 (1维)
         features.append(1.0 if obs.has_ball else 0.0)
         
-        # 5. 球可见性/年龄 (2维) - 新增字段
+        # 5. 球可见性/年龄/置信度 (3维) - 视觉质量字段
         features.append(1.0 if obs.ball_visible else 0.0)
         # 数据年龄归一化 (假设最大 1000ms)
         features.append(min(obs.ball_age_ms / 1000.0, 1.0) if obs.ball_age_ms >= 0 else 1.0)
+        features.append(float(np.clip(obs.ball_confidence, 0.0, 1.0)))
         
-        # 6. 敌方机器人位置 (max_enemies × 3 维) - 包含可见性
+        # 6. 敌方机器人位置 (max_enemies × 5 维) - 包含可见性/年龄/置信度
         # 固定使用 config.max_enemies，确保输入维度由模型配置决定，而不是由单次观测决定。
         enemy_features = self._encode_enemies_v1(obs.enemies, self.config.max_enemies)
         features.extend(enemy_features)
@@ -298,7 +307,7 @@ class StateEncoder:
             max_enemies: 最大敌方数量
             
         Returns:
-            归一化的敌方特征列表 (每个敌人 3 维: rel_x, rel_y, visible)
+            归一化的敌方特征列表 (每个敌人 5 维: rel_x, rel_y, visible, age, confidence)
         """
         features = []
         
@@ -309,6 +318,8 @@ class StateEncoder:
                     self._normalize_dist(enemy.rel_x),
                     self._normalize_dist(enemy.rel_y),
                     1.0,  # visible
+                    min(enemy.age_ms / 1000.0, 1.0) if enemy.age_ms >= 0 else 1.0,
+                    float(np.clip(enemy.confidence, 0.0, 1.0)),
                 ])
             elif i < len(enemies):
                 # 有数据但不可见
@@ -317,10 +328,12 @@ class StateEncoder:
                     self._normalize_dist(enemy.rel_x),
                     self._normalize_dist(enemy.rel_y),
                     0.0,  # not visible
+                    min(enemy.age_ms / 1000.0, 1.0) if enemy.age_ms >= 0 else 1.0,
+                    float(np.clip(enemy.confidence, 0.0, 1.0)),
                 ])
             else:
-                # 填充无效位置 (3维)
-                features.extend([2.0, 2.0, 0.0])  # 特殊值表示无效
+                # 填充无效位置 (5维)
+                features.extend([2.0, 2.0, 0.0, 1.0, 0.0])  # 特殊值表示无效
         
         return features
     
@@ -340,8 +353,8 @@ class StateEncoder:
         dim += 3   # 自身速度
         dim += 2   # 球位置
         dim += 1   # 持球状态
-        dim += 2   # 球可见性/年龄
-        dim += self.config.max_enemies * 3  # 敌方 (位置 + 可见性)
+        dim += 3   # 球可见性/年龄/置信度
+        dim += self.config.max_enemies * 5  # 敌方 (位置 + 可见性 + 年龄 + 置信度)
         dim += 4   # 边界距离
         dim += 2   # 球门方向
         dim += 3   # 比赛状态
@@ -424,6 +437,55 @@ class StateEncoder:
             'kick': kick,
             'dribble': dribble,
         }
+
+    def decode_decision_packet(self, action: np.ndarray) -> DecisionPacketV1:
+        """Decode native decision-packet action vector.
+
+        Layout:
+            [target_x, target_y, target_yaw, move_gain, horizon, confidence,
+             intent_id, face_mode, dribble_mode, shoot_intent]
+
+        Continuous values are normalized to [-1, 1] by the model and mapped
+        back to practical field/control units here.
+        """
+        action = np.asarray(action, dtype=np.float32)
+        required = self.config.decision_continuous_dim + 4
+        if len(action) < required:
+            action = np.concatenate([action, np.zeros(required - len(action), dtype=np.float32)])
+
+        target_x = float(np.clip(action[0], -1.0, 1.0) * self.pos_scale)
+        target_y = float(np.clip(action[1], -1.0, 1.0) * self.pos_scale)
+        target_yaw = float(np.clip(action[2], -1.0, 1.0) * 180.0)
+        move_gain = float((np.clip(action[3], -1.0, 1.0) + 1.0) * 0.5)
+        horizon01 = float((np.clip(action[4], -1.0, 1.0) + 1.0) * 0.5)
+        confidence = float((np.clip(action[5], -1.0, 1.0) + 1.0) * 0.5)
+        decision_horizon_ms = int(round(50 + horizon01 * 450))
+
+        intent_id = self._clamp_class(action[6], len(IntentId))
+        face_mode = self._clamp_class(action[7], len(FaceMode))
+        dribble_mode = self._clamp_class(action[8], len(DribbleMode))
+        shoot_intent = self._clamp_class(action[9], len(ShootIntent))
+
+        return DecisionPacketV1(
+            intent_id=int(intent_id),
+            target_x=target_x,
+            target_y=target_y,
+            target_yaw=target_yaw,
+            face_mode=int(face_mode),
+            move_gain=move_gain,
+            dribble_mode=int(dribble_mode),
+            shoot_intent=int(shoot_intent),
+            decision_horizon_ms=decision_horizon_ms,
+            confidence=confidence,
+        )
+
+    @staticmethod
+    def _clamp_class(value: float, class_count: int) -> int:
+        try:
+            idx = int(round(float(value)))
+        except Exception:
+            idx = 0
+        return max(0, min(max(0, class_count - 1), idx))
     
     @staticmethod
     def from_lunapre(state_dict: Dict[str, Any]) -> RobotState:

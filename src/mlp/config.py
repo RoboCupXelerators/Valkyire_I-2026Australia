@@ -16,9 +16,9 @@ class MLPConfig:
     # 输入维度（状态特征数）
     # 当前 DeployObservationV1 编码维度：
     # 自身位姿(3) + 速度(3) + 球位置(2) + 持球状态(1) +
-    # 球可见性/年龄(2) + 敌方(最大4个 × 3) + 边界距离(4) +
-    # 球门方向(2) + 比赛状态(3) + 历史信息(3) = 35
-    state_dim: int = 35
+    # 球可见性/年龄/置信度(3) + 敌方(最大4个 × 5) + 边界距离(4) +
+    # 球门方向(2) + 比赛状态(3) + 历史信息(3) = 44
+    state_dim: int = 44
     
     # 隐藏层结构
     hidden_dims: List[int] = field(default_factory=lambda: [128, 64, 32])
@@ -26,6 +26,16 @@ class MLPConfig:
     # 输出维度（动作空间）
     # vx, vy, wz, kick(0/1), dribble(0/1) = 5
     action_dim: int = 5
+
+    # Policy output contract.
+    # - legacy_action: vx, vy, wz, kick, dribble
+    # - decision_packet: native DecisionPacketV1 action vector
+    output_mode: str = "legacy_action"
+    decision_continuous_dim: int = 6  # target_x, target_y, target_yaw, move_gain, horizon, confidence
+    decision_intent_classes: int = 10
+    decision_face_classes: int = 4
+    decision_dribble_classes: int = 3
+    decision_shoot_classes: int = 2
     
     # 激活函数
     activation: str = "relu"  # relu, tanh, elu
@@ -116,6 +126,11 @@ class MLPConfig:
     
     def __post_init__(self):
         """初始化后处理"""
+        self.output_mode = str(self.output_mode or "legacy_action").lower()
+        if self.output_mode not in ("legacy_action", "decision_packet"):
+            raise ValueError(f"Unsupported MLP output_mode: {self.output_mode}")
+        if self.output_mode == "decision_packet":
+            self.action_dim = self.decision_continuous_dim + 4
         # 确保目录存在
         os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -131,6 +146,12 @@ class MLPConfig:
             "state_dim": self.state_dim,
             "hidden_dims": self.hidden_dims,
             "action_dim": self.action_dim,
+            "output_mode": self.output_mode,
+            "decision_continuous_dim": self.decision_continuous_dim,
+            "decision_intent_classes": self.decision_intent_classes,
+            "decision_face_classes": self.decision_face_classes,
+            "decision_dribble_classes": self.decision_dribble_classes,
+            "decision_shoot_classes": self.decision_shoot_classes,
             "activation": self.activation,
             "learning_rate": self.learning_rate,
             "gamma": self.gamma,

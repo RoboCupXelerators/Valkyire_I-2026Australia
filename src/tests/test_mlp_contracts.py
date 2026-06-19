@@ -109,6 +109,7 @@ class TestDeployObservationV1:
         assert obs.self_y == 0.0
         assert obs.self_yaw == 0.0
         assert obs.ball_visible == False
+        assert obs.ball_confidence == 0.0
         assert obs.has_ball == False
         assert obs.enemies == []
         assert obs.max_enemies == 4
@@ -126,6 +127,7 @@ class TestDeployObservationV1:
             ball_rel_x=30.0,
             ball_rel_y=40.0,
             ball_visible=True,
+            ball_confidence=0.8,
             has_ball=False,
             enemies=enemies,
         )
@@ -135,6 +137,7 @@ class TestDeployObservationV1:
         assert obs.ball_rel_x == 30.0
         assert obs.ball_rel_y == 40.0
         assert obs.ball_visible == True
+        assert obs.ball_confidence == 0.8
         assert len(obs.enemies) == 2
         assert obs.enemies[0].rel_x == 100.0
     
@@ -163,6 +166,7 @@ class TestDeployObservationV1:
             'ball_rel_y': 60.0,
             'ball_visible': True,
             'ball_age_ms': 100,
+            'ball_confidence': 0.7,
             'has_ball': False,
             'enemies': [
                 {'rel_x': 100.0, 'rel_y': 50.0, 'visible': True, 'age_ms': 50}
@@ -174,6 +178,7 @@ class TestDeployObservationV1:
         assert obs.self_yaw == 90.0
         assert obs.ball_rel_x == 50.0
         assert obs.ball_visible == True
+        assert obs.ball_confidence == 0.7
         assert len(obs.enemies) == 1
         assert obs.enemies[0].rel_x == 100.0
     
@@ -191,6 +196,7 @@ class TestDeployObservationV1:
             ball_rel_y=60.0,
             ball_visible=True,
             ball_age_ms=150,
+            ball_confidence=0.65,
             has_ball=False,
             wall_front=100.0,
             wall_left=50.0,
@@ -215,6 +221,7 @@ class TestDeployObservationV1:
         assert obs2.velocity_valid == obs.velocity_valid
         assert obs2.ball_visible == obs.ball_visible
         assert obs2.ball_age_ms == obs.ball_age_ms
+        assert obs2.ball_confidence == obs.ball_confidence
         assert obs2.wall_valid == obs.wall_valid
         assert len(obs2.enemies) == len(obs.enemies)
         assert obs2.enemies[0].rel_x == obs.enemies[0].rel_x
@@ -448,6 +455,7 @@ class TestObservationFromSimulator:
         )
         assert obs.has_ball == True
         assert obs.ball_visible == False
+        assert obs.ball_confidence == 1.0
         assert len(obs.enemies) == 2
         # 敌方输入已经是相对机器人坐标，不应再减 self_x/self_y
         assert obs.enemies[0].rel_x == 300.0
@@ -466,6 +474,7 @@ class TestObservationFromSimulator:
         )
         assert obs.ball_visible == False
         assert obs.ball_age_ms == -1
+        assert obs.ball_confidence == 0.0
 
 
 class TestStateEncoderWithContracts:
@@ -514,6 +523,7 @@ class TestStateEncoderWithContracts:
             ball_rel_y=60.0,
             ball_visible=True,
             ball_age_ms=100,
+            ball_confidence=0.75,
             has_ball=False,
             wall_front=100.0,
             wall_left=50.0,
@@ -521,12 +531,18 @@ class TestStateEncoderWithContracts:
             wall_right=60.0,
             wall_valid=True,
             enemies=[
-                EntityObservationV1(rel_x=100.0, rel_y=50.0, visible=True),
+                EntityObservationV1(rel_x=100.0, rel_y=50.0, visible=True, age_ms=250, confidence=0.6),
             ],
         )
         features = encoder.encode(obs)
         assert features.shape[0] == encoder.config.state_dim
         assert features.dtype == np.float32
+        assert features[11] == pytest.approx(0.75)
+        assert features[12] == pytest.approx(100.0 / encoder.dist_scale)
+        assert features[13] == pytest.approx(50.0 / encoder.dist_scale)
+        assert features[14] == pytest.approx(1.0)
+        assert features[15] == pytest.approx(0.25)
+        assert features[16] == pytest.approx(0.6)
     
     def test_encode_observation_dimension(self, encoder):
         """测试编码输出维度正确"""
