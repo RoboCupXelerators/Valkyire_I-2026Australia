@@ -1872,8 +1872,8 @@ def main():
     # Try to attach vision module if not already set
     if not args.no_vision and app.vision is None:
         try:
-            # 尝试导入 UnitedVision 类（Vision.py 中定义的类名）
-            from Vision import UnitedVision
+            from LunaPre.vision import UnitedVision
+
             app.vision = UnitedVision()
             print("[ControlPanel] Vision module attached")
         except Exception as e:

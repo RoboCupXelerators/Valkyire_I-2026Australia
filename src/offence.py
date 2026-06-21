@@ -2,9 +2,7 @@ from BasicFuc import *
 import os
 import time
 
-
-BALL_NOT_FOUND = [0xFFF, 0xFFF]
-BALL_HELD = [0xDDD, 0xDDD]
+from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, safe_stop
 
 OFFENCE_DT = float(os.environ.get("OFFENCE_DT", "0.03"))
 ATTACK_DIR = 1 if float(os.environ.get("OFFENCE_ATTACK_SIGN", "1")) >= 0 else -1
@@ -85,13 +83,7 @@ def OffenceStep():
 
 def OffenceStop():
     global state
-    peripheral.Dribble(False)
-    chassis.stop()
-    try:
-        UnitedPosition.Stop()
-    except AttributeError:
-        UnitedPosition.stop()
-    chassis.stop()
+    safe_stop(chassis, peripheral, UnitedPosition)
     state = "stopped"
 
 

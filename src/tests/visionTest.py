@@ -1,7 +1,7 @@
 import socket
 import pickle
 import time
-from Vision import UnitedVision
+from LunaPre.vision import UnitedVision
 
 # UDP socket setup
 UDP_IP = "127.0.0.1"

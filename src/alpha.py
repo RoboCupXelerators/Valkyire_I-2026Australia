@@ -33,13 +33,14 @@ from typing import Optional, Dict, Any, List, Tuple
 from loguru import logger
 
 from LunaPre import UnitedPosition, chassis, peripheral
+from LunaPre.strategy_tools import (
+    BALL_HELD,
+    BALL_NOT_FOUND,
+    angle_error_deg as _angle_error_deg,
+    clamp as _clamp,
+    distance as _dist,
+)
 from BasicFuc import lockball
-
-# ============================================================================
-# 常量
-# ============================================================================
-BALL_NOT_FOUND = [0xFFF, 0xFFF]
-BALL_HELD = [0xDDD, 0xDDD]
 
 # 模式常量
 MODE_STRIKING = 0
@@ -140,12 +141,6 @@ def _vec_dot(a, b):
 def _vec_norm(a):
     return math.sqrt(a[0] * a[0] + a[1] * a[1])
 
-def _angle_error_deg(current: float, target: float) -> float:
-    return ((float(target) - float(current) + 180.0) % 360.0) - 180.0
-
-def _clamp(value: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, value))
-
 def _normalize_angle(angle_deg: float) -> float:
     while angle_deg > 180: angle_deg -= 360
     while angle_deg < -180: angle_deg += 360
@@ -159,11 +154,6 @@ def _angle_between_vectors(v1, v2) -> float:
     cos_angle = _vec_dot(v1, v2) / (n1 * n2)
     cos_angle = max(-1.0, min(1.0, cos_angle))
     return math.degrees(math.acos(cos_angle))
-
-def _dist(p1, p2) -> float:
-    dx = p1[0] - p2[0]
-    dy = p1[1] - p2[1]
-    return math.sqrt(dx * dx + dy * dy)
 
 def _limit_speed(sx, sy, mx) -> Tuple[float, float]:
     m = math.sqrt(sx * sx + sy * sy)

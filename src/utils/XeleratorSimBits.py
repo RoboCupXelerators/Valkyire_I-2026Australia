@@ -41,6 +41,91 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 
+def create_runtime(cfg):
+    """Create simulator Bits, lidar, and vision providers from project config."""
+
+    sim_cfg = getattr(cfg, "Sim", None)
+    unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", "127.0.0.1"))
+
+    robot_id = int(
+        os.environ.get(
+            "XEL_ROBOT_ID",
+            str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", 1))),
+        )
+    )
+
+    multi_mode = str(getattr(sim_cfg, "MultiRobotMode", "per_port")).lower()
+    if multi_mode == "per_port":
+        cmd_base = int(getattr(sim_cfg, "CmdPortBase", 20001))
+        st_base = int(getattr(sim_cfg, "StatusPortBase", 20002))
+        stride = int(getattr(sim_cfg, "PortStride", 10))
+        default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
+        default_status_port = st_base + (max(robot_id, 1) - 1) * stride
+    else:
+        default_cmd_port = int(getattr(sim_cfg, "CmdPort", 20001))
+        default_status_port = int(getattr(sim_cfg, "StatusPort", 20002))
+
+    cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
+    status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
+
+    _apply_sim_env_defaults(cfg, sim_cfg)
+
+    bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
+    lidar = Lidar(
+        bits.GetYaw,
+        get_pose_callable=bits.GetPose,
+        bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260)),
+        bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200)),
+        auto_start=True,
+    )
+
+    from vision_utils.XeleratorVision import XeleratorVision
+
+    vision = XeleratorVision(bits)
+    return bits, lidar, vision
+
+
+def _apply_sim_env_defaults(cfg, sim_cfg) -> None:
+    try:
+        sim_twist_from_wheels = bool(
+            getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", True))
+        )
+        sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.008)))
+        sim_wheel_to_wz = float(getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", 0.02)))
+        sim_yaw_offset_deg = float(getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", 0.0)))
+        sim_yaw_zero_at_start = bool(
+            getattr(sim_cfg, "YawZeroAtStart", getattr(cfg.Debug, "SimYawZeroAtStart", False))
+        )
+        sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
+        sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
+        sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
+        sim_vision_noise_level = float(getattr(sim_cfg, "VisionNoiseLevel", 0.0))
+        sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", 0))
+    except Exception:
+        sim_twist_from_wheels = True
+        sim_wheel_to_v = 0.008
+        sim_wheel_to_wz = 0.02
+        sim_yaw_offset_deg = 0.0
+        sim_yaw_zero_at_start = False
+        sim_kick_strength = 1.0
+        sim_dribble_scale = 1.0
+        sim_planar_move_scale = 1.0
+        sim_vision_noise_level = 0.0
+        sim_vision_noise_seed = 0
+
+    if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
+        os.environ["XEL_TWIST_FROM_WHEELS"] = "1" if sim_twist_from_wheels else "0"
+    os.environ.setdefault("XEL_WHEEL_TO_V", str(sim_wheel_to_v))
+    os.environ.setdefault("XEL_WHEEL_TO_WZ", str(sim_wheel_to_wz))
+    os.environ.setdefault("XEL_YAW_OFFSET_DEG", str(sim_yaw_offset_deg))
+    os.environ.setdefault("XEL_YAW_ZERO_AT_START", "1" if sim_yaw_zero_at_start else "0")
+    os.environ.setdefault("XEL_SIM_KICK_STRENGTH", str(sim_kick_strength))
+    os.environ.setdefault("XEL_SIM_DRIBBLE_SCALE", str(sim_dribble_scale))
+    os.environ.setdefault("XEL_SIM_PLANAR_MOVE_SCALE", str(sim_planar_move_scale))
+    os.environ.setdefault("XEL_SIM_VISION_NOISE_LEVEL", str(sim_vision_noise_level))
+    os.environ.setdefault("XEL_SIM_VISION_NOISE_SEED", str(sim_vision_noise_seed))
+
+
 @dataclass
 class SimStatus:
     ts: float = 0.0

@@ -1,213 +1,24 @@
-"""LunaPre
-
-本文件提供上层策略常用的封装：
-- 🤖 Positions：坐标/目标位置计算（机体坐标系 & 场地坐标系）
-- 📡 Communication：队内通信（Wi-Fi / BLE 等）
-
-命名规范（与 SoccerVisonWiki/ProgramingAdvanced.md 对齐）：
-- ✅ 对外方法：PascalCase（大驼峰）
-- ✅ 变量：snake_case（蛇形）
-
-兼容性：为了不一次性炸掉历史代码，旧接口会保留为“别名/包装”。
-"""
+"""Position, localization, vision, and Pos2Pos facade for LunaPre."""
 
 from __future__ import annotations
 
 import math
 import errno
-import os
 import pickle
-import csv
 import socket
 import subprocess
 import sys
 import threading
 import time
-import simple_pid
 from pathlib import Path
+
+import simple_pid
 
 from ReasonData import logger, Settings
 
-cfg = Settings
+from . import runtime
 
-from Sensor import Lidar
-from chassis import Car, Peripherals, Key  # Universal-Movement-Standard
-
-
-
-
-def _init_runtime(*, auto_start_lidar: bool = True):
-    """初始化 Bits / chassis / peripheral / lidar 等全局对象。
-
-    支持的硬件类型：
-    - SIM: Unity 仿真器 (XeleratorSimBits + XeleratorVision)
-    - AB: Arisu Bit (比赛机)
-    - IL: IceLoong Bit (比赛机)
-    """
-
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee
-
-    try:
-        # Simulator runtime: UDP bridge to Unity (SoccerSimulatorForXels)
-        # Enable via config: Settings.RoboInfo.Bit == "SIM"
-        # Or env override: ROBOCUPX_BITS=SIM
-        bits_override = os.environ.get("ROBOCUPX_BITS", "").strip().upper()
-        if bits_override:
-            try:
-                cfg.RoboInfo.Bit = bits_override
-            except Exception:
-                pass
-
-        if str(cfg.RoboInfo.Bit).upper() == "SIM":
-            from utils.XeleratorSimBits import XeleratorSimBits
-            from utils.XeleratorSimBits import Lidar as SimLidar
-            from vision_utils.XeleratorVision import XeleratorVision
-
-            # Prefer config-driven settings (ReasonData/data/config.json -> Settings.Sim.*)
-            # Env vars remain supported as overrides for quick debugging.
-            sim_cfg = getattr(cfg, "Sim", None)
-            unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", "127.0.0.1"))
-
-            # robot id: env override -> Settings.Sim.RobotId -> Settings.RoboInfo.number
-            robot_id = int(
-                os.environ.get(
-                    "XEL_ROBOT_ID",
-                    str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", 1))),
-                )
-            )
-
-            # Multi-robot port mapping:
-            # per_port mode: each robot has dedicated cmd/status ports.
-            # Default mapping: base + (robot_id-1)*stride.
-            multi_mode = str(getattr(sim_cfg, "MultiRobotMode", "per_port")).lower()
-            if multi_mode == "per_port":
-                cmd_base = int(getattr(sim_cfg, "CmdPortBase", 20001))
-                st_base = int(getattr(sim_cfg, "StatusPortBase", 20002))
-                stride = int(getattr(sim_cfg, "PortStride", 10))
-                default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
-                default_status_port = st_base + (max(robot_id, 1) - 1) * stride
-            else:
-                # single-port / future hub mode
-                default_cmd_port = int(getattr(sim_cfg, "CmdPort", 20001))
-                default_status_port = int(getattr(sim_cfg, "StatusPort", 20002))
-
-            cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
-            status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
-
-            # Simulator tuning (prefer config Debug section, allow env override in CI/dev)
-            try:
-                # New SIM config lives under Settings.Sim.*.
-                # Keep Debug.* fallback for older configs so existing deployments still work.
-                sim_twist_from_wheels = bool(
-                    getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", True))
-                )
-                sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.008)))
-                sim_wheel_to_wz = float(getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", 0.02)))
-                sim_yaw_offset_deg = float(getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", 0.0)))
-                sim_yaw_zero_at_start = bool(
-                    getattr(sim_cfg, "YawZeroAtStart", getattr(cfg.Debug, "SimYawZeroAtStart", False))
-                )
-                sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
-                sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
-                sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
-                sim_vision_noise_level = float(getattr(sim_cfg, "VisionNoiseLevel", 0.0))
-                sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", 0))
-            except Exception:
-                sim_twist_from_wheels = True
-                sim_wheel_to_v = 0.008
-                sim_wheel_to_wz = 0.02
-                sim_yaw_offset_deg = 0.0
-                sim_yaw_zero_at_start = False
-                sim_kick_strength = 1.0
-                sim_dribble_scale = 1.0
-                sim_planar_move_scale = 1.0
-                sim_vision_noise_level = 0.0
-                sim_vision_noise_seed = 0
-
-            # Env overrides (optional)
-            if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
-                os.environ["XEL_TWIST_FROM_WHEELS"] = "1" if sim_twist_from_wheels else "0"
-            os.environ.setdefault("XEL_WHEEL_TO_V", str(sim_wheel_to_v))
-            os.environ.setdefault("XEL_WHEEL_TO_WZ", str(sim_wheel_to_wz))
-            os.environ.setdefault("XEL_YAW_OFFSET_DEG", str(sim_yaw_offset_deg))
-            os.environ.setdefault("XEL_YAW_ZERO_AT_START", "1" if sim_yaw_zero_at_start else "0")
-            os.environ.setdefault("XEL_SIM_KICK_STRENGTH", str(sim_kick_strength))
-            os.environ.setdefault("XEL_SIM_DRIBBLE_SCALE", str(sim_dribble_scale))
-            os.environ.setdefault("XEL_SIM_PLANAR_MOVE_SCALE", str(sim_planar_move_scale))
-            os.environ.setdefault("XEL_SIM_VISION_NOISE_LEVEL", str(sim_vision_noise_level))
-            os.environ.setdefault("XEL_SIM_VISION_NOISE_SEED", str(sim_vision_noise_seed))
-
-            Bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
-            # Simulator lidar: compute wall distances from pose
-            lidar = SimLidar(
-                Bits.GetYaw,
-                get_pose_callable=Bits.GetPose,
-                bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260)),
-                bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200)),
-                auto_start=True,
-            )
-            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw)
-            compass = Bits.GetYaw
-            peripheral = Peripherals(Bits.VirtualPorts)
-            key = Key(Bits.GetKey)
-            Odometer = None
-            referee = None
-            Morse = None
-            # Provide a lightweight vision provider in SIM (no subprocess).
-            # It reads ball/enemy extensions from XeleratorSimBits, while full
-            # camera/YOLO pipelines can still be started explicitly by tests.
-            globals()["vision"] = XeleratorVision(Bits)
-            logger.info(f"Simulator Bits loaded: unity={unity_ip}:{cmd_port}, status_port={status_port}, robot_id={robot_id}")
-            return
-
-        if cfg.RoboInfo.Bit == "AB":
-            logger.error("Initializing Arisu Bit... Nice to See You Again, Arisu!")
-            from utils.ArisuBits import ArisBit
-
-            Bits = ArisBit()
-            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            chassis = Car(Bits.SetMotor, Bits.GetYaw, Bits.get_motor_encoder)
-            compass = Bits.GetYaw
-            peripheral = Peripherals(Bits.SetIO)
-            key = Key(Bits.GetKey)
-            Odometer = None
-            referee = None
-            Morse = None
-            logger.info("Arisu Bit loaded.")
-            return
-
-        if cfg.RoboInfo.Bit == "IL":
-            from utils.IceLoongBits import IceLoongBits
-
-            Bits = IceLoongBits()
-            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
-            chassis = Car(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
-            compass = Bits.GetYaw
-            key = Bits.GetKey
-            referee = Bits.GetRefereeUnlockPin
-            Morse = Bits.MosePrint
-            Odometer = None  # TODO add odometer support
-            logger.info("IceLoongBits Bit loaded.")
-            return
-
-        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL")
-
-    except Exception as e:
-        logger.error(f"Failed to init runtime: {e}")
-        raise RuntimeError(
-            f"Runtime initialization failed. Ensure config.RoboInfo.Bit is set correctly (SIM/AB/IL). Error: {e}"
-        ) from e
-
-
-# 默认初始化：直接初始化硬件，不再支持离线替身后端
-_init_runtime(auto_start_lidar=True)
-
-Beta_Func = False
-
-# Thread start flags (avoid NameError)
-SendstatusThreadFuncStarted = False
-PeerstatusThreadFuncStarted = False
+cfg = runtime.cfg
 
 class Positions:
     def __init__(self):
@@ -234,15 +45,9 @@ class Positions:
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
         self._pos2pos_cfg = self._load_pos2pos_config()
         self.ResetFlag = 0
-        self._last_pos2pos_record_ts = 0.0
-        self._pos2pos_header_written: set[str] = set()
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
-        enable_vision_env = os.environ.get("ROBOCUPX_ENABLE_VISION", "").lower() in {"1", "true", "yes"}
-        self._vision_enabled = True
-        bit_mode = str(getattr(getattr(cfg, "RoboInfo", object()), "Bit", "")).upper()
-        if bit_mode == "SIM":
-            self._vision_enabled = enable_vision_env
+        self._vision_enabled = runtime.default_vision_enabled()
 
     def _load_pos2pos_config(self) -> dict:
         motion_cfg = getattr(cfg, "Motion", None)
@@ -298,67 +103,6 @@ class Positions:
         gain = min(self._pos2pos_cfg["max_speed_gain"], gain)
         return gain
 
-    def _record_pos2pos_sample(
-        self,
-        *,
-        aim_pos: list,
-        loc_pos: list,
-        error_xyz: list,
-        delta_xy: list,
-        speed_gain: float,
-        reached: bool,
-        mode: str,
-    ) -> None:
-        if not self._pos2pos_cfg.get("record_enabled", False):
-            return
-        try:
-            record_dir = Path(self._pos2pos_cfg["record_dir"]).expanduser()
-            if not record_dir.is_absolute():
-                repo_root = Path(__file__).resolve().parent.parent
-                record_dir = repo_root / record_dir
-            record_dir.mkdir(parents=True, exist_ok=True)
-            session_id = getattr(cfg.Debug, "RecordSessionId", None) or time.strftime("%Y%m%d_%H%M%S", time.localtime())
-            csv_path = record_dir / f"pos2pos_{session_id}.csv"
-            fieldnames = [
-                "tick", "robot_id", "mode", "reached",
-                "aim_x", "aim_y", "aim_z",
-                "loc_x", "loc_y", "loc_z",
-                "err_x", "err_y", "err_z",
-                "cmd_x", "cmd_y", "speed_gain",
-                "pid_kp", "pid_ki", "pid_kd", "pid_limit",
-            ]
-            need_header = str(csv_path) not in self._pos2pos_header_written or not csv_path.exists()
-            with csv_path.open("a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                if need_header:
-                    writer.writeheader()
-                    self._pos2pos_header_written.add(str(csv_path))
-                writer.writerow({
-                    "tick": round(time.time(), 6),
-                    "robot_id": int(getattr(cfg.RoboInfo, "number", 1)),
-                    "mode": mode,
-                    "reached": int(reached),
-                    "aim_x": round(float(aim_pos[0]), 4),
-                    "aim_y": round(float(aim_pos[1]), 4),
-                    "aim_z": round(float(aim_pos[2]), 4),
-                    "loc_x": round(float(loc_pos[0]), 4),
-                    "loc_y": round(float(loc_pos[1]), 4),
-                    "loc_z": round(float(loc_pos[2]), 4),
-                    "err_x": round(float(error_xyz[0]), 4),
-                    "err_y": round(float(error_xyz[1]), 4),
-                    "err_z": round(float(error_xyz[2]), 4),
-                    "cmd_x": round(float(delta_xy[0]), 4),
-                    "cmd_y": round(float(delta_xy[1]), 4),
-                    "speed_gain": round(float(speed_gain), 4),
-                    "pid_kp": self._pos2pos_cfg["kp"],
-                    "pid_ki": self._pos2pos_cfg["ki"],
-                    "pid_kd": self._pos2pos_cfg["kd"],
-                    "pid_limit": self._pos2pos_cfg["output_limit"],
-                })
-        except Exception as e:
-            if Settings.Debug.FullLog:
-                logger.debug(f"Pos2Pos record failed: {e}")
-
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
 
@@ -367,7 +111,7 @@ class Positions:
         """
 
         # Simulator fast-path: use lightweight vision adapter (no socket/subprocess)
-        v = globals().get("vision", None)
+        v = getattr(runtime, "vision", None)
         if v is not None:
             self._vision_started = True
             return True
@@ -435,7 +179,7 @@ class Positions:
                     if (now - last_restart_t) < restart_backoff_s:
                         time.sleep(restart_backoff_s)
                     last_restart_t = now
-                    project_root = os.path.dirname(os.path.dirname(__file__))
+                    project_root = str(Path(__file__).resolve().parents[2])
                     self.vision_process = subprocess.Popen([sys.executable, "src/Vision.py"], cwd=project_root)
                     logger.info("Started vision server process")
                     restart_count += 1
@@ -460,7 +204,7 @@ class Positions:
         
     def GetVisionData(self):
         # Simulator fast-path
-        v = globals().get("vision", None)
+        v = getattr(runtime, "vision", None)
         if v is not None:
             try:
                 return v.get_vision_data()
@@ -472,7 +216,7 @@ class Positions:
         return self.vision_data
 
     def _get_ball_pos(self):
-        v = globals().get("vision", None)
+        v = getattr(runtime, "vision", None)
         if v is not None:
             try:
                 return v.get_ball_pos()
@@ -483,7 +227,7 @@ class Positions:
         return self.vision_data["ball_pos"]
     
     def _get_chassis_pos(self):
-        v = globals().get("vision", None)
+        v = getattr(runtime, "vision", None)
         if v is not None:
             try:
                 return v.get_chassis_pos()
@@ -494,7 +238,7 @@ class Positions:
         return self.vision_data["chassis_pos"]
 
     def _get_goals_pos(self):
-        v = globals().get("vision", None)
+        v = getattr(runtime, "vision", None)
         if v is not None:
             try:
                 return v.get_goals_pos()
@@ -560,32 +304,23 @@ class Positions:
             `0xfff` stand for `NoBallFounded`
             `0xddd` stand for `CatchBall`
         '''
-        sim_ball_from_bits = False
-        # Simulator fast-path: if Bits can provide relative ball position directly,
-        # do not rely on Vision UDP server.
         try:
-            if hasattr(Bits, "GetBallPos") and callable(getattr(Bits, "GetBallPos")):
-                # NOTE: SIM Bits.GetBallPos() is already the robot-frame relative position in cm
-                # (x_forward, y_left). Do NOT subtract pose here.
-                self.ballPos = Bits.GetBallPos()
-                sim_ball_from_bits = str(getattr(Settings.RoboInfo, "Bit", "")).upper() == "SIM"
+            runtime_ball_pos = runtime.get_runtime_ball_pos()
+            if runtime_ball_pos is not None:
+                self.ballPos = runtime_ball_pos
             else:
                 # 20251017 already changed X,Y dimension
                 self.ballPos = self._get_ball_pos()
         except Exception:
             self.ballPos = self._get_ball_pos()
-        # If SIM Bits returns sentinel values, keep them.
         if self.ballPos == [0xDDD, 0xDDD] or self.ballPos == [0xFFF, 0xFFF]:
             self.ballPosOut = self.ballPos
         # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
         elif self.ballPos == [0,0]:
             self.ballPosOut = [0xfff,0xfff]
-        elif sim_ball_from_bits:
-            # In SIM, [0xDDD,0xDDD] must come from Unity StatusFlags.HasBall.
-            # A ball near the 8.5cm geometric target can still be separated
-            # from the robot collider surface, so the legacy vision geometry
-            # heuristic would make strategy enter carry mode before physical
-            # possession is actually true.
+        elif runtime.runtime_ball_state_is_authoritative():
+            # Some runtime providers already encode possession state, so the
+            # legacy vision geometry heuristic should not override it here.
             self.ballPosOut = self.ballPos
         else:
             catch_val = getattr(cfg.Motion, "CatchVal", [8.5, 0])
@@ -650,18 +385,18 @@ class Positions:
         #### Note:
             `0xfff` stand for `NoPosition`
         '''
-        self.BoundsDistance = lidar.GetDists()
-        # disabled lidar returns [0xfff,...]
+        self.BoundsDistance = runtime.lidar.GetDists()
+        # disabled runtime.lidar returns [0xfff,...]
         if self.BoundsDistance == [0xfff,0xfff,0xfff,0xfff]:
             return [0xfff,0xfff,0xfff,0xfff]
         if self.BoundsDistance == [0, 0, 0, 0]:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
-            time.sleep(self.WaitTime) # wait 1 second for starting lidar
+            time.sleep(self.WaitTime) # wait 1 second for starting runtime.lidar
             if self.WarnedLidarCount >= cfg.Motion.ErrorRange/3:
                 a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
-                logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping chassis to prevent damage.")
-                lidar.stop()
+                logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping runtime.chassis to prevent damage.")
+                runtime.lidar.stop()
                 raise RuntimeError("No Lidar Data Recieved! Please Check Lidar Modules!")
             return [0xfff,0xfff,0xfff,0xfff]
         else:
@@ -689,12 +424,12 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
-        # Simulator fast-path: if Bits can provide pose, use it.
+        # Simulator fast-path: if runtime.Bits can provide pose, use it.
         try:
-            if hasattr(Bits, "GetPose") and callable(getattr(Bits, "GetPose")):
-                x, y, yaw = Bits.GetPose()
+            if hasattr(runtime.Bits, "GetPose") and callable(getattr(runtime.Bits, "GetPose")):
+                x, y, yaw = runtime.Bits.GetPose()
                 # keep same semantics: [x_forward, y_left, yaw_deg]
-                # IMPORTANT: Bits.GetPose() already returns field-center based coordinates (cm)
+                # IMPORTANT: runtime.Bits.GetPose() already returns field-center based coordinates (cm)
                 # after applying Unity origin shift. Do NOT add extra offsets here, otherwise
                 # strategy logic (RestrictedArea/CheckPoints/etc.) will be inconsistent.
                 self.LidarPos = [round(x, 2), round(y, 2), float(yaw)]
@@ -704,7 +439,7 @@ class Positions:
 
         _distance = self.DirectDistance()
         if _distance == [0xfff,0xfff,0xfff,0xfff]:
-            chassis.stop()
+            runtime.chassis.stop()
             return [0xfff,0xfff,0xfff]
         if (_distance[0]+_distance[2]) < (cfg.Bounds.Long)*self.LidarScale*self.BoundsScale:
             if _distance[0] > _distance[2]:
@@ -720,11 +455,11 @@ class Positions:
                 X = -(_distance[3] - cfg.Bounds.Short*self.LidarScale/2)
         else:
             X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
-        self.LidarPos = [Y/10,X/10,compass()]
+        self.LidarPos = [Y/10,X/10,runtime.compass()]
         logger.info("[Field] Robot Pose: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
         try:
-            if Odometer:# if use odometer datas
+            if runtime.Odometer:# if use odometer datas
                 # TODO finish lower Positions
                 pass
         except:
@@ -738,7 +473,10 @@ class Positions:
         compatibility and returns the same value.
         """
 
-        return self.FieldRobotPos(lower)
+        try:
+            return self.FieldRobotPos(lower)
+        except TypeError:
+            return self.FieldRobotPos()
 
     def FieldRobotPosition(self, lower: bool | None = False):
         """Return robot field-frame position ``[x_forward, y_left]``.
@@ -788,14 +526,14 @@ class Positions:
 
         获取[对方机器人]相对于[场地几何中心]的位置 [[x_forward,y_left],[x_forward,y_left],[x_forward,y_left]]
 
-        ##### retrun a list of the absloute position of all chassis
+        ##### retrun a list of the absloute position of all runtime.chassis
         #### Returns:
             OutputDistanceList: [c1,c2]
                 c1: 
-                    chassis X Position
-                    chassis Y Position
-                    chassis height
-                    chassis weidth
+                    runtime.chassis X Position
+                    runtime.chassis Y Position
+                    runtime.chassis height
+                    runtime.chassis weidth
         '''
         # TODO 20260503 This method is to be tested.
         ChassisRawList = self._get_chassis_pos()
@@ -850,7 +588,7 @@ class Positions:
         #### Returns:
             BallAngle: int | absolute ball angle
         '''
-        self.BallAngle = (self.RobotBallAngle() + compass())%360
+        self.BallAngle = (self.RobotBallAngle() + runtime.compass())%360
         return self.BallAngle
 
     def RobotBallDistance(self):
@@ -922,7 +660,7 @@ class Positions:
         `非阻塞函数`
 
         获取[球]相对于[机器人几何中心]的角度列表
-        ##### retrun a list of the relative angle from the robot to the chassis
+        ##### retrun a list of the relative angle from the robot to the runtime.chassis
         #### Returns:
             [a1,a2,a3,etc]
         '''
@@ -960,8 +698,8 @@ class Positions:
         '''
         iLocX, iLocY, iLocZ = self.FieldRobotPose()
         if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
-            chassis.stop()
-            Morse("No Position Data!")
+            runtime.chassis.stop()
+            runtime.Morse("No Position Data!")
             return False
         iAimX,iAimY,iAimZ = AimPos
         iAimZ = float(iAimZ) % 360.0
@@ -991,48 +729,21 @@ class Positions:
         resolved_speed_gain = self._resolve_speed_gain(speed_gain)
         iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
         if iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and abs(iErrorRange) > abs(iErrorZ):
-            chassis.stop()
+            runtime.chassis.stop()
             self.ResetFlag = 0
             self.Position_X_PID.reset()
             self.Position_Y_PID.reset()
-            self._record_pos2pos_sample(
-                aim_pos=[iAimX, iAimY, iAimZ],
-                loc_pos=[iLocX, iLocY, iLocZ],
-                error_xyz=[iErrorX, iErrorY, iErrorZ],
-                delta_xy=[0.0, 0.0],
-                speed_gain=resolved_speed_gain,
-                reached=True,
-                mode="arrived",
-            )
             return True
         elif iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
             self.ResetFlag = 0
             self.Position_X_PID.reset()
             self.Position_Y_PID.reset()
-            chassis.FieldTurn(iAimZ)
+            runtime.chassis.FieldTurn(iAimZ)
             logger.debug("Position reached, adjusting orientation to %s degrees." % iAimZ)
-            self._record_pos2pos_sample(
-                aim_pos=[iAimX, iAimY, iAimZ],
-                loc_pos=[iLocX, iLocY, iLocZ],
-                error_xyz=[iErrorX, iErrorY, iErrorZ],
-                delta_xy=[0.0, 0.0],
-                speed_gain=resolved_speed_gain,
-                reached=False,
-                mode="turn_only",
-            )
         else:
             cmd_x = iDeltaX * resolved_speed_gain
             cmd_y = iDeltaY * resolved_speed_gain
-            chassis.FieldMoveVector(cmd_x, cmd_y, iAimZ)
-            self._record_pos2pos_sample(
-                aim_pos=[iAimX, iAimY, iAimZ],
-                loc_pos=[iLocX, iLocY, iLocZ],
-                error_xyz=[iErrorX, iErrorY, iErrorZ],
-                delta_xy=[cmd_x, cmd_y],
-                speed_gain=resolved_speed_gain,
-                reached=False,
-                mode="tracking",
-            )
+            runtime.chassis.FieldMoveVector(cmd_x, cmd_y, iAimZ)
             return False
 
     def Move2Path(
@@ -1070,7 +781,7 @@ class Positions:
                     break
 
                 if point_timeout > 0 and time.time() - start_t > point_timeout:
-                    chassis.stop()
+                    runtime.chassis.stop()
                     logger.warning(
                         "Move2Path timeout at point {}/{} target={} current={}",
                         idx + 1,
@@ -1090,7 +801,7 @@ class Positions:
 
         '''
         while 1:
-            if 100 < lidar.GetDists()[0] <= 500:
+            if 100 < runtime.lidar.GetDists()[0] <= 500:
                 return True
             else:
                 pass
@@ -1105,7 +816,7 @@ class Positions:
             RefereeStatus: bool | `True` for unlocked, `False` for locked
         '''
         try:
-            return Bits.referee_key
+            return runtime.Bits.referee_key
         except Exception:
             return False
 
@@ -1218,7 +929,7 @@ class Positions:
 
         The legacy method name is kept for strategy compatibility. Internally it
         only consumes `FieldRobotPose()`, so the guard stays stable when the pose
-        source changes from lidar to simulator truth or fused localization.
+        source changes from runtime.lidar to simulator truth or fused localization.
         """
 
         robo_pos = self.FieldRobotPose()
@@ -1233,10 +944,10 @@ class Positions:
         '''
         ### Function for stopping the vision data thread
         '''
-        chassis.stop()
-        peripheral.Dribble(False)
-        lidar.stop()
-        chassis.stop()
+        runtime.chassis.stop()
+        runtime.peripheral.Dribble(False)
+        runtime.lidar.stop()
+        runtime.chassis.stop()
         self.vision_data_stop_event.set()
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.
@@ -1263,276 +974,3 @@ class Positions:
                 self.get_vision_data_process.join(timeout=0.5)
         except Exception:
             pass
-
-UnitedPosition = Positions()
-
-class Communication:
-    """蓝牙/Wi-Fi 队内通信封装。
-
-    协议参考 `蓝牙数据协议.csv`：
-    - 帧头: 0x23
-    - 帧尾: 0x42
-    - 字段顺序:
-        [帧头, 识别ID, 角色, 状态, x+, y+, x-, y-, 备用, 帧尾]
-
-    说明：
-    - 这里保留了一个通用实现，既可以用于串口 BLE，也可以用于 Wi-Fi
-      方案中的二次封装。
-    - 对于坐标字段，默认采用“正负拆分”的方式：
-        signed = positive - negative
-      其中每个分量都会被限制到 0~0xFF。
-    """
-
-    FRAME_HEAD = 0x23
-    FRAME_TAIL = 0x42
-    FRAME_LENGTH = 10
-
-    # 角色编码（对齐蓝牙数据协议.csv）
-    ROLE_OFFENCE_YELLOW = 0x01
-    ROLE_DEFENCE_YELLOW = 0x00
-    ROLE_DEFENCE_BLUE = 0x02
-    ROLE_OFFENCE_BLUE = 0x03
-    ROLE_BAN = 0x04
-
-    # 状态编码
-    STATUS_CATCH_BALL = 0x00
-    STATUS_CHASING = 0x01
-    STATUS_AVOIDING = 0xEE
-    STATUS_NO_BALL = 0xFF
-
-    def __init__(self):
-        if cfg.Transimission.Method == "WIFI":
-            from utils.ReasonBeacon import MisakaNetwork
-            self.transimission = MisakaNetwork()
-        elif cfg.Transimission.Method == "BLE":
-            import serial
-            self.transimission = serial.Serial(getattr(Settings.Ports, "BLEPort", "/dev/ble"), 115200, timeout=0.1)
-        else:
-            raise RuntimeError("None Transmission Method Selected!")
-
-        self.BallFlag = [0, 0]
-        self.PeerPosition = [0xFFF, 0xFFF]
-        self.FullLog = cfg.Debug.FullLog
-        self.RobotID = int(getattr(cfg.RoboInfo, "number", 1))
-        self.Role = self._default_role_from_config()
-        self.Status = self.STATUS_NO_BALL
-        self.LastFrame = None
-        self.LastPeerFrame = None
-
-    def _default_role_from_config(self) -> int:
-        robo_type = str(getattr(cfg.RoboInfo, "type", "OP")).upper()
-        color = str(getattr(cfg.RoboInfo, "Color", getattr(cfg.RoboInfo, "color", "Y"))).upper()
-
-        if robo_type in {"DP", "DEFENCE", "DEFENSE"}:
-            return self.ROLE_DEFENCE_BLUE if color.startswith("B") else self.ROLE_DEFENCE_YELLOW
-        return self.ROLE_OFFENCE_BLUE if color.startswith("B") else self.ROLE_OFFENCE_YELLOW
-
-    @staticmethod
-    def _clamp_byte(value) -> int:
-        try:
-            value = int(round(float(value)))
-        except Exception:
-            value = 0
-        return max(0, min(0xFF, value))
-
-    @staticmethod
-    def _split_signed_xy(x, y) -> tuple[int, int, int, int]:
-        """将带符号坐标拆成正负两路字节。"""
-        try:
-            x = float(x)
-        except Exception:
-            x = 0.0
-        try:
-            y = float(y)
-        except Exception:
-            y = 0.0
-
-        x_pos = Communication._clamp_byte(max(x, 0.0))
-        y_pos = Communication._clamp_byte(max(y, 0.0))
-        x_neg = Communication._clamp_byte(max(-x, 0.0))
-        y_neg = Communication._clamp_byte(max(-y, 0.0))
-        return x_pos, y_pos, x_neg, y_neg
-
-    @staticmethod
-    def _merge_signed_xy(x_pos, y_pos, x_neg, y_neg) -> list[int]:
-        return [int(x_pos) - int(x_neg), int(y_pos) - int(y_neg)]
-
-    def BuildFrame(self, identity_id: int | None = None, role: int | None = None, status: int | None = None,
-                   x_pos: int = 0, y_pos: int = 0, x_neg: int = 0, y_neg: int = 0, reserve: int = 0) -> bytes:
-        """构造一帧通信报文。"""
-        frame = bytes([
-            self.FRAME_HEAD,
-            self._clamp_byte(self.RobotID if identity_id is None else identity_id),
-            self._clamp_byte(self.Role if role is None else role),
-            self._clamp_byte(self.Status if status is None else status),
-            self._clamp_byte(x_pos),
-            self._clamp_byte(y_pos),
-            self._clamp_byte(x_neg),
-            self._clamp_byte(y_neg),
-            self._clamp_byte(reserve),
-            self.FRAME_TAIL,
-        ])
-        self.LastFrame = frame
-        return frame
-
-    def ParseFrame(self, payload: bytes | bytearray | list[int]):
-        """解析协议帧，返回字典；非法帧返回 None。"""
-        if payload is None:
-            return None
-        if isinstance(payload, list):
-            payload = bytes(payload)
-        if not isinstance(payload, (bytes, bytearray)):
-            return None
-        if len(payload) != self.FRAME_LENGTH:
-            return None
-        if payload[0] != self.FRAME_HEAD or payload[-1] != self.FRAME_TAIL:
-            return None
-
-        identity_id = int(payload[1])
-        role = int(payload[2])
-        status = int(payload[3])
-        x_pos, y_pos, x_neg, y_neg, reserve = map(int, payload[4:9])
-        signed_xy = self._merge_signed_xy(x_pos, y_pos, x_neg, y_neg)
-        data = {
-            "id": identity_id,
-            "role": role,
-            "status": status,
-            "x_pos": x_pos,
-            "y_pos": y_pos,
-            "x_neg": x_neg,
-            "y_neg": y_neg,
-            "reserve": reserve,
-            "signed_xy": signed_xy,
-        }
-        self.LastPeerFrame = data
-        self.PeerPosition = signed_xy
-        self.BallFlag = [status, reserve]
-        return data
-
-    def UpdateState(self, *, role: int | None = None, status: int | None = None,
-                    ball_flag: list[int] | None = None, peer_position: list[int] | None = None):
-        """更新本机待发送状态。"""
-        if role is not None:
-            self.Role = self._clamp_byte(role)
-        if status is not None:
-            self.Status = self._clamp_byte(status)
-        if ball_flag is not None and len(ball_flag) >= 2:
-            self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
-        if peer_position is not None and len(peer_position) >= 2:
-            self.PeerPosition = [int(peer_position[0]), int(peer_position[1])]
-
-    def PackSelfStatus(self, *, identity_id: int | None = None, role: int | None = None,
-                       status: int | None = None, position: list[int] | tuple[int, int] | None = None,
-                       reserve: int = 0) -> bytes:
-        """根据当前状态和位置打包一帧。"""
-        if position is None:
-            position = self.PeerPosition
-        if isinstance(position, (list, tuple)) and len(position) >= 2:
-            x_pos, y_pos, x_neg, y_neg = self._split_signed_xy(position[0], position[1])
-        else:
-            x_pos, y_pos, x_neg, y_neg = 0, 0, 0, 0
-        return self.BuildFrame(
-            identity_id=identity_id,
-            role=role,
-            status=status,
-            x_pos=x_pos,
-            y_pos=y_pos,
-            x_neg=x_neg,
-            y_neg=y_neg,
-            reserve=reserve,
-        )
-
-    def Send(self, payload: bytes | bytearray | list[int] | None = None) -> bool:
-        """发送原始帧或当前状态帧。"""
-        if payload is None:
-            payload = self.PackSelfStatus()
-
-        try:
-            if hasattr(self.transimission, "send") and callable(getattr(self.transimission, "send")):
-                self.transimission.send(payload)
-            elif hasattr(self.transimission, "sendall") and callable(getattr(self.transimission, "sendall")):
-                self.transimission.sendall(payload)
-            elif hasattr(self.transimission, "write") and callable(getattr(self.transimission, "write")):
-                self.transimission.write(payload)
-            else:
-                raise AttributeError("transimission object has no send/write interface")
-            return True
-        except Exception as e:
-            if self.FullLog:
-                logger.warning(f"Communication send failed: {e}")
-            return False
-
-    def Receive(self):
-        """尝试接收一帧并解析。"""
-        try:
-            raw = None
-            if hasattr(self.transimission, "recv") and callable(getattr(self.transimission, "recv")):
-                raw = self.transimission.recv(self.FRAME_LENGTH)
-            elif hasattr(self.transimission, "read") and callable(getattr(self.transimission, "read")):
-                raw = self.transimission.read(self.FRAME_LENGTH)
-            elif hasattr(self.transimission, "receive") and callable(getattr(self.transimission, "receive")):
-                raw = self.transimission.receive()
-            else:
-                raise AttributeError("transimission object has no recv/read/receive interface")
-
-            if not raw:
-                return None
-
-            if isinstance(raw, tuple):
-                # 某些实现会返回 (addr, data)
-                raw = raw[-1]
-
-            if isinstance(raw, list):
-                raw = bytes(raw)
-
-            if isinstance(raw, str):
-                raw = raw.encode("latin1", errors="ignore")
-
-            # 兼容一次读到多帧的场景，尽量从中截取第一帧合法数据。
-            if isinstance(raw, (bytes, bytearray)) and len(raw) >= self.FRAME_LENGTH:
-                for idx in range(0, len(raw) - self.FRAME_LENGTH + 1):
-                    chunk = raw[idx: idx + self.FRAME_LENGTH]
-                    parsed = self.ParseFrame(chunk)
-                    if parsed is not None:
-                        return parsed
-            return self.ParseFrame(raw)
-        except Exception as e:
-            if self.FullLog:
-                logger.warning(f"Communication receive failed: {e}")
-            return None
-
-    def SendStatus(self, *, status: int | None = None, role: int | None = None,
-                   position: list[int] | tuple[int, int] | None = None, reserve: int = 0) -> bool:
-        """发送当前机器人状态。"""
-        payload = self.PackSelfStatus(role=role, status=status, position=position, reserve=reserve)
-        return self.Send(payload)
-
-    def SendBallFlag(self, ball_flag: list[int] | None = None, *, reserve: int = 0) -> bool:
-        """便捷接口：发送球状态（兼容旧变量命名）。"""
-        if ball_flag is not None and len(ball_flag) >= 2:
-            self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
-        return self.SendStatus(status=self.Status, position=self.PeerPosition, reserve=reserve)
-
-    def Close(self):
-        """关闭通信句柄。"""
-        try:
-            if hasattr(self.transimission, "close") and callable(getattr(self.transimission, "close")):
-                self.transimission.close()
-        except Exception as e:
-            if self.FullLog:
-                logger.warning(f"Communication close failed: {e}")
-
-    # Backward-compatible aliases
-    def SendMessage(self, *args, **kwargs):
-        return self.Send(*args, **kwargs)
-
-    def RecvMessage(self):
-        return self.Receive()
-
-    def SetBallFlag(self, ball_flag):
-        self.BallFlag = [self._clamp_byte(ball_flag[0]), self._clamp_byte(ball_flag[1])]
-        return self.BallFlag
-
-    def SetPeerPosition(self, peer_position):
-        self.PeerPosition = [int(peer_position[0]), int(peer_position[1])]
-        return self.PeerPosition

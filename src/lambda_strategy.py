@@ -20,13 +20,15 @@ import time
 from loguru import logger
 
 from LunaPre import UnitedPosition, chassis, peripheral
+from LunaPre.strategy_tools import (
+    BALL_HELD,
+    BALL_NOT_FOUND,
+    angle_error_deg,
+    distance,
+    robot_ball_distance,
+    safe_stop,
+)
 from BasicFuc import lockball
-
-# ============================================================================
-# 常量
-# ============================================================================
-BALL_NOT_FOUND = [0xFFF, 0xFFF]
-BALL_HELD = [0xDDD, 0xDDD]
 
 # 场地参数
 FIELD_LONG = 260.0
@@ -50,22 +52,6 @@ STUCK_NEAR_BALL_IGNORE_CM = 40.0
 
 # 射门冷却
 SHOT_COOLDOWN_S = 0.5
-
-
-# ============================================================================
-# 工具函数
-# ============================================================================
-def _angle_error_deg(current, target):
-    """计算角度误差"""
-    return ((float(target) - float(current) + 180.0) % 360.0) - 180.0
-
-def _clamp(value, lo, hi):
-    return max(lo, min(hi, value))
-
-def _dist(p1, p2):
-    dx = p1[0] - p2[0]
-    dy = p1[1] - p2[1]
-    return math.sqrt(dx * dx + dy * dy)
 
 
 # ============================================================================
@@ -122,20 +108,15 @@ class LambdaController:
         # 判断球的状态
         ball_held = (robot_ball == BALL_HELD)
         ball_found = (robot_ball != BALL_NOT_FOUND) or (field_ball and field_ball[0] < 500)
-        robot_ball_dist = None
-        if robot_ball != BALL_NOT_FOUND and robot_ball != BALL_HELD:
-            try:
-                robot_ball_dist = math.sqrt(float(robot_ball[0]) ** 2 + float(robot_ball[1]) ** 2)
-            except Exception:
-                robot_ball_dist = None
+        robot_ball_dist = robot_ball_distance(robot_ball)
         
         # 计算进度（进攻方向）
         progress = self.attack_dir * rx
         
         # 计算到球门的距离和角度
-        goal_dist = _dist((rx, ry), (self.goal_x, 0))
+        goal_dist = distance((rx, ry), (self.goal_x, 0))
         goal_angle = math.degrees(math.atan2(0 - ry, self.goal_x - rx)) % 360
-        yaw_error = abs(_angle_error_deg(ryaw, goal_angle))
+        yaw_error = abs(angle_error_deg(ryaw, goal_angle))
         
         # ===== 卡住检测与脱困 =====
         if self._check_stuck(robot_ball_dist=robot_ball_dist, ball_held=ball_held):
@@ -227,8 +208,8 @@ class LambdaController:
         
         # 使用 LockBallSlip 抢球
         if robot_ball != BALL_NOT_FOUND and robot_ball != BALL_HELD:
-            ball_dist = math.sqrt(robot_ball[0]**2 + robot_ball[1]**2)
-            if ball_dist < 60:
+            ball_dist = robot_ball_distance(robot_ball)
+            if ball_dist is not None and ball_dist < 60:
                 # 球很近，用 LockBallSlip
                 lockball.LockBallSlip()
                 return
@@ -309,16 +290,12 @@ class LambdaController:
         self._last_dribble = power
         try:
             lockball._lockball_dribble_state = power if power else False
-        except:
+        except Exception:
             pass
     
     def stop(self):
         """停止"""
-        try:
-            self._set_dribble(False)
-            chassis.stop()
-        except:
-            pass
+        safe_stop(chassis, peripheral)
 
 
 # ============================================================================

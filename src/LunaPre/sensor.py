@@ -3,7 +3,7 @@
 本模块主要用于解析激光雷达（ROS2 sllidar）数据。
 
 兼容性目标：
-- 在没有安装 ROS2 / rclpy 的开发机上也允许 `import Sensor`（不应直接 ImportError）。
+- 在没有安装 ROS2 / rclpy 的开发机上也允许 `import LunaPre.sensor`（不应直接 ImportError）。
 - 当 ROS2 不可用时，`Lidar` 进入 disabled 模式：不会启动子进程/线程，GetDists 返回哨兵值。
 """
 

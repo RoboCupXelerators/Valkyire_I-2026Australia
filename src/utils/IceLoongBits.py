@@ -1,4 +1,12 @@
 # IceLoongBits.py
+#
+# TODO lower-controller compatibility:
+# - Keep this legacy class stable for existing robots and demos.
+# - New lower-controller protocol work should fork/create a new Bits component
+#   that follows the new standard, rather than expanding this legacy wire format.
+# - The new standard should expose GetPose() for fused localization [x, y, yaw].
+# - Pos2Pos remains an upper-controller closed-loop behavior for now.
+# - Existing Commands / CommandLine payloads in this file should stay unchanged.
 
 import logging
 from typing import Optional, List, Tuple

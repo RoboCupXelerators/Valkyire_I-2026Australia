@@ -61,7 +61,7 @@ def test_defence_challenges_danger_ball(monkeypatch):
 
     monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-40.0, 0.0, 0.0])
     monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [30.0, 0.0])
-    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [-10.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [25.0, 0.0])
     monkeypatch.setattr(defence.lockball, "LockBallSlip", lambda: calls.append("lock"))
 
     strategy.step()

@@ -1,6 +1,6 @@
 from ReasonData import logger, Settings
-from Sensor import Lidar
-from chassis import Car, Peripherals, Key # Universal-Movement-Standard
+from LunaPre.sensor import Lidar
+from LunaPre.motion.chassis import Car, Peripherals, Key # Universal-Movement-Standard
 
 from utils.IceLoongBits import IceLoongBits
 

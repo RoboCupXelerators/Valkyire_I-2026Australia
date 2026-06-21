@@ -13,7 +13,7 @@ SRC_DIR = Path(__file__).resolve().parents[2]
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from chassis import Car  # noqa: E402
+from LunaPre.motion.chassis import Car  # noqa: E402
 from ReasonData.config import Settings  # noqa: E402
 
 
