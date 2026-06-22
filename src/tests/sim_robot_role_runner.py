@@ -1,13 +1,14 @@
-"""Run one simulator robot role for multi-robot debugging.
+"""运行一个模拟器机器人角色，便于多机器人调试。
 
-This script is intentionally single-robot. Multi-robot runs should start one
-process per robot so each process owns its own LunaPre globals and UDP ports.
+这个脚本有意只绑定一台机器人。多机器人运行时应为每台机器人启动一个
+独立进程，确保每个进程独占自己的 LunaPre 全局对象和 UDP 端口。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -18,6 +19,7 @@ INVALID_POSE = [0xFFF, 0xFFF, 0xFFF]
 
 
 def _set_env(robot_id: int) -> None:
+    """配置当前进程，让 LunaPre 绑定到指定模拟器机器人。"""
     os.environ.setdefault("ROBOCUPX_BITS", "SIM")
     os.environ.setdefault("XEL_UNITY_IP", "127.0.0.1")
     os.environ["XEL_ROBOT_ID"] = str(int(robot_id))
@@ -27,6 +29,7 @@ def _set_env(robot_id: int) -> None:
 
 
 def _pose(UnitedPosition) -> list[float]:
+    """返回规范化场地位姿；无效时返回模拟器无效位姿哨兵值。"""
     pose = UnitedPosition.FieldRobotPos()
     if not isinstance(pose, list) or len(pose) < 3 or pose == INVALID_POSE:
         return list(INVALID_POSE)
@@ -34,6 +37,7 @@ def _pose(UnitedPosition) -> list[float]:
 
 
 def _wait_for_sim(Bits, UnitedPosition, timeout_s: float = 6.0) -> bool:
+    """等待 Unity 同时发来有效位姿和新的状态帧。"""
     start_rx = int(getattr(Bits, "_rx_count", 0))
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -44,6 +48,7 @@ def _wait_for_sim(Bits, UnitedPosition, timeout_s: float = 6.0) -> bool:
 
 
 def _write_jsonl(path: Path | None, row: dict) -> None:
+    """开启 trace 时追加一行紧凑 JSON。"""
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,13 +56,77 @@ def _write_jsonl(path: Path | None, row: dict) -> None:
         fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def _write_json(path: Path | None, payload: dict) -> None:
+    """配置 summary 路径时写入缩进格式的 JSON 报告。"""
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _motion_summary(frames: list[dict]) -> dict:
+    """汇总角色循环是否产生了模拟器运动和底盘命令。"""
+    pose_frames = [row for row in frames if row.get("pose") and row.get("pose") != INVALID_POSE]
+    if not pose_frames:
+        return {
+            "frames": len(frames),
+            "valid_pose_frames": 0,
+            "states": [],
+            "motion_span": 0.0,
+            "x_span": 0.0,
+            "y_span": 0.0,
+            "yaw_span": 0.0,
+            "nonzero_cmd_frames": 0,
+            "rx_delta": 0,
+            "tx_delta": 0,
+        }
+
+    xs = [row["pose"][0] for row in pose_frames]
+    ys = [row["pose"][1] for row in pose_frames]
+    yaws = [row["pose"][2] for row in pose_frames]
+    start_x, start_y = pose_frames[0]["pose"][:2]
+    motion_span = max(math.hypot(row["pose"][0] - start_x, row["pose"][1] - start_y) for row in pose_frames)
+    nonzero_cmd_frames = sum(
+        1
+        for row in pose_frames
+        if any(abs(float(row.get(name) or 0.0)) > 1e-6 for name in ("cmd_vx", "cmd_vy", "cmd_wz"))
+    )
+    rx_values = [int(row.get("rx_count") or 0) for row in pose_frames]
+    tx_values = [int(row.get("tx_count") or 0) for row in pose_frames]
+
+    return {
+        "frames": len(frames),
+        "valid_pose_frames": len(pose_frames),
+        "states": sorted({row.get("state") for row in pose_frames if row.get("state") is not None}),
+        "first_pose": pose_frames[0]["pose"],
+        "last_pose": pose_frames[-1]["pose"],
+        "motion_span": round(float(motion_span), 3),
+        "x_span": round(float(max(xs) - min(xs)), 3),
+        "y_span": round(float(max(ys) - min(ys)), 3),
+        "yaw_span": round(float(max(yaws) - min(yaws)), 3),
+        "nonzero_cmd_frames": nonzero_cmd_frames,
+        "rx_delta": rx_values[-1] - rx_values[0],
+        "tx_delta": tx_values[-1] - tx_values[0],
+    }
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run one SIM robot role.")
+    """运行一个角色循环，并可在机器人没有实际运动时失败退出。"""
+    parser = argparse.ArgumentParser(description="运行一个 SIM 机器人角色。")
     parser.add_argument("--robot-id", type=int, required=True)
     parser.add_argument("--role", choices=["offence", "defence", "idle", "alpha", "lambda", "mlp"], default="offence")
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--trace", default="")
     parser.add_argument("--tick", type=float, default=0.03)
+    parser.add_argument("--summary", default="", help="可选 JSON 汇总文件，记录运动和命令统计。")
+    parser.add_argument("--require-motion", action="store_true", help="模拟器机器人没有实际运动时失败退出。")
+    parser.add_argument("--min-motion", type=float, default=5.0, help="--require-motion 使用的最小平面运动跨度。")
+    parser.add_argument(
+        "--min-command-frames",
+        type=int,
+        default=3,
+        help="--require-motion 使用的最小非零命令帧数量。",
+    )
     parser.add_argument(
         "--mlp-model",
         default=os.environ.get(
@@ -73,9 +142,11 @@ def main() -> int:
     from LunaPre import Bits, UnitedPosition, chassis, logger, peripheral  # noqa: E402
 
     trace_path = Path(args.trace) if args.trace else None
+    summary_path = Path(args.summary) if args.summary else None
     ok = False
     strategy = None
     mlp_last_action = None
+    frames: list[dict] = []
     started = time.time()
 
     try:
@@ -165,8 +236,32 @@ def main() -> int:
                     "kick": bool(mlp_last_action.get("kick", False)),
                     "dribble": bool(mlp_last_action.get("dribble", False)),
                 }
+            frames.append(row)
             _write_jsonl(trace_path, row)
             time.sleep(max(0.005, tick_s))
+
+        summary = _motion_summary(frames)
+        summary.update(
+            {
+                "robot_id": int(args.robot_id),
+                "role": args.role,
+                "duration_s": round(time.time() - started, 3),
+                "require_motion": bool(args.require_motion),
+                "min_motion": float(args.min_motion),
+                "min_command_frames": int(args.min_command_frames),
+            }
+        )
+        summary["motion_ok"] = (
+            summary["valid_pose_frames"] > 0
+            and summary["motion_span"] >= float(args.min_motion)
+            and summary["nonzero_cmd_frames"] >= int(args.min_command_frames)
+            and summary["rx_delta"] > 0
+            and summary["tx_delta"] > 0
+        )
+        _write_json(summary_path, summary)
+        if args.require_motion and not summary["motion_ok"]:
+            logger.error("[SimRobotRole] motion validation failed: {}", summary)
+            return 4
 
         ok = True
         return 0

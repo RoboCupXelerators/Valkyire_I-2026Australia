@@ -16,6 +16,16 @@ import os
 import time
 
 def RoundThresholdJudger(iValue, iRound, iMiddleValue, iOffset):
+    """判断周期值是否落在允许跨零点的阈值窗口内。
+
+    参数:
+        iValue: 待判断的值。
+        iRound: 周期长度，例如角度场景下通常是 360。
+        iMiddleValue: 阈值窗口中心，与 ``iValue`` 使用同一单位。
+        iOffset: 阈值窗口半宽。
+    """
+    if iRound == 0:
+        raise ValueError("iRound 不能为 0")
     iValue = iValue % iRound
     
     iLowerThreshold = (iMiddleValue - iOffset) % iRound
@@ -28,11 +38,11 @@ def RoundThresholdJudger(iValue, iRound, iMiddleValue, iOffset):
         return iValue >= iLowerThreshold or iValue <= iUpperThreshold
 
 def FindNearestAngle(arr, target):
-    return min(arr, key=lambda x: abs(x - target))
+    """在 360 度圆环上返回最接近 ``target`` 的候选角。"""
+    return min(arr, key=lambda x: abs(_AngleErrorDeg(x, target)))
 
 def LinearMap(value, input_range, output_range):
-    """
-    通用线性映射函数
+    """把 ``value`` 从一个数值区间线性映射到另一个区间。
     
     Args:
         value: 要映射的值
@@ -44,6 +54,8 @@ def LinearMap(value, input_range, output_range):
     """
     input_min, input_max = input_range
     output_min, output_max = output_range
+    if input_min == input_max:
+        raise ValueError("input_range 的两个端点不能相同")
     
     # 计算映射
     input_span = input_max - input_min
@@ -56,7 +68,14 @@ def LinearMap(value, input_range, output_range):
 
 
 class LockSeries:
+    """历史攻防辅助函数使用的抢球/锁球控制器。
+
+    这里的公开方法有意保留状态：PID 积分、最近一次看到的球位置、
+    吸球状态都会保存在 ``lockball`` 单例上。
+    """
+
     def __init__(self):
+        """从 ``Settings.Motion`` 读取锁球参数并初始化 PID 状态。"""
         self.D_time = 0
         import simple_pid
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
@@ -116,6 +135,7 @@ class LockSeries:
             auto_mode=True)
 
     def Lockballangle(self):#贝尔巴托夫转身
+        """按当前机器人参考系下的球角度转向。"""
         # iBX,iBY = UnitedPosition.AbsBallPos()#获取球的位置
         #  = lBallPos[0],lBallPos[1]#将球的位置赋值给iBX和iBY
         
@@ -123,24 +143,24 @@ class LockSeries:
         # Angle = (math.degrees(math.atan2(iBX, iBY))) % 360
         Angle = UnitedPosition.RobotBallAngle()
         logger.debug("Ball Angle: %f" % Angle)
-        # Robot-frame turn only; do not apply field yaw correction here.
+        # 这里只做机器人参考系转向，不叠加场地航向修正。
         chassis.RobotTurn((Angle - 180) / 2)
 
     def Lockballmove(self):
-        lBallPos = UnitedPosition.FieldBallPos()
-        iBX,iBY = lBallPos[0],lBallPos[1]
-        # Convert to robot-frame pursuit to avoid field/robot mixing.
+        """按机器人参考系追向当前可见球。"""
+        # 转成机器人参考系追球，避免混用场地参考系和机器人参考系。
         rBX, rBY = UnitedPosition.RobotBallPos()
         if [rBX, rBY] in ([0xfff, 0xfff], [0xddd, 0xddd]):
             return
         chassis.RobotMoveAngle((math.degrees(math.atan2(rBY, rBX)) + 360) % 360, min(300, int(math.hypot(rBX, rBY) * 4)))
 
     def _write_lockball_pid_log(self, state, iBX, iBY, angle=None, pid_x=None, pid_y=None, pid_w=None, speed_x=0, speed_y=0, speed_w=0):
+        """在调试记录开启时追加一条锁球控制器采样。"""
         try:
             log_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'log', 'lockball_pid.csv'))
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             need_header = not os.path.exists(log_path)
-            with open(log_path, 'a') as f:
+            with open(log_path, 'a', encoding='utf-8') as f:
                 if need_header:
                     f.write('ts,state,iBX,iBY,angle,pid_x,pid_y,pid_w,SpeedX,SpeedY,SpeedW,Beta\n')
                 beta = int(bool(getattr(Settings.Debug, 'Beta', False)))
@@ -149,20 +169,24 @@ class LockSeries:
             pass
 
     def _reset_lockball_pid(self):
+        """重置锁球 PID 积分状态和帧计数。"""
         self.D_time = 0
         self.pan_x.reset()
         self.pan_y.reset()
         self.pan_w.reset()
 
     def _robot_ball_angle(self, iBX, iBY):
+        """返回机器人参考系下的球角度，单位为度，0 表示正前方。"""
         if iBX == 0 and iBY == 0:
             return 0
         return int(math.degrees(math.atan2(iBY, iBX)))
 
     def _clamp(self, value, lower, upper):
+        """把 ``value`` 限制在 ``[lower, upper]`` 范围内。"""
         return max(lower, min(upper, value))
 
     def _set_lockball_dribble(self, enabled):
+        """仅在目标状态变化时更新吸球输出。"""
         target = self.dribble_power if enabled and self.dribble_power else False
         if self._lockball_dribble_state == target:
             return
@@ -173,6 +197,7 @@ class LockSeries:
             pass
 
     def _capture_control(self):
+        """根据视觉框大小缩放前进和转向速度，避免近距离过冲。"""
         try:
             vision_data = getattr(UnitedPosition, "vision_data", {})
             debug = vision_data.get("ball_debug") if isinstance(vision_data, dict) else None
@@ -197,6 +222,7 @@ class LockSeries:
         return self._lockball_last_capture_control
 
     def _alignment_speed_x_scale(self, iBY):
+        """横向球偏差较大时降低前进速度。"""
         slow_y = max(0.0, float(self.align_slow_y))
         stop_y = max(slow_y + 1.0, float(self.align_stop_y))
         min_scale = self._clamp(float(self.align_min_x_scale), 0.0, 1.0)
@@ -207,6 +233,7 @@ class LockSeries:
         return self._clamp(1.0 - ratio * (1.0 - min_scale), min_scale, 1.0)
 
     def _acquire_ball_fast(self, iBX, iBY, angle, state_prefix=''):
+        """处理后方球或大角度球的快速抢球分支。"""
         self._reset_lockball_pid()
         if iBX <= 0:
             if not self._lockball_rear_acquire_active:
@@ -231,6 +258,11 @@ class LockSeries:
         self._write_lockball_pid_log(f'{state_prefix}{state}', iBX, iBY, angle, None, None, None, speed_x, speed_y, speed_w)
 
     def LockBallSlip(self):
+        """执行标准锁球控制器的一个非阻塞 tick。
+
+        返回:
+            已经持球时返回 ``True``，否则返回 ``False``。
+        """
         iBX,iBY = UnitedPosition.RobotBallPos()
         now = time.time()
         state_prefix = ''
@@ -294,14 +326,15 @@ class LockSeries:
                 ):
                     SpeedX = 0
                     SpeedW = 0
-                chassis.RobotMoveVector(SpeedX,SpeedY,SpeedW) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+                chassis.RobotMoveVector(SpeedX,SpeedY,SpeedW)
                 self._write_lockball_pid_log(f'{state_prefix}track_pid', iBX, iBY, angle, pid_x, pid_y, pid_w, SpeedX, SpeedY, SpeedW)
                 return False
             else:
-                if iBX > 75 or iBY > 75:
+                abs_iBY = abs(iBY)
+                if iBX > 75 or abs_iBY > 75:
                     Kp = 7
                     KpZ = 4
-                elif 25 < iBX <= 75 or 25 < iBY <= 75:
+                elif 25 < iBX <= 75 or 25 < abs_iBY <= 75:
                     Kp = 6
                     KpZ = 1.5
                 else:
@@ -323,13 +356,13 @@ class LockSeries:
                     SpeedX = -300
                 if SpeedY < -300:
                     SpeedY = -300
-                # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-                # Keep the entire slip logic in robot-frame motion.
-                chassis.RobotMoveVector(SpeedX*1.5,SpeedY,turn_speed) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+                # 整个滑步锁球逻辑保持在机器人参考系内。
+                chassis.RobotMoveVector(SpeedX*1.5,SpeedY,turn_speed)
                 self._write_lockball_pid_log(f'{state_prefix}track_legacy', iBX, iBY, angle, pid_x, pid_y, pid_w, SpeedX, SpeedY, turn_speed)
                 return False
 
     def LockBallDash(self):
+        """执行旧版冲球控制器的一个非阻塞 tick。"""
         iBX,iBY = UnitedPosition.RobotBallPos()
         if [iBX,iBY] == [0xfff,0xfff]:
             chassis.stop()
@@ -342,10 +375,11 @@ class LockSeries:
                 Fangle = 0
             else:
                 Fangle = int(math.degrees(math.atan2(iBY,iBX)))
-            if iBX > 75 or iBY > 75:
+            abs_iBY = abs(iBY)
+            if iBX > 75 or abs_iBY > 75:
                 Kp = 7
                 KpZ = 4
-            elif 25 < iBX <= 75 or 25 < iBY <= 75:
+            elif 25 < iBX <= 75 or 25 < abs_iBY <= 75:
                 Kp = 6
                 KpZ = 1.5
             else:
@@ -367,12 +401,12 @@ class LockSeries:
                 SpeedX = -300
             if SpeedY < -300:
                 SpeedY = -300
-            # print(SpeedX,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
-            # Keep the entire slip logic in robot-frame motion.
-            chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle) # 1.5 is a factor to make the robot turn faster, you can adjust it as needed
+            # 整个滑步锁球逻辑保持在机器人参考系内。
+            chassis.RobotMoveVector(SpeedX*1.5,SpeedY,Fangle)
             return False
         
     def BallScore(self):
+        """返回旧版逻辑中用于粗略衡量追球紧迫度的分数。"""
         distance = UnitedPosition.RobotBallDistance()
         speed = sum(chassis.speedCache)/4
         try:
@@ -388,28 +422,32 @@ class LockSeries:
 lockball = LockSeries()
 
 def NormalShoot(x=1, HomePos=[0, -20, 0]):
-    """兼容版 NormalShoot（保留旧名）。
+    """执行旧版抢球/射门逻辑的一个 tick。
 
-    说明：历史代码里本函数被定义过两次，且包含明显错误（lockball()、FieldRobotPos()()）。
-    现在统一为一个实现。
+    参数:
+        x: 为 ``0`` 时，只确认球已经进入前方捕获区域，不执行射门。
+        HomePos: 丢球后回退使用的场地位姿。
+
+    返回:
+        持球或射门流程完成时返回 ``True``，否则返回锁球流程的结果。
     """
 
     bx, by = UnitedPosition.RobotBallPos()
     logger.debug("Ball Position: %s" % [bx, by])
 
-    # No ball
+    # 没看到球。
     if [bx, by] == [0xFFF, 0xFFF] or (bx == 0 and by == 0):
         logger.info("Ball not found, go home.")
         UnitedPosition.Pos2Pos(HomePos)
         peripheral.Dribble(False)
         return False
 
-    # Catch ball
+    # 已经持球。
     if [bx, by] == [0xDDD, 0xDDD]:
-        # already holding, caller decides what to do
+        # 已经持球，后续动作由调用方决定。
         return True
 
-    # Ball in front area (legacy heuristic)
+    # 球在前方捕获区域内，沿用历史启发式判断。
     if bx == 0 and 5 < by <= 9:
         time.sleep(0.03)
         logger.info("Ball is in front")
@@ -423,7 +461,7 @@ def NormalShoot(x=1, HomePos=[0, -20, 0]):
                 break
 
             x0, y0, _ = UnitedPosition.FieldRobotPos()
-            # fallback: use field center and bounds to compute aim
+            # 兜底：用场地中心和边界估算瞄准角。
             delta_y = cfg.Bounds.Long / 2 - y0
             delta_x = x0
             theta = math.degrees(math.atan2(delta_y, delta_x))
@@ -444,24 +482,12 @@ def NormalShoot(x=1, HomePos=[0, -20, 0]):
     peripheral.Dribble(True)
     return lockball.LockBallSlip()
 
-# def CircleAround_old(iAimAngle):
-# #    if abs(compass.read() - iAimAngle) >= 180:
-#     iDirectionFactor = 1
-# #    else:
-# #        iDirectionFactor = -1
-#     while(1):
-#         lBallPos = GetBallPos()
-#         iX, iY = lBallPos[0], lBallPos[1]
-#         if iY > 0:
-#             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
-#         print(iX,iY,iDeltaAngle,compass.read())
-#         if roundThresholdJudger(compass.read(), 360, iAimAngle, 3):
-#             break
-#         else:
-#             set_motor.RPM(iDirectionFactor * 30,-iDirectionFactor * (130 - iDeltaAngle),-iDirectionFactor * 30,iDirectionFactor * (130 - iDeltaAngle))
-#     car.stop()
+def CircleAround(iAimAngle, max_ticks: int | None = None):
+    """围绕球调整姿态，直到机器人朝向 ``iAimAngle``。
 
-def CircleAround(iAimAngle):
+    这是一个阻塞式历史辅助函数。``max_ticks`` 主要用于测试或受控运行；
+    不传时保留历史上的无限等待行为。
+    """
     iCompass = int(compass())
     if RoundThresholdJudger(iCompass,360,iAimAngle+90,90):
         iDirectionFactor = 1
@@ -475,7 +501,8 @@ def CircleAround(iAimAngle):
     lBallPos = [TempBX,TempBY]
 
 
-    while(1):
+    tick_count = 0
+    while True:
         lBallPos = UnitedPosition.RobotBallPos()
 
         TempBX = -lBallPos[1]
@@ -485,7 +512,8 @@ def CircleAround(iAimAngle):
 
 
         iX, iY = lBallPos[0], lBallPos[1]
-        if iY > 0:
+        iDeltaAngle = 0
+        if iX != 0 or iY != 0:
             iDeltaAngle = -int(math.degrees(math.atan2(iY, iX)) - 90)     
         # print(iX,iY,iDeltaAngle,compass())
         if RoundThresholdJudger(compass(), 360, iAimAngle, 3):
@@ -493,8 +521,13 @@ def CircleAround(iAimAngle):
         else:
             chassis.SetMotor([iDirectionFactor * 15,-iDirectionFactor * (150 - iDeltaAngle),-iDirectionFactor * 15,iDirectionFactor * (150 - iDeltaAngle)])
         time.sleep(.03)
+        tick_count += 1
+        if max_ticks is not None and tick_count >= max_ticks:
+            chassis.stop()
+            return False
     chassis.TurnTo(iAimAngle)
-    while(1):
+    tick_count = 0
+    while True:
         lBallPos = UnitedPosition.RobotBallPos()
 
         TempBX = -lBallPos[1]
@@ -516,82 +549,96 @@ def CircleAround(iAimAngle):
                 chassis.stop()
             break
         time.sleep(.03)
+        tick_count += 1
+        if max_ticks is not None and tick_count >= max_ticks:
+            chassis.stop()
+            return False
     print('stopped')
+    return True
 
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
+    """在保持锁球的同时转向指定场地航向。
+
+    返回:
+        航向进入容差且球仍被锁住时返回 ``True``。
+    """
     yaw = chassis.GetYaw()
     ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
-    logger.success(Aim_Angle)
-    if lockball.LockBallSlip() == True:
-        # Robot-frame ball angle (0=forward)
+    logger.debug("TurnTo_with_ball target_yaw={}", Aim_Angle)
+    locked = lockball.LockBallSlip()
+    if locked == True:
+        # 机器人参考系下的球角度，0 表示正前方。
         iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
-        Error = ( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
-        if Error < 180:
-            iDirectionFactor = -1
-        elif Error >= 180:
-            iDirectionFactor = 1
-        if not abs(Aim_Angle-yaw) <= 10:
-            logger.error(Error)
+        Error = _AngleErrorDeg(yaw, Aim_Angle)
+        if not abs(Error) <= 10:
+            logger.debug("TurnTo_with_ball yaw_error={}", Error)
+            iDirectionFactor = 1 if Error >= 0 else -1
+            turn_gain = abs(Error) / 30
             chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK *Error/30,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30,
-                -iDirectionFactor * 15 * SpeedK *Error/30,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30
+                iDirectionFactor * 15 * SpeedK * turn_gain,
+                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK * turn_gain,
+                -iDirectionFactor * 15 * SpeedK * turn_gain,
+                iDirectionFactor * (150 - iDeltaAngle) * SpeedK * turn_gain
                 ])
             return False
         else:
             return True
-    else:
-        return lockball.LockBallSlip()
+    return locked
 
 
 def GoBack():
-    # config.json currently stores Home under CheckPoints
+    """调用 Pos2Pos 回到配置里的 Home 位姿。"""
+    # 当前 config.json 把 Home 存在 CheckPoints 下。
     try:
         home = [cfg.CheckPoints.Home[0], cfg.CheckPoints.Home[1], cfg.CheckPoints.Home[2]]
     except Exception:
         home = [0, -20, 0]
-    UnitedPosition.Pos2Pos(home)
+    return UnitedPosition.Pos2Pos(home)
 
-# ========= Backward-compatible aliases =========
+# ========= 向后兼容别名 =========
 
-# old names -> new names
+# 旧名称 -> 新名称
 roundThresholdJudger = RoundThresholdJudger
 FindNearstAngle = FindNearestAngle
 linear_map = LinearMap
 
 
 
-def Slipsideshot(EnemyPos): #溜边 10,-90
-    '''
-    #### Yaw : 指南针 
-    ##### <code>Yaw: int | [0,360]</code>
-    #### LocalPos : 本地坐标 
-    ##### <code>LocalPos: list | [[-80,80],[-100,100],[0,360]]</code>
-    ### EnemyPos : 敌人坐标
-    ### GoalPos : 球门坐标
-    '''
+def Slipsideshot(EnemyPos=None): #溜边 10,-90
+    """执行旧版溜边射门逻辑的一个 tick。
+
+    参数:
+        EnemyPos: 敌方在场地坐标系下的位置；缺失或无效时回退到场地中心。
+
+    返回:
+        进入射门分支后返回 ``True``，否则返回 ``False``。
+    """
     peripheral.Dribble(True)
     LocalX,LocalY,_ = UnitedPosition.FieldRobotPos()
-    EnemyX,EnemyY = EnemyPos
+    try:
+        has_enemy = EnemyPos is not None and len(EnemyPos) >= 2
+    except TypeError:
+        has_enemy = False
+    if has_enemy:
+        EnemyX,EnemyY = EnemyPos[:2]
+    else:
+        EnemyX = 0
+        EnemyY = 0
     GoalX = 90
     AimX  = 80
     AimY  = 40
-    if not EnemyPos:
-        EnemyX = 0
-        EnemyY = 0
     if LocalX > 0:
         k = -45
     else:
         AimY = -AimY
         k = 45
-    Angle = (math.degrees(math.atan2(LocalX - EnemyX, LocalY - EnemyY)-270)) % 360
+    Angle = (math.degrees(math.atan2(LocalX - EnemyX, LocalY - EnemyY)) - 270) % 360
     UnitedPosition.Pos2Pos([AimX,AimY,Angle],10)
-    if abs(AimX-LocalX)+abs(AimX-LocalX) < 5:
+    if abs(AimX-LocalX)+abs(AimY-LocalY) < 5:
         DeltaX = LocalX - GoalX
         DeltaY = LocalY
-        Theta =((math.degrees(math.atan2(DeltaX, DeltaY)-270)) % 360) + 180 +k
+        Theta =((math.degrees(math.atan2(DeltaX, DeltaY)) - 270) % 360) + 180 +k
         Compass = Theta
         for _ in range(20):
             # if not AbsBallPos() == [1207, 1207]:
@@ -600,12 +647,16 @@ def Slipsideshot(EnemyPos): #溜边 10,-90
             time.sleep(0.03)
         peripheral.ShootBall()
         logger.success("Ball is in possession, start shotting.")
+        return True
+    return False
 
 def _AngleErrorDeg(current, target):
+    """返回从 ``current`` 到 ``target`` 的有符号最短角度误差。"""
     return ((float(target) - float(current) + 180.0) % 360.0) - 180.0
 
 
 def _Clamp(value, lo, hi):
+    """把 ``value`` 限制在 ``[lo, hi]`` 范围内。"""
     return max(lo, min(hi, value))
 
 
@@ -666,6 +717,7 @@ def OhMyBackStep(
 
 
 def OHMYBACK(HomePos=[0, -20, 0]):
+    """兼容历史大写函数名的 ``OhMyBackStep`` 别名。"""
     return OhMyBackStep(HomePos=HomePos)
 
 

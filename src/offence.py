@@ -16,6 +16,7 @@ state = "boot"
 
 
 def OffenceStep():
+    """执行进攻策略的一个非阻塞 tick，并返回当前状态名。"""
     global state
 
     ball = UnitedPosition.RobotBallPos()
@@ -31,7 +32,7 @@ def OffenceStep():
         return state
 
     if ball != BALL_HELD:
-        logger.warning(1)
+        logger.debug("看到球但未持球，进入锁球流程。")
         peripheral.Dribble(0.7)
         lockball.LockBallSlip()
         state = "lock_ball"
@@ -82,12 +83,14 @@ def OffenceStep():
 
 
 def OffenceStop():
+    """停止进攻策略相关运动和外设，并标记状态为 stopped。"""
     global state
     safe_stop(chassis, peripheral, UnitedPosition)
     state = "stopped"
 
 
 def main():
+    """直接运行本文件时持续执行进攻策略循环。"""
     try:
         while True:
             OffenceStep()
