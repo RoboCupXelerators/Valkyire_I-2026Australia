@@ -103,6 +103,28 @@ if ball_pos != [0xFFF, 0xFFF] and ball_pos != [0xDDD, 0xDDD]:
 
 简化判断标准：如果读者只看一个 `step()` 函数，就应该能大致复述机器人一轮控制周期的行为。
 
+## 🧪 真实场景调试
+
+`src/tests/sim_robot_role_runner.py` 可以在 Unity 场景里直接跑单个角色，并输出 JSONL trace：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 XEL_SIM_BALL_STATUS_FALLBACK=1 \
+../venv/bin/python src/tests/sim_robot_role_runner.py \
+  --robot-id 1 --role offence --duration 8 \
+  --trace Records/sim_runs/offence_real.jsonl \
+  --summary Records/sim_runs/offence_real.summary.json \
+  --require-motion --min-motion 5 --min-command-frames 3
+```
+
+进攻策略的 trace 会额外写入 `offence_decision` 字段。重点看这些值：
+
+- `action`: 本 tick 的实际策略动作，例如 `chase_ball`、`attack_dodge`、`quick_shot`。
+- `shot_gate`: 主动射门门控原因，例如 `open_goal`、`quick_zone`、`opportunity_not_ready`。
+- `force_gate`: 被贴防/受压时的强制射门门控原因，例如 `forced_shot_before_threat_zone`。
+- `progress` / `y` / `yaw_error` / `lane_score`: 判断射门是否合理的核心几何量。
+
+当前 offence 约定：空门或开阔线路可以提前射门；被对手贴近时，必须至少推进到威胁区域，不能在己方半场或刚过中线因为“有人贴近”就乱射。
+
 ## ⚠️ 重要提示
 - **坐标系约定**：
     - **机体坐标系**：$x$ 为前， $y$ 为左。

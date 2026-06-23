@@ -563,24 +563,15 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
         航向进入容差且球仍被锁住时返回 ``True``。
     """
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
     logger.debug("TurnTo_with_ball target_yaw={}", Aim_Angle)
     locked = lockball.LockBallSlip()
     if locked == True:
-        # 机器人参考系下的球角度，0 表示正前方。
-        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
         Error = _AngleErrorDeg(yaw, Aim_Angle)
         if not abs(Error) <= 10:
             logger.debug("TurnTo_with_ball yaw_error={}", Error)
-            iDirectionFactor = 1 if Error >= 0 else -1
-            turn_gain = abs(Error) / 30
-            chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK * turn_gain,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK * turn_gain,
-                -iDirectionFactor * 15 * SpeedK * turn_gain,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK * turn_gain
-                ])
+            turn_gain = _Clamp(abs(Error) / 45.0, 0.35, 1.4)
+            chassis.FieldMoveVector(0, 0, Aim_Angle, KpW=turn_gain * (SpeedK or 1))
             return False
         else:
             return True

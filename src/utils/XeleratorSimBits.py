@@ -245,6 +245,13 @@ class XeleratorSimBits:
             "true",
             "yes",
         }
+        self._ball_observation_max_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MAX_CM", "350"))
+        self._ball_observation_min_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MIN_CM", "0.25"))
+        self._enemy_scene_filter = str(os.environ.get("XEL_SIM_ENEMY_SCENE_FILTER", "1")).lower() not in {
+            "0",
+            "false",
+            "no",
+        }
         self._scene_control = None
         self._scene_status_cache = None
         self._scene_status_cache_ts = 0.0
@@ -594,9 +601,14 @@ class XeleratorSimBits:
                 # Ball relative position is robot-frame; do NOT apply origin shift.
                 bx = float(ball_x_m) * self._unity_to_cm * self._pose_scale
                 by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
-                if not math.isfinite(bx) or not math.isfinite(by):
-                    return [0xFFF, 0xFFF]
-                return self._apply_noisy_ball_observation([bx, by], speed_mps)
+                if (
+                    math.isfinite(bx)
+                    and math.isfinite(by)
+                    and math.hypot(bx, by) >= self._ball_observation_min_cm
+                    and abs(bx) <= self._ball_observation_max_cm
+                    and abs(by) <= self._ball_observation_max_cm
+                ):
+                    return self._apply_noisy_ball_observation([bx, by], speed_mps)
 
         if self._ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
@@ -604,9 +616,8 @@ class XeleratorSimBits:
                 return self._apply_noisy_ball_observation(fallback, 0.0)
         return [0xFFF, 0xFFF]
 
-    def _get_scene_ball_pos_fallback(self) -> list[float] | None:
-        """Debug-only fallback: synthesize RobotBallPos from scene-control state."""
-
+    def _scene_status_snapshot(self) -> dict | None:
+        """返回一份短缓存的 Unity 场景状态，避免高频 HTTP 查询。"""
         try:
             now = time.time()
             if self._scene_status_cache is None or now - self._scene_status_cache_ts > 0.08:
@@ -619,6 +630,17 @@ class XeleratorSimBits:
 
             status = self._scene_status_cache
             if not isinstance(status, dict) or not status.get("ok", False):
+                return None
+            return status
+        except Exception:
+            return None
+
+    def _get_scene_ball_pos_fallback(self) -> list[float] | None:
+        """Debug-only fallback: synthesize RobotBallPos from scene-control state."""
+
+        try:
+            status = self._scene_status_snapshot()
+            if status is None:
                 return None
             ball = status.get("ball")
             robots = status.get("robots") or []
@@ -642,7 +664,56 @@ class XeleratorSimBits:
             rel_y = -dx * s + dy * c
             if not math.isfinite(rel_x) or not math.isfinite(rel_y):
                 return None
+            if math.hypot(rel_x, rel_y) < self._ball_observation_min_cm:
+                return None
+            if abs(rel_x) > self._ball_observation_max_cm or abs(rel_y) > self._ball_observation_max_cm:
+                return None
             return [rel_x, rel_y]
+        except Exception:
+            return None
+
+    def _scene_enemy_positions(self) -> list[list[float]] | None:
+        """从 Unity 场景状态生成真正敌方机器人的机体系相对坐标。"""
+        if not self._enemy_scene_filter:
+            return None
+
+        try:
+            status = self._scene_status_snapshot()
+            if status is None:
+                return None
+
+            robots = status.get("robots") or []
+            self_robot = None
+            for item in robots:
+                if int(item.get("id", -1)) == int(self.robot_id):
+                    self_robot = item
+                    break
+            if not isinstance(self_robot, dict) or not self_robot.get("active", True):
+                return None
+
+            self_id = int(self.robot_id)
+            enemy_ids = {3, 4} if self_id in (1, 2) else {1, 2}
+            sx = float(self_robot.get("x_cm", 0.0))
+            sy = float(self_robot.get("y_cm", 0.0))
+            yaw = math.radians(float(self_robot.get("yaw_deg", 0.0)))
+            c = math.cos(yaw)
+            s = math.sin(yaw)
+
+            enemies: list[list[float]] = []
+            for item in robots:
+                try:
+                    rid = int(item.get("id", -1))
+                except Exception:
+                    continue
+                if rid not in enemy_ids or not item.get("active", True):
+                    continue
+                dx = float(item.get("x_cm", 0.0)) - sx
+                dy = float(item.get("y_cm", 0.0)) - sy
+                rel_x = dx * c + dy * s
+                rel_y = -dx * s + dy * c
+                if math.isfinite(rel_x) and math.isfinite(rel_y):
+                    enemies.append([rel_x, rel_y])
+            return enemies
         except Exception:
             return None
 
@@ -655,17 +726,26 @@ class XeleratorSimBits:
         
         Positions are relative to this robot's frame (same as ball position).
         """
+        scene_enemies = self._scene_enemy_positions()
         with self._status_lock:
-            if self._status.enemies is None:
-                return []
             speed_mps = self._status_planar_speed_mps_locked()
-            # Convert to cm (Unity uses meters)
-            result = []
-            for ex, ey in self._status.enemies:
-                ex_cm = float(ex) * self._unity_to_cm * self._pose_scale
-                ey_cm = float(ey) * self._unity_to_cm * self._pose_scale
-                result.append([ex_cm, ey_cm])
-            return self._apply_noisy_enemy_observations(result, speed_mps)
+            if self._status.enemies is None:
+                raw_enemies = []
+            else:
+                raw_enemies = list(self._status.enemies)
+
+        if scene_enemies is not None:
+            return self._apply_noisy_enemy_observations(scene_enemies, speed_mps)
+        if not raw_enemies:
+            return []
+
+        # Convert to cm (Unity uses meters)
+        result = []
+        for ex, ey in raw_enemies:
+            ex_cm = float(ex) * self._unity_to_cm * self._pose_scale
+            ey_cm = float(ey) * self._unity_to_cm * self._pose_scale
+            result.append([ex_cm, ey_cm])
+        return self._apply_noisy_enemy_observations(result, speed_mps)
 
     # ===== scene-origin guesser (SIM convenience) =====
 

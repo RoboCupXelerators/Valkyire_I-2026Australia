@@ -236,6 +236,9 @@ def main() -> int:
                     "kick": bool(mlp_last_action.get("kick", False)),
                     "dribble": bool(mlp_last_action.get("dribble", False)),
                 }
+            if args.role == "offence":
+                # offence 会记录本 tick 的射门门控、线路质量和动作原因，方便真实场景复盘。
+                row["offence_decision"] = dict(getattr(strategy, "last_decision", {}) or {})
             frames.append(row)
             _write_jsonl(trace_path, row)
             time.sleep(max(0.005, tick_s))
