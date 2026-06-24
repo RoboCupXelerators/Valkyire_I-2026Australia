@@ -179,8 +179,11 @@ class Positions:
                     if (now - last_restart_t) < restart_backoff_s:
                         time.sleep(restart_backoff_s)
                     last_restart_t = now
-                    project_root = str(Path(__file__).resolve().parents[2])
-                    self.vision_process = subprocess.Popen([sys.executable, "src/Vision.py"], cwd=project_root)
+                    project_root = Path(__file__).resolve().parents[2]
+                    vision_script = project_root / "src" / "vision_utils" / "Vision.py"
+                    if not vision_script.exists():
+                        vision_script = project_root / "src" / "Vision.py"
+                    self.vision_process = subprocess.Popen([sys.executable, str(vision_script)], cwd=str(project_root))
                     logger.info("Started vision server process")
                     restart_count += 1
 
