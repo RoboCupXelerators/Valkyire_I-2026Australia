@@ -12,6 +12,7 @@
 
 启动方法:
     python control_panel.py --port 8080
+
 """
 
 from __future__ import annotations
@@ -323,6 +324,52 @@ class ControlPanelApp:
                 result["robot_y_cm"] = robot_state.get("y_cm", 0)
                 result["robot_yaw_deg"] = robot_state.get("yaw_deg", 0)
                 result["has_ball"] = robot_state.get("has_ball", False)
+        except Exception:
+            pass
+
+        # 如果依然未获取位姿，尝试直接从底层 chassis 读取（GetPose 或 GetYaw）
+        try:
+            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
+                chassis, _ = self._get_chassis_and_peripheral()
+                if chassis:
+                    # 优先使用 GetPose()（返回 x,y,yaw）
+                    if hasattr(chassis, 'GetPose') and callable(getattr(chassis, 'GetPose')):
+                        try:
+                            xp, yp, yawp = chassis.GetPose()
+                            result["robot_x_cm"] = round(float(xp), 2)
+                            result["robot_y_cm"] = round(float(yp), 2)
+                            result["robot_yaw_deg"] = round(float(yawp), 2)
+                        except Exception:
+                            pass
+                    else:
+                        # 回退到 GetYaw()
+                        try:
+                            yawp = chassis.GetYaw() if hasattr(chassis, 'GetYaw') else None
+                            if yawp is not None:
+                                result["robot_yaw_deg"] = float(yawp)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # 如果 Bits 有 GetYaw，可以直接显示真实 yaw（真实机器人场景下有效）
+        try:
+            if self.bits is not None and hasattr(self.bits, 'GetYaw') and callable(getattr(self.bits, 'GetYaw')):
+                yawp = self.bits.GetYaw()
+                if yawp is not None:
+                    result["robot_yaw_deg"] = round(float(yawp), 2)
+        except Exception:
+            pass
+
+        # 如果仍然没有 x,y 位姿，尝试从 UnitedPosition 获取场地坐标姿态
+        try:
+            from LunaPre import UnitedPosition
+            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
+                pose = UnitedPosition.FieldRobotPose()
+                if pose and len(pose) >= 3 and all(val != 0xfff for val in pose[:3]):
+                    result["robot_x_cm"] = round(float(pose[0]), 2)
+                    result["robot_y_cm"] = round(float(pose[1]), 2)
+                    result["robot_yaw_deg"] = round(float(pose[2]), 2)
         except Exception:
             pass
         

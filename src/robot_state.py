@@ -75,9 +75,22 @@ def update_from_chassis(chassis, vision=None):
         chassis: Car 实例，需要有 GetYaw() 方法
         vision: Vision 实例，用于获取球位置
     """
+    # Try to obtain full pose (x, y, yaw) if the chassis exposes GetPose()
+    x_cm = None
+    y_cm = None
     try:
-        yaw = chassis.GetYaw() if chassis and hasattr(chassis, 'GetYaw') else 0.0
+        if chassis and hasattr(chassis, 'GetPose') and callable(getattr(chassis, 'GetPose')):
+            try:
+                xp, yp, yaw = chassis.GetPose()
+                x_cm = float(xp)
+                y_cm = float(yp)
+            except Exception:
+                yaw = chassis.GetYaw() if chassis and hasattr(chassis, 'GetYaw') else 0.0
+        else:
+            yaw = chassis.GetYaw() if chassis and hasattr(chassis, 'GetYaw') else 0.0
     except Exception:
+        x_cm = None
+        y_cm = None
         yaw = 0.0
     
     try:
@@ -102,7 +115,10 @@ def update_from_chassis(chassis, vision=None):
     except Exception:
         vx, vy, wz = 0.0, 0.0, 0.0
     
+    # Include x/y if we successfully obtained them from GetPose()
     set_robot_state(
+        x_cm=x_cm if x_cm is not None else None,
+        y_cm=y_cm if y_cm is not None else None,
         yaw_deg=yaw,
         has_ball=has_ball,
         vx=vx,
