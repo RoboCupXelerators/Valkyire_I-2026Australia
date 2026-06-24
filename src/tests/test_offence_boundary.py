@@ -38,40 +38,12 @@ def test_offence_searches_from_home_when_ball_not_visible(monkeypatch):
 def test_offence_locks_visible_ball(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "_close_lock_since", None)
-    monkeypatch.setattr(offence, "_close_lock_anchor", None)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [22, -8])
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.lockball, "LockBallSlip", lambda: calls.append(("lock", None)))
 
     assert offence.OffenceStep() == "lock_ball"
     assert calls == [("dribble", 0.7), ("lock", None)]
-
-
-def test_offence_presses_close_ball_after_lock_timeout(monkeypatch):
-    calls = []
-    now = {"value": 200.0}
-
-    monkeypatch.setattr(offence, "_close_lock_since", None)
-    monkeypatch.setattr(offence, "_close_lock_anchor", None)
-    monkeypatch.setattr(offence, "LOCK_BALL_MAX_SECONDS", 0.5)
-    monkeypatch.setattr(offence.time, "monotonic", lambda: now["value"])
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [15, 0])
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.lockball, "LockBallSlip", lambda: calls.append(("lock", None)))
-    monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
-
-    assert offence.OffenceStep() == "lock_ball"
-    assert calls == [("dribble", 0.7), ("lock", None)]
-
-    calls.clear()
-    now["value"] += 0.6
-
-    assert offence.OffenceStep() == "press_close_ball"
-    assert calls[0] == ("dribble", 0.85)
-    assert calls[1][0] == "move"
-    assert calls[1][1][0] >= offence.CLOSE_PRESS_MIN_X
-    assert offence.last_decision["action"] == "press_close_ball"
 
 
 def test_offence_directly_chases_visible_far_ball(monkeypatch):
@@ -122,10 +94,6 @@ def test_offence_chases_last_seen_ball_on_short_dropout(monkeypatch):
 def test_offence_shoots_immediately_in_quick_shot_zone(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 10)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "FORCED_SHOT_YAW_TOL", 10)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -142,12 +110,6 @@ def test_offence_shoots_immediately_in_quick_shot_zone(monkeypatch):
 def test_offence_does_not_shoot_quick_zone_when_badly_misaligned(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 10)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "FORCED_SHOT_YAW_TOL", 45)
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 999)
-    monkeypatch.setattr(offence, "PRESSURE_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [75, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -156,16 +118,13 @@ def test_offence_does_not_shoot_quick_zone_when_badly_misaligned(monkeypatch):
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
 
-    assert offence.OffenceStep() == "feint_drive"
-    assert calls == [("dribble", 0.85), ("move", (52, -0.0, 100), {"KpW": 0.9})]
+    assert offence.OffenceStep() == "fast_attack"
+    assert calls == [("dribble", 0.85), ("move", (65, -0.0, 100), {"KpW": 0.9})]
 
 
 def test_offence_quick_shot(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 10)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -183,17 +142,10 @@ def test_offence_quick_shot(monkeypatch):
 def test_offence_shoots_open_goal_before_old_opportunity_zone(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 20)
-    monkeypatch.setattr(offence, "OPEN_GOAL_LANE_SCORE", 0.8)
-    monkeypatch.setattr(offence, "OPEN_GOAL_YAW_TOL", 75)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [24, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 60)
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 40)
     monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 0)
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
@@ -206,14 +158,6 @@ def test_offence_shoots_open_goal_before_old_opportunity_zone(monkeypatch):
 def test_offence_shoots_open_goal_from_own_half_when_line_is_clean(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 18)
-    monkeypatch.setattr(offence, "OPEN_GOAL_Y_TOL", 28)
-    monkeypatch.setattr(offence, "OPEN_GOAL_LANE_SCORE", 0.88)
-    monkeypatch.setattr(offence, "OPEN_GOAL_YAW_TOL", 46)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -230,14 +174,6 @@ def test_offence_shoots_open_goal_from_own_half_when_line_is_clean(monkeypatch):
 def test_offence_does_not_shoot_open_goal_from_own_half(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 18)
-    monkeypatch.setattr(offence, "OPEN_GOAL_Y_TOL", 28)
-    monkeypatch.setattr(offence, "OPEN_GOAL_LANE_SCORE", 0.88)
-    monkeypatch.setattr(offence, "OPEN_GOAL_YAW_TOL", 46)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-8, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -253,14 +189,6 @@ def test_offence_does_not_shoot_open_goal_from_own_half(monkeypatch):
 def test_offence_does_not_shoot_open_goal_when_yaw_is_too_wide(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 18)
-    monkeypatch.setattr(offence, "OPEN_GOAL_Y_TOL", 28)
-    monkeypatch.setattr(offence, "OPEN_GOAL_LANE_SCORE", 0.88)
-    monkeypatch.setattr(offence, "OPEN_GOAL_YAW_TOL", 46)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [25, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -276,12 +204,8 @@ def test_offence_does_not_shoot_open_goal_when_yaw_is_too_wide(monkeypatch):
 def test_offence_fast_attacks_when_front_lane_clear(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 10)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [40, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 15)
     monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
@@ -295,9 +219,6 @@ def test_offence_fast_attacks_when_front_lane_clear(monkeypatch):
 def test_offence_fast_shoots_when_front_lane_clear_and_aligned(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 10)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -314,10 +235,6 @@ def test_offence_fast_shoots_when_front_lane_clear_and_aligned(monkeypatch):
 def test_offence_shoots_around_single_blocker_when_side_lane_open(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 40)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "MIN_SHOT_LANE_SCORE", -0.05)
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [48, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[72, 0]])
@@ -334,7 +251,6 @@ def test_offence_shoots_around_single_blocker_when_side_lane_open(monkeypatch):
 def test_offence_uses_ohmyback_on_wide_ball(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 30)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 45, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -348,11 +264,6 @@ def test_offence_uses_ohmyback_on_wide_ball(monkeypatch):
 def test_offence_dodges_blocker_instead_of_waiting(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 10)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 999)
-    monkeypatch.setattr(offence, "CONTESTED_SHOT_X", 999)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
@@ -368,13 +279,8 @@ def test_offence_dodges_blocker_instead_of_waiting(monkeypatch):
 def test_offence_filters_side_and_rear_chassis_before_attacking(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 10)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 999)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [40, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[-10, 0], [45, 90], [140, 0]])
     monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 80)
@@ -388,12 +294,6 @@ def test_offence_filters_side_and_rear_chassis_before_attacking(monkeypatch):
 def test_offence_forces_shot_under_pressure_near_blocker(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "PRESSURE_SHOT_X", 45)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "FORCED_SHOT_YAW_TOL", 70)
-    monkeypatch.setattr(offence, "FORCED_SHOT_LANE_SCORE", -0.05)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [50, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
@@ -410,14 +310,6 @@ def test_offence_forces_shot_under_pressure_near_blocker(monkeypatch):
 def test_offence_forces_contested_shot_before_pressure_zone(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "CONTESTED_SHOT_X", 25)
-    monkeypatch.setattr(offence, "CONTESTED_BLOCKER_X", 28)
-    monkeypatch.setattr(offence, "PRESSURE_SHOT_X", 80)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "CONTESTED_SHOT_YAW_TOL", 60)
-    monkeypatch.setattr(offence, "CONTESTED_SHOT_LANE_SCORE", 0.0)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [34, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
@@ -434,12 +326,6 @@ def test_offence_forces_contested_shot_before_pressure_zone(monkeypatch):
 def test_offence_does_not_force_contested_shot_before_threat_zone(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "CONTESTED_SHOT_X", 30)
-    monkeypatch.setattr(offence, "PRESSURE_SHOT_X", 50)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "OPPORTUNITY_SHOT_X", 999)
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 999)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-4, -10, 12])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 18)
@@ -449,21 +335,18 @@ def test_offence_does_not_force_contested_shot_before_threat_zone(monkeypatch):
     monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
 
     assert offence.OffenceStep() == "attack_dodge"
-    assert calls == [("dribble", 0.85), ("move", (42, -42, 18), {"KpW": 0.95})]
+    assert calls == [("dribble", 0.85), ("move", (42, -36.25, 18), {"KpW": 0.95})]
     assert offence.last_decision["force_gate"] == "forced_shot_before_threat_zone"
 
 
 def test_offence_feint_drive_when_no_trick_slot(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(offence, "OHMYBACK_Y", 90)
-    monkeypatch.setattr(offence, "QUICK_SHOT_X", 90)
-    monkeypatch.setattr(offence, "FAST_ATTACK_X", 999)
-    monkeypatch.setattr(offence, "OPEN_GOAL_SHOT_X", 999)
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [20, 0, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
     monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 15)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
 

@@ -247,6 +247,15 @@ class XeleratorSimBits:
         }
         self._ball_observation_max_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MAX_CM", "350"))
         self._ball_observation_min_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MIN_CM", "0.25"))
+        self._infer_dribbler_possession = str(os.environ.get("XEL_SIM_INFER_DRIBBLER_POSSESSION", "1")).lower() not in {
+            "0",
+            "false",
+            "no",
+        }
+        self._infer_dribbler_min_strength = float(os.environ.get("XEL_SIM_INFER_DRIBBLER_MIN_STRENGTH", "0.2"))
+        self._infer_dribbler_x_min_cm = float(os.environ.get("XEL_SIM_INFER_DRIBBLER_X_MIN_CM", "-2"))
+        self._infer_dribbler_x_max_cm = float(os.environ.get("XEL_SIM_INFER_DRIBBLER_X_MAX_CM", "22"))
+        self._infer_dribbler_y_abs_cm = float(os.environ.get("XEL_SIM_INFER_DRIBBLER_Y_ABS_CM", "10"))
         self._enemy_scene_filter = str(os.environ.get("XEL_SIM_ENEMY_SCENE_FILTER", "1")).lower() not in {
             "0",
             "false",
@@ -521,6 +530,43 @@ class XeleratorSimBits:
     def _status_planar_speed_mps_locked(self) -> float:
         return math.hypot(float(self._status.vx_mps), float(self._status.vy_mps))
 
+    def _valid_ball_relative_cm(self, bx: float, by: float) -> bool:
+        """判断模拟器给出的机器人坐标系球观测是否可信。"""
+        return (
+            math.isfinite(bx)
+            and math.isfinite(by)
+            and math.hypot(bx, by) >= self._ball_observation_min_cm
+            and abs(bx) <= self._ball_observation_max_cm
+            and abs(by) <= self._ball_observation_max_cm
+        )
+
+    def _status_ball_relative_cm_locked(self) -> list[float] | None:
+        """把状态包里的相对球坐标转成厘米；调用方需持有 ``_status_lock``。"""
+        ball_x_m = self._status.ball_x_m
+        ball_y_m = self._status.ball_y_m
+        if ball_x_m is None or ball_y_m is None:
+            return None
+
+        bx = float(ball_x_m) * self._unity_to_cm * self._pose_scale
+        by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
+        if not self._valid_ball_relative_cm(bx, by):
+            return None
+        return [bx, by]
+
+    def _infer_has_ball_from_relative(self, ball: list[float] | None) -> bool:
+        """SIM 专用兜底：吸球开启且球在捕获窗口内时，补齐 Unity 漏报的持球语义。"""
+        if not self._infer_dribbler_possession or ball is None:
+            return False
+        if self._dribble_strength < self._infer_dribbler_min_strength:
+            return False
+
+        bx = float(ball[0])
+        by = float(ball[1])
+        return (
+            self._infer_dribbler_x_min_cm <= bx <= self._infer_dribbler_x_max_cm
+            and abs(by) <= self._infer_dribbler_y_abs_cm
+        )
+
     def _vision_dropout(self, speed_mps: float, *, multiplier: float = 1.0) -> bool:
         level = self._vision_noise_level
         if level <= 0.0 or self._vision_rng is None:
@@ -579,7 +625,15 @@ class XeleratorSimBits:
 
     def HasBall(self) -> bool:
         with self._status_lock:
-            return bool(self._status.has_ball)
+            if bool(self._status.has_ball):
+                return True
+            ball = self._status_ball_relative_cm_locked()
+            if self._infer_has_ball_from_relative(ball):
+                return True
+
+        if self._ball_status_fallback:
+            return self._infer_has_ball_from_relative(self._get_scene_ball_pos_fallback())
+        return False
 
     def GetBallPos(self):
         """Return RobotBallPos semantic relative ball position [x, y] in cm.
@@ -592,27 +646,17 @@ class XeleratorSimBits:
             if self._status.has_ball:
                 return [0xDDD, 0xDDD]
             speed_mps = self._status_planar_speed_mps_locked()
-            ball_x_m = self._status.ball_x_m
-            ball_y_m = self._status.ball_y_m
-            if ball_x_m is None or ball_y_m is None:
-                ball_x_m = None
-                ball_y_m = None
-            else:
-                # Ball relative position is robot-frame; do NOT apply origin shift.
-                bx = float(ball_x_m) * self._unity_to_cm * self._pose_scale
-                by = float(ball_y_m) * self._unity_to_cm * self._pose_scale
-                if (
-                    math.isfinite(bx)
-                    and math.isfinite(by)
-                    and math.hypot(bx, by) >= self._ball_observation_min_cm
-                    and abs(bx) <= self._ball_observation_max_cm
-                    and abs(by) <= self._ball_observation_max_cm
-                ):
-                    return self._apply_noisy_ball_observation([bx, by], speed_mps)
+            ball = self._status_ball_relative_cm_locked()
+            if ball is not None:
+                if self._infer_has_ball_from_relative(ball):
+                    return [0xDDD, 0xDDD]
+                return self._apply_noisy_ball_observation(ball, speed_mps)
 
         if self._ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
             if fallback is not None:
+                if self._infer_has_ball_from_relative(fallback):
+                    return [0xDDD, 0xDDD]
                 return self._apply_noisy_ball_observation(fallback, 0.0)
         return [0xFFF, 0xFFF]
 
@@ -662,11 +706,7 @@ class XeleratorSimBits:
             s = math.sin(yaw)
             rel_x = dx * c + dy * s
             rel_y = -dx * s + dy * c
-            if not math.isfinite(rel_x) or not math.isfinite(rel_y):
-                return None
-            if math.hypot(rel_x, rel_y) < self._ball_observation_min_cm:
-                return None
-            if abs(rel_x) > self._ball_observation_max_cm or abs(rel_y) > self._ball_observation_max_cm:
+            if not self._valid_ball_relative_cm(rel_x, rel_y):
                 return None
             return [rel_x, rel_y]
         except Exception:

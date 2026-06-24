@@ -125,6 +125,8 @@ PYTHONDONTWRITEBYTECODE=1 XEL_SIM_BALL_STATUS_FALLBACK=1 \
 
 当前 offence 约定：空门或开阔线路可以提前射门；被对手贴近时，必须至少推进到威胁区域，不能在己方半场或刚过中线因为“有人贴近”就乱射。
 
+分层约定：`offence.py` 只写比赛策略和动作选择；Unity 状态包缺字段、持球漏报、敌人过滤、坐标兜底这类仿真适配问题放在 `src/utils/XeleratorSimBits.py` 或测试 runner 里处理。
+
 ## ⚠️ 重要提示
 - **坐标系约定**：
     - **机体坐标系**：$x$ 为前， $y$ 为左。
