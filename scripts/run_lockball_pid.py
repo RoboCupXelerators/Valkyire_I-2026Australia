@@ -95,8 +95,20 @@ def install_dry_run_hooks(basicfuc) -> None:
     def fake_stop():
         print(f"{time.time():.3f} dry_stop")
 
+    def fake_dribble(status):
+        print(f"{time.time():.3f} dry_dribble status={status}")
+
+    def fake_shoot():
+        print(f"{time.time():.3f} dry_shoot")
+
+    def fake_set_io(port, status):
+        print(f"{time.time():.3f} dry_set_io port={port} status={status}")
+
     basicfuc.chassis.RobotMoveVector = fake_move
     basicfuc.chassis.stop = fake_stop
+    basicfuc.peripheral.Dribble = fake_dribble
+    basicfuc.peripheral.ShootBall = fake_shoot
+    basicfuc.peripheral.SetIO = fake_set_io
 
 
 def has_usable_ball(
