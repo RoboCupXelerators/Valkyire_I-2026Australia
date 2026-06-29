@@ -1,6 +1,7 @@
 loguru
 opencv-python
 pyserial
+rplidar-roboticia
 ujson
 uvicorn
 gradio
