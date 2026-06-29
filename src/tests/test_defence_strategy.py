@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import defence  # noqa: E402
 from defence import BALL_NOT_FOUND, DefenceConfig, RuleDefenceStrategy  # noqa: E402
 from LunaPre import UnitedPosition  # noqa: E402
+from LunaPre.simple_strategy import choose_defence_cover  # noqa: E402
 
 
 def test_defence_home_is_safe_for_both_sides():
@@ -32,6 +33,12 @@ def test_defence_intercept_target_is_between_own_goal_and_ball():
     assert target[0] < -20.0
     assert target[0] > strategy.own_goal_x
     assert UnitedPosition.ProjectSafePose(target) is None
+
+
+def test_defence_cover_plan_handles_direct_wall_and_sideline():
+    assert choose_defence_cover([20.0, 0.0], 1.0)[0] == "cover_direct_shot"
+    assert choose_defence_cover([20.0, 30.0], 1.0)[0] == "cover_wall_shot"
+    assert choose_defence_cover([20.0, 55.0], 1.0)[0] == "cover_sideline_shot"
 
 
 def test_defence_hold_home_when_ball_not_visible(monkeypatch):
@@ -68,6 +75,64 @@ def test_defence_challenges_danger_ball(monkeypatch):
 
     assert strategy.state == "challenge_ball"
     assert calls == ["lock"]
+
+
+def test_defence_covers_direct_shot_when_ball_is_not_chased(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=1.0, chase_distance_cm=20.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-58.0, 0.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [80.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [35.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Angle", lambda _start, _end: 0.0)
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+
+    def fake_pos2pos(target, speed_gain=None):
+        captured["target"] = target
+        captured["speed_gain"] = speed_gain
+        return False
+
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+
+    strategy.step()
+
+    assert strategy.state == "cover_direct_shot"
+    assert captured["target"][0] == -58.0
+    assert abs(captured["target"][1]) <= 22.0
+
+
+def test_defence_covers_sideline_shot_when_ball_is_wide(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=1.0, chase_distance_cm=20.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-58.0, 0.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [88.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [35.0, 58.0])
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Angle", lambda _start, _end: 0.0)
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", lambda target, speed_gain=None: captured.setdefault("target", target))
+
+    strategy.step()
+
+    assert strategy.state == "cover_sideline_shot"
+    assert captured["target"][1] > 40.0
+
+
+def test_defence_covers_wall_shot_when_ball_is_mid_wide(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=1.0, chase_distance_cm=20.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-58.0, 0.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [86.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [35.0, 30.0])
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Angle", lambda _start, _end: 0.0)
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", lambda target, speed_gain=None: captured.setdefault("target", target))
+
+    strategy.step()
+
+    assert strategy.state == "cover_wall_shot"
+    assert captured["target"][1] == 36.0
 
 
 def test_defence_clear_ball_has_shot_cooldown(monkeypatch):

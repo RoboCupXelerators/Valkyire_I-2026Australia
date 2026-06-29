@@ -15,6 +15,7 @@ import time
 
 from BasicFuc import lockball
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
+from LunaPre.simple_strategy import choose_defence_cover
 from LunaPre.strategy_tools import (
     BALL_HELD,
     BALL_NOT_FOUND,
@@ -158,6 +159,13 @@ class RuleDefenceStrategy:
             UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
             return
 
+        state, target = self._cover_shot_target(ball_field)
+        if state:
+            self._set_state(state)
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
+            return
+
         self._hold_home()
 
     def _hold_home(self) -> None:
@@ -196,6 +204,13 @@ class RuleDefenceStrategy:
         target_x = self.attack_dir * target_progress
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return self._project_target([target_x, target_y, target_yaw])
+
+    def _cover_shot_target(self, ball_field: list | tuple):
+        state, target_x, target_y = choose_defence_cover(ball_field, self.attack_dir, self.field_short)
+        if not state:
+            return "", None
+        target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
+        return state, self._project_target([target_x, target_y, target_yaw])
 
     def _recovery_is_stuck(self, pose: list | tuple | None) -> bool:
         if self._recovery_start_ts is None or self._recovery_start_pose is None:

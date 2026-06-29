@@ -3,6 +3,7 @@ import math
 import os
 import time
 
+from LunaPre.simple_strategy import choose_attack_plan
 from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop
 
 # 只保留跨 tick/运行方式有关的参数；具体策略阈值直接写在对应判断旁边。
@@ -241,6 +242,44 @@ def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
         )
         return _fire_now()
 
+    plan_action, plan_x, plan_y, plan_speed_x, plan_speed_y = choose_attack_plan(
+        pose,
+        enemies,
+        ATTACK_DIR,
+        lane_score,
+    )
+    if plan_action == "wall_shot":
+        target = [plan_x, plan_y]
+        plan_angle = UnitedPosition.Local2Angle(target) % 360
+        yaw_error = angle_error_deg(chassis.GetYaw(), plan_angle)
+        if abs(float(yaw_error)) <= 72:
+            _set_decision(
+                action="wall_shot",
+                force_gate=force_reason,
+                progress=round(float(progress), 3),
+                y=round(float(y), 3),
+                yaw_error=round(float(yaw_error), 3),
+                lane_score=round(float(lane_score), 3),
+                blocker=blocker,
+                target=[round(float(plan_x), 3), round(float(plan_y), 3)],
+            )
+            return _fire_now()
+
+    if plan_action == "wall_setup":
+        plan_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
+        peripheral.Dribble(0.85)
+        chassis.FieldMoveVector(plan_speed_x, plan_speed_y, plan_angle, KpW=0.9)
+        _set_decision(
+            action="wall_setup",
+            force_gate=force_reason,
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            lane_score=round(float(lane_score), 3),
+            target=[round(float(plan_x), 3), round(float(plan_y), 3)],
+            speed=[round(float(plan_speed_x), 3), round(float(plan_speed_y), 3), round(float(plan_angle), 3)],
+        )
+        return "wall_setup"
+
     peripheral.Dribble(0.85)
     if blocker:
         lateral_gap = float(blocker["lateral_gap"])
@@ -370,8 +409,10 @@ def OffenceStep():
         goal_angle=round(float(goal_angle), 3),
     )
     if shot_allowed:
+        shot_family = "direct_shot" if shot_reason == "open_goal" else "quick_shot"
         _set_decision(
-            action="quick_shot",
+            action=shot_family,
+            shot_family=shot_family,
             shot_gate=shot_reason,
             progress=round(float(progress), 3),
             y=round(float(y), 3),
@@ -380,6 +421,44 @@ def OffenceStep():
             goal_angle=round(float(goal_angle), 3),
         )
         state = _fire_now()
+        return state
+
+    plan_action, plan_x, plan_y, plan_speed_x, plan_speed_y = choose_attack_plan(
+        pose,
+        enemies,
+        ATTACK_DIR,
+        shot_lane_score,
+    )
+    if plan_action == "sideline_shot":
+        sideline_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
+        sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
+        if abs(float(sideline_error)) <= 72:
+            _set_decision(
+                action="sideline_shot",
+                shot_gate=shot_reason,
+                progress=round(float(progress), 3),
+                y=round(float(y), 3),
+                yaw_error=round(float(sideline_error), 3),
+                lane_score=round(float(shot_lane_score), 3),
+                target=[round(float(plan_x), 3), round(float(plan_y), 3)],
+            )
+            state = _fire_now()
+            return state
+
+    if plan_action == "sideline_drive":
+        sideline_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
+        peripheral.Dribble(0.85)
+        chassis.FieldMoveVector(plan_speed_x, plan_speed_y, sideline_angle, KpW=0.9)
+        _set_decision(
+            action="sideline_drive",
+            shot_gate=shot_reason,
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            lane_score=round(float(shot_lane_score), 3),
+            target=[round(float(plan_x), 3), round(float(plan_y), 3)],
+            speed=[round(float(plan_speed_x), 3), round(float(plan_speed_y), 3), round(float(sideline_angle), 3)],
+        )
+        state = "sideline_drive"
         return state
 
     if abs(float(y)) >= 45 and progress < 50:

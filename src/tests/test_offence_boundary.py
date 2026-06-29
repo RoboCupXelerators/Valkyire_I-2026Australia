@@ -10,6 +10,7 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import offence  # noqa: E402
+from LunaPre.simple_strategy import choose_attack_plan  # noqa: E402
 from offence import BALL_HELD, BALL_NOT_FOUND  # noqa: E402
 
 
@@ -105,6 +106,44 @@ def test_offence_shoots_immediately_in_quick_shot_zone(monkeypatch):
 
     assert offence.OffenceStep() == "quick_shot"
     assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+    assert offence.last_decision["shot_family"] == "direct_shot"
+
+
+def test_attack_plan_direct_shot_for_1v0_open_lane():
+    plan = choose_attack_plan([30, 0, 0], [], 1, 1.0)
+
+    assert plan[0] == "direct_shot"
+    assert plan[1:3] == (110.0, 0.0)
+
+
+def test_attack_plan_wall_setup_when_front_is_crowded():
+    plan = choose_attack_plan([30, 0, 0], [[54, 0], [70, 12]], 1, -0.4)
+
+    assert plan[0] == "wall_setup"
+    assert plan[2] > 0
+
+
+def test_attack_plan_2v1_prefers_wall_shot_over_waiting():
+    plan = choose_attack_plan([44, 0, 0], [[68, -5], [86, 10]], 1, -0.5)
+
+    assert plan[0] == "wall_shot"
+    assert plan[1] > 44
+    assert abs(plan[2]) >= 80
+
+
+def test_attack_plan_2v2_still_selects_a_simple_exit_lane():
+    plan = choose_attack_plan([46, -6, 0], [[68, -8], [82, 10], [35, 58], [100, -50]], 1, -0.5)
+
+    assert plan[0] == "wall_shot"
+    assert plan[1] > 46
+    assert abs(plan[2]) >= 80
+
+
+def test_attack_plan_sideline_drive_from_wide_lane():
+    plan = choose_attack_plan([30, 56, 0], [], 1, -0.4)
+
+    assert plan[0] == "sideline_drive"
+    assert plan[2] > 0
 
 
 def test_offence_does_not_shoot_quick_zone_when_badly_misaligned(monkeypatch):
@@ -274,6 +313,76 @@ def test_offence_dodges_blocker_instead_of_waiting(monkeypatch):
 
     assert offence.OffenceStep() == "attack_dodge"
     assert calls == [("dribble", 0.85), ("move", (42, 42, 0), {"KpW": 0.95})]
+
+
+def test_offence_wall_shoots_when_direct_lane_is_blocked(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [42, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[82, 0]])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], -0.2))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert offence.last_decision["action"] == "wall_shot"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+
+
+def test_offence_sets_up_wall_shot_before_deep_zone(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[54, 0], [70, 12]])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], -0.4))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 22)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 85)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "wall_setup"
+    assert offence.last_decision["action"] == "wall_setup"
+    assert calls == [("dribble", 0.85), ("move", (44.0, 26.0, 22), {"KpW": 0.9})]
+
+
+def test_offence_sideline_shoots_from_wide_deep_lane(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [55, 56, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], -0.4))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert offence.last_decision["action"] == "sideline_shot"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+
+
+def test_offence_sideline_drives_before_shot_window(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 56, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], -0.4))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 14)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "sideline_drive"
+    assert offence.last_decision["action"] == "sideline_drive"
+    assert calls == [("dribble", 0.85), ("move", (52.0, 12.0, 14), {"KpW": 0.9})]
 
 
 def test_offence_filters_side_and_rear_chassis_before_attacking(monkeypatch):
