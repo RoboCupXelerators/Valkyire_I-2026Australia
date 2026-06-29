@@ -434,6 +434,14 @@ class ControlPanelApp:
                 "inference_batch_ms": None,
                 "inference_batch_size": 0,
                 "postprocess_ms": None,
+                "blob_ms": None,
+                "fusion_ms": None,
+                "output_hz": None,
+                "yolo_hz": None,
+                "tracker_hz": None,
+                "vision_confidence": None,
+                "yolo_backend": None,
+                "yolo_error": None,
             },
         }
         
@@ -614,6 +622,21 @@ class ControlPanelApp:
                         if value > 0:
                             result["perf"][key] = round(value, 3)
                 result["perf"]["inference_batch_size"] = int(getattr(self.vision, "InferBatchSize", 0) or 0)
+                hybrid_perf_getter = getattr(self.vision, "GetHybridPerf", None)
+                if callable(hybrid_perf_getter):
+                    hybrid_perf = hybrid_perf_getter() or {}
+                    for key in (
+                        "blob_ms",
+                        "fusion_ms",
+                        "output_hz",
+                        "yolo_hz",
+                        "tracker_hz",
+                        "vision_confidence",
+                        "yolo_backend",
+                        "yolo_error",
+                    ):
+                        if key in hybrid_perf:
+                            result["perf"][key] = hybrid_perf[key]
             except Exception as e:
                 print(f"[ControlPanel] Error getting performance metrics: {e}")
         

@@ -1281,6 +1281,10 @@ async function updateOverview() {
             const perfInferenceEl = document.getElementById('perf-inference');
             const perfPostprocessEl = document.getElementById('perf-postprocess');
             const perfCameraEl = document.getElementById('perf-camera');
+            const perfBlobEl = document.getElementById('perf-blob');
+            const perfOutputHzEl = document.getElementById('perf-output-hz');
+            const perfTrackerHzEl = document.getElementById('perf-tracker-hz');
+            const perfConfidenceEl = document.getElementById('perf-confidence');
             
             if (perfPreprocessEl && perfState.preprocessMs > 0) perfPreprocessEl.textContent = Math.round(perfState.preprocessMs) + ' ms';
             if (perfInferenceEl && perfState.inferenceMs > 0) perfInferenceEl.textContent = Math.round(perfState.inferenceMs) + ' ms';
@@ -1296,6 +1300,15 @@ async function updateOverview() {
             }
             if (perfPostprocessEl && perfState.postprocessPeriodMs > 0) perfPostprocessEl.title = `线程周期约 ${Math.round(perfState.postprocessPeriodMs)} ms`;
             if (perfCameraEl && perfState.cameraFps > 0) perfCameraEl.textContent = Math.round(perfState.cameraFps) + ' FPS';
+            if (perfBlobEl && typeof visionData.perf.blob_ms === 'number') perfBlobEl.textContent = visionData.perf.blob_ms.toFixed(1) + ' ms';
+            if (perfOutputHzEl && typeof visionData.perf.output_hz === 'number') perfOutputHzEl.textContent = visionData.perf.output_hz.toFixed(1) + ' Hz';
+            if (perfTrackerHzEl && typeof visionData.perf.tracker_hz === 'number') perfTrackerHzEl.textContent = visionData.perf.tracker_hz.toFixed(1) + ' Hz';
+            if (perfConfidenceEl && typeof visionData.perf.vision_confidence === 'number') perfConfidenceEl.textContent = visionData.perf.vision_confidence.toFixed(2);
+            if (perfInferenceEl && visionData.perf.yolo_backend) {
+                const yoloHz = typeof visionData.perf.yolo_hz === 'number' ? visionData.perf.yolo_hz.toFixed(1) : '--';
+                const yoloError = visionData.perf.yolo_error ? `；YOLO错误: ${visionData.perf.yolo_error}` : '';
+                perfInferenceEl.title = `${perfInferenceEl.title || ''}；YOLO ${visionData.perf.yolo_backend} ${yoloHz} Hz${yoloError}`;
+            }
         }
         
         // Fetch recording state

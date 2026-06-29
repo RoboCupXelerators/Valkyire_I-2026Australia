@@ -128,6 +128,13 @@ def get_settings_dict() -> Dict[str, Any]:
         except Exception:
             base = {}
 
+    if not base:
+        # Last-resort file fallback. Importing ReasonData may fail in minimal
+        # vision-only environments when optional logging deps are absent, but
+        # the config file is still the source of truth.
+        reason_config = Path(__file__).resolve().parents[1] / "ReasonData" / "data" / "config.json"
+        base = _load_json(reason_config)
+
     # Overlay from vision override config
     app_dir = Path(__file__).parent
     overlay_dir = app_dir / "VisionDatas" / "data"

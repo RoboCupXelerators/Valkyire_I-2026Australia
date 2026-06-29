@@ -44,6 +44,8 @@ if _REC == 'AI':
     Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
 elif _REC == 'TI':
     Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
+elif _REC in ('HV', 'HYBRID'):
+    Detect_Method = _safe_import(f'{_PKG}.HybridVision', 'HybridVision')
 elif _REC == 'XV':
     Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
 elif _REC in ('SY', 'SIMYOLO'):
@@ -74,4 +76,4 @@ __version__ = '0.2.0'
 # ReasonData 0.2.0(20250722A) Updated Preference instead QKjson
 
 
-__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'XeleratorVision', 'SimYoloVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']
+__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'HybridVision', 'XeleratorVision', 'SimYoloVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']
