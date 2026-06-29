@@ -462,6 +462,18 @@ body {
     text-align: right;
 }
 
+.state-table td.status-good {
+    color: var(--accent-success);
+}
+
+.state-table td.status-warn {
+    color: var(--accent-warning);
+}
+
+.state-table td.status-bad {
+    color: var(--accent-danger);
+}
+
 .vision-status {
     font-size: 0.85rem;
     color: var(--text-secondary);

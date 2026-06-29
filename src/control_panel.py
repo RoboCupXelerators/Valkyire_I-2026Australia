@@ -18,8 +18,11 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import math
+import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,6 +177,7 @@ class ControlPanelApp:
         
         # Bits 对象（用于模拟器环境下获取位姿和球位置）
         self.bits = bits
+        self._last_lidar_status = None
         
         # 检测是否为模拟器环境
         self._is_simulator = self._detect_simulator_mode()
@@ -203,9 +207,18 @@ class ControlPanelApp:
         
         # BirdEye state
         self.birdeye_session = BirdEyeSession()
+
+        # Vision startup diagnostics. The server can start before cameras are
+        # ready, then attach vision in the background.
+        self._vision_status_lock = threading.Lock()
+        self._vision_status = {
+            "state": "ready" if self.vision is not None else "not_started",
+            "backend": None,
+            "error": None,
+        }
         
         # 注册 Vision 模块的摄像头
-        if self.vision:
+        if self.vision is not None:
             self._register_vision_cameras()
     
     def _detect_simulator_mode(self) -> bool:
@@ -258,6 +271,138 @@ class ControlPanelApp:
             print(f"[ControlPanel] Error registering vision cameras: {e}")
     
     # ==================== 视觉状态 ====================
+
+    def set_vision_status(self, state: str, backend: str = None, error: str = None):
+        with self._vision_status_lock:
+            self._vision_status = {
+                "state": state,
+                "backend": backend,
+                "error": error,
+            }
+
+    def get_vision_status(self) -> dict:
+        with self._vision_status_lock:
+            status = dict(self._vision_status)
+        status["available"] = self.vision is not None
+        status["type"] = type(self.vision).__name__ if self.vision is not None else None
+        status["detect_backend"] = None
+        if self.vision is not None:
+            try:
+                mro = type(self.vision).__mro__
+                if len(mro) > 1:
+                    status["detect_backend"] = mro[1].__name__
+            except Exception:
+                pass
+        return status
+
+    def get_lidar_status(self) -> dict:
+        """Return lidar diagnostics without initializing the LunaPre runtime."""
+        status = {
+            "available": False,
+            "runtime_initialized": False,
+            "state": "not_initialized",
+            "backend": None,
+            "driver": None,
+            "running": False,
+            "disabled": None,
+            "dist_mm": [0xFFF, 0xFFF, 0xFFF, 0xFFF],
+            "message": "LunaPre runtime not initialized",
+        }
+
+        runtime = sys.modules.get("LunaPre.runtime")
+        if runtime is None:
+            return status
+
+        status["runtime_initialized"] = bool(getattr(runtime, "_runtime_initialized", False))
+        lidar = getattr(runtime, "lidar", None)
+        if lidar is None:
+            if status["runtime_initialized"]:
+                status["state"] = "missing"
+                status["message"] = "Runtime initialized but lidar object is missing"
+            return status
+
+        status["available"] = True
+        status["backend"] = getattr(lidar, "backend", None)
+        status["driver"] = type(getattr(lidar, "driver", None)).__name__ if getattr(lidar, "driver", None) else None
+        status["running"] = bool(getattr(lidar, "running", False))
+        status["disabled"] = bool(getattr(lidar, "disabled", False))
+
+        try:
+            dists = list(lidar.GetDists())
+            status["dist_mm"] = dists
+        except Exception as e:
+            status["state"] = "error"
+            status["message"] = str(e)
+            return status
+
+        if status["disabled"] or status["dist_mm"] == [0xFFF, 0xFFF, 0xFFF, 0xFFF]:
+            status["state"] = "disabled"
+            status["message"] = "Lidar driver is disabled"
+        elif status["dist_mm"] == [0, 0, 0, 0]:
+            status["state"] = "no_data"
+            status["message"] = "Lidar object exists but no scan has been normalized yet"
+        else:
+            status["state"] = "ok"
+            status["message"] = "Receiving lidar distance data"
+
+        self._last_lidar_status = status
+        return status
+
+    def scan_lidar_usb(self) -> dict:
+        """Scan common Linux serial device paths for lidar USB diagnostics."""
+        configured_port = None
+        configured_type = None
+        try:
+            config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
+            if config_file.exists():
+                with config_file.open("r", encoding="utf-8") as f:
+                    config = json.load(f)
+                configured_port = config.get("Ports", {}).get("LidarPort")
+                configured_type = config.get("RoboInfo", {}).get("LidarType")
+        except Exception:
+            pass
+
+        candidates = []
+        patterns = [
+            "/dev/sllidar",
+            "/dev/rplidar",
+            "/dev/ttyUSB*",
+            "/dev/ttyACM*",
+            "/dev/serial/by-id/*",
+            "/dev/serial/by-path/*",
+        ]
+        seen = set()
+
+        for pattern in patterns:
+            for path_str in sorted(glob.glob(pattern)):
+                if path_str in seen:
+                    continue
+                seen.add(path_str)
+                info = {"path": path_str, "exists": os.path.exists(path_str)}
+                try:
+                    resolved = os.path.realpath(path_str)
+                    info["resolved"] = resolved
+                    info["readable"] = os.access(resolved, os.R_OK)
+                    info["writable"] = os.access(resolved, os.W_OK)
+                except Exception:
+                    info["resolved"] = None
+                    info["readable"] = False
+                    info["writable"] = False
+                candidates.append(info)
+
+        likely = [
+            item for item in candidates
+            if any(token in item["path"].lower() for token in ("sllidar", "rplidar", "silicon", "cp210", "ttyusb", "ttyacm"))
+            or any(token in str(item.get("resolved", "")).lower() for token in ("ttyusb", "ttyacm"))
+        ]
+
+        return {
+            "configured_port": configured_port or "/dev/sllidar",
+            "configured_type": configured_type,
+            "candidates": candidates,
+            "likely": likely,
+            "message": "No serial lidar-like devices found" if not likely else f"Found {len(likely)} lidar-like serial path(s)",
+        }
     
     def get_state_dict(self) -> dict:
         """获取视觉状态"""
@@ -276,17 +421,24 @@ class ControlPanelApp:
             "chassis_bboxes_640": [None, None, None, None],
             "goal_bboxes_640": [None, None, None, None],
             "is_simulator": self._is_simulator,
+            "vision_status": self.get_vision_status(),
+            "lidar_status": self.get_lidar_status(),
             # 性能指标 - 返回帧计数器，前端计算延时
             "perf": {
                 "preprocess_tf": 0,  # 预处理帧计数
                 "inference_tf": 0,   # 推理帧计数
                 "postprocess_tf": 0, # 后处理帧计数
                 "camera_tf": 0,      # 摄像头帧计数
+                "preprocess_ms": None,
+                "inference_ms": None,
+                "inference_batch_ms": None,
+                "inference_batch_size": 0,
+                "postprocess_ms": None,
             },
         }
         
         # 模拟器环境下优先从 Bits 获取数据
-        if self._is_simulator and self.bits:
+        if self._is_simulator and self.bits is not None:
             try:
                 x, y, yaw = self.bits.GetPose()
                 result["robot_x_cm"] = round(x, 2)
@@ -361,20 +513,13 @@ class ControlPanelApp:
         except Exception:
             pass
 
-        # 如果仍然没有 x,y 位姿，尝试从 UnitedPosition 获取场地坐标姿态
-        try:
-            from LunaPre import UnitedPosition
-            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
-                pose = UnitedPosition.FieldRobotPose()
-                if pose and len(pose) >= 3 and all(val != 0xfff for val in pose[:3]):
-                    result["robot_x_cm"] = round(float(pose[0]), 2)
-                    result["robot_y_cm"] = round(float(pose[1]), 2)
-                    result["robot_yaw_deg"] = round(float(pose[2]), 2)
-        except Exception:
-            pass
+        # Do not call UnitedPosition.FieldRobotPose() here. It falls back to
+        # DirectDistance(), which sleeps/retries and can stop the chassis when
+        # lidar has no data. The control panel must keep vision responsive even
+        # when lidar USB discovery or scan parsing is broken.
         
         # Try to get data from vision module
-        if self.vision:
+        if self.vision is not None:
             # 模拟器环境使用小写方法名 (XeleratorVision)
             if self._is_simulator:
                 try:
@@ -457,6 +602,18 @@ class ControlPanelApp:
                 result["perf"]["inference_tf"] = int(getattr(self.vision, 'InferTF', 0))
                 result["perf"]["postprocess_tf"] = int(getattr(self.vision, 'PostProcessTF', 0))
                 result["perf"]["camera_tf"] = int(getattr(self.vision, 'ReadCamTF', 0))
+                for attr, key in (
+                    ("PreProcessMs", "preprocess_ms"),
+                    ("InferMs", "inference_ms"),
+                    ("InferBatchMs", "inference_batch_ms"),
+                    ("PostProcessMs", "postprocess_ms"),
+                ):
+                    value = getattr(self.vision, attr, None)
+                    if value is not None:
+                        value = float(value)
+                        if value > 0:
+                            result["perf"][key] = round(value, 3)
+                result["perf"]["inference_batch_size"] = int(getattr(self.vision, "InferBatchSize", 0) or 0)
             except Exception as e:
                 print(f"[ControlPanel] Error getting performance metrics: {e}")
         
@@ -685,7 +842,7 @@ class ControlPanelApp:
         }
         
         # 从 Bits 获取状态
-        if self.bits:
+        if self.bits is not None:
             try:
                 x, y, yaw = self.bits.GetPose()
                 result["robot_pose"] = {"x_cm": round(x, 2), "y_cm": round(y, 2), "yaw_deg": round(yaw, 2)}
@@ -708,7 +865,7 @@ class ControlPanelApp:
                 pass
         
         # 如果 Bits 不可用，尝试从 vision 获取
-        elif self.vision:
+        elif self.vision is not None:
             try:
                 ball_pos = self.vision.get_ball_pos() if hasattr(self.vision, 'get_ball_pos') else None
                 if ball_pos:
@@ -1187,12 +1344,11 @@ class ControlPanelApp:
         }
     
     def _get_chassis_and_peripheral(self):
-        """获取 chassis 和 peripheral 对象"""
-        try:
-            from LunaPre import chassis, peripheral
-            return chassis, peripheral
-        except Exception:
+        """Return attached runtime control objects without initializing hardware."""
+        runtime = sys.modules.get("LunaPre.runtime")
+        if runtime is None or not getattr(runtime, "_runtime_initialized", False):
             return None, None
+        return getattr(runtime, "chassis", None), getattr(runtime, "peripheral", None)
     
     def _control_stop(self):
         """停止机器人移动"""
@@ -1614,7 +1770,7 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
     
@@ -1645,6 +1801,14 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         if path == '/api/system-info':
             self._send_json(app.get_system_info())
             return
+
+        if path == '/api/lidar/status':
+            self._send_json(app.get_lidar_status())
+            return
+
+        if path == '/api/lidar/usb':
+            self._send_json(app.scan_lidar_usb())
+            return
         
         if path == '/api/config':
             self._send_json(app.get_config())
@@ -1665,6 +1829,29 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         
         if path == '/api/recording/sessions':
             self._send_json({"sessions": app.list_sessions()})
+            return
+
+        if path == '/api/sessions':
+            self._send_json(app.list_sessions())
+            return
+
+        if path.startswith('/api/sessions/') and path.endswith('/data'):
+            parts = path.split('/')
+            if len(parts) >= 4:
+                self._send_json(app.get_session_data(parts[3]))
+            return
+
+        if path.startswith('/api/sessions/') and path.endswith('/export'):
+            parts = path.split('/')
+            if len(parts) >= 4:
+                session_id = parts[3]
+                data = app.export_session(session_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Disposition', f'attachment; filename="{session_id}.json"')
+                self.send_header('Content-Length', len(data))
+                self.end_headers()
+                self.wfile.write(data)
             return
         
         # Camera frames
@@ -1763,6 +1950,25 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', len(data))
             self.end_headers()
             self.wfile.write(data)
+            return
+
+        if path.startswith('/api/sessions/') and path.endswith('/export'):
+            parts = path.split('/')
+            if len(parts) >= 4:
+                session_id = parts[3]
+                data = app.export_session(session_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Disposition', f'attachment; filename="{session_id}.json"')
+                self.send_header('Content-Length', len(data))
+                self.end_headers()
+                self.wfile.write(data)
+            return
+
+        if path.startswith('/api/sessions/'):
+            session_id = path.split('/')[3]
+            result = app.delete_session(session_id)
+            self._send_json(result)
             return
         
         # Calibration API
@@ -1880,6 +2086,19 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         
         self.send_error(404, 'Not found')
 
+    def do_DELETE(self):
+        app = self.app
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path.startswith('/api/sessions/'):
+            session_id = path.split('/')[3]
+            result = app.delete_session(session_id)
+            self._send_json(result)
+            return
+
+        self.send_error(404, 'Not found')
+
 
 def main():
     ap = argparse.ArgumentParser(description="Xelerator Control Panel Server")
@@ -1892,21 +2111,39 @@ def main():
         help="Directory containing web UI files"
     )
     ap.add_argument("--no-vision", action="store_true", help="Disable vision module")
+    ap.add_argument(
+        "--vision-backend",
+        choices=("auto", "vision-utils", "lunapre"),
+        default="vision-utils",
+        help="Vision provider to instantiate when no runtime vision is attached.",
+    )
+    ap.add_argument(
+        "--attach-runtime",
+        action="store_true",
+        help="Attach existing LunaPre runtime objects. Default keeps control panel vision-only and does not start lidar.",
+    )
     args = ap.parse_args()
     
-    # Try to get Bits from LunaPre (simulator mode)
+    # Keep the control panel vision-first by default. Importing LunaPre.Bits or
+    # LunaPre.vision resolves lazy runtime proxies and can initialize lidar,
+    # chassis, and serial hardware before the UI is usable.
     bits = None
     vision = None
 
-    try:
-        from LunaPre import Bits, vision as luna_vision
-        bits = Bits
-        vision = luna_vision
-        print(f"[ControlPanel] Got Bits from LunaPre, type: {type(Bits).__name__}")
-        if vision is not None:
-            print(f"[ControlPanel] Got vision from LunaPre, type: {type(vision).__name__}")
-    except Exception as e:
-        print(f"[ControlPanel] Could not import from LunaPre: {e}")
+    if args.attach_runtime:
+        try:
+            import importlib
+
+            runtime = importlib.import_module("LunaPre.runtime")
+            if getattr(runtime, "_runtime_initialized", False):
+                bits = getattr(runtime, "Bits", None)
+                vision = getattr(runtime, "vision", None)
+                print(f"[ControlPanel] Attached existing LunaPre runtime Bits: {type(bits).__name__ if bits else None}")
+                print(f"[ControlPanel] Attached existing LunaPre runtime vision: {type(vision).__name__ if vision else None}")
+            else:
+                print("[ControlPanel] LunaPre runtime is not initialized; staying vision-only")
+        except Exception as e:
+            print(f"[ControlPanel] Could not inspect LunaPre runtime: {e}")
     
     # Initialize app with bits
     app = ControlPanelApp(
@@ -1916,15 +2153,42 @@ def main():
         vision=vision,
     )
     
-    # Try to attach vision module if not already set
-    if not args.no_vision and app.vision is None:
-        try:
-            from LunaPre.vision import UnitedVision
+    def attach_vision_module():
+        errors = []
+        backend_order = (
+            (("vision-utils", "vision_utils.Vision"),)
+            if args.vision_backend == "vision-utils"
+            else (("lunapre", "LunaPre.vision"),)
+        )
+        if args.vision_backend == "auto":
+            backend_order = (("vision-utils", "vision_utils.Vision"), ("lunapre", "LunaPre.vision"))
 
-            app.vision = UnitedVision()
-            print("[ControlPanel] Vision module attached")
-        except Exception as e:
-            print(f"[ControlPanel] Vision module not available: {e}")
+        app.set_vision_status("starting")
+        for backend_name, module_name in backend_order:
+            try:
+                import importlib
+
+                app.set_vision_status("starting", backend=backend_name)
+                module = importlib.import_module(module_name)
+                app.vision = module.UnitedVision()
+                app._register_vision_cameras()
+                app.set_vision_status("ready", backend=backend_name)
+                print(f"[ControlPanel] Vision module attached via {backend_name}")
+                return
+            except Exception as e:
+                errors.append(f"{backend_name}: {e}")
+
+        if app.vision is None:
+            error_msg = " | ".join(errors)
+            app.set_vision_status("error", error=error_msg)
+            print("[ControlPanel] Vision module not available: " + error_msg)
+
+    # Attach vision in the background so the web UI is available even when
+    # camera/model startup is slow or broken.
+    if args.no_vision:
+        app.set_vision_status("disabled")
+    elif app.vision is None:
+        threading.Thread(target=attach_vision_module, daemon=True).start()
     
     # Setup HTTP server
     ControlPanelHandler.app = app

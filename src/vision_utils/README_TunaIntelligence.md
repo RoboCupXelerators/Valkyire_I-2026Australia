@@ -12,6 +12,9 @@
 
 这样 `src/Vision.py` 不需要改动即可读取结果。
 
+> Hybrid high-rate vision planning lives in
+> [`README_HybridVision_TODO.md`](README_HybridVision_TODO.md).
+
 ## 配置切换
 
 在 `src/vision_utils/VisionDatas/data/vision.json` 内设置：

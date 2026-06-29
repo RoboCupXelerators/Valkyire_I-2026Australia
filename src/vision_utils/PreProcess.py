@@ -26,10 +26,21 @@ except Exception:  # pragma: no cover
         try:
             # merged_settings does not expose logger; keep legacy logger
             from .merged_settings import Settings  # type: ignore
-            from .VisionDatas import logger
+            try:
+                from .VisionDatas import logger
+            except Exception:
+                import logging
+
+                logger = logging.getLogger(__name__)
             REASON_DATA_DIR = None  # type: ignore
         except Exception:  # pragma: no cover
-            from .VisionDatas import Settings, logger
+            try:
+                from .VisionDatas import Settings, logger
+            except Exception:
+                from .merged_settings import Settings  # type: ignore
+                import logging
+
+                logger = logging.getLogger(__name__)
             REASON_DATA_DIR = None  # type: ignore
 import threading
 import queue
@@ -436,6 +447,11 @@ class VisionPreUntil:
         self.PreProcessTF = 0
         self.InferTF = 0
         self.PostProcessTF = 0
+        self.PreProcessMs = 0.0
+        self.InferMs = 0.0
+        self.InferBatchMs = 0.0
+        self.InferBatchSize = 0
+        self.PostProcessMs = 0.0
 
 
         if init_cams:
@@ -783,4 +799,3 @@ class VisionPreUntil:
 
     def __exit__(self, *args, **kwargs):
         self.close(join_timeout=0.5)
-

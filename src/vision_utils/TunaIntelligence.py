@@ -75,6 +75,10 @@ class TunaIntelligence(VisionPreUntil):
 
         self.PreProcessTF = 0
         self.InferTF = 0
+        self.PreProcessMs = 0.0
+        self.InferMs = 0.0
+        self.InferBatchMs = 0.0
+        self.InferBatchSize = 0
 
         # Queues consistent with ArisuIntelligence
         self.YOLOQueue = queue.Queue(maxsize=1)
@@ -323,6 +327,7 @@ class TunaIntelligence(VisionPreUntil):
     def ModelPreProcess(self):
         """Collect latest frames and push to queue."""
         while not self._stop_event.is_set():
+            t0 = time.time()
             frames_640: List[Optional[np.ndarray]] = [None, None, None, None]
             for i in range(4):
                 Frame = self.Frames[i] if i < len(self.Frames) else None
@@ -332,6 +337,7 @@ class TunaIntelligence(VisionPreUntil):
                 frames_640[i] = Frame
 
             self.PreProcessTF += 1
+            self.PreProcessMs = (time.time() - t0) * 1000.0
             # Non-blocking put (avoid deadlock at shutdown)
             try:
                 if self.YOLOQueue.full():
@@ -438,7 +444,11 @@ class TunaIntelligence(VisionPreUntil):
 
             if imgs:
                 try:
+                    infer_t0 = time.time()
                     dets_by_img = self._infer_ultralytics(imgs)
+                    self.InferBatchSize = len(imgs)
+                    self.InferBatchMs = (time.time() - infer_t0) * 1000.0
+                    self.InferMs = self.InferBatchMs / max(1, self.InferBatchSize)
                 except Exception as e:
                     self.logger.error(f"Inference error: {e}")
                     time.sleep(0.05)

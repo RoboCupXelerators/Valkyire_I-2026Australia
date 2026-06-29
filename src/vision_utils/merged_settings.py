@@ -59,6 +59,58 @@ def _load_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
+def _camera_port(vision: Dict[str, Any], index: int, fallback: int) -> int:
+    ports = vision.get("CamPorts", [])
+    try:
+        return int(ports[index])
+    except Exception:
+        return int(fallback)
+
+
+def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
+    """Populate VisionVals from the newer Vision section for legacy vision code."""
+    vision = config.get("Vision") if isinstance(config.get("Vision"), dict) else {}
+    existing = config.get("VisionVals") if isinstance(config.get("VisionVals"), dict) else {}
+    compat = {
+        "Back": _camera_port(vision, 0, existing.get("Back", 0)),
+        "Left": _camera_port(vision, 1, existing.get("Left", 2)),
+        "Front": _camera_port(vision, 2, existing.get("Front", 4)),
+        "Right": _camera_port(vision, 3, existing.get("Right", 6)),
+        "Record": bool(vision.get("Record", existing.get("Record", False))),
+        "RecordDir": vision.get("RecordDir", existing.get("RecordDir", "./Records")),
+        "RecordCams": existing.get("RecordCams", [0, 1, 2, 3]),
+        "RecordWidth": existing.get("RecordWidth", 320),
+        "RecordHeight": existing.get("RecordHeight", 320),
+        "RecordSegmentSeconds": existing.get("RecordSegmentSeconds", 60),
+        "RecordFPS": existing.get("RecordFPS", 30),
+        "RecordCodec": existing.get("RecordCodec", "mp4v"),
+        "RecordExt": existing.get("RecordExt", "mp4"),
+        "ExposeVal": existing.get("ExposeVal", 100),
+        "AutoExpose": existing.get("AutoExpose", 0),
+        "CalibrationFolder": vision.get("CalibrationFolder", existing.get("CalibrationFolder", "Calibration")),
+        "HailoModelPath": vision.get("HailoModelPath", existing.get("HailoModelPath", "/yoloV8_Weighs/")),
+        "TunaModelName": vision.get("ModelPath", existing.get("TunaModelName", "")),
+        "TunaEnginePath": vision.get("EnginePath", existing.get("TunaEnginePath", "")),
+        "BallDiameterCM": vision.get("BallDiameter", existing.get("BallDiameterCM", 4.2)),
+        "ChassisWidthCM": vision.get("ChassisWidth", existing.get("ChassisWidthCM", 18.0)),
+        "ChassisHeightCM": vision.get("ChassisHeight", existing.get("ChassisHeightCM", 3.5)),
+        "BlueGoalWidthCM": vision.get("GoalWidth", existing.get("BlueGoalWidthCM", 90.0)),
+        "BlueGoalHeightCM": vision.get("GoalHeight", existing.get("BlueGoalHeightCM", 18.0)),
+        "YellowGoalWidthCM": vision.get("GoalWidth", existing.get("YellowGoalWidthCM", 90.0)),
+        "YellowGoalHeightCM": vision.get("GoalHeight", existing.get("YellowGoalHeightCM", 18.0)),
+        "EnableBBoxDistanceEstimate": existing.get("EnableBBoxDistanceEstimate", True),
+        "BBoxFusionStrength": existing.get("BBoxFusionStrength", 0.5),
+        "BBoxLegacyReferenceAreaPx": existing.get("BBoxLegacyReferenceAreaPx", 12000.0),
+        "CaptureBackend": existing.get("CaptureBackend", "auto"),
+        "CaptureCodec": existing.get("CaptureCodec", "mjpg"),
+        "CamWidth": existing.get("CamWidth", 640),
+        "CamHeight": existing.get("CamHeight", 480),
+        "CamFps": existing.get("CamFps", 30),
+    }
+    compat.update(existing)
+    config["VisionVals"] = compat
+
+
 def get_settings_dict() -> Dict[str, Any]:
     # Base from ReasonData when available
     base: Dict[str, Any] = {}
@@ -94,6 +146,21 @@ def get_settings_dict() -> Dict[str, Any]:
     if not base:
         base = {
             "RoboInfo": {"number": 1, "type": "OP", "Bit": "AB", "Rec": "AI"},
+            "Vision": {
+                "CamPorts": [0, 2, 4, 6],
+                "ModelPath": "",
+                "EnginePath": "",
+                "HailoModelPath": "/yoloV8_Weighs/",
+                "CalibrationFolder": "Calibration",
+                "BallDiameter": 4.2,
+                "ChassisWidth": 18.0,
+                "ChassisHeight": 18.0,
+                "GoalWidth": 90.0,
+                "GoalHeight": 18.0,
+                "MinBallBBoxArea": 40,
+                "Record": False,
+                "RecordDir": "./Records",
+            },
             "VisionVals": {
                 "Front": 4,
                 "Right": 6,
@@ -108,7 +175,9 @@ def get_settings_dict() -> Dict[str, Any]:
             "Debug": {"FullLog": False, "Beta": False},
         }
 
-    return _deep_merge(base, overlay)
+    merged = _deep_merge(base, overlay)
+    _ensure_legacy_vision_vals(merged)
+    return merged
 
 
 def get_settings() -> ConfigSection:

@@ -19,6 +19,8 @@ except Exception:  # pragma: no cover
         import logging
 
         logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            logger.addHandler(logging.NullHandler())
 
 
 def _safe_import(path: str, name: str):

@@ -177,6 +177,7 @@ class BlobBased(VisionPreUntil):
     
     def FindBall(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
+            infer_t0 = time.time()
             Candidates = []
             BallBBoxes = [None, None, None, None]
             for i in range(4):
@@ -213,5 +214,7 @@ class BlobBased(VisionPreUntil):
                 self._update_bbox_distance_caches()
             except Exception:
                 pass
+            self.InferTF = getattr(self, "InferTF", 0) + 1
+            self.InferMs = (time.time() - infer_t0) * 1000.0
             # 20251118 已修改坐标 x forward, y left
             time.sleep(0.03)

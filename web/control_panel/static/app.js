@@ -211,6 +211,9 @@ function startVisionFeeds() {
                 // Use fetch to get response headers with processing time
                 fetch(`/api/cam/${camIdx}.jpg?size=480&t=${t}`)
                     .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Camera ${camIdx} unavailable: ${response.status}`);
+                        }
                         // Read processing time from response header
                         const processingTimeHeader = response.headers.get('X-Processing-Time-Ms');
                         if (processingTimeHeader) {
@@ -359,6 +362,9 @@ let perfState = {
     preprocessMs: 0,
     inferenceMs: 0,
     postprocessMs: 0,
+    preprocessPeriodMs: 0,
+    inferencePeriodMs: 0,
+    postprocessPeriodMs: 0,
     cameraFps: 0,
 };
 
@@ -374,17 +380,6 @@ function updateVisionState() {
             // Store performance metrics
             if (data.perf) {
                 visionState.perf = data.perf;
-                
-                // Update performance display in overview page
-                const perfPreprocessEl = document.getElementById('perf-preprocess');
-                const perfInferenceEl = document.getElementById('perf-inference');
-                const perfPostprocessEl = document.getElementById('perf-postprocess');
-                const perfCameraEl = document.getElementById('perf-camera');
-                
-                if (perfPreprocessEl) perfPreprocessEl.textContent = data.perf.preprocess_fps + ' FPS';
-                if (perfInferenceEl) perfInferenceEl.textContent = data.perf.inference_fps + ' FPS';
-                if (perfPostprocessEl) perfPostprocessEl.textContent = data.perf.postprocess_fps + ' FPS';
-                if (perfCameraEl) perfCameraEl.textContent = data.perf.camera_fps + ' FPS';
             }
             
             // Update ball position
@@ -396,8 +391,11 @@ function updateVisionState() {
             // Update vision status
             const statusEl = document.getElementById('vision-status');
             if (statusEl) {
-                statusEl.textContent = `状态: 在线 | 运行时间: ${formatDuration(data.uptime_s)}`;
+                const backend = data.vision_status?.detect_backend || data.vision_status?.type || '--';
+                statusEl.textContent = `状态: 在线 | 后端: ${backend} | 运行时间: ${formatDuration(data.uptime_s)}`;
             }
+
+            updateLidarPanel(data.lidar_status);
             
             // Update radar
             drawRadar(data);
@@ -408,6 +406,33 @@ function updateVisionState() {
                 statusEl.textContent = '状态: 离线';
             }
         });
+}
+
+function updateLidarPanel(lidarStatus) {
+    const stateEl = document.getElementById('lidar-state');
+    const distsEl = document.getElementById('lidar-dists');
+    if (!stateEl && !distsEl) return;
+
+    const status = lidarStatus || {};
+    const stateText = status.state || 'unknown';
+    const msg = status.message ? ` - ${status.message}` : '';
+    if (stateEl) {
+        stateEl.textContent = `${stateText}${msg}`;
+        stateEl.className = '';
+        if (stateText === 'ok') {
+            stateEl.classList.add('status-good');
+        } else if (stateText === 'no_data' || stateText === 'not_initialized') {
+            stateEl.classList.add('status-warn');
+        } else {
+            stateEl.classList.add('status-bad');
+        }
+    }
+
+    if (distsEl) {
+        const dists = Array.isArray(status.dist_mm) ? status.dist_mm : [];
+        distsEl.textContent = dists.length === 4 ? dists.map(v => `${v}mm`).join(' / ') : '--';
+        distsEl.title = `backend=${status.backend || '--'}, driver=${status.driver || '--'}, running=${!!status.running}`;
+    }
 }
 
 // Map bbox from 640x640 detector space to image space
@@ -1201,15 +1226,36 @@ async function updateOverview() {
                 const alpha = 0.4;  // Smoothing factor
                 if (preprocessFps > 0.1) {
                     const ms = 1000 / preprocessFps;
-                    perfState.preprocessMs = alpha * ms + (1 - alpha) * perfState.preprocessMs;
+                    perfState.preprocessPeriodMs = alpha * ms + (1 - alpha) * perfState.preprocessPeriodMs;
                 }
                 if (inferenceFps > 0.1) {
                     const ms = 1000 / inferenceFps;
-                    perfState.inferenceMs = alpha * ms + (1 - alpha) * perfState.inferenceMs;
+                    perfState.inferencePeriodMs = alpha * ms + (1 - alpha) * perfState.inferencePeriodMs;
                 }
                 if (postprocessFps > 0.1) {
                     const ms = 1000 / postprocessFps;
-                    perfState.postprocessMs = alpha * ms + (1 - alpha) * perfState.postprocessMs;
+                    perfState.postprocessPeriodMs = alpha * ms + (1 - alpha) * perfState.postprocessPeriodMs;
+                }
+                if (typeof visionData.perf.preprocess_ms === 'number') {
+                    perfState.preprocessMs = perfState.preprocessMs > 0
+                        ? alpha * visionData.perf.preprocess_ms + (1 - alpha) * perfState.preprocessMs
+                        : visionData.perf.preprocess_ms;
+                } else if (preprocessFps > 0.1) {
+                    perfState.preprocessMs = perfState.preprocessPeriodMs;
+                }
+                if (typeof visionData.perf.inference_ms === 'number') {
+                    perfState.inferenceMs = perfState.inferenceMs > 0
+                        ? alpha * visionData.perf.inference_ms + (1 - alpha) * perfState.inferenceMs
+                        : visionData.perf.inference_ms;
+                } else if (inferenceFps > 0.1) {
+                    perfState.inferenceMs = perfState.inferencePeriodMs;
+                }
+                if (typeof visionData.perf.postprocess_ms === 'number') {
+                    perfState.postprocessMs = perfState.postprocessMs > 0
+                        ? alpha * visionData.perf.postprocess_ms + (1 - alpha) * perfState.postprocessMs
+                        : visionData.perf.postprocess_ms;
+                } else if (postprocessFps > 0.1) {
+                    perfState.postprocessMs = perfState.postprocessPeriodMs;
                 }
                 if (cameraFps > 0) {
                     perfState.cameraFps = alpha * cameraFps + (1 - alpha) * perfState.cameraFps;
@@ -1239,6 +1285,16 @@ async function updateOverview() {
             if (perfPreprocessEl && perfState.preprocessMs > 0) perfPreprocessEl.textContent = Math.round(perfState.preprocessMs) + ' ms';
             if (perfInferenceEl && perfState.inferenceMs > 0) perfInferenceEl.textContent = Math.round(perfState.inferenceMs) + ' ms';
             if (perfPostprocessEl && perfState.postprocessMs > 0) perfPostprocessEl.textContent = Math.round(perfState.postprocessMs) + ' ms';
+            if (perfPreprocessEl && perfState.preprocessPeriodMs > 0) perfPreprocessEl.title = `线程周期约 ${Math.round(perfState.preprocessPeriodMs)} ms`;
+            if (perfInferenceEl && perfState.inferencePeriodMs > 0) {
+                const batchMs = visionData.perf.inference_batch_ms;
+                const batchSize = visionData.perf.inference_batch_size || 0;
+                const batchText = typeof batchMs === 'number'
+                    ? `batch总耗时 ${Math.round(batchMs)} ms / ${batchSize || '?'} 路`
+                    : 'batch总耗时 --';
+                perfInferenceEl.title = `${batchText}；线程周期约 ${Math.round(perfState.inferencePeriodMs)} ms`;
+            }
+            if (perfPostprocessEl && perfState.postprocessPeriodMs > 0) perfPostprocessEl.title = `线程周期约 ${Math.round(perfState.postprocessPeriodMs)} ms`;
             if (perfCameraEl && perfState.cameraFps > 0) perfCameraEl.textContent = Math.round(perfState.cameraFps) + ' FPS';
         }
         

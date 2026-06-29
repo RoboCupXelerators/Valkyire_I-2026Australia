@@ -10,7 +10,10 @@ import time
 try:
     from ReasonData import Settings  # type: ignore
 except Exception:  # pragma: no cover
-    from src.ReasonData import Settings  # type: ignore
+    try:
+        from src.ReasonData import Settings  # type: ignore
+    except Exception:  # pragma: no cover
+        from .merged_settings import Settings  # type: ignore
 
 try:
     from vision_utils import Detect_Method, DATA_DIR  # type: ignore
@@ -69,6 +72,8 @@ class UnitedVision(Detect_Method):
         # BlobBased backend does not provide chassis/ball queues.
         # In that mode, BlobBased updates self.BallPos directly in its own thread.
         self._queue_backend = hasattr(self, "BallQueue") and hasattr(self, "ChassisQueue")
+        self.PostProcessMs = float(getattr(self, "PostProcessMs", 0.0) or 0.0)
+        self._postprocess_lock = threading.Lock()
 
         # Calibration for Pixel2CM/CM2Pixel. BlobBased already loads calibration
         # via VisionPreUntil, but AI/TI pipelines historically relied on this class.
@@ -184,6 +189,20 @@ class UnitedVision(Detect_Method):
                     t.join(timeout=join_timeout)
             except Exception:
                 pass
+
+    def _record_postprocess_ms(self, start_time):
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        lock = getattr(self, "_postprocess_lock", None)
+        if lock is None:
+            self.PostProcessMs = elapsed_ms
+            return
+
+        with lock:
+            previous = float(getattr(self, "PostProcessMs", 0.0) or 0.0)
+            if previous <= 0.0:
+                self.PostProcessMs = elapsed_ms
+            else:
+                self.PostProcessMs = previous * 0.8 + elapsed_ms * 0.2
 
     def ApplyPerspectiveTransform(self, px_x, px_y, Matrix):
         # OpenCV image plane: origin is top-left, +x right, +y down.
@@ -443,6 +462,7 @@ class UnitedVision(Detect_Method):
             except Exception:
                 continue
             # print(OutputBuffer)
+            post_start = time.perf_counter()
             self.PostProcessTF = self.PostProcessTF + 1
             self.MergedChassisList = []
             ChassisList = []
@@ -501,6 +521,7 @@ class UnitedVision(Detect_Method):
                 # print(self.MergedChassisList)
                 except:
                     continue
+            self._record_postprocess_ms(post_start)
             time.sleep(0.01)
 
     def GetChassisPos(self):
@@ -523,6 +544,7 @@ class UnitedVision(Detect_Method):
             except Exception:
                 continue
 
+            post_start = time.perf_counter()
             goals = []
             blue_goal = None
             yellow_goal = None
@@ -594,6 +616,7 @@ class UnitedVision(Detect_Method):
                 self._goal_bbox = best_goal
                 self._goal_bbox_ts = time.time()
             self._update_bbox_distance_caches()
+            self._record_postprocess_ms(post_start)
             time.sleep(0.01)
 
     def GetGoalsPos(self):
@@ -643,6 +666,7 @@ class UnitedVision(Detect_Method):
             except Exception:
                 continue
 
+            post_start = time.perf_counter()
             # Update bbox cache if backend provides it (TunaIntelligence)
             self.BallBBoxUpdate()
 
@@ -712,6 +736,7 @@ class UnitedVision(Detect_Method):
                 # hold last position briefly to reduce flicker
                 if (time.time() - getattr(self, "_ball_pos_ts", 0.0)) > self.ball_hold_seconds:
                     self.BallPos = [0, 0]
+            self._record_postprocess_ms(post_start)
             time.sleep(0.01)
 
     def GetBallPos(self):

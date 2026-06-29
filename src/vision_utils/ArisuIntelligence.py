@@ -14,6 +14,10 @@ class ArisuIntelligence(VisionPreUntil):
 
         self.PreProcessTF = 0
         self.InferTF = 0
+        self.PreProcessMs = 0.0
+        self.InferMs = 0.0
+        self.InferBatchMs = 0.0
+        self.InferBatchSize = 0
 
         self.HailoParams = VDevice.create_params()
         self.HailoParams.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
@@ -125,6 +129,7 @@ class ArisuIntelligence(VisionPreUntil):
         output: float32
         '''
         while(1):
+            preprocess_t0 = time.time()
             # Wait until model is ready; if Hailo is busy, InitConfiguredModel will retry.
             if not self._model_ready.wait(timeout=0.5):
                 time.sleep(0.05)
@@ -170,6 +175,7 @@ class ArisuIntelligence(VisionPreUntil):
                 continue
             else:
                 self.PreProcessTF = self.PreProcessTF + 1
+                self.PreProcessMs = (time.time() - preprocess_t0) * 1000.0
                 self.YOLOQueue.put(BindingsList)
             time.sleep(0.01)
                 
@@ -197,7 +203,11 @@ class ArisuIntelligence(VisionPreUntil):
                     continue
                 if not BindingsList:
                     continue
+                infer_t0 = time.time()
                 configured.run(BindingsList, 2000)
+                self.InferBatchSize = len(BindingsList)
+                self.InferBatchMs = (time.time() - infer_t0) * 1000.0
+                self.InferMs = self.InferBatchMs / max(1, self.InferBatchSize)
             except Exception as e:
                 # DO NOT recurse (will explode the stack). Mark model not-ready so init thread re-acquires device.
                 self.logger.error(f"Hailo inference error: {e}. Marking model as not-ready and waiting for re-init.")
