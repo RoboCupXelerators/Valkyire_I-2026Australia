@@ -110,6 +110,8 @@ class XeleratorSceneControl:
         drag: float | None = None,
         angular_drag: float | None = None,
         ball_friction: float | None = None,
+        robot_friction: float | None = None,
+        ball_rolling_resistance: float | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {}
         if drag is not None:
@@ -118,6 +120,10 @@ class XeleratorSceneControl:
             payload["angular_drag"] = float(angular_drag)
         if ball_friction is not None:
             payload["ball_friction"] = float(ball_friction)
+        if robot_friction is not None:
+            payload["robot_friction"] = float(robot_friction)
+        if ball_rolling_resistance is not None:
+            payload["ball_rolling_resistance"] = float(ball_rolling_resistance)
         return self.request("set_ball_physics", **payload)
 
     def set_robot_tuning(
@@ -191,6 +197,11 @@ def main() -> int:
     parser.add_argument("--linear-scale", type=float, default=None)
     parser.add_argument("--lateral-scale", type=float, default=None)
     parser.add_argument("--angular-scale", type=float, default=None)
+    parser.add_argument("--drag", type=float, default=None)
+    parser.add_argument("--angular-drag", type=float, default=None)
+    parser.add_argument("--ball-friction", type=float, default=None)
+    parser.add_argument("--robot-friction", type=float, default=None)
+    parser.add_argument("--ball-rolling-resistance", type=float, default=None)
     parser.add_argument("--strength", type=float, default=1.0)
     parser.add_argument("--dribbler-mode", default="contact_realistic")
     parser.add_argument("--no-reset-velocity", action="store_true")
@@ -208,6 +219,14 @@ def main() -> int:
             linear_scale=args.linear_scale,
             lateral_scale=args.lateral_scale,
             angular_scale=args.angular_scale,
+        )
+    elif args.cmd == "set_ball_physics":
+        response = ctl.set_ball_physics(
+            drag=args.drag,
+            angular_drag=args.angular_drag,
+            ball_friction=args.ball_friction,
+            robot_friction=args.robot_friction,
+            ball_rolling_resistance=args.ball_rolling_resistance,
         )
     elif args.cmd == "set_dribble":
         response = ctl.set_dribble(args.robot_id, True, strength=args.strength)

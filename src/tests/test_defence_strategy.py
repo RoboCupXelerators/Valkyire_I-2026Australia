@@ -69,12 +69,65 @@ def test_defence_challenges_danger_ball(monkeypatch):
     monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-40.0, 0.0, 0.0])
     monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [30.0, 0.0])
     monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [25.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldChassisPos", lambda: [])
     monkeypatch.setattr(defence.lockball, "LockBallSlip", lambda: calls.append("lock"))
 
     strategy.step()
 
     assert strategy.state == "challenge_ball"
     assert calls == ["lock"]
+
+
+def test_defence_presses_midfield_before_free_shot(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=-1.0, chase_distance_cm=70.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [60.0, 30.0, 180.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [-95.0, -30.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [-12.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Angle", lambda _start, _end: 180.0)
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+
+    def fake_pos2pos(target, speed_gain=None):
+        captured["target"] = target
+        captured["speed_gain"] = speed_gain
+        return False
+
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+
+    strategy.step()
+
+    assert strategy.state == "press_ball"
+    assert captured["target"][0] > 0.0
+    assert abs(captured["target"][1]) < 1.0
+
+
+def test_defence_blocks_contested_ball_without_ram(monkeypatch):
+    captured = {}
+    locks = []
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=-1.0, chase_distance_cm=88.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [48.0, -16.0, 180.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [58.0, -16.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [-12.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldChassisPos", lambda: [[-5.0, 8.0, 0.0, 0.0]])
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Angle", lambda _start, _end: 180.0)
+    monkeypatch.setattr(defence.lockball, "LockBallSlip", lambda: locks.append("lock"))
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+
+    def fake_pos2pos(target, speed_gain=None):
+        captured["target"] = target
+        captured["speed_gain"] = speed_gain
+        return False
+
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+
+    strategy.step()
+
+    assert strategy.state == "block_contested_ball"
+    assert locks == []
+    assert captured["target"][0] > 0.0
 
 
 def test_defence_covers_direct_shot_when_ball_is_not_chased(monkeypatch):

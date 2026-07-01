@@ -35,10 +35,17 @@ def _make_bits_for_possession(ball_x_m: float | None, ball_y_m: float | None, *,
 
 
 def test_sim_bits_infers_possession_when_dribbler_covers_ball():
-    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.7)
+    bits = _make_bits_for_possession(0.09, 0.005, dribble=0.7)
 
     assert bits.HasBall() is True
     assert bits.GetBallPos() == [0xDDD, 0xDDD]
+
+
+def test_sim_bits_keeps_free_ball_when_only_in_recovery_window():
+    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.7)
+
+    assert bits.HasBall() is False
+    assert bits.GetBallPos() == [12.0, 1.0]
 
 
 def test_sim_bits_keeps_free_ball_when_dribbler_is_off():

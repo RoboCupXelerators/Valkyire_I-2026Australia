@@ -35,20 +35,62 @@ venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py src\test
 
 Result: `40 passed in 0.28s`
 
-Unity scene-control smoke was attempted:
+Unity scene-control smoke was blocked on 2026-06-29, then re-run successfully on 2026-07-01 after scene-control/MCP recovered:
 
 ```powershell
 venv312\Scripts\python.exe -m src.utils.XeleratorSceneControl ping
 ```
 
-Current result: failed with `ConnectionResetError: [WinError 10054]`, so the Unity scene-control UDP endpoint is not accepting requests from the runner at the moment. The Unity validation commands below are ready to rerun once `ping` returns `ok: true`.
+Current result: `ok: true`.
 
-Local diagnostics at the time of this report:
+Earlier local diagnostics while blocked:
 
 - `Get-NetUDPEndpoint -LocalPort 20100` returned no listener.
 - `Test-NetConnection 127.0.0.1 -Port 8090` failed.
 - `Test-NetConnection ::1 -Port 8090` succeeded, with Unity listening on IPv6 loopback.
 - Unity MCP tool calls timed out, so MCP was reachable at TCP level but not responding to tool requests.
+
+Unity smoke results after recovery:
+
+- 1v0: `ok=True`, output `tmp_strategy_1v0.json\run_20260701_123011`, ally 2 - enemy 0, offence states include `quick_shot`, `attack_dodge`, `feint_drive`.
+- 1v1: `ok=True`, output `tmp_strategy_1v1.json\run_20260701_123041`, ally 1 - enemy 0, defence states include `cover_direct_shot`, `intercept_lane`, `cover_sideline_shot`.
+- 2v1: `ok=True`, output `tmp_strategy_2v1.json\run_20260701_123110`, ally 1 - enemy 0, defence states include `cover_direct_shot`, `cover_wall_shot`, `cover_sideline_shot`, `intercept_lane`, `challenge_ball`, `clear_ball`.
+- 2v2: `ok=True`, output `tmp_strategy_2v2.json\run_20260701_123139`, ally 0 - enemy 0, all robot processes exited 0, defence states include `cover_direct_shot`, `cover_wall_shot`, `cover_sideline_shot`, `intercept_lane`.
+
+## 2026-07-01 Control Follow-up
+
+After video review, three control issues were reproduced:
+
+- Wall shots were too eager when the robot was not deep enough or the lane was only mildly blocked.
+- Own-half possession could enter shot/carry logic too early.
+- In 1v1, the simulator adapter sometimes converted the dribbler recovery window into the `[0xDDD, 0xDDD]` possession sentinel even when Unity scene status still reported `has_ball=False`.
+
+Fixes:
+
+- Tightened `choose_attack_plan()` shot gates so wall shots require a deeper field position and a clearly blocked direct lane.
+- Added `own_half_carry`, `near_ball_capture`, `near_ball_align`, and `own_half_wide_clear` branches in `offence.py` to reduce close-ball jitter and prevent own-half random shots.
+- Tightened simulator possession inference in `XeleratorSimBits`: the adapter now only emits the possession sentinel when the ball is near the actual dribbler center, not merely inside the wider recovery window.
+- Added regression coverage for gentle close-ball capture, sideways alignment, own-half wide clear, and simulator possession semantics.
+
+Final 1v1 one-minute replay:
+
+```powershell
+venv312\Scripts\python.exe src\tests\sim_multi_robot_scrimmage.py --robots 1,3 --roles offence,defence --duration 60 --continue-after-goal --allow-no-goal --output tmp_strategy_1v1_controlfix7_replay
+```
+
+Result: `ok=True`, output `tmp_strategy_1v1_controlfix7_replay\run_20260701_151902`.
+
+- Score: ally 15 - enemy 0.
+- Out-of-bounds / penalty events: 0.
+- Lack-of-progress events: 0.
+- Multi-possession frames: 0.
+- Max holders: 1.
+- Holder frames: 90 / 237 scene frames.
+- R1 total path length from trace: 2720.069 cm.
+- R1 states: `near_ball_acquire`, `chase_ball`, `own_half_carry`, `attack_dodge`, `quick_shot`, `turn_to_ball`.
+- R1 shot actions: `direct_shot` only in this run; no `wall_shot` or `sideline_shot` was selected under this 1v1 scene.
+
+Interpretation: the 1v1 control failure is fixed under the current replay command, but the 15-0 score suggests the test scene is still too easy for measuring realistic battle intensity. Use a stricter defender start or longer mixed 2v2 replay before judging final balance.
 
 ## Reproduction Commands
 
@@ -69,7 +111,7 @@ venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_of
 `wall_shot`:
 
 ```powershell
-venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_offence_wall_shoots_when_direct_lane_is_blocked -q
+venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_offence_wall_shoots_when_deep_direct_lane_is_blocked -q
 ```
 
 `sideline_drive`:
@@ -111,7 +153,7 @@ venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_at
 ### 1v1 - blocker response / wall and sideline
 
 ```powershell
-venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_offence_wall_shoots_when_direct_lane_is_blocked src\tests\test_offence_boundary.py::test_offence_sets_up_wall_shot_before_deep_zone src\tests\test_offence_boundary.py::test_offence_sideline_drives_before_shot_window src\tests\test_defence_strategy.py::test_defence_covers_direct_shot_when_ball_is_not_chased -q
+venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_offence_wall_shoots_when_deep_direct_lane_is_blocked src\tests\test_offence_boundary.py::test_offence_sets_up_wall_shot_before_deep_zone src\tests\test_offence_boundary.py::test_offence_sideline_drives_before_shot_window src\tests\test_defence_strategy.py::test_defence_covers_direct_shot_when_ball_is_not_chased -q
 ```
 
 ### 2v1 - crowded front lane
@@ -129,7 +171,7 @@ venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py::test_at
 ### Full related offline suite
 
 ```powershell
-venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py src\tests\test_defence_strategy.py -q
+venv312\Scripts\python.exe -m pytest src\tests\test_offence_boundary.py src\tests\test_defence_strategy.py src\tests\test_xelerator_sim_bits.py -q
 ```
 
 ### Unity smoke commands after scene-control is healthy

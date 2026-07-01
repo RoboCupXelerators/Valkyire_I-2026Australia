@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import random
 import subprocess
 import sys
 import time
@@ -45,6 +47,74 @@ LAYOUTS = {
 }
 
 DEFAULT_BALL = (-12.0, 0.0)
+SIM_WHEEL_DIAMETER_M = 0.056
+SIM_WHEEL_MAX_RPM = 500.0
+SIM_WHEEL_TO_V_56MM_500RPM = math.pi * SIM_WHEEL_DIAMETER_M / 60.0
+SIM_LINEAR_SCALE = 1.0
+SIM_LATERAL_SCALE = 0.64
+SIM_ANGULAR_SCALE = 2.20
+SIM_BALL_DRAG = 0.02
+SIM_BALL_ANGULAR_DRAG = 0.08
+SIM_BALL_ROLLING_RESISTANCE = 3.1
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _avoid_goal_box_start(x: float, y: float) -> tuple[float, float]:
+    """Keep randomized starts out of the simulator penalty box."""
+
+    if abs(x) > 62.0 and abs(y) < 52.0:
+        if abs(y) >= 36.0:
+            y = 52.0 if y >= 0.0 else -52.0
+        else:
+            x = 62.0 if x >= 0.0 else -62.0
+    return x, y
+
+
+def _random_layout(
+    robots: list[int],
+    ball: tuple[float, float],
+    seed: int,
+) -> dict[int, tuple[float, float, float]]:
+    rng = random.Random(seed)
+    ball_x, ball_y = float(ball[0]), float(ball[1])
+    layout = dict(DEFAULT_LAYOUT)
+
+    for robot_id in robots:
+        if robot_id in (1, 2):
+            x = ball_x - rng.uniform(34.0, 92.0)
+            y = ball_y + rng.uniform(-58.0, 58.0)
+            yaw = 0.0
+        else:
+            x = ball_x + rng.uniform(30.0, 92.0)
+            y = ball_y + rng.uniform(-58.0, 58.0)
+            yaw = 180.0
+
+        if robot_id == 2:
+            y += 30.0 if y <= ball_y else -30.0
+        elif robot_id == 4:
+            y += 34.0 if y <= ball_y else -34.0
+
+        x = _clip(x, -86.0, 86.0)
+        y = _clip(y, -58.0, 58.0)
+        x, y = _avoid_goal_box_start(x, y)
+        layout[robot_id] = (x, y, yaw)
+
+    return layout
+
+
+def _layout_for_round(
+    layout_name: str,
+    robots: list[int],
+    ball: tuple[float, float],
+    seed: int,
+    round_index: int,
+) -> dict[int, tuple[float, float, float]]:
+    if layout_name == "random":
+        return _random_layout(robots, ball, seed + round_index * 7919)
+    return LAYOUTS.get(layout_name, DEFAULT_LAYOUT)
 
 
 def _parse_robots(value: str) -> list[int]:
@@ -74,16 +144,44 @@ def _write_jsonl(path: Path, row: dict[str, Any]) -> None:
         fh.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def _recover_out_of_bounds_ball(
+    ctl: XeleratorSceneControl,
+    status: dict[str, Any],
+) -> dict[str, Any] | None:
+    ball_status = status.get("ball") if isinstance(status.get("ball"), dict) else {}
+    try:
+        ball_x = float(ball_status.get("x_cm", 0.0))
+        ball_y = float(ball_status.get("y_cm", 0.0))
+    except (TypeError, ValueError):
+        return None
+
+    if abs(ball_x) <= 128.0 and abs(ball_y) <= 98.0:
+        return None
+
+    target_x = _clip(ball_x, -67.0, 67.0)
+    target_y = _clip(ball_y, -50.0, 50.0)
+    if abs(target_x) > 60.0 and abs(target_y) < 34.0:
+        target_y = 50.0 if target_y >= 0.0 else -50.0
+    ctl.set_ball(target_x, target_y, reset_velocity=True)
+    return {
+        "from": [round(ball_x, 3), round(ball_y, 3)],
+        "to": [round(target_x, 3), round(target_y, 3)],
+    }
+
+
 def _place_robots(
     ctl: XeleratorSceneControl,
     robots: list[int],
     ball: tuple[float, float],
     layout: dict[int, tuple[float, float, float]],
+    *,
+    reset_score: bool = True,
 ) -> None:
-    try:
-        ctl.reset_score()
-    except Exception:
-        pass
+    if reset_score:
+        try:
+            ctl.reset_score()
+        except Exception:
+            pass
     active = set(robots)
     for robot_id in (1, 2, 3, 4):
         try:
@@ -93,6 +191,113 @@ def _place_robots(
         x, y, yaw = layout[robot_id]
         ctl.set_robot(robot_id, x, y, yaw, active=robot_id in active)
     ctl.set_ball(ball[0], ball[1], reset_velocity=True)
+
+
+def _set_rules(
+    ctl: XeleratorSceneControl,
+    *,
+    enabled: bool,
+) -> dict[str, Any]:
+    return ctl.set_rules(
+        penalties=enabled,
+        lack=enabled,
+        pushing=enabled,
+    )
+
+
+def _refresh_rules_after_manual_place(
+    ctl: XeleratorSceneControl,
+    *,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    _set_rules(ctl, enabled=False)
+    return _set_rules(ctl, enabled=True)
+
+
+def _lock_active_robots(
+    ctl: XeleratorSceneControl,
+    status: dict[str, Any],
+    robots: list[int],
+    suspended: set[int] | None = None,
+) -> dict[str, Any] | None:
+    expected = set(robots) - set(suspended or set())
+    scene_robots = status.get("robots") if isinstance(status.get("robots"), list) else []
+    unexpected = [robot for robot in scene_robots if robot.get("active") and int(robot.get("id", -1)) not in expected]
+    missing = [robot for robot in scene_robots if not robot.get("active") and int(robot.get("id", -1)) in expected]
+    if not unexpected and not missing:
+        return None
+
+    for robot in unexpected:
+        robot_id = int(robot.get("id", -1))
+        if robot_id < 0:
+            continue
+        try:
+            ctl.set_dribble(robot_id, False, strength=0.0)
+        except Exception:
+            pass
+        ctl.set_robot(
+            robot_id,
+            float(robot.get("x_cm", 0.0)),
+            float(robot.get("y_cm", 0.0)),
+            float(robot.get("yaw_deg", 0.0)),
+            active=False,
+        )
+
+    for robot in missing:
+        robot_id = int(robot.get("id", -1))
+        if robot_id < 0:
+            continue
+        ctl.set_robot(
+            robot_id,
+            float(robot.get("x_cm", 0.0)),
+            float(robot.get("y_cm", 0.0)),
+            float(robot.get("yaw_deg", 0.0)),
+            active=True,
+        )
+
+    return {
+        "unexpected_active": [int(robot.get("id", -1)) for robot in unexpected],
+        "missing_active": [int(robot.get("id", -1)) for robot in missing],
+    }
+
+
+def _penalized_robot(event: str, robots: list[int]) -> int | None:
+    normalized = event.strip().lower()
+    if "penalty" not in normalized:
+        return None
+    for robot_id in robots:
+        if f"r{robot_id} penalty" in normalized:
+            return robot_id
+    return None
+
+
+def _apply_physics_tuning(ctl: XeleratorSceneControl) -> dict[str, Any]:
+    robot_response = ctl.set_robot_tuning(
+        robot_id=0,
+        linear_scale=SIM_LINEAR_SCALE,
+        lateral_scale=SIM_LATERAL_SCALE,
+        angular_scale=SIM_ANGULAR_SCALE,
+    )
+    ball_response = ctl.set_ball_physics(
+        drag=SIM_BALL_DRAG,
+        angular_drag=SIM_BALL_ANGULAR_DRAG,
+        ball_rolling_resistance=SIM_BALL_ROLLING_RESISTANCE,
+    )
+    return {
+        "robot": robot_response,
+        "ball": ball_response,
+        "wheel_diameter_m": SIM_WHEEL_DIAMETER_M,
+        "wheel_max_rpm": SIM_WHEEL_MAX_RPM,
+        "wheel_to_v": SIM_WHEEL_TO_V_56MM_500RPM,
+        "linear_scale": SIM_LINEAR_SCALE,
+        "lateral_scale": SIM_LATERAL_SCALE,
+        "angular_scale": SIM_ANGULAR_SCALE,
+        "ball_drag": SIM_BALL_DRAG,
+        "ball_angular_drag": SIM_BALL_ANGULAR_DRAG,
+        "ball_rolling_resistance": SIM_BALL_ROLLING_RESISTANCE,
+    }
 
 
 def _spawn_robot(
@@ -109,6 +314,8 @@ def _spawn_robot(
     attack_sign = "-1" if robot_id >= 3 else "1"
     env["OFFENCE_ATTACK_SIGN"] = attack_sign
     env["DEFENCE_ATTACK_SIGN"] = attack_sign
+    env["XEL_WHEEL_TO_V"] = str(SIM_WHEEL_TO_V_56MM_500RPM)
+    env["XEL_SIM_PLANAR_MOVE_SCALE"] = "1.0"
     env["XEL_SIM_BALL_STATUS_FALLBACK"] = "1"
     env.setdefault("OFFENCE_LOG_EVERY", "1.0")
     env.setdefault("LUNAPRE_FULL_LOG", "1")  # enable Pos2Pos PID debug logs
@@ -400,6 +607,34 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
             lines.append(f"- first_rule_event={scene.get('first_rule_event')}")
         lines.append("")
 
+    physics = report.get("physics_tuning") or {}
+    if physics:
+        lines.extend(
+            [
+                "## Physics",
+                "",
+                f"- robot linear_scale={physics.get('linear_scale')} lateral_scale={physics.get('lateral_scale')} "
+                f"angular_scale={physics.get('angular_scale')}",
+                f"- ball drag={physics.get('ball_drag')} angular_drag={physics.get('ball_angular_drag')} "
+                f"rolling_resistance={physics.get('ball_rolling_resistance')}",
+                "",
+            ]
+        )
+
+    layout_history = report.get("layout_history") or []
+    if layout_history:
+        lines.extend(["## Layout", ""])
+        for item in layout_history:
+            layout = item.get("layout") if isinstance(item, dict) else {}
+            entries = []
+            for robot_id in sorted(layout, key=lambda value: int(value)):
+                pose = layout[robot_id]
+                if not pose or len(pose) < 3:
+                    continue
+                entries.append(f"R{robot_id}=({float(pose[0]):.1f},{float(pose[1]):.1f},{float(pose[2]):.0f})")
+            lines.append(f"- round {item.get('round')}: {' '.join(entries)}")
+        lines.append("")
+
     lines.extend(
         [
             "## Robots",
@@ -424,9 +659,15 @@ def main() -> int:
     parser.add_argument("--ball-y", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_BALL_Y", str(DEFAULT_BALL[1]))))
     parser.add_argument(
         "--layout",
-        choices=sorted(LAYOUTS),
+        choices=sorted([*LAYOUTS, "random"]),
         default=os.environ.get("SIM_SCRIMMAGE_LAYOUT", "default"),
-        help="Initial robot layout. 'default' preserves the centered clash; 'staggered' offsets enemies so one alpha can acquire first.",
+        help="Initial robot layout. Use 'random' with --seed for reproducible randomized starts.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for --layout random. Defaults to current time when omitted.",
     )
     parser.add_argument("--output", default=os.environ.get("SIM_SCRIMMAGE_OUTPUT", "Records/multi_robot_scrimmage"))
     parser.add_argument(
@@ -470,7 +711,10 @@ def main() -> int:
 
     robots = _parse_robots(args.robots)
     roles = _parse_roles(args.roles, robots)
-    layout = LAYOUTS.get(args.layout, DEFAULT_LAYOUT)
+    ball = (float(args.ball_x), float(args.ball_y))
+    layout_seed = int(args.seed) if args.seed is not None else int(time.time())
+    layout_round = 0
+    layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
     out_dir = Path(args.output) / time.strftime("run_%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     scene_trace = out_dir / "scene_status.jsonl"
@@ -479,6 +723,10 @@ def main() -> int:
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "ok": False,
         "robots": [],
+        "roster_corrections": [],
+        "layout": args.layout,
+        "layout_seed": layout_seed,
+        "layout_history": [],
     }
 
     processes: dict[int, subprocess.Popen] = {}
@@ -491,12 +739,11 @@ def main() -> int:
             "lack": rules_enabled,
             "pushing": rules_enabled,
         }
-        report["rules_response"] = ctl.set_rules(
-            penalties=rules_enabled,
-            lack=rules_enabled,
-            pushing=rules_enabled,
-        )
-        _place_robots(ctl, robots, (float(args.ball_x), float(args.ball_y)), layout)
+        report["rules_response"] = _set_rules(ctl, enabled=rules_enabled)
+        report["physics_tuning"] = _apply_physics_tuning(ctl)
+        report["layout_history"].append({"round": layout_round, "layout": layout})
+        _place_robots(ctl, robots, ball, layout)
+        report["initial_rule_refresh"] = _refresh_rules_after_manual_place(ctl, enabled=rules_enabled)
         time.sleep(0.3)
 
         for robot_id in robots:
@@ -510,9 +757,50 @@ def main() -> int:
         deadline = time.time() + max(0.2, float(args.duration)) + max(1.0, float(args.startup_grace))
         ended_after_goal = False
         stop_after_goal_at: float | None = None
+        suspended_robots: set[int] = set()
+        previous_goal_total = 0
         while time.time() < deadline and any(proc.poll() is None for proc in processes.values()):
             try:
                 status = ctl.status()
+                score = status.get("score") if isinstance(status.get("score"), dict) else {}
+                event = str(score.get("last_event", "")).strip() if score else ""
+                penalized = _penalized_robot(event, robots)
+                if penalized is not None:
+                    suspended_robots.add(penalized)
+
+                current_goal_total = _score_total(score)
+                if args.continue_after_goal and current_goal_total > previous_goal_total:
+                    layout_round += 1
+                    layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
+                    report["layout_history"].append({"round": layout_round, "layout": layout})
+                    _place_robots(
+                        ctl,
+                        robots,
+                        ball,
+                        layout,
+                        reset_score=False,
+                    )
+                    report.setdefault("round_rule_refreshes", []).append(
+                        {
+                            "round": layout_round,
+                            "response": _refresh_rules_after_manual_place(ctl, enabled=rules_enabled),
+                        }
+                    )
+                    time.sleep(0.05)
+                    previous_goal_total = current_goal_total
+                    status = ctl.status()
+                    suspended_robots.clear()
+
+                correction = _lock_active_robots(ctl, status, robots, suspended_robots)
+                if correction is not None:
+                    correction["time"] = status.get("time")
+                    report["roster_corrections"].append(correction)
+                    status = ctl.status()
+                ball_recovery = _recover_out_of_bounds_ball(ctl, status)
+                if ball_recovery is not None:
+                    ball_recovery["time"] = status.get("time")
+                    report.setdefault("ball_recoveries", []).append(ball_recovery)
+                    status = ctl.status()
                 _write_jsonl(scene_trace, {"t_wall": time.time(), "status": status})
                 target_goals = max(1, int(args.target_goals))
                 if not args.allow_no_goal and not args.continue_after_goal and _score_total(status.get("score")) >= target_goals:

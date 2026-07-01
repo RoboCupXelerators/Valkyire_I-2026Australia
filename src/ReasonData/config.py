@@ -93,8 +93,8 @@ class Preference:
             "MaxSpeed": 500,        # 最大速度值
             "NormalizeWheelOutput": True,
             "EnableTractionControl": True,
-            "TractionPlanarAccelLimit": 600.0,
-            "TractionAngularAccelLimit": 900.0,
+            "TractionPlanarAccelLimit": 950.0,
+            "TractionAngularAccelLimit": 1100.0,
             "TractionDtMax": 0.08,
             "EnableWheelSlewLimit": True,
             "TractionWheelSlewRate": 1800.0,
@@ -134,12 +134,12 @@ class Preference:
                 "Kp": 1.1,
                 "Ki": 0.0,
                 "Kd": 0.08,
-                "OutputLimit": 160,
+                "OutputLimit": 340,
                 "SampleTime": 0.02,
                 "ResetFrames": 300,
                 "ArrivalScale": 0.8,
                 "MinSpeedGain": 0.25,
-                "MaxSpeedGain": 4.0
+                "MaxSpeedGain": 4.5
             },
         },
         "Network": {
@@ -160,7 +160,7 @@ class Preference:
             "MultiRobotMode": "per_port",  # per_port / hub
             "SceneControlPort": 20100,
             # 运动参数缩放
-            "WheelToV": 0.008,
+            "WheelToV": 0.0029321531433504737,
             "WheelToWz": 0.02,
             "YawOffsetDeg": 0.0,
             "KickStrength": 1.0,

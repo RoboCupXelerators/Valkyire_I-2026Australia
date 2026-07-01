@@ -112,8 +112,8 @@ def build_scene_control() -> XeleratorSceneControl | None:
         if _env_bool("SIM_SCENE_APPLY_TUNING", True):
             ctl.set_robot_tuning(
                 robot_id=int(_env_float("SIM_SCENE_TUNING_ROBOT_ID", 0)),
-                linear_scale=_env_float("SIM_ROBOT_LINEAR_SCALE", 0.26),
-                lateral_scale=_env_float("SIM_ROBOT_LATERAL_SCALE", 0.167),
+                linear_scale=_env_float("SIM_ROBOT_LINEAR_SCALE", 1.0),
+                lateral_scale=_env_float("SIM_ROBOT_LATERAL_SCALE", 0.64),
                 angular_scale=_env_float("SIM_ROBOT_ANGULAR_SCALE", 2.20),
             )
         logger.info("[SimMotion] scene control connected on {}:{}", ctl.host, ctl.port)

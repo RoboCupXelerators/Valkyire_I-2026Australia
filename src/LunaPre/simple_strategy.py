@@ -43,29 +43,31 @@ def choose_attack_plan(pose, enemies, attack_dir: float, direct_lane_score: floa
                 nearest_gap = forward_gap
                 nearest_lateral = lateral_gap
 
-    if progress >= 18.0 and abs_y <= 28.0 and direct_lane_score >= 0.88:
+    if progress >= 34.0 and abs_y <= 24.0 and direct_lane_score >= 0.92:
         return "direct_shot", attack_dir * GOAL_X_CM, 0.0, 0.0, 0.0
 
-    if abs_y >= 52.0 and progress >= 18.0:
+    if abs_y >= 52.0 and progress >= 24.0:
         target_y = side * GOAL_POST_Y_CM
-        if progress >= 42.0:
+        if progress >= 58.0:
             return "sideline_shot", attack_dir * GOAL_X_CM, target_y, attack_dir * 32.0, -side * 14.0
-        return "sideline_drive", attack_dir * GOAL_X_CM, target_y, attack_dir * 52.0, side * 12.0
+        return "sideline_drive", attack_dir * 58.0, target_y, attack_dir * 46.0, -side * 18.0
 
-    if front_count >= 2 and progress >= 28.0:
+    if front_count >= 2 and progress >= 30.0 and abs_y <= 34.0:
         if abs(nearest_lateral) > 4.0:
             side = -1.0 if nearest_lateral > 0.0 else 1.0
         target_x = x + attack_dir * 42.0
         target_y = side * SIDE_WALL_Y_CM
-        if progress >= 38.0:
+        if progress >= 58.0 and nearest_gap <= 60.0 and direct_lane_score <= -0.18:
             return "wall_shot", target_x, target_y, attack_dir * 28.0, side * 18.0
         return "wall_setup", target_x, target_y, attack_dir * 44.0, side * 26.0
 
-    if front_count == 1 and direct_lane_score < -0.05 and progress >= 38.0:
+    if front_count == 1 and direct_lane_score < -0.18 and progress >= 44.0 and abs_y <= 28.0:
         if abs(nearest_lateral) > 4.0:
             side = -1.0 if nearest_lateral > 0.0 else 1.0
         target_x = x + attack_dir * 42.0
         target_y = side * SIDE_WALL_Y_CM
+        if progress < 64.0 or nearest_gap > 52.0:
+            return "wall_setup", target_x, target_y, attack_dir * 42.0, side * 22.0
         return "wall_shot", target_x, target_y, attack_dir * 28.0, side * 18.0
 
     return "", 0.0, 0.0, 0.0, 0.0

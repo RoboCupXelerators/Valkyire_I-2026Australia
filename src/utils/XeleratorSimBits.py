@@ -90,7 +90,7 @@ def _apply_sim_env_defaults(cfg, sim_cfg) -> None:
         sim_twist_from_wheels = bool(
             getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", True))
         )
-        sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.008)))
+        sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.0029321531433504737)))
         sim_wheel_to_wz = float(getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", 0.02)))
         sim_yaw_offset_deg = float(getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", 0.0)))
         sim_yaw_zero_at_start = bool(
@@ -103,7 +103,7 @@ def _apply_sim_env_defaults(cfg, sim_cfg) -> None:
         sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", 0))
     except Exception:
         sim_twist_from_wheels = True
-        sim_wheel_to_v = 0.008
+        sim_wheel_to_v = 0.0029321531433504737
         sim_wheel_to_wz = 0.02
         sim_yaw_offset_deg = 0.0
         sim_yaw_zero_at_start = False
@@ -268,7 +268,7 @@ class XeleratorSimBits:
         # Convert wheel-speed commands (strategy code) into twist for Unity controller.
         self._twist_from_wheels = str(os.environ.get("XEL_TWIST_FROM_WHEELS", "1")).lower() not in {"0", "false", "no"}
         # map strategy wheel units to simulator SI
-        self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", "0.008"))
+        self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", "0.0029321531433504737"))
         self._wheel_to_wz = float(os.environ.get("XEL_WHEEL_TO_WZ", "0.02"))
         # Scale planar translation in simulator to reduce overshoot during chase behaviors
         self._planar_move_scale = float(os.environ.get("XEL_SIM_PLANAR_MOVE_SCALE", "1.0"))
@@ -562,9 +562,13 @@ class XeleratorSimBits:
 
         bx = float(ball[0])
         by = float(ball[1])
+        center_x = 8.5
+        x_min = max(float(self._infer_dribbler_x_min_cm), center_x - 0.6)
+        x_max = min(float(self._infer_dribbler_x_max_cm), center_x + 4.0)
+        y_abs = min(float(self._infer_dribbler_y_abs_cm), 0.6)
         return (
-            self._infer_dribbler_x_min_cm <= bx <= self._infer_dribbler_x_max_cm
-            and abs(by) <= self._infer_dribbler_y_abs_cm
+            x_min <= bx <= x_max
+            and abs(by) <= y_abs
         )
 
     def _vision_dropout(self, speed_mps: float, *, multiplier: float = 1.0) -> bool:

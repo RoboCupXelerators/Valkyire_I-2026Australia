@@ -33,12 +33,12 @@ class DefenceConfig:
     log_every_s: float = float(os.environ.get("DEFENCE_LOG_EVERY", "0.7"))
     guard_x_cm: float = float(os.environ.get("DEFENCE_GUARD_X", "58"))
     guard_y_cm: float = float(os.environ.get("DEFENCE_GUARD_Y", "0"))
-    intercept_offset_cm: float = float(os.environ.get("DEFENCE_INTERCEPT_OFFSET", "28"))
-    chase_distance_cm: float = float(os.environ.get("DEFENCE_CHASE_DISTANCE", "55"))
+    intercept_offset_cm: float = float(os.environ.get("DEFENCE_INTERCEPT_OFFSET", "34"))
+    chase_distance_cm: float = float(os.environ.get("DEFENCE_CHASE_DISTANCE", "88"))
     chase_progress_cm: float = float(os.environ.get("DEFENCE_CHASE_PROGRESS", "10"))
     chase_retreat_cm: float = float(os.environ.get("DEFENCE_CHASE_RETREAT", "-20"))
-    hold_speed_gain: float = float(os.environ.get("DEFENCE_HOLD_GAIN", "1.1"))
-    intercept_speed_gain: float = float(os.environ.get("DEFENCE_INTERCEPT_GAIN", "1.7"))
+    hold_speed_gain: float = float(os.environ.get("DEFENCE_HOLD_GAIN", "1.25"))
+    intercept_speed_gain: float = float(os.environ.get("DEFENCE_INTERCEPT_GAIN", "2.05"))
     recovery_speed_gain: float = float(os.environ.get("DEFENCE_BOUNDARY_RECOVERY_GAIN", "1.2"))
     clear_cooldown_s: float = float(os.environ.get("DEFENCE_CLEAR_COOLDOWN", "0.8"))
     attack_direction: float = float(os.environ.get("DEFENCE_ATTACK_SIGN", os.environ.get("OFFENCE_ATTACK_SIGN", "0")))
@@ -144,11 +144,37 @@ class RuleDefenceStrategy:
 
         ball_distance = distance(ball, [0, 0])
         ball_progress = self.attack_dir * float(ball_field[0])
+        enemies = self._field_enemies()
+        contested_ball = self._enemy_near_ball(ball_field, enemies)
+        danger_ball = ball_progress <= self.cfg.chase_retreat_cm
+        central_ball = abs(float(ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
 
-        # Ball deep in our half and close enough: challenge immediately.
-        if ball_progress >= abs(self.cfg.chase_retreat_cm) and ball_distance <= self.cfg.chase_distance_cm:
+        if contested_ball and danger_ball and central_ball and ball_distance <= min(self.cfg.chase_distance_cm, 58.0):
+            self._set_state("challenge_contested_ball")
+            lockball.LockBallSlip()
+            return
+
+        if contested_ball and ball_distance <= self.cfg.chase_distance_cm * 1.75:
+            target = self._pressure_target(ball_field)
+            self._set_state("block_contested_ball")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
+            return
+
+        # Close loose balls should be challenged instead of waiting on the
+        # goal line; otherwise the attacker gets repeated free direct shots.
+        if ball_distance <= min(self.cfg.chase_distance_cm, 42.0) and (central_ball or not contested_ball):
             self._set_state("challenge_ball")
             lockball.LockBallSlip()
+            return
+
+        # If the ball is still too far to grab, step forward onto the
+        # goal-ball lane. This makes 1v1 defence apply pressure at midfield.
+        if ball_distance <= self.cfg.chase_distance_cm * 1.55 and ball_progress >= self.cfg.chase_retreat_cm:
+            target = self._pressure_target(ball_field)
+            self._set_state("press_ball")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
             return
 
         # Ball near midfield and close enough: occupy the defensive lane.
@@ -201,6 +227,32 @@ class RuleDefenceStrategy:
 
         max_y = min(self.field_short / 2.0 - 32.0, 58.0)
         target_y = clamp(float(ball_field[1]) * 0.75, -max_y, max_y)
+        target_x = self.attack_dir * target_progress
+        target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
+        return self._project_target([target_x, target_y, target_yaw])
+
+    def _field_enemies(self) -> list:
+        try:
+            enemies = UnitedPosition.FieldChassisPos()
+        except Exception:
+            return []
+        return enemies if isinstance(enemies, list) else []
+
+    def _enemy_near_ball(self, ball_field: list | tuple, enemies: list) -> bool:
+        for enemy in enemies or []:
+            if not enemy or len(enemy) < 2:
+                continue
+            if distance([float(enemy[0]), float(enemy[1])], ball_field) <= 30.0:
+                return True
+        return False
+
+    def _pressure_target(self, ball_field: list | tuple) -> list[float]:
+        ball_progress = self.attack_dir * float(ball_field[0])
+        target_progress = ball_progress - abs(self.cfg.intercept_offset_cm)
+        target_progress = clamp(target_progress, -abs(self.cfg.guard_x_cm) - 12.0, abs(self.cfg.guard_x_cm) - 8.0)
+
+        max_y = min(self.field_short / 2.0 - 34.0, 54.0)
+        target_y = clamp(float(ball_field[1]) * 0.65, -max_y, max_y)
         target_x = self.attack_dir * target_progress
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return self._project_target([target_x, target_y, target_yaw])
