@@ -45,10 +45,12 @@ class Preference:
             "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
             "Bit": "SIM",           # SIM / AB(ArisuBits) / IL(IceLoongBits)
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
+            "LidarBackend": "rplidar", # rplidar / ros2
             "LidarType": "s1",      # s1 / s2
         },
         "Ports": {
             "LidarID": random.randrange(1, 99),
+            "LidarPort": "/dev/sllidar",
             "IceLoongPort": "/dev/iceloong",
             "ElecMagnet": 3,
             "Dribble": 4,

@@ -3,6 +3,15 @@ import math
 import numpy as np
 import cv2
 import time
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    _SRC_DIR = Path(__file__).resolve().parents[1]
+    _REPO_ROOT = _SRC_DIR.parent
+    for _path in (str(_SRC_DIR), str(_REPO_ROOT)):
+        if _path not in sys.path:
+            sys.path.insert(0, _path)
 
 # Import order is made robust so that this module can be executed either:
 # - from an installed package layout (ReasonData/vision_utils are top-level)

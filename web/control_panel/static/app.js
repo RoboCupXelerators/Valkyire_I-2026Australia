@@ -2350,6 +2350,9 @@ const controlState = {
     speed: 100,
     turnSpeed: 50,
     dribbleActive: false,
+    runtimeInitialized: false,
+    chassisAvailable: false,
+    peripheralAvailable: false,
     currentDirection: null,
     keysPressed: new Set(),
     mouseControlEnabled: false,
@@ -2543,6 +2546,13 @@ function updateMouseCaptureUI() {
     }
 }
 
+function setControlStatusMessage(message, isError = false) {
+    const statusEl = document.getElementById('control-status');
+    if (!statusEl) return;
+    statusEl.textContent = message;
+    statusEl.style.color = isError ? '#ef4444' : '';
+}
+
 // 切换控制启用状态
 async function toggleControlEnable() {
     const btn = document.getElementById('control-enable-btn');
@@ -2560,6 +2570,7 @@ async function toggleControlEnable() {
             controlState.enabled = data.enabled;
             updateControlUI();
         } else {
+            setControlStatusMessage('状态: ' + (data.error || '启用失败'), true);
             alert('操作失败: ' + data.error);
         }
     } catch (e) {
@@ -2679,9 +2690,12 @@ async function sendControlMoveVector(vx, vy, wz) {
         
         if (data.success) {
             controlState.currentVector = { vx, vy, wz };
+        } else {
+            setControlStatusMessage('状态: ' + (data.error || '移动失败'), true);
         }
     } catch (e) {
         console.error('Failed to send move vector:', e);
+        setControlStatusMessage('状态: 移动请求失败', true);
     }
 }
 
@@ -2743,9 +2757,12 @@ async function sendControlMove(direction) {
         if (data.success) {
             controlState.currentDirection = direction;
             updateDirectionDisplay();
+        } else {
+            setControlStatusMessage('状态: ' + (data.error || '移动失败'), true);
         }
     } catch (e) {
         console.error('Failed to send move command:', e);
+        setControlStatusMessage('状态: 移动请求失败', true);
     }
 }
 
@@ -2769,9 +2786,12 @@ async function sendControlKick() {
                     statusEl.style.color = '';
                 }, 500);
             }
+        } else {
+            setControlStatusMessage('状态: ' + (data.error || '弹射失败'), true);
         }
     } catch (e) {
         console.error('Failed to send kick command:', e);
+        setControlStatusMessage('状态: 弹射请求失败', true);
     }
 }
 
@@ -2787,9 +2807,12 @@ async function toggleDribble() {
         if (data.success) {
             controlState.dribbleActive = data.dribble_active;
             updateDribbleDisplay();
+        } else {
+            setControlStatusMessage('状态: ' + (data.error || '盘球失败'), true);
         }
     } catch (e) {
         console.error('Failed to toggle dribble:', e);
+        setControlStatusMessage('状态: 盘球请求失败', true);
     }
 }
 
@@ -2852,6 +2875,28 @@ function updateDribbleDisplay() {
     }
 }
 
+function updateControlDiagnostics() {
+    const runtimeEl = document.getElementById('control-runtime-status');
+    const chassisEl = document.getElementById('control-chassis-status');
+    const peripheralEl = document.getElementById('control-peripheral-status');
+
+    if (runtimeEl) {
+        runtimeEl.textContent = controlState.runtimeInitialized ? '已初始化' : '未初始化';
+        runtimeEl.classList.toggle('active', controlState.runtimeInitialized);
+        runtimeEl.classList.toggle('inactive', !controlState.runtimeInitialized);
+    }
+    if (chassisEl) {
+        chassisEl.textContent = controlState.chassisAvailable ? '可用' : '不可用';
+        chassisEl.classList.toggle('active', controlState.chassisAvailable);
+        chassisEl.classList.toggle('inactive', !controlState.chassisAvailable);
+    }
+    if (peripheralEl) {
+        peripheralEl.textContent = controlState.peripheralAvailable ? '可用' : '不可用';
+        peripheralEl.classList.toggle('active', controlState.peripheralAvailable);
+        peripheralEl.classList.toggle('inactive', !controlState.peripheralAvailable);
+    }
+}
+
 // 更新控制状态（从服务器获取）
 async function updateControlStatus() {
     if (state.currentPage !== 'control') return;
@@ -2864,6 +2909,9 @@ async function updateControlStatus() {
         controlState.speed = data.speed;
         controlState.turnSpeed = data.turn_speed;
         controlState.dribbleActive = data.dribble_active;
+        controlState.runtimeInitialized = !!data.runtime_initialized;
+        controlState.chassisAvailable = !!data.chassis_available;
+        controlState.peripheralAvailable = !!data.peripheral_available;
         
         // 更新滑块
         const speedSlider = document.getElementById('control-speed');
@@ -2882,6 +2930,10 @@ async function updateControlStatus() {
         
         updateControlUI();
         updateDribbleDisplay();
+        updateControlDiagnostics();
+        if (data.runtime_error) {
+            setControlStatusMessage('状态: ' + data.runtime_error, true);
+        }
     } catch (e) {
         console.error('Failed to update control status:', e);
     }

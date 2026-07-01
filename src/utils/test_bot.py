@@ -88,7 +88,7 @@ def main():
         resp4 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,), 
             (Commands.GET_BMI088_DATA,), 
-            (Commands.SET_DRIBBLE_SPEED, 0.22, 0), 
+            (Commands.SET_DRIBBLE_SPEED, 0.55, 0), 
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
             (Commands.GET_RUN_KEY_DELTA,)
         ])

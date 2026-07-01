@@ -36,9 +36,11 @@ cfg = _runtime.cfg
 Beta_Func = _runtime.Beta_Func
 SendstatusThreadFuncStarted = _runtime.SendstatusThreadFuncStarted
 PeerstatusThreadFuncStarted = _runtime.PeerstatusThreadFuncStarted
+chassis = _runtime.chassis
+peripheral = _runtime.peripheral
+
 
 UnitedPosition = RecordingPositions()
-
 
 _RUNTIME_NAMES = {
     "Bits",

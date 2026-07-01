@@ -37,6 +37,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+_SRC_DIR = _repo_root() / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+
 def _json_safe(obj):
     """Recursively convert common numpy / custom scalar types to JSON-safe values."""
     if obj is None or isinstance(obj, (str, int, float, bool)):
@@ -188,6 +193,7 @@ class ControlPanelApp:
         self._control_speed = 100  # 默认移动速度
         self._control_turn_speed = 100  # 默认转向速度
         self._dribble_active = False  # 盘球状态
+        self._control_runtime_error = None
         
         # 摄像头资源管理器
         self.camera_manager = CameraResourceManager()
@@ -1343,6 +1349,16 @@ class ControlPanelApp:
     def control_enable(self, enabled: bool) -> dict:
         """启用/禁用键盘控制"""
         with self._control_lock:
+            if enabled:
+                chassis, peripheral = self._get_chassis_and_peripheral(initialize=True)
+                if not chassis or not peripheral:
+                    self._control_enabled = False
+                    return {
+                        "success": False,
+                        "enabled": False,
+                        "error": self._control_runtime_error or "Control runtime unavailable",
+                    }
+
             self._control_enabled = enabled
             if not enabled:
                 # 禁用时停止机器人
@@ -1359,16 +1375,45 @@ class ControlPanelApp:
     
     def control_get_status(self) -> dict:
         """获取控制状态"""
+        chassis, peripheral = self._get_chassis_and_peripheral(initialize=False)
         return {
             "enabled": self._control_enabled,
             "speed": self._control_speed,
             "turn_speed": self._control_turn_speed,
             "dribble_active": self._dribble_active,
+            "runtime_initialized": self._is_control_runtime_initialized(),
+            "chassis_available": bool(chassis),
+            "peripheral_available": bool(peripheral),
+            "runtime_error": self._control_runtime_error,
         }
     
-    def _get_chassis_and_peripheral(self):
-        """Return attached runtime control objects without initializing hardware."""
+    def _is_control_runtime_initialized(self) -> bool:
         runtime = sys.modules.get("LunaPre.runtime")
+        return bool(runtime is not None and getattr(runtime, "_runtime_initialized", False))
+
+    def _ensure_control_runtime(self):
+        """Initialize LunaPre runtime on demand for manual control."""
+        try:
+            import importlib
+
+            runtime = importlib.import_module("LunaPre.runtime")
+            if not getattr(runtime, "_runtime_initialized", False):
+                runtime._init_runtime(auto_start_lidar=False)
+            self.bits = getattr(runtime, "Bits", None)
+            if self.vision is None:
+                self.vision = getattr(runtime, "vision", None)
+            self._control_runtime_error = None
+            return runtime
+        except Exception as e:
+            self._control_runtime_error = str(e)
+            print(f"[ControlPanel] Control runtime unavailable: {e}")
+            return None, None
+
+    def _get_chassis_and_peripheral(self, *, initialize: bool = False):
+        """Return runtime control objects, optionally initializing hardware."""
+        runtime = self._ensure_control_runtime() if initialize else sys.modules.get("LunaPre.runtime")
+        if isinstance(runtime, tuple):
+            return runtime
         if runtime is None or not getattr(runtime, "_runtime_initialized", False):
             return None, None
         return getattr(runtime, "chassis", None), getattr(runtime, "peripheral", None)
@@ -1391,9 +1436,9 @@ class ControlPanelApp:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
             
-            chassis, _ = self._get_chassis_and_peripheral()
+            chassis, _ = self._get_chassis_and_peripheral(initialize=True)
             if not chassis:
-                return {"success": False, "error": "Chassis not available"}
+                return {"success": False, "error": self._control_runtime_error or "Chassis not available"}
             
             speed = self._control_speed
             turn_speed = self._control_turn_speed
@@ -1431,9 +1476,9 @@ class ControlPanelApp:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
             
-            chassis, _ = self._get_chassis_and_peripheral()
+            chassis, _ = self._get_chassis_and_peripheral(initialize=True)
             if not chassis:
-                return {"success": False, "error": "Chassis not available"}
+                return {"success": False, "error": self._control_runtime_error or "Chassis not available"}
             
             try:
                 chassis.RobotMoveVector(vx, vy, wz)
@@ -1447,9 +1492,9 @@ class ControlPanelApp:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
             
-            _, peripheral = self._get_chassis_and_peripheral()
+            _, peripheral = self._get_chassis_and_peripheral(initialize=True)
             if not peripheral:
-                return {"success": False, "error": "Peripheral not available"}
+                return {"success": False, "error": self._control_runtime_error or "Peripheral not available"}
             
             try:
                 peripheral.ShootBall()
@@ -1466,13 +1511,13 @@ class ControlPanelApp:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
             
-            _, peripheral = self._get_chassis_and_peripheral()
+            _, peripheral = self._get_chassis_and_peripheral(initialize=True)
             if not peripheral:
-                return {"success": False, "error": "Peripheral not available"}
+                return {"success": False, "error": self._control_runtime_error or "Peripheral not available"}
             
             try:
                 if active:
-                    peripheral.Dribble(0.35)  # PWM 0.2
+                    peripheral.Dribble(0.8)  # PWM 0.2
                 else:
                     peripheral.Dribble(False)
                 self._dribble_active = active
@@ -1926,6 +1971,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 "raw": base64.b64encode(raw_jpeg).decode('ascii') if raw_jpeg else "",
                 "bird": base64.b64encode(bird_jpeg).decode('ascii') if bird_jpeg else "",
             })
+            return
+
+        if path == '/api/control/status':
+            self._send_json(app.control_get_status())
             return
         
         self.send_error(404, 'Not found')

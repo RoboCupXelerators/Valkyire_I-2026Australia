@@ -36,6 +36,9 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.MORSE_PLAY:             1
 }
 
+MAX_DRIBBLE_INPUT = 1.0
+MAX_DRIBBLE_SPEED = 0.4
+
 try:
     import serial
 except Exception:  # pragma: no cover - import error handled at runtime
@@ -75,6 +78,8 @@ class IceLoongBits:
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
         self.ser = None
+        self._io_lock = threading.RLock()
+        self._command_lock = threading.Lock()
         self.logger = logging.getLogger(self.__class__.__name__)
         if not self.logger.handlers:
             # 避免多次添加 handler
@@ -87,66 +92,85 @@ class IceLoongBits:
 
     def SendUnitedCommand(self):
         while (1):
-            _CommandList = []
-            for i in self.CommandLine:
-                match i:
-                    case 'HAND_SHAKE':
-                        if self.CommandLine[i]:
-                            _CommandList.append((Commands.HAND_SHAKE,))
-                    case 'GET_BMI088_DATA':
-                        if self.CommandLine[i]:
-                            _CommandList.append((Commands.GET_BMI088_DATA,))
-                    case 'SET_WHEELS_SPEED':
-                        Speed1,Speed2,Speed3,Speed4 = self.CommandLine[i]
-                        self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1,Speed2,Speed3,Speed4)])
-                    case 'SET_DRIBBLE_SPEED':
-                        Speed = self.CommandLine[i]
-                        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Speed[0], Speed[1])])
-                    case 'MORSE_PLAY':
-                        if self.CommandLine[i] != None:
-                            self.ExecuteCommands([(Commands.MORSE_PLAY, str(self.CommandLine[i]))])
-                        self.CommandLine['MORSE_PLAY'] = None
-                    case 'KICK':
-                        if self.CommandLine[i]:
-                            _CommandList.append((Commands.KICK,))
-                        self.CommandLine['KICK'] = False
-                    case 'GET_RUN_KEY_DELTA':
-                        if self.CommandLine[i]:
-                            _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
-                    case 'GET_REFEREE_UNLOCK_PIN':
-                        if self.CommandLine[i]:
-                            _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
-            response = self.ExecuteCommands(_CommandList)
-            for i in response:
-                match i[0] ^ 0x80:
-                    case 0x00:
-                        continue
-                    case Commands.HAND_SHAKE:
-                        pass
-                    case Commands.GET_BMI088_DATA:
-                        _, yaw, pitch, roll = i
-                        self.yaw = yaw % 360
-                    case Commands.SET_WHEELS_SPEED:
-                        pass
-                    case Commands.KICK:
-                        pass
-                    case Commands.SET_DRIBBLE_SPEED:
-                        pass
-                    case Commands.MORSE_PLAY:
-                        pass
-                    case Commands.GET_REFEREE_UNLOCK_PIN:
-                        _, referee_key = i
-                        if referee_key == 1:
-                            self.referee_key = True
-                        else:
-                            pass
-                    case Commands.GET_RUN_KEY_DELTA:
-                        _, key = i
-                        if key == 1:
-                            self.key = True
-                        else:
-                            pass
+            try:
+                self._SendUnitedCommandOnce()
+            except Exception as e:
+                self.logger.exception("IceLoongBits command loop failed: %s", e)
             time.sleep(0.02)
+
+    def _CommandSnapshot(self):
+        with self._command_lock:
+            snapshot = {
+                "HAND_SHAKE": self.CommandLine["HAND_SHAKE"],
+                "GET_BMI088_DATA": self.CommandLine["GET_BMI088_DATA"],
+                "GET_RUN_KEY_DELTA": self.CommandLine["GET_RUN_KEY_DELTA"],
+                "GET_REFEREE_UNLOCK_PIN": self.CommandLine["GET_REFEREE_UNLOCK_PIN"],
+                "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
+                "SET_DRIBBLE_SPEED": tuple(self.CommandLine["SET_DRIBBLE_SPEED"]),
+                "KICK": self.CommandLine["KICK"],
+                "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
+            }
+            self.CommandLine["KICK"] = False
+            self.CommandLine["MORSE_PLAY"] = None
+        return snapshot
+
+    def _SendUnitedCommandOnce(self):
+        snapshot = self._CommandSnapshot()
+
+        Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
+        self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
+
+        Dribble1, Dribble2 = snapshot["SET_DRIBBLE_SPEED"]
+        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+
+        if snapshot["MORSE_PLAY"] is not None:
+            self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
+
+        _CommandList = []
+        if snapshot["HAND_SHAKE"]:
+            _CommandList.append((Commands.HAND_SHAKE,))
+        if snapshot["GET_BMI088_DATA"]:
+            _CommandList.append((Commands.GET_BMI088_DATA,))
+        if snapshot["KICK"]:
+            _CommandList.append((Commands.KICK,))
+        if snapshot["GET_RUN_KEY_DELTA"]:
+            _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
+        if snapshot["GET_REFEREE_UNLOCK_PIN"]:
+            _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
+
+        response = self.ExecuteCommands(_CommandList)
+        self._ApplyResponses(response)
+
+    def _ApplyResponses(self, response):
+        for i in response:
+            match i[0] ^ 0x80:
+                case 0x00:
+                    continue
+                case Commands.HAND_SHAKE:
+                    pass
+                case Commands.GET_BMI088_DATA:
+                    _, yaw, pitch, roll = i
+                    self.yaw = yaw % 360
+                case Commands.SET_WHEELS_SPEED:
+                    pass
+                case Commands.KICK:
+                    pass
+                case Commands.SET_DRIBBLE_SPEED:
+                    pass
+                case Commands.MORSE_PLAY:
+                    pass
+                case Commands.GET_REFEREE_UNLOCK_PIN:
+                    _, referee_key = i
+                    if referee_key == 1:
+                        self.referee_key = True
+                    else:
+                        pass
+                case Commands.GET_RUN_KEY_DELTA:
+                    _, key = i
+                    if key == 1:
+                        self.key = True
+                    else:
+                        pass
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -190,39 +214,40 @@ class IceLoongBits:
         Returns:
             bytes: 读取到的响应（如果 read_response=False 返回 b''）。
         """
-        if serial is None:
-            raise RuntimeError("pyserial 未安装，请运行: pip install pyserial")
-        if not self.ser or not getattr(self.ser, "is_open", False):
-            self.OpenPort()
+        with self._io_lock:
+            if serial is None:
+                raise RuntimeError("pyserial 未安装，请运行: pip install pyserial")
+            if not self.ser or not getattr(self.ser, "is_open", False):
+                self.OpenPort()
 
-        # 清空输入缓冲，避免读到旧数据
-        try:
-            self.ser.reset_input_buffer()
-        except Exception:
-            # 有些 serial 实现可能没有该方法
-            pass
+            # 清空输入缓冲，避免读到旧数据
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                # 有些 serial 实现可能没有该方法
+                pass
 
-        self.ser.write(data)
-        self.ser.flush()
+            self.ser.write(data)
+            self.ser.flush()
 
-        if not read_response:
-            return b""
+            if not read_response:
+                return b""
 
-        # 暂时调整 timeout（若提供），发送后立即读取
-        old_timeout = getattr(self.ser, "timeout", None)
-        if response_timeout is not None:
-            self.ser.timeout = response_timeout
-
-        try:
-            if response_length > 0:
-                resp = self.ser.read(response_length)
-            else:
-                # 读取直到超时
-                resp = self._ReadUntilTimeout()
-            return resp
-        finally:
+            # 暂时调整 timeout（若提供），发送后立即读取
+            old_timeout = getattr(self.ser, "timeout", None)
             if response_timeout is not None:
-                self.ser.timeout = old_timeout
+                self.ser.timeout = response_timeout
+
+            try:
+                if response_length > 0:
+                    resp = self.ser.read(response_length)
+                else:
+                    # 读取直到超时
+                    resp = self._ReadUntilTimeout()
+                return resp
+            finally:
+                if response_timeout is not None:
+                    self.ser.timeout = old_timeout
 
     def __enter__(self):
         self.OpenPort()
@@ -250,7 +275,11 @@ class IceLoongBits:
                 case Commands.KICK:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_DRIBBLE_SPEED:
-                    tx_bytes += bytes([cmd[0]]) + struct.pack('<ff', cmd[1], cmd[2])
+                    tx_bytes += bytes([cmd[0]]) + struct.pack(
+                        '<ff',
+                        self._MapDribbleSpeed(cmd[1]),
+                        self._MapDribbleSpeed(cmd[2]),
+                    )
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.GET_RUN_KEY_DELTA:
@@ -303,32 +332,88 @@ class IceLoongBits:
 
     def GetYaw(self) -> float:
         """获取当前偏航角（度）。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            try:
+                self._RefreshYaw()
+            except Exception as e:
+                self.logger.debug("Refresh yaw failed: %s", e)
+        return self.yaw
+
+    def _RefreshYaw(self):
+        response = self.ExecuteCommands([(Commands.GET_BMI088_DATA,)])
+        self._ApplyResponses(response)
         return self.yaw
     
     def VirtualPorts(self,port,status):
         """设置虚拟端口状态"""
+        try:
+            port = int(port)
+        except Exception:
+            pass
+
         match port:
             case 3:
-                if status:
-                    pass
-                else:
-                    self.CommandLine['KICK'] = True
+                if not status:
+                    self._KickNow()
             case 4:
-                self.CommandLine['SET_DRIBBLE_SPEED'][0] = status
+                self._SetDribbleSpeedNow(left=status)
             case 5:
-                self.CommandLine['SET_DRIBBLE_SPEED'][1] = status
+                self._SetDribbleSpeedNow(right=status)
+
+    @staticmethod
+    def _NormalizeDribbleInput(value):
+        try:
+            speed = float(value)
+        except Exception:
+            return 0.0
+        if speed < 0.0:
+            return 0.0
+        if speed > MAX_DRIBBLE_INPUT:
+            return MAX_DRIBBLE_INPUT
+        return speed
+
+    @classmethod
+    def _MapDribbleSpeed(cls, value):
+        return cls._NormalizeDribbleInput(value) * MAX_DRIBBLE_SPEED / MAX_DRIBBLE_INPUT
+
+    def _KickNow(self):
+        with self._command_lock:
+            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
+        response = self.ExecuteCommands([
+            (Commands.KICK,),
+            (Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2),
+        ])
+        self._ApplyResponses(response)
+        return response
+
+    def _SetDribbleSpeedNow(self, left=None, right=None):
+        with self._command_lock:
+            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
+            if left is not None:
+                Dribble1 = self._NormalizeDribbleInput(left)
+            if right is not None:
+                Dribble2 = self._NormalizeDribbleInput(right)
+            self.CommandLine["SET_DRIBBLE_SPEED"] = [Dribble1, Dribble2]
+
+        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        self._ApplyResponses(response)
+        return response
 
     def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
         """设置轮子速度"""
-        self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
+        with self._command_lock:
+            self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
 
     def MosePrint(self,Msg):
         """摩斯电码播放"""
-        self.CommandLine['MORSE_PLAY'] = Msg
+        with self._command_lock:
+            self.CommandLine['MORSE_PLAY'] = Msg
 
     def GetRefereeUnlockPin(self):
         """获取裁判解锁状态"""
-        return self.CommandLine['GET_REFEREE_UNLOCK_PIN']
+        with self._command_lock:
+            return self.CommandLine['GET_REFEREE_UNLOCK_PIN']
 
     def GetKey(self):
         """获取按键状态"""
@@ -339,10 +424,11 @@ class IceLoongBits:
             return False
 
 if __name__ == "__main__":
-    bits = IceLoongBits(port='/dev/ttyUSB0')
+    bits = IceLoongBits(port='/dev/iceloong')
     while(1):
         if bits.key:
             print(bits.GetKey())
+            bits.MosePrint("Hello World")
             break
         else:
             pass

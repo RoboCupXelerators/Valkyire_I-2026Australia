@@ -7,11 +7,24 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 from ReasonData import DATA_DIR, ROS_ENV, Preference, Settings, logger
+
+
+def _add_ros_python_path() -> None:
+    if not ROS_ENV:
+        return
+    setup_path = Path(os.path.expanduser(str(ROS_ENV)))
+    ros_root = setup_path.parent
+    python_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    site_packages = ros_root / "lib" / python_dir / "site-packages"
+    if site_packages.exists() and str(site_packages) not in sys.path:
+        sys.path.append(str(site_packages))
+
 
 try:
     import rclpy
@@ -27,15 +40,30 @@ try:
 
     ROS_AVAILABLE = True
 except Exception:  # pragma: no cover - depends on external ROS2 env
-    rclpy = None
-    Node = object  # type: ignore
-    LaserScan = object  # type: ignore
-    QoSProfile = object  # type: ignore
-    QoSReliabilityPolicy = object  # type: ignore
-    QoSHistoryPolicy = object  # type: ignore
-    QoSDurabilityPolicy = object  # type: ignore
-    SignalHandlerOptions = object  # type: ignore
-    ROS_AVAILABLE = False
+    _add_ros_python_path()
+    try:
+        import rclpy
+        from rclpy.node import Node
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSHistoryPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+        from rclpy.signals import SignalHandlerOptions
+        from sensor_msgs.msg import LaserScan
+
+        ROS_AVAILABLE = True
+    except Exception:
+        rclpy = None
+        Node = object  # type: ignore
+        LaserScan = object  # type: ignore
+        QoSProfile = object  # type: ignore
+        QoSReliabilityPolicy = object  # type: ignore
+        QoSHistoryPolicy = object  # type: ignore
+        QoSDurabilityPolicy = object  # type: ignore
+        SignalHandlerOptions = object  # type: ignore
+        ROS_AVAILABLE = False
 
 try:
     import numpy as np  # type: ignore
@@ -51,6 +79,27 @@ def _lidar_type_from_settings() -> str:
         return str(Preference().read("RoboInfo", "LidarType")).lower()
     except Exception:
         return str(getattr(Settings.RoboInfo, "LidarType", "s2")).lower()
+
+
+def _setting_value(section: str, key: str, default=None):
+    try:
+        value = Preference().read(section, key)
+        if value not in (None, "", "None"):
+            return value
+    except Exception:
+        pass
+
+    try:
+        value = getattr(getattr(Settings, section), key)
+        if value not in (None, "", "None"):
+            return value
+    except Exception:
+        pass
+    return default
+
+
+def _lidar_serial_port_from_settings(default: str = "/dev/sllidar") -> str:
+    return str(_setting_value("Ports", "LidarPort", default))
 
 
 def _launch_file_for_type(lidar_type: str) -> str:
@@ -124,10 +173,10 @@ class _ROSLidarParser(Node):
 class ROS2LidarDriver:
     """Acquire scan frames from the legacy ROS2 sllidar stack."""
 
-    def __init__(self, *, domain_id: int | None = None, bashrc: str | None = ROS_ENV, serial_port: str = "/dev/ttyUSB1"):
+    def __init__(self, *, domain_id: int | None = None, bashrc: str | None = ROS_ENV, serial_port: str | None = None):
         self.domain_id = domain_id
         self.bashrc = bashrc
-        self.serial_port = serial_port
+        self.serial_port = serial_port or _lidar_serial_port_from_settings()
         self.lidar_process = None
         self.lidar_log_files = None
         self.current_launch = None

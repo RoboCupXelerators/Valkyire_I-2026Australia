@@ -1,7 +1,10 @@
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,7 @@ def _install_reasondata_stub(monkeypatch, lidar_type='s3'):
 
         class Ports:
             LidarID = 0
+            LidarPort = '/dev/sllidar'
 
     class DummyLogger:
         def info(self, *args, **kwargs):
@@ -41,7 +45,10 @@ def _install_reasondata_stub(monkeypatch, lidar_type='s3'):
     reasondata_stub.DATA_DIR = '/tmp'
     reasondata_stub.ROS_ENV = '/tmp/setup.bash'
     reasondata_stub.Preference = lambda: type('Pref', (), {
-        'read': lambda self, section, key: {'Ports': {'LidarID': 77}, 'RoboInfo': {'LidarType': lidar_type}}[section][key]
+        'read': lambda self, section, key: {
+            'Ports': {'LidarID': 77, 'LidarPort': '/dev/sllidar'},
+            'RoboInfo': {'LidarType': lidar_type},
+        }[section][key]
     })()
 
     monkeypatch.setitem(sys.modules, 'ReasonData', reasondata_stub)
@@ -92,7 +99,7 @@ def test_ros2_driver_uses_s3_launch_when_configured(monkeypatch):
 
     assert result is not None
     assert 'sllidar_s3_launch.py' in captured['cmd']
-    assert 'serial_port:=/dev/ttyUSB1' in captured['cmd']
+    assert 'serial_port:=/dev/sllidar' in captured['cmd']
 
 
 def test_rplidar_driver_uses_queue(monkeypatch):
@@ -188,3 +195,46 @@ def test_sensor_facade_starts_injected_driver(monkeypatch):
     assert lidar.disabled is False
     lidar.stop()
     assert fake_driver.stopped is True
+
+
+def test_sensor_facade_accepts_numpy_scan_frames(monkeypatch):
+    np = pytest.importorskip("numpy")
+    sensor = _load_lunapre_module(monkeypatch, 'sensor')
+
+    assert sensor._scan_frame_is_empty(None) is True
+    assert sensor._scan_frame_is_empty(np.empty((0, 2), dtype=np.float32)) is True
+    assert sensor._scan_frame_is_empty(np.array([[0.0, 1.0]], dtype=np.float32)) is False
+
+    class FakeDriver:
+        def start(self, scan_queue):
+            scan_queue.put(np.array([
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [90.0, 1.0],
+                [91.0, 1.0],
+                [180.0, 1.0],
+                [181.0, 1.0],
+            ], dtype=np.float32))
+            return True
+
+        def stop(self):
+            return None
+
+    lidar = sensor.Lidar(lambda: 0, driver=FakeDriver(), auto_start=True)
+    deadline = time.time() + 1.0
+    while time.time() < deadline and not lidar.dirLidarQueue.empty():
+        time.sleep(0.01)
+    lidar.stop()
+    assert lidar.disabled is False
+
+
+def test_sensor_backend_comes_from_config_not_environment(monkeypatch):
+    sensor = _load_lunapre_module(monkeypatch, 'sensor')
+
+    monkeypatch.setenv('LIDAR_BACKEND', 'ros2')
+    sensor.Settings.RoboInfo.LidarBackend = 'rplidar'
+    assert sensor._resolve_backend(None) == 'rplidar'
+
+    sensor.Settings.RoboInfo.LidarBackend = 'ros2'
+    assert sensor._resolve_backend(None) == 'ros2'
+    assert sensor._resolve_backend('direct') == 'rplidar'

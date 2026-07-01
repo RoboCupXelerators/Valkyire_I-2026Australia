@@ -159,7 +159,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
         if cfg.RoboInfo.Bit == "IL":
             from utils.IceLoongBits import IceLoongBits
 
-            Bits = IceLoongBits()
+            Bits = IceLoongBits(port=getattr(cfg.Ports, "IceLoongPort", "/dev/iceloong"))
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
             peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
             chassis = RecordingCar(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)

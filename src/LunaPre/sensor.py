@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import importlib
 import math
-import os
 import queue
 import threading
 import time
@@ -23,6 +22,7 @@ from ReasonData import Settings, logger
 LIDAR_DISABLED_DISTS = [0xFFF, 0xFFF, 0xFFF, 0xFFF]
 LIDAR_ZERO_DISTS = [0, 0, 0, 0]
 DEFAULT_SCAN_QUEUE_SIZE = 3
+DEFAULT_LIDAR_BACKEND = "rplidar"
 
 
 def GetLineStandardEquation(Line):
@@ -81,14 +81,21 @@ class DirDistance:
 
 
 def _resolve_backend(backend: str | None) -> str:
-    backend_value = backend or os.environ.get("LIDAR_BACKEND", "rplidar")
+    backend_value = backend
+    if backend_value in (None, "", "None"):
+        backend_value = getattr(getattr(Settings, "RoboInfo", object()), "LidarBackend", None)
+    if backend_value in (None, "", "None"):
+        backend_value = getattr(getattr(Settings, "Lidar", object()), "Backend", None)
+    if backend_value in (None, "", "None"):
+        backend_value = DEFAULT_LIDAR_BACKEND
+
     backend_key = str(backend_value).strip().lower()
     if backend_key in {"rplidar", "direct"}:
         return "rplidar"
     if backend_key in {"ros", "ros2"}:
         return "ros2"
-    logger.warning(f"Unknown LIDAR_BACKEND={backend_key!r}; using rplidar.")
-    return "rplidar"
+    logger.warning(f"Unknown configured lidar backend={backend_key!r}; using {DEFAULT_LIDAR_BACKEND}.")
+    return DEFAULT_LIDAR_BACKEND
 
 
 def _load_driver_class(backend: str):
@@ -97,6 +104,15 @@ def _load_driver_class(backend: str):
         return module.ROS2LidarDriver
     module = importlib.import_module(".lidar_driver_rplidar", package=__package__)
     return module.RPLidarDriver
+
+
+def _scan_frame_is_empty(frame) -> bool:
+    if frame is None:
+        return True
+    try:
+        return len(frame) == 0
+    except TypeError:
+        return False
 
 
 class Lidar:
@@ -187,7 +203,7 @@ class Lidar:
         while self._is_running():
             try:
                 Ranges = self.dirLidarQueue.get(timeout=0.2)
-                if not Ranges:
+                if _scan_frame_is_empty(Ranges):
                     continue
                 lines = []
                 points = []
