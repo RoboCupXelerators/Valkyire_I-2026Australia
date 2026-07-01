@@ -179,9 +179,16 @@ class XeleratorSimBits:
         self._rx = None
 
         bind_error: OSError | None = None
+        allow_port_fallback = str(os.environ.get("XEL_SIM_PORT_FALLBACK", "1")).lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        max_attempts = 4 if allow_port_fallback else 1
         # 防呆：如果状态端口被占用，自动尝试 robot_id+1、端口+10，最多 4 次。
         # 这样在旧进程残留、多个脚本并行、或 Unity 尚未释放端口时，能更快恢复。
-        for attempt in range(4):
+        for attempt in range(max_attempts):
             attempt_robot_id = base_robot_id + attempt
             attempt_cmd_port = base_cmd_port + attempt * 10
             attempt_status_port = base_status_port + attempt * 10
@@ -201,7 +208,7 @@ class XeleratorSimBits:
                 if attempt > 0:
                     print(
                         f"[XEL_SIM] status_port occupied, auto-fallback to robot_id={self.robot_id} "
-                        f"cmd_port={self.cmd_port} status_port={self.status_port} (attempt {attempt + 1}/4)"
+                        f"cmd_port={self.cmd_port} status_port={self.status_port} (attempt {attempt + 1}/{max_attempts})"
                     )
                 break
             except OSError as e:
@@ -217,7 +224,7 @@ class XeleratorSimBits:
 
                 if e.errno != errno.EADDRINUSE:
                     raise
-                if attempt == 3:
+                if attempt == max_attempts - 1:
                     raise
 
         if self._tx is None or self._rx is None:

@@ -171,6 +171,21 @@ def test_offence_clears_own_half_wide_ball_before_local_alignment(monkeypatch):
     assert 6.0 <= calls[1][1][2] <= 7.0
 
 
+def test_offence_pulls_sideline_free_ball_back_infield(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [22, 9])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-55, 62, 140])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-78, 69])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 315)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "sideline_free_ball_recover"
+    assert offence.last_decision["action"] == "sideline_free_ball_recover"
+    assert calls == [("dribble", 0.85), ("move", (30.0, -46.0, 315), {"KpW": 0.9})]
+
+
 def test_offence_chases_last_seen_ball_on_short_dropout(monkeypatch):
     calls = []
     now = {"value": 100.0}

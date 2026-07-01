@@ -100,17 +100,17 @@ def main() -> int:
             report["hint"] = "Exit Play mode and enter Play again so Unity reloads XelRuntimeControlUi/XeleratorRobotController."
             return 1
 
-        ctl.set_ball(116.0, 0.0, reset_velocity=True)
+        ctl.set_ball(105.0, 0.0, reset_velocity=True)
         time.sleep(0.25)
         status = ctl.status()
         _ok(
             int(_score(status).get("ally", 0)) == 0,
             report,
-            "front +X goal mouth does not score before back contact",
+            "front +X goal mouth does not score before goal-floor contact",
             {"score": _score(status), "ball": status.get("ball")},
         )
 
-        ctl.set_ball(128.0, 0.0, reset_velocity=True)
+        ctl.set_ball(110.0, 0.0, reset_velocity=True)
         status = _wait_for(
             ctl,
             lambda st: int(_score(st).get("ally", 0)) == 1 and _near_center(st),
@@ -119,22 +119,22 @@ def main() -> int:
         _ok(
             int(_score(status).get("ally", 0)) == 1,
             report,
-            "deep +X goal scores on back contact",
+            "deep +X goal scores on goal-floor contact",
             {"score": _score(status), "ball": status.get("ball")},
         )
 
         ctl.reset_score()
-        ctl.set_ball(-116.0, 0.0, reset_velocity=True)
+        ctl.set_ball(-105.0, 0.0, reset_velocity=True)
         time.sleep(0.25)
         status = ctl.status()
         _ok(
             int(_score(status).get("enemy", 0)) == 0,
             report,
-            "front -X goal mouth does not score before back contact",
+            "front -X goal mouth does not score before goal-floor contact",
             {"score": _score(status), "ball": status.get("ball")},
         )
 
-        ctl.set_ball(-128.0, 0.0, reset_velocity=True)
+        ctl.set_ball(-110.0, 0.0, reset_velocity=True)
         status = _wait_for(
             ctl,
             lambda st: int(_score(st).get("enemy", 0)) == 1 and _near_center(st),
@@ -143,7 +143,7 @@ def main() -> int:
         _ok(
             int(_score(status).get("enemy", 0)) == 1,
             report,
-            "deep -X goal scores on back contact",
+            "deep -X goal scores on goal-floor contact",
             {"score": _score(status), "ball": status.get("ball")},
         )
 
@@ -152,13 +152,14 @@ def main() -> int:
         time.sleep(0.25)
         status = ctl.status()
         _ok(
-            int(_score(status).get("ally", 0)) == 0,
+            int(_score(status).get("ally", 0)) == 1,
             report,
-            "swept +X front-line crossing does not score",
+            "swept +X ball scores after entering goal-floor contact zone",
             {"score": _score(status), "ball": status.get("ball")},
         )
 
-        ctl.set_ball(128.0, 0.0, reset_velocity=True)
+        ctl.reset_score()
+        ctl.set_ball(110.0, 0.0, reset_velocity=True)
         status = _wait_for(
             ctl,
             lambda st: int(_score(st).get("ally", 0)) == 1,
@@ -167,7 +168,7 @@ def main() -> int:
         _ok(
             int(_score(status).get("ally", 0)) == 1,
             report,
-            "post-crossing +X goal scores only at back contact",
+            "placed +X ball scores at goal-floor contact",
             {"score": _score(status), "ball": status.get("ball")},
         )
 

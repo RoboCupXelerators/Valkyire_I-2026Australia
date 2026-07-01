@@ -317,6 +317,7 @@ def _spawn_robot(
     env["XEL_WHEEL_TO_V"] = str(SIM_WHEEL_TO_V_56MM_500RPM)
     env["XEL_SIM_PLANAR_MOVE_SCALE"] = "1.0"
     env["XEL_SIM_BALL_STATUS_FALLBACK"] = "1"
+    env["XEL_SIM_PORT_FALLBACK"] = "0"
     env.setdefault("OFFENCE_LOG_EVERY", "1.0")
     env.setdefault("LUNAPRE_FULL_LOG", "1")  # enable Pos2Pos PID debug logs
 
@@ -707,6 +708,12 @@ def main() -> int:
         default=float(os.environ.get("SIM_SCRIMMAGE_STARTUP_GRACE", "15.0")),
         help="Extra seconds allowed for robot subprocess startup and Unity UDP handshake.",
     )
+    parser.add_argument(
+        "--status-interval",
+        type=float,
+        default=float(os.environ.get("SIM_SCRIMMAGE_STATUS_INTERVAL", "0.05")),
+        help="Seconds between scene status samples used by reports and replay rendering.",
+    )
     args = parser.parse_args()
 
     robots = _parse_robots(args.robots)
@@ -759,6 +766,7 @@ def main() -> int:
         stop_after_goal_at: float | None = None
         suspended_robots: set[int] = set()
         previous_goal_total = 0
+        status_interval = max(0.02, float(args.status_interval))
         while time.time() < deadline and any(proc.poll() is None for proc in processes.values()):
             try:
                 status = ctl.status()
@@ -811,7 +819,7 @@ def main() -> int:
             if stop_after_goal_at is not None and time.time() >= stop_after_goal_at:
                 ended_after_goal = True
                 break
-            time.sleep(0.25)
+            time.sleep(status_interval)
 
         report["ended_after_goal"] = ended_after_goal
         for proc in processes.values():

@@ -45,6 +45,7 @@ class DefenceConfig:
     # v5: avoid_wall stuck timeout
     stuck_timeout_s: float = float(os.environ.get("DEFENCE_STUCK_TIMEOUT", "1.5"))
     stuck_move_cm: float = float(os.environ.get("DEFENCE_STUCK_MOVE", "3.0"))
+    wall_margin_cm: float = float(os.environ.get("DEFENCE_WALL_MARGIN", "30.0"))
 
 
 class RuleDefenceStrategy:
@@ -289,7 +290,7 @@ class RuleDefenceStrategy:
         x, y = float(pose[0]), float(pose[1])
         half_long = self.field_long / 2.0
         half_short = self.field_short / 2.0
-        margin = 20.0  # cm from edge to start caring
+        margin = max(20.0, float(self.cfg.wall_margin_cm))
         near_boundary = abs(x) > (half_long - margin) or abs(y) > (half_short - margin)
         if not near_boundary:
             return None

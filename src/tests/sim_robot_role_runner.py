@@ -150,6 +150,25 @@ def main() -> int:
     started = time.time()
 
     try:
+        actual_robot_id = int(getattr(Bits, "robot_id", args.robot_id))
+        if actual_robot_id != int(args.robot_id):
+            logger.error(
+                "[SimRobotRole] requested robot_id={} but simulator bound robot_id={}",
+                args.robot_id,
+                actual_robot_id,
+            )
+            _write_jsonl(
+                trace_path,
+                {
+                    "t_s": round(time.time() - started, 3),
+                    "robot_id": int(args.robot_id),
+                    "bound_robot_id": actual_robot_id,
+                    "role": args.role,
+                    "event": "robot_id_mismatch",
+                },
+            )
+            return 5
+
         connected = _wait_for_sim(Bits, UnitedPosition)
         if not connected:
             logger.error("[SimRobotRole] robot_id={} simulator connection failed", args.robot_id)
@@ -217,6 +236,7 @@ def main() -> int:
             row = {
                 "t_s": round(time.time() - started, 3),
                 "robot_id": int(args.robot_id),
+                "bound_robot_id": int(getattr(Bits, "robot_id", args.robot_id)),
                 "role": args.role,
                 "state": state,
                 "pose": _pose(UnitedPosition),

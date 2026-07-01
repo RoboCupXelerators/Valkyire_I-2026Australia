@@ -4,7 +4,7 @@ import os
 import time
 
 from LunaPre.simple_strategy import choose_attack_plan
-from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop
+from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop, valid_pose
 
 # 只保留跨 tick/运行方式有关的参数；具体策略阈值直接写在对应判断旁边。
 OFFENCE_DT = float(os.environ.get("OFFENCE_DT", "0.03"))
@@ -237,6 +237,51 @@ def _lock_or_chase_free_ball(ball) -> str:
         field_ball = UnitedPosition.FieldBallPos()
         robot_progress = ATTACK_DIR * float(pose[0])
         ball_progress = ATTACK_DIR * float(field_ball[0])
+        restricted_cfg = getattr(getattr(Settings, "Motion", None), "RestrictedArea", None)
+        drivable_half_y = float(
+            getattr(
+                restricted_cfg,
+                "YLimit",
+                min(70.0, float(getattr(Settings.Bounds, "Short", 200)) / 2.0 - 30.0),
+            )
+        )
+        field_long = float(getattr(Settings.Bounds, "Long", 260))
+        field_short = float(getattr(Settings.Bounds, "Short", 200))
+        field_pose_valid = (
+            valid_pose(pose)
+            and field_ball not in (BALL_NOT_FOUND, BALL_HELD)
+            and len(field_ball) >= 2
+            and abs(float(pose[0])) <= field_long * 0.5 + 20.0
+            and abs(float(pose[1])) <= field_short * 0.5 + 20.0
+            and abs(float(field_ball[0])) <= field_long * 0.5 + 20.0
+            and abs(float(field_ball[1])) <= field_short * 0.5 + 20.0
+        )
+        yaw_rad = math.radians(float(pose[2]))
+        expected_ball_x = float(pose[0]) + bx * math.cos(yaw_rad) - by * math.sin(yaw_rad)
+        expected_ball_y = float(pose[1]) + bx * math.sin(yaw_rad) + by * math.cos(yaw_rad)
+        field_ball_matches_robot = (
+            math.hypot(expected_ball_x - float(field_ball[0]), expected_ball_y - float(field_ball[1])) <= 20.0
+        )
+        if (
+            field_pose_valid
+            and field_ball_matches_robot
+            and abs(float(field_ball[1])) >= drivable_half_y - 3.0
+            and abs(float(pose[1])) >= drivable_half_y - 18.0
+        ):
+            side = 1.0 if float(field_ball[1]) >= 0.0 else -1.0
+            pull_angle = UnitedPosition.Local2Angle([ATTACK_DIR * 70.0, -side * 44.0]) % 360
+            speed_x = ATTACK_DIR * 30.0
+            speed_y = -side * 46.0
+            peripheral.Dribble(0.85)
+            chassis.FieldMoveVector(speed_x, speed_y, pull_angle, KpW=0.9)
+            _set_decision(
+                action="sideline_free_ball_recover",
+                ball=[round(bx, 3), round(by, 3)],
+                field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(pull_angle), 3)],
+            )
+            return "sideline_free_ball_recover"
         if ATTACK_DIR * float(pose[0]) < -68.0 and ball_progress < -88.0:
             clear_angle = UnitedPosition.Local2Angle([ATTACK_DIR * 95, 0]) % 360
             speed_x = ATTACK_DIR * 36

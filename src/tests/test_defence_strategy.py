@@ -103,6 +103,27 @@ def test_defence_presses_midfield_before_free_shot(monkeypatch):
     assert abs(captured["target"][1]) < 1.0
 
 
+def test_defence_recovers_before_robot_body_hits_side_wall(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=-1.0, wall_margin_cm=30.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPos", lambda: [-72.0, 76.0, 120.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [20.0, 6.0])
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+
+    def fake_pos2pos(target, speed_gain=None):
+        captured["target"] = target
+        captured["speed_gain"] = speed_gain
+        return False
+
+    monkeypatch.setattr(defence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+
+    strategy.step()
+
+    assert strategy.state == "avoid_wall"
+    assert captured["target"][1] < 76.0
+
+
 def test_defence_blocks_contested_ball_without_ram(monkeypatch):
     captured = {}
     locks = []

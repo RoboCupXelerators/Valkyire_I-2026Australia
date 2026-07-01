@@ -1,0 +1,33 @@
+{
+  "frames": 90,
+  "valid_pose_frames": 90,
+  "states": [
+    "chase_ball",
+    "near_ball_acquire",
+    "own_half_carry"
+  ],
+  "first_pose": [
+    76.0,
+    -0.0,
+    180.0
+  ],
+  "last_pose": [
+    -0.58,
+    1.0,
+    15.492889404296875
+  ],
+  "motion_span": 135.04,
+  "x_span": 135.04,
+  "y_span": 1.0,
+  "yaw_span": 180.0,
+  "nonzero_cmd_frames": 90,
+  "rx_delta": 228,
+  "tx_delta": 146,
+  "robot_id": 1,
+  "role": "offence",
+  "duration_s": 5.175,
+  "require_motion": false,
+  "min_motion": 5.0,
+  "min_command_frames": 3,
+  "motion_ok": true
+}
