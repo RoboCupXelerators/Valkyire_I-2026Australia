@@ -446,6 +446,33 @@ def test_offence_quick_shot(monkeypatch):
     assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
 
 
+def test_fire_now_locks_short_shot_release_intent(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence._fire_now() == "quick_shot"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+    assert offence._active_drive_intent("shot_release") is not None
+
+
+def test_offence_shot_release_peels_away_from_nearest_defender(monkeypatch):
+    calls = []
+
+    offence._remember_drive_intent("shot_release", 1.0)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [60.0, 10.0, 0.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[70.0, 15.0, 0.0]])
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "shot_release"
+    assert offence.last_decision["action"] == "shot_release"
+    assert offence.last_decision["mode"] == "post_shot_peel"
+    assert calls == [("dribble", False), ("move", (-18.0, -32.0, 0.0), {"KpW": 0.7})]
+
+
 def test_offence_shoots_open_goal_when_decisive_lane_ready(monkeypatch):
     calls = []
 
