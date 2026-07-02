@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
-os.environ.setdefault("ROBOCUPX_BITS", "SIM")
+_original_bits_env = os.environ.get("ROBOCUPX_BITS")
+if _original_bits_env is None:
+    os.environ["ROBOCUPX_BITS"] = "SIM"
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -16,7 +19,13 @@ from sim_multi_robot_scrimmage import (  # noqa: E402
     SIM_WHEEL_TO_V_56MM_500RPM,
     _layout_for_round,
     _random_layout,
+    _trace_summary,
 )
+
+if _original_bits_env is None:
+    os.environ.pop("ROBOCUPX_BITS", None)
+else:
+    os.environ["ROBOCUPX_BITS"] = _original_bits_env
 
 
 def test_random_layout_is_seeded_and_round_specific():
@@ -50,3 +59,18 @@ def test_sim_linear_scale_matches_56mm_500rpm_wheel_limit():
 
     assert SIM_LINEAR_SCALE == 1.0
     assert abs(SIM_WHEEL_MAX_RPM * SIM_WHEEL_TO_V_56MM_500RPM - target_mps) < 0.01
+
+
+def test_trace_summary_reports_total_path_not_displacement(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    rows = [
+        {"pose": [0.0, 0.0, 0.0], "state": "start"},
+        {"pose": [3.0, 4.0, 0.0], "state": "move"},
+        {"pose": [0.0, 0.0, 0.0], "state": "return"},
+    ]
+    trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    summary = _trace_summary(trace)
+
+    assert summary["moved_cm"] == 10.0
+    assert summary["displacement_cm"] == 0.0

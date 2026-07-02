@@ -414,10 +414,29 @@ def _trace_summary(path: Path) -> dict[str, Any]:
     start = rows[0]["pose"] if rows else None
     end = rows[-1]["pose"] if rows else None
     moved = None
+    if rows:
+        total = 0.0
+        previous_xy: tuple[float, float] | None = None
+        for row in rows:
+            pose = row.get("pose")
+            if not pose or len(pose) < 2:
+                continue
+            try:
+                current_xy = (float(pose[0]), float(pose[1]))
+            except (TypeError, ValueError):
+                continue
+            if previous_xy is not None:
+                dx = current_xy[0] - previous_xy[0]
+                dy = current_xy[1] - previous_xy[1]
+                total += (dx * dx + dy * dy) ** 0.5
+            previous_xy = current_xy
+        moved = round(total, 3)
+
+    displacement = None
     if start and end and len(start) >= 2 and len(end) >= 2:
         dx = float(end[0]) - float(start[0])
         dy = float(end[1]) - float(start[1])
-        moved = round((dx * dx + dy * dy) ** 0.5, 3)
+        displacement = round((dx * dx + dy * dy) ** 0.5, 3)
 
     return {
         "frames": len(rows),
@@ -425,6 +444,7 @@ def _trace_summary(path: Path) -> dict[str, Any]:
         "start_pose": start,
         "end_pose": end,
         "moved_cm": moved,
+        "displacement_cm": displacement,
     }
 
 
@@ -650,7 +670,8 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
     for robot in report["robots"]:
         lines.append(
             f"- R{robot['robot_id']} {robot['role']}: exit={robot['exit_code']} "
-            f"frames={robot['trace_summary']['frames']} moved_cm={robot['trace_summary']['moved_cm']}"
+            f"frames={robot['trace_summary']['frames']} moved_cm={robot['trace_summary']['moved_cm']} "
+            f"displacement_cm={robot['trace_summary'].get('displacement_cm')}"
         )
         lines.append(f"  states={robot['trace_summary']['states']}")
     (out_dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
