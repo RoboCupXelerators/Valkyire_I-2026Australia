@@ -26,6 +26,13 @@ _last_free_ball = None
 _last_free_ball_ts = 0.0
 
 
+def _search_home():
+    home = list(Settings.CheckPoints.Home)
+    while len(home) < 3:
+        home.append(0)
+    return [home[0] + 20, home[1], 0]
+
+
 def _set_decision(**fields):
     """记录本 tick 的关键判断，供真实场景 trace 复盘。"""
     global last_decision
@@ -215,6 +222,10 @@ def _recent_free_ball():
     if time.monotonic() - _last_free_ball_ts > 0.35:
         return None
     return _last_free_ball
+
+
+def _is_dribbler_contact_ball(bx: float, by: float) -> bool:
+    return -1.5 <= bx <= 12.5 and abs(by) <= 8.0
 
 
 def _direct_chase_ball(ball, *, stale=False) -> str:
@@ -420,6 +431,11 @@ def _lock_or_chase_free_ball(ball) -> str:
                     target=[round(float(target_x), 3), round(float(target_y), 3), round(float(target_yaw), 3)],
                 )
                 return "ball_rear_reposition"
+            if _is_dribbler_contact_ball(bx, by) and robot_progress > -55.0:
+                controlled_state = _controlled_ball_step(pose, _search_home())
+                last_decision["control_source"] = "visible_dribbler_contact"
+                last_decision["contact_ball"] = [round(bx, 3), round(by, 3)]
+                return controlled_state
     except Exception:
         pass
     if math.hypot(bx, by) >= 30 or bx < -5:
@@ -433,11 +449,12 @@ def _lock_or_chase_free_ball(ball) -> str:
         speed_w = clamp(angle * 0.38, -28.0, 28.0)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         _set_decision(
-            action="near_ball_capture",
+            action="near_ball_control",
+            mode="capture",
             ball=[round(bx, 3), round(by, 3)],
             speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
         )
-        return "near_ball_capture"
+        return "near_ball_control"
 
     if bx <= 22.0 and abs(by) > 9.0:
         peripheral.Dribble(0.95)
@@ -446,13 +463,14 @@ def _lock_or_chase_free_ball(ball) -> str:
         speed_w = clamp(angle * 0.35, -30.0, 30.0)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         _set_decision(
-            action="near_ball_align",
+            action="near_ball_control",
+            mode="align",
             ball=[round(bx, 3), round(by, 3)],
             distance=round(float(math.hypot(bx, by)), 3),
             angle=round(float(angle), 3),
             speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
         )
-        return "near_ball_align"
+        return "near_ball_control"
 
     peripheral.Dribble(0.9)
     speed_x = clamp(30.0 + (bx - 8.5) * 1.7, 28.0, 62.0)
@@ -460,13 +478,14 @@ def _lock_or_chase_free_ball(ball) -> str:
     speed_w = clamp(angle * 0.7, -58.0, 58.0)
     chassis.RobotMoveVector(speed_x, speed_y, speed_w)
     _set_decision(
-        action="near_ball_acquire",
+        action="near_ball_control",
+        mode="acquire",
         ball=[round(bx, 3), round(by, 3)],
         distance=round(float(math.hypot(bx, by)), 3),
         angle=round(float(angle), 3),
         speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
     )
-    return "near_ball_acquire"
+    return "near_ball_control"
 
 
 def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
@@ -617,38 +636,8 @@ def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
     return action
 
 
-def OffenceStep():
-    """执行进攻策略的一个非阻塞 tick，并返回当前状态名。"""
-    global state
-
-    ball = UnitedPosition.RobotBallPos()
-    home = list(Settings.CheckPoints.Home)
-    while len(home) < 3:
-        home.append(0)
-    search_home = [home[0] + 20, home[1], 0]
-
-    if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
-        recent_ball = _recent_free_ball()
-        if recent_ball is not None:
-            state = _direct_chase_ball(recent_ball, stale=True)
-            return state
-        peripheral.Dribble(0.7)
-        UnitedPosition.Pos2Pos(search_home, 4.5)
-        _set_decision(action="search_ball", target=search_home)
-        state = "search_ball"
-        return state
-
-    if ball != BALL_HELD:
-        state = _lock_or_chase_free_ball(ball)
-        return state
-
-    try:
-        pose = UnitedPosition.FieldRobotPos()
-        x, y, _ = pose
-    except Exception:
-        pose = [0, 0, 0]
-        x, y = 0, 0
-
+def _controlled_ball_step(pose, search_home) -> str:
+    x, y, _ = pose
     progress = ATTACK_DIR * float(x)
     abs_y = abs(float(y))
     if progress < -45 and abs_y >= 58:
@@ -663,8 +652,7 @@ def OffenceStep():
             y=round(float(y), 3),
             speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(recover_angle), 3)],
         )
-        state = "corner_recover"
-        return state
+        return "corner_recover"
 
     if progress >= 72 and 24 <= abs_y <= 38:
         safe_angle = UnitedPosition.Local2Angle([ATTACK_DIR * 88, 48 if float(y) >= 0 else -48]) % 360
@@ -678,8 +666,7 @@ def OffenceStep():
             y=round(float(y), 3),
             speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(safe_angle), 3)],
         )
-        state = "penalty_box_escape"
-        return state
+        return "penalty_box_escape"
 
     enemies = _relevant_enemies(pose, UnitedPosition.FieldChassisPos())
     goal_target, shot_lane_score = _best_goal_target(pose, enemies)
@@ -698,12 +685,10 @@ def OffenceStep():
             y=round(float(y), 3),
             target=[round(float(ATTACK_DIR * 82.0), 3), round(float(infield_y), 3), round(float(recover_angle), 3)],
         )
-        state = "deep_corner_release"
-        return state
+        return "deep_corner_release"
 
     if progress < 0:
-        state = _carry_own_half(goal_angle, pose, shot_lane_score)
-        return state
+        return _carry_own_half(goal_angle, pose, shot_lane_score)
 
     back_angle = (goal_angle + 180.0) % 360.0
     back_error = angle_error_deg(chassis.GetYaw(), back_angle)
@@ -718,8 +703,7 @@ def OffenceStep():
             lane_score=round(float(shot_lane_score), 3),
             goal_angle=round(float(goal_angle), 3),
         )
-        state = _fire_now()
-        return state
+        return _fire_now()
 
     shot_allowed = False
     if abs_y > 45 * 1.55:
@@ -780,8 +764,7 @@ def OffenceStep():
             lane_score=round(float(shot_lane_score), 3),
             goal_angle=round(float(goal_angle), 3),
         )
-        state = _fire_now()
-        return state
+        return _fire_now()
 
     plan_action, plan_x, plan_y, plan_speed_x, plan_speed_y = choose_attack_plan(
         pose,
@@ -802,8 +785,7 @@ def OffenceStep():
                 lane_score=round(float(shot_lane_score), 3),
                 target=[round(float(plan_x), 3), round(float(plan_y), 3)],
             )
-            state = _fire_now()
-            return state
+            return _fire_now()
 
     if plan_action == "sideline_drive":
         sideline_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
@@ -818,19 +800,45 @@ def OffenceStep():
             target=[round(float(plan_x), 3), round(float(plan_y), 3)],
             speed=[round(float(plan_speed_x), 3), round(float(plan_speed_y), 3), round(float(sideline_angle), 3)],
         )
-        state = "sideline_drive"
-        return state
+        return "sideline_drive"
 
     if abs(float(y)) >= 45 and progress < 50:
         if OhMyBackStep(HomePos=search_home, attack_dir=ATTACK_DIR):
             _set_decision(action="oh_my_back_shot", progress=round(float(progress), 3), y=round(float(y), 3))
-            state = "oh_my_back_shot"
-        else:
-            _set_decision(action="oh_my_back", progress=round(float(progress), 3), y=round(float(y), 3))
-            state = "oh_my_back"
+            return "oh_my_back_shot"
+        _set_decision(action="oh_my_back", progress=round(float(progress), 3), y=round(float(y), 3))
+        return "oh_my_back"
+
+    return _attack_with_ball(goal_angle, pose, enemies, shot_lane_score)
+
+
+def OffenceStep():
+    """执行进攻策略的一个非阻塞 tick，并返回当前状态名。"""
+    global state
+
+    ball = UnitedPosition.RobotBallPos()
+    search_home = _search_home()
+
+    if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
+        recent_ball = _recent_free_ball()
+        if recent_ball is not None:
+            state = _direct_chase_ball(recent_ball, stale=True)
+            return state
+        peripheral.Dribble(0.7)
+        UnitedPosition.Pos2Pos(search_home, 4.5)
+        _set_decision(action="search_ball", target=search_home)
+        state = "search_ball"
         return state
 
-    state = _attack_with_ball(goal_angle, pose, enemies, shot_lane_score)
+    if ball != BALL_HELD:
+        state = _lock_or_chase_free_ball(ball)
+        return state
+
+    try:
+        pose = UnitedPosition.FieldRobotPos()
+    except Exception:
+        pose = [0, 0, 0]
+    state = _controlled_ball_step(pose, search_home)
     return state
 
 

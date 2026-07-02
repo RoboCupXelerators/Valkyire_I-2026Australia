@@ -53,7 +53,8 @@ def test_offence_acquires_visible_near_ball(monkeypatch):
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
 
-    assert offence.OffenceStep() == "near_ball_acquire"
+    assert offence.OffenceStep() == "near_ball_control"
+    assert offence.last_decision["mode"] == "acquire"
     assert calls[0] == ("dribble", 0.9)
     assert calls[1][0] == "move"
     assert calls[1][1][0] > 0
@@ -67,12 +68,50 @@ def test_offence_captures_ball_gently_in_dribble_window(monkeypatch):
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
 
-    assert offence.OffenceStep() == "near_ball_capture"
+    assert offence.OffenceStep() == "near_ball_control"
+    assert offence.last_decision["mode"] == "capture"
     assert calls[0] == ("dribble", 0.95)
     assert calls[1][0] == "move"
     assert calls[1][1][0] >= 32.0
     assert 0 < calls[1][1][1] <= 14.0
     assert abs(calls[1][1][2]) <= 28.0
+
+
+def test_offence_treats_visible_dribbler_contact_as_controlled_carry(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [8, -1])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-36, 46, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-28, 45])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 358)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "own_half_carry"
+    assert offence.last_decision["action"] == "own_half_carry"
+    assert offence.last_decision["control_source"] == "visible_dribbler_contact"
+    assert calls == [("dribble", 0.9), ("move", (54.0, -24.0, 358), {"KpW": 0.8})]
+
+
+def test_offence_uses_sideline_plan_for_visible_dribbler_contact(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [7, 2])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 52, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [37, 54])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], -0.4))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 14)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "sideline_drive"
+    assert offence.last_decision["action"] == "sideline_drive"
+    assert offence.last_decision["control_source"] == "visible_dribbler_contact"
+    assert calls == [("dribble", 0.85), ("move", (46.0, -18.0, 14), {"KpW": 0.9})]
 
 
 def test_offence_aligns_sideways_before_pushing_close_ball(monkeypatch):
@@ -84,7 +123,8 @@ def test_offence_aligns_sideways_before_pushing_close_ball(monkeypatch):
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
 
-    assert offence.OffenceStep() == "near_ball_align"
+    assert offence.OffenceStep() == "near_ball_control"
+    assert offence.last_decision["mode"] == "align"
     assert calls[0] == ("dribble", 0.95)
     assert calls[1][0] == "move"
     assert 16.0 <= calls[1][1][0] <= 40.0
