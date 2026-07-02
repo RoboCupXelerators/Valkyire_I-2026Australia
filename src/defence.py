@@ -149,6 +149,15 @@ class RuleDefenceStrategy:
         contested_ball = self._enemy_near_ball(ball_field, enemies)
         danger_ball = ball_progress <= self.cfg.chase_retreat_cm
         central_ball = abs(float(ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
+        deep_guard = abs(self.cfg.guard_x_cm) >= 68.0
+
+        if deep_guard:
+            state, target = self._deep_guard_cover_target(ball_field)
+            if state:
+                self._set_state(state)
+                self._set_dribble(False)
+                UnitedPosition.Pos2Pos(target, self.cfg.hold_speed_gain)
+                return
 
         if contested_ball and danger_ball and central_ball and ball_distance <= min(self.cfg.chase_distance_cm, 58.0):
             self._set_state("challenge_contested_ball")
@@ -249,11 +258,15 @@ class RuleDefenceStrategy:
 
     def _pressure_target(self, ball_field: list | tuple) -> list[float]:
         ball_progress = self.attack_dir * float(ball_field[0])
-        target_progress = ball_progress - abs(self.cfg.intercept_offset_cm)
-        target_progress = clamp(target_progress, -abs(self.cfg.guard_x_cm) - 12.0, abs(self.cfg.guard_x_cm) - 8.0)
+        # Keep contested-ball defence on the goal side of the ball. The old
+        # target was too close under the current ball friction and caused both
+        # robots to bunch around the ball instead of forming a shot block.
+        offset = max(42.0, abs(self.cfg.intercept_offset_cm) + 10.0)
+        target_progress = ball_progress - offset
+        target_progress = clamp(target_progress, -abs(self.cfg.guard_x_cm) - 16.0, abs(self.cfg.guard_x_cm) - 18.0)
 
         max_y = min(self.field_short / 2.0 - 34.0, 54.0)
-        target_y = clamp(float(ball_field[1]) * 0.65, -max_y, max_y)
+        target_y = clamp(float(ball_field[1]) * 0.55, -max_y, max_y)
         target_x = self.attack_dir * target_progress
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return self._project_target([target_x, target_y, target_yaw])
@@ -264,6 +277,24 @@ class RuleDefenceStrategy:
             return "", None
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return state, self._project_target([target_x, target_y, target_yaw])
+
+    def _deep_guard_cover_target(self, ball_field: list | tuple):
+        state, target = self._cover_shot_target(ball_field)
+        if not state or target is None:
+            return state, target
+
+        # Staying too deep inside the goal/penalty mouth makes ProjectSafePose
+        # push the goalie back into the lane. Keep the layered guard outside
+        # that restricted box, and separate it laterally from the ball carrier.
+        guard_x = -self.attack_dir * min(abs(self.cfg.guard_x_cm), 58.0)
+        max_y = min(self.field_short / 2.0 - 38.0, 46.0)
+        ball_y = float(ball_field[1])
+        if state == "cover_direct_shot":
+            target_y = -34.0 if ball_y > 0.0 else 34.0
+        else:
+            target_y = clamp(float(target[1]) * 0.82, -max_y, max_y)
+        target_yaw = UnitedPosition.Pos2Angle([guard_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
+        return state, self._project_target([guard_x, target_y, target_yaw])
 
     def _recovery_is_stuck(self, pose: list | tuple | None) -> bool:
         if self._recovery_start_ts is None or self._recovery_start_pose is None:

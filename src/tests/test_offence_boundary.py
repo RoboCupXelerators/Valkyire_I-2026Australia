@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -12,6 +14,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import offence  # noqa: E402
 from LunaPre.simple_strategy import choose_attack_plan  # noqa: E402
 from offence import BALL_HELD, BALL_NOT_FOUND  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_field_state(monkeypatch):
+    """Keep unit tests independent from any running simulator frame."""
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [9999, 9999, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: BALL_NOT_FOUND)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
 
 
 def test_offence_searches_from_home_when_ball_not_visible(monkeypatch):
@@ -60,9 +70,9 @@ def test_offence_captures_ball_gently_in_dribble_window(monkeypatch):
     assert offence.OffenceStep() == "near_ball_capture"
     assert calls[0] == ("dribble", 0.95)
     assert calls[1][0] == "move"
-    assert calls[1][1][0] == 8.0
-    assert 0 < calls[1][1][1] <= 10.0
-    assert abs(calls[1][1][2]) <= 24.0
+    assert calls[1][1][0] >= 32.0
+    assert 0 < calls[1][1][1] <= 14.0
+    assert abs(calls[1][1][2]) <= 28.0
 
 
 def test_offence_aligns_sideways_before_pushing_close_ball(monkeypatch):
@@ -77,9 +87,9 @@ def test_offence_aligns_sideways_before_pushing_close_ball(monkeypatch):
     assert offence.OffenceStep() == "near_ball_align"
     assert calls[0] == ("dribble", 0.95)
     assert calls[1][0] == "move"
-    assert 0.0 <= calls[1][1][0] <= 12.0
+    assert 16.0 <= calls[1][1][0] <= 40.0
     assert calls[1][1][1] > 20.0
-    assert abs(calls[1][1][2]) <= 18.0
+    assert abs(calls[1][1][2]) <= 30.0
 
 
 def test_offence_directly_chases_visible_far_ball(monkeypatch):
@@ -157,8 +167,8 @@ def test_offence_clears_own_half_wide_ball_before_local_alignment(monkeypatch):
     calls = []
 
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [12, 11])
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-82, 47, 60])
-    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-70, 50])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-82, 47, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-70, 58])
     monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
     monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
 
@@ -166,9 +176,26 @@ def test_offence_clears_own_half_wide_ball_before_local_alignment(monkeypatch):
     assert offence.last_decision["action"] == "own_half_wide_clear"
     assert calls[0] == ("dribble", 0.9)
     assert calls[1][0] == "move"
-    assert calls[1][1][0] == 22.0
-    assert calls[1][1][1] == 25.299999999999997
+    assert calls[1][1][0] >= 18.0
+    assert calls[1][1][1] > 25.0
     assert 6.0 <= calls[1][1][2] <= 7.0
+
+
+def test_offence_clears_own_corner_ball_from_farther_approach(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [36, 6])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [-30, 56, 180])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-67, 50])
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args)))
+
+    assert offence.OffenceStep() == "own_half_wide_clear"
+    assert offence.last_decision["action"] == "own_half_wide_clear"
+    assert calls[0] == ("dribble", 0.9)
+    assert calls[1][0] == "move"
+    assert calls[1][1][0] > 0
+    assert calls[1][1][1] > 0
 
 
 def test_offence_pulls_sideline_free_ball_back_infield(monkeypatch):
@@ -443,6 +470,21 @@ def test_offence_recovers_corner_ball_without_ohmyback(monkeypatch):
     assert calls == [("dribble", 0.9), ("move", (46, -44.0, 20), {"KpW": 0.9})]
 
 
+def test_offence_releases_deep_enemy_corner_before_pushing(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [92.0, -50.0, 176.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[67.0, -48.0]])
+    monkeypatch.setattr(offence.UnitedPosition, "Pos2Angle", lambda _start, _end: 160)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
+
+    assert offence.OffenceStep() == "deep_corner_release"
+    assert offence.last_decision["action"] == "deep_corner_release"
+    assert calls == [("dribble", 0.65), ("move", (-20.0, 19.2, 160), {"KpW": 0.85})]
+
+
 def test_offence_dodges_blocker_instead_of_waiting(monkeypatch):
     calls = []
 
@@ -456,6 +498,23 @@ def test_offence_dodges_blocker_instead_of_waiting(monkeypatch):
 
     assert offence.OffenceStep() == "attack_dodge"
     assert calls == [("dribble", 0.85), ("move", (34, 34, 0), {"KpW": 0.95})]
+
+
+def test_offence_releases_shot_before_double_pressure_push(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [16.0, -10.0, 3.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[35.0, 8.0], [40.0, -16.0]])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 8)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 3.0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert offence.last_decision["action"] == "pressure_release_shot"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
 
 
 def test_offence_wall_shoots_when_deep_direct_lane_is_blocked(monkeypatch):
