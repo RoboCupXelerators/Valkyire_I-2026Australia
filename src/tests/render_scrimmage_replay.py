@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess
 from bisect import bisect_right
 from pathlib import Path
@@ -22,6 +23,8 @@ TEAM_COLORS = {
     3: (255, 140, 80),
     4: (255, 140, 80),
 }
+
+_PUSHING_EVENT_RE = re.compile(r"pushing\s+r(\d+)\s*/\s*r(\d+)", re.IGNORECASE)
 
 
 def _read_rows(scene_trace: Path) -> list[dict[str, Any]]:
@@ -107,6 +110,65 @@ def _trace_action(row: dict[str, Any] | None) -> str:
     return str(decision.get("action") or row.get("state") or "")
 
 
+def _trace_field_label(row: dict[str, Any] | None) -> str:
+    if not row:
+        return ""
+    decision = row.get("offence_decision") or row.get("defence_decision") or {}
+    state = str(row.get("state") or "")
+    action = str(decision.get("action") or "")
+    if state and action and state != action:
+        return f"{state}>{action}"
+    return state or action
+
+
+def _decision_detail_lines(decision: dict[str, Any]) -> list[str]:
+    if not decision:
+        return []
+
+    lines: list[str] = []
+    for key in ("mode", "shot_gate", "force_gate", "control_source", "distance", "angle", "behind_gap"):
+        if key in decision:
+            lines.append(f"{key}={decision.get(key)}")
+
+    if "progress" in decision or "y" in decision:
+        lines.append(f"progress={decision.get('progress', '')} y={decision.get('y', '')}")
+
+    if "lane_score" in decision or "yaw_error" in decision:
+        lines.append(f"lane={decision.get('lane_score', '')} yaw={decision.get('yaw_error', '')}")
+
+    for key in ("target", "target_y", "speed", "field_ball", "ball", "blocker", "pressure"):
+        if key in decision:
+            lines.append(f"{key}={decision.get(key)}")
+
+    return lines
+
+
+def _robot_xy(status: dict[str, Any], robot_id: int) -> tuple[float, float] | None:
+    for robot in status.get("robots") or []:
+        try:
+            if int(robot.get("id", -1)) == int(robot_id):
+                return float(robot.get("x_cm", 0.0)), float(robot.get("y_cm", 0.0))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _display_event(status: dict[str, Any]) -> str:
+    score = status.get("score") if isinstance(status.get("score"), dict) else {}
+    event = str(score.get("last_event", "")).strip() if score else ""
+    match = _PUSHING_EVENT_RE.search(event)
+    if not match:
+        return event
+
+    first = _robot_xy(status, int(match.group(1)))
+    second = _robot_xy(status, int(match.group(2)))
+    if first is None or second is None:
+        return event
+    if math.hypot(first[0] - second[0], first[1] - second[1]) > 36.0:
+        return ""
+    return event
+
+
 def _draw_debug_panel(
     img: np.ndarray,
     *,
@@ -114,15 +176,15 @@ def _draw_debug_panel(
     height: int,
     trace_snapshots: dict[int, dict[str, Any] | None],
 ) -> None:
-    panel_w = 392
-    x0 = width - panel_w - 18
-    y0 = 82
-    y1 = min(height - 18, y0 + 278)
+    panel_w = min(width - 36, max(760, int(width * 0.48)))
+    x0 = 18
+    y0 = 86
+    y1 = min(height - 18, max(y0 + 500, height - 28))
 
     overlay = img.copy()
-    cv2.rectangle(overlay, (x0, y0), (width - 18, y1), (18, 24, 29), -1, cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.72, img, 0.28, 0, img)
-    cv2.rectangle(img, (x0, y0), (width - 18, y1), (120, 135, 145), 1, cv2.LINE_AA)
+    cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y1), (18, 24, 29), -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.64, img, 0.36, 0, img)
+    cv2.rectangle(img, (x0, y0), (x0 + panel_w, y1), (120, 135, 145), 1, cv2.LINE_AA)
 
     _draw_text(img, "strategy trace", (x0 + 14, y0 + 26), (255, 255, 255), 0.62, 2)
     y = y0 + 54
@@ -141,15 +203,19 @@ def _draw_debug_panel(
 
         _draw_text(img, f"R{robot_id} {role}", (x0 + 14, y), color, 0.54, 2)
         y += 22
-        _draw_text(img, _short(f"fn={role}.{action} state={state}", 50), (x0 + 26, y), (245, 245, 245), 0.47, 1)
+        phase = str(decision.get("phase") or "")
+        headline = f"phase={phase} action={action}" if phase else f"action={action}"
+        _draw_text(img, _short(headline, 92), (x0 + 26, y), (245, 245, 245), 0.46, 1)
         y += 20
-        if "distance" in decision or "angle" in decision:
-            dist = decision.get("distance", "")
-            angle = decision.get("angle", "")
-            _draw_text(img, _short(f"ball d={dist} angle={angle}", 48), (x0 + 26, y), (220, 230, 235), 0.44, 1)
+        _draw_text(img, _short(f"fn={role}.{state} branch={action}", 92), (x0 + 26, y), (195, 205, 212), 0.40, 1)
+        y += 20
+        for detail in _decision_detail_lines(decision)[:4]:
+            _draw_text(img, _short(detail, 94), (x0 + 26, y), (220, 230, 235), 0.40, 1)
             y += 18
-        _draw_text(img, f"cmd vx={cmd_vx:.1f} vy={cmd_vy:.1f} wz={cmd_wz:.1f}", (x0 + 26, y), (220, 230, 235), 0.44, 1)
+        _draw_text(img, f"cmd vx={cmd_vx:.1f} vy={cmd_vy:.1f} wz={cmd_wz:.1f}", (x0 + 26, y), (220, 230, 235), 0.40, 1)
         y += 26
+        if y > y1 - 20:
+            break
 
 
 def _lerp(a: float, b: float, ratio: float) -> float:
@@ -237,6 +303,8 @@ def _render_raw(
         raise RuntimeError(f"VideoWriter failed: {output}")
 
     last_frame: np.ndarray | None = None
+    cover_frame: np.ndarray | None = None
+    cover_frame_idx = min(frame_count - 1, max(0, int(round(min(max(duration * 0.16, 8.0), duration - 2.0) * fps))))
 
     def pt(x_cm: float, y_cm: float) -> tuple[int, int]:
         return _point(width, height, scale, x_cm, y_cm)
@@ -290,7 +358,7 @@ def _render_raw(
             if robot.get("has_ball"):
                 cv2.circle(img, (cx, cy), radius + 5, (0, 255, 255), 2, cv2.LINE_AA)
             trace_row = trace_snapshots.get(robot_id)
-            label_action = _trace_action(trace_row)
+            label_action = _trace_field_label(trace_row)
             if label_action:
                 label = f"{robot_id}:{label_action}"
                 _draw_text(img, _short(label, 26), (cx + radius + 8, cy + 5), color, 0.42, 1)
@@ -298,7 +366,7 @@ def _render_raw(
         _draw_text(img, title, (24, 34), (255, 255, 255), 0.72, 2)
         _draw_text(
             img,
-            f"t={t_rel:05.1f}s / {duration:05.1f}s  ally={score.get('ally', 0)} enemy={score.get('enemy', 0)}  event={score.get('last_event', '')}",
+            f"t={t_rel:05.1f}s / {duration:05.1f}s  ally={score.get('ally', 0)} enemy={score.get('enemy', 0)}  event={_display_event(status)}",
             (24, 64),
             (235, 235, 235),
             0.58,
@@ -308,10 +376,13 @@ def _render_raw(
         _draw_debug_panel(img, width=width, height=height, trace_snapshots=trace_snapshots)
         writer.write(img)
         last_frame = img
+        if frame_idx == cover_frame_idx:
+            cover_frame = img.copy()
 
     writer.release()
-    if last_frame is not None:
-        cv2.imwrite(str(cover), last_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+    frame_for_cover = cover_frame if cover_frame is not None else last_frame
+    if frame_for_cover is not None:
+        cv2.imwrite(str(cover), frame_for_cover, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     return duration
 
 
@@ -323,17 +394,17 @@ def _transcode_h264(raw: Path, output: Path) -> None:
             "-i",
             str(raw),
             "-vf",
-            "scale=1280:720:flags=lanczos,format=yuv420p",
+            "format=yuv420p",
             "-c:v",
             "libx264",
             "-profile:v",
             "baseline",
             "-level",
-            "3.1",
+            "4.0",
             "-preset",
             "veryfast",
             "-crf",
-            "23",
+            "18",
             "-movflags",
             "+faststart",
             "-an",
@@ -362,7 +433,7 @@ def main() -> int:
 
     stem = args.name or f"{run_dir.name}_realtime"
     raw = args.output_dir / f"{stem}_raw.mp4"
-    output = args.output_dir / f"{stem}_h264_720p.mp4"
+    output = args.output_dir / f"{stem}_h264_{args.height}p.mp4"
     cover = args.output_dir / f"{stem}_cover.jpg"
 
     duration = _render_raw(

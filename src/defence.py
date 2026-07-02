@@ -151,6 +151,20 @@ class RuleDefenceStrategy:
         central_ball = abs(float(ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
         deep_guard = abs(self.cfg.guard_x_cm) >= 68.0
 
+        if self._own_goal_mouth_dead_ball(ball_field):
+            target = self._goal_mouth_dead_ball_cover_target(ball_field)
+            self._set_state("cover_goal_mouth_dead_ball")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.hold_speed_gain)
+            return
+
+        if self._wide_own_goal_dead_ball(ball_field):
+            target = self._wide_dead_ball_cover_target(ball_field)
+            self._set_state("cover_wide_dead_ball")
+            self._set_dribble(False)
+            UnitedPosition.Pos2Pos(target, self.cfg.hold_speed_gain)
+            return
+
         if deep_guard:
             state, target = self._deep_guard_cover_target(ball_field)
             if state:
@@ -159,13 +173,8 @@ class RuleDefenceStrategy:
                 UnitedPosition.Pos2Pos(target, self.cfg.hold_speed_gain)
                 return
 
-        if contested_ball and danger_ball and central_ball and ball_distance <= min(self.cfg.chase_distance_cm, 58.0):
-            self._set_state("challenge_contested_ball")
-            lockball.LockBallSlip()
-            return
-
         if contested_ball and ball_distance <= self.cfg.chase_distance_cm * 1.75:
-            target = self._pressure_target(ball_field)
+            target = self._pressure_target(ball_field, contested=True)
             self._set_state("block_contested_ball")
             self._set_dribble(False)
             UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
@@ -252,21 +261,57 @@ class RuleDefenceStrategy:
         for enemy in enemies or []:
             if not enemy or len(enemy) < 2:
                 continue
-            if distance([float(enemy[0]), float(enemy[1])], ball_field) <= 30.0:
+            # Treat an attacker who is closing on the ball as contested before
+            # body contact. Waiting for a 30 cm overlap made R3 press into the
+            # same lane, then trigger pushing during 1v2 starts.
+            if distance([float(enemy[0]), float(enemy[1])], ball_field) <= 48.0:
                 return True
         return False
 
-    def _pressure_target(self, ball_field: list | tuple) -> list[float]:
+    def _wide_own_goal_dead_ball(self, ball_field: list | tuple) -> bool:
+        own_goal_progress = -self.attack_dir * float(ball_field[0])
+        wide_y = abs(float(ball_field[1])) >= min(self.field_short / 2.0 - 28.0, 64.0)
+        deep_x = own_goal_progress >= self.field_long / 2.0 - 34.0
+        return bool(deep_x and wide_y)
+
+    def _own_goal_mouth_dead_ball(self, ball_field: list | tuple) -> bool:
+        own_goal_progress = -self.attack_dir * float(ball_field[0])
+        central_y = abs(float(ball_field[1])) <= 34.0
+        deep_x = own_goal_progress >= self.field_long / 2.0 - 34.0
+        return bool(deep_x and central_y)
+
+    def _goal_mouth_dead_ball_cover_target(self, ball_field: list | tuple) -> list[float]:
+        guard_x = -self.attack_dir * min(abs(self.cfg.guard_x_cm), 58.0)
+        ball_y = float(ball_field[1])
+        target_y = -30.0 if ball_y >= 0.0 else 30.0
+        target_yaw = UnitedPosition.Pos2Angle([guard_x, target_y], [float(ball_field[0]), ball_y]) % 360
+        return self._project_target([guard_x, target_y, target_yaw])
+
+    def _wide_dead_ball_cover_target(self, ball_field: list | tuple) -> list[float]:
+        guard_x = -self.attack_dir * min(abs(self.cfg.guard_x_cm), 58.0)
+        target_y = clamp(float(ball_field[1]) * 0.28, -24.0, 24.0)
+        target_yaw = UnitedPosition.Pos2Angle([guard_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
+        return self._project_target([guard_x, target_y, target_yaw])
+
+    def _pressure_target(self, ball_field: list | tuple, *, contested: bool = False) -> list[float]:
         ball_progress = self.attack_dir * float(ball_field[0])
-        # Keep contested-ball defence on the goal side of the ball. The old
-        # target was too close under the current ball friction and caused both
-        # robots to bunch around the ball instead of forming a shot block.
-        offset = max(42.0, abs(self.cfg.intercept_offset_cm) + 10.0)
+        # Keep contested-ball defence on the goal side of the ball. With the
+        # current ball friction, a close pressure target turns into a pushing
+        # reset instead of a useful block.
+        offset = max(62.0, abs(self.cfg.intercept_offset_cm) + 24.0)
         target_progress = ball_progress - offset
         target_progress = clamp(target_progress, -abs(self.cfg.guard_x_cm) - 16.0, abs(self.cfg.guard_x_cm) - 18.0)
 
         max_y = min(self.field_short / 2.0 - 34.0, 54.0)
-        target_y = clamp(float(ball_field[1]) * 0.55, -max_y, max_y)
+        ball_y = float(ball_field[1])
+        if contested and abs(ball_y) <= 28.0:
+            # Do not stand directly behind a contested central ball: the goal-box
+            # projection pulls the defender to x~=52, so a same-lane target turns
+            # into a pushing call. Use the opposite shoulder to block without ramming.
+            side = -1.0 if ball_y > 0.0 else 1.0
+            target_y = side * 44.0
+        else:
+            target_y = clamp(ball_y * 0.70, -max_y, max_y)
         target_x = self.attack_dir * target_progress
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return self._project_target([target_x, target_y, target_yaw])

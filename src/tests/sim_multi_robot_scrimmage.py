@@ -15,6 +15,7 @@ import json
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,13 @@ STAGGERED_LAYOUT = {
     2: (-85.0, 65.0, 0.0),
     3: (85.0, 45.0, 180.0),
     4: (95.0, -65.0, 180.0),
+}
+
+INACTIVE_PARKING = {
+    1: (-110.0, 82.0, 0.0),
+    2: (-98.0, 82.0, 0.0),
+    3: (98.0, -82.0, 180.0),
+    4: (110.0, -82.0, 180.0),
 }
 
 LAYOUTS = {
@@ -117,6 +125,10 @@ def _layout_for_round(
     return LAYOUTS.get(layout_name, DEFAULT_LAYOUT)
 
 
+def _inactive_parking_pose(robot_id: int) -> tuple[float, float, float]:
+    return INACTIVE_PARKING.get(int(robot_id), (0.0, 88.0, 0.0))
+
+
 def _parse_robots(value: str) -> list[int]:
     robots: list[int] = []
     for part in value.split(","):
@@ -188,8 +200,12 @@ def _place_robots(
             ctl.set_dribble(robot_id, False, strength=0.0)
         except Exception:
             pass
-        x, y, yaw = layout[robot_id]
-        ctl.set_robot(robot_id, x, y, yaw, active=robot_id in active)
+        if robot_id in active:
+            x, y, yaw = layout[robot_id]
+            ctl.set_robot(robot_id, x, y, yaw, active=True)
+        else:
+            x, y, yaw = _inactive_parking_pose(robot_id)
+            ctl.set_robot(robot_id, x, y, yaw, active=False)
     ctl.set_ball(ball[0], ball[1], reset_velocity=True)
 
 
@@ -216,6 +232,10 @@ def _refresh_rules_after_manual_place(
     return _set_rules(ctl, enabled=True)
 
 
+def _uses_controlled_goal_reset(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "continue_after_goal", False) or getattr(args, "allow_no_goal", False))
+
+
 def _lock_active_robots(
     ctl: XeleratorSceneControl,
     status: dict[str, Any],
@@ -237,11 +257,12 @@ def _lock_active_robots(
             ctl.set_dribble(robot_id, False, strength=0.0)
         except Exception:
             pass
+        x, y, yaw = _inactive_parking_pose(robot_id)
         ctl.set_robot(
             robot_id,
-            float(robot.get("x_cm", 0.0)),
-            float(robot.get("y_cm", 0.0)),
-            float(robot.get("yaw_deg", 0.0)),
+            x,
+            y,
+            yaw,
             active=False,
         )
 
@@ -459,6 +480,41 @@ def _is_rule_event(event: str) -> bool:
     )
 
 
+def _is_fresh_event_time(value: Any) -> bool:
+    try:
+        return float(value) >= 0.0
+    except (TypeError, ValueError):
+        return True
+
+
+_PUSHING_EVENT_RE = re.compile(r"pushing\s+r(\d+)\s*/\s*r(\d+)", re.IGNORECASE)
+
+
+def _robot_xy(status: dict[str, Any], robot_id: int) -> tuple[float, float] | None:
+    robots = status.get("robots") if isinstance(status.get("robots"), list) else []
+    for robot in robots:
+        try:
+            if int(robot.get("id", -1)) != int(robot_id):
+                continue
+            return float(robot.get("x_cm", 0.0)), float(robot.get("y_cm", 0.0))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _event_is_supported_by_status(event: str, status: dict[str, Any]) -> bool:
+    match = _PUSHING_EVENT_RE.search(event)
+    if not match:
+        return True
+
+    first = _robot_xy(status, int(match.group(1)))
+    second = _robot_xy(status, int(match.group(2)))
+    if first is None or second is None:
+        return True
+
+    return math.hypot(first[0] - second[0], first[1] - second[1]) <= 36.0
+
+
 def _score_total(score: dict[str, Any] | None) -> int:
     if not isinstance(score, dict):
         return 0
@@ -523,7 +579,12 @@ def _scene_summary(path: Path) -> dict[str, Any]:
         event = str(score.get("last_event", "")).strip() if score else ""
         event_time = score.get("last_time") if score else None
         event_key = (event, event_time)
-        if event and event_key != previous_event_key:
+        if (
+            event
+            and _is_fresh_event_time(event_time)
+            and _event_is_supported_by_status(event, status)
+            and event_key != previous_event_key
+        ):
             event_counts[event] = event_counts.get(event, 0) + 1
             if _is_rule_event(event) and first_rule_event is None:
                 first_rule_event = {
@@ -803,10 +864,17 @@ def main() -> int:
                     suspended_robots.add(penalized)
 
                 current_goal_total = _score_total(score)
-                if args.continue_after_goal and current_goal_total > previous_goal_total:
+                if _uses_controlled_goal_reset(args) and current_goal_total > previous_goal_total:
                     layout_round += 1
                     layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
                     report["layout_history"].append({"round": layout_round, "layout": layout})
+                    if rules_enabled:
+                        report.setdefault("round_rule_suspends", []).append(
+                            {
+                                "round": layout_round,
+                                "response": _set_rules(ctl, enabled=False),
+                            }
+                        )
                     _place_robots(
                         ctl,
                         robots,

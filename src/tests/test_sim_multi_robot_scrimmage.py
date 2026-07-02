@@ -17,9 +17,14 @@ from sim_multi_robot_scrimmage import (  # noqa: E402
     SIM_LINEAR_SCALE,
     SIM_WHEEL_MAX_RPM,
     SIM_WHEEL_TO_V_56MM_500RPM,
+    _inactive_parking_pose,
     _layout_for_round,
+    _place_robots,
     _random_layout,
+    _lock_active_robots,
+    _scene_summary,
     _trace_summary,
+    _uses_controlled_goal_reset,
 )
 
 if _original_bits_env is None:
@@ -74,3 +79,134 @@ def test_trace_summary_reports_total_path_not_displacement(tmp_path):
 
     assert summary["moved_cm"] == 10.0
     assert summary["displacement_cm"] == 0.0
+
+
+def test_scene_summary_ignores_stale_rule_event_before_reset(tmp_path):
+    trace = tmp_path / "scene_status.jsonl"
+    rows = [
+        {
+            "status": {
+                "time": 1.0,
+                "score": {"ally": 0, "enemy": 0, "last_event": "lack of progress", "last_time": -999},
+                "ball": {"x_cm": 0.0, "y_cm": 0.0, "speed_cm_s": 0.0},
+                "robots": [],
+            }
+        },
+        {
+            "status": {
+                "time": 2.0,
+                "score": {"ally": 1, "enemy": 0, "last_event": "Ally goal -> Enemy kickoff", "last_time": 2.0},
+                "ball": {"x_cm": 110.0, "y_cm": 0.0, "speed_cm_s": 0.0},
+                "robots": [],
+            }
+        },
+    ]
+    trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    summary = _scene_summary(trace)
+
+    assert summary["event_counts"] == {"Ally goal -> Enemy kickoff": 1}
+    assert summary["first_rule_event"] is None
+
+
+def test_scene_summary_ignores_physically_impossible_pushing_event(tmp_path):
+    trace = tmp_path / "scene_status.jsonl"
+    rows = [
+        {
+            "status": {
+                "time": 5.0,
+                "score": {"ally": 0, "enemy": 0, "last_event": "pushing R1/R3", "last_time": 5.0},
+                "ball": {"x_cm": 0.0, "y_cm": 0.0, "speed_cm_s": 0.0},
+                "robots": [
+                    {"id": 1, "x_cm": 0.0, "y_cm": 0.0, "has_ball": False},
+                    {"id": 3, "x_cm": 90.0, "y_cm": 0.0, "has_ball": False},
+                ],
+            }
+        }
+    ]
+    trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    summary = _scene_summary(trace)
+
+    assert summary["event_counts"] == {}
+    assert summary["first_rule_event"] is None
+
+
+def test_scene_summary_keeps_supported_pushing_event(tmp_path):
+    trace = tmp_path / "scene_status.jsonl"
+    rows = [
+        {
+            "status": {
+                "time": 5.0,
+                "score": {"ally": 0, "enemy": 0, "last_event": "pushing R1/R3", "last_time": 5.0},
+                "ball": {"x_cm": 0.0, "y_cm": 0.0, "speed_cm_s": 0.0},
+                "robots": [
+                    {"id": 1, "x_cm": 0.0, "y_cm": 0.0, "has_ball": False},
+                    {"id": 3, "x_cm": 24.0, "y_cm": 0.0, "has_ball": False},
+                ],
+            }
+        }
+    ]
+    trace.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    summary = _scene_summary(trace)
+
+    assert summary["event_counts"] == {"pushing R1/R3": 1}
+    assert summary["first_rule_event"]["event"] == "pushing R1/R3"
+
+
+class _FakeSceneControl:
+    def __init__(self):
+        self.robot_calls = []
+        self.dribble_calls = []
+        self.reset_count = 0
+        self.ball_calls = []
+
+    def reset_score(self):
+        self.reset_count += 1
+
+    def set_dribble(self, robot_id, active, strength=0.0):
+        self.dribble_calls.append((robot_id, active, strength))
+
+    def set_robot(self, robot_id, x, y, yaw, *, active=True):
+        self.robot_calls.append((robot_id, x, y, yaw, active))
+
+    def set_ball(self, x, y, *, reset_velocity=True):
+        self.ball_calls.append((x, y, reset_velocity))
+
+
+def test_place_robots_parks_inactive_robots_away_from_match_layout():
+    ctl = _FakeSceneControl()
+
+    _place_robots(ctl, [1, 3], (-12.0, 0.0), _layout_for_round("default", [1, 3], (-12.0, 0.0), 1, 0))
+
+    calls = {robot_id: call for robot_id, *call in ctl.robot_calls}
+    assert calls[1][-1] is True
+    assert calls[3][-1] is True
+    assert calls[2] == [*_inactive_parking_pose(2), False]
+    assert calls[4] == [*_inactive_parking_pose(4), False]
+
+
+def test_lock_active_robots_moves_unexpected_active_robot_to_parking_pose():
+    ctl = _FakeSceneControl()
+    status = {
+        "robots": [
+            {"id": 2, "active": True, "x_cm": -70.0, "y_cm": 60.0, "yaw_deg": 0.0},
+            {"id": 1, "active": True, "x_cm": -60.0, "y_cm": -30.0, "yaw_deg": 0.0},
+            {"id": 3, "active": False, "x_cm": 60.0, "y_cm": 30.0, "yaw_deg": 180.0},
+        ]
+    }
+
+    correction = _lock_active_robots(ctl, status, [1, 3], set())
+
+    assert correction == {"unexpected_active": [2], "missing_active": [3]}
+    parking = _inactive_parking_pose(2)
+    assert (2, *parking, False) in ctl.robot_calls
+
+
+def test_allow_no_goal_runs_still_use_controlled_goal_reset():
+    class Args:
+        continue_after_goal = False
+        allow_no_goal = True
+
+    assert _uses_controlled_goal_reset(Args())

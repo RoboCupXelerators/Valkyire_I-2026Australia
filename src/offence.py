@@ -24,6 +24,7 @@ state = "boot"
 last_decision = {}
 _last_free_ball = None
 _last_free_ball_ts = 0.0
+_drive_intent = {}
 
 
 def _search_home():
@@ -33,11 +34,76 @@ def _search_home():
     return [home[0] + 20, home[1], 0]
 
 
+def _decision_phase(action) -> str:
+    if action in {
+        "search_ball",
+        "chase_ball",
+        "chase_last_ball",
+        "turn_to_ball",
+        "near_ball_control",
+        "sideline_free_ball_approach",
+        "sideline_free_ball_recover",
+        "ball_rear_reposition",
+    }:
+        return "acquire_ball"
+    if action in {
+        "own_half_carry",
+        "advance_lane",
+        "sideline_drive",
+        "wall_setup",
+        "penalty_mouth_peel",
+    }:
+        return "advance_lane"
+    if action in {"attack_dodge", "pressure_release_shot"}:
+        return "handle_pressure"
+    if action in {
+        "quick_shot",
+        "direct_shot",
+        "back_shot",
+        "wall_shot",
+        "sideline_shot",
+        "oh_my_back_shot",
+    }:
+        return "shoot"
+    if action in {
+        "corner_recover",
+        "deep_corner_release",
+        "oh_my_back",
+        "own_backline_escape",
+        "own_half_wide_clear",
+        "post_goal_reset_hold",
+        "shot_release",
+    }:
+        return "recover_lane"
+    return "observe"
+
+
 def _set_decision(**fields):
     """记录本 tick 的关键判断，供真实场景 trace 复盘。"""
     global last_decision
+    fields.setdefault("phase", _decision_phase(fields.get("action")))
     last_decision = fields
     return fields
+
+
+def _remember_drive_intent(action: str, duration_s: float = 0.32, **fields) -> None:
+    global _drive_intent
+    _drive_intent = {"action": action, "until": time.monotonic() + duration_s, **fields}
+
+
+def _active_drive_intent(action: str | None = None):
+    if not _drive_intent:
+        return None
+    if time.monotonic() > float(_drive_intent.get("until", 0.0)):
+        return None
+    if action is not None and _drive_intent.get("action") != action:
+        return None
+    return _drive_intent
+
+
+def _clear_drive_intent() -> None:
+    global _drive_intent
+    _drive_intent = {}
 
 
 def _relevant_enemies(pose, enemies):
@@ -79,9 +145,9 @@ def _blocking_enemy(pose, enemies):
         ex, ey = float(enemy[0]), float(enemy[1])
         forward_gap = ATTACK_DIR * (ex - x)
         lateral_gap = ey - y
-        if not 18 < forward_gap <= 70:
+        if not 12 < forward_gap <= 82:
             continue
-        if abs(lateral_gap) > 28:
+        if abs(lateral_gap) > 34:
             continue
 
         dist = math.hypot(forward_gap, lateral_gap)
@@ -168,11 +234,57 @@ def _best_goal_target(pose, enemies):
 
 def _fire_now() -> str:
     """执行一次果断射门，并关闭吸球避免射门后继续拖住球。"""
+    _clear_drive_intent()
     peripheral.Dribble(0.85)
     peripheral.ShootBall()
     peripheral.Dribble(False)
     chassis.stop()
+    _remember_drive_intent("shot_release", 0.18)
     return "quick_shot"
+
+
+def _shot_release_step() -> str:
+    """After a shot, peel away briefly so we do not re-catch the ball into a defender."""
+    try:
+        pose = UnitedPosition.FieldRobotPos()
+    except Exception:
+        pose = [0.0, 0.0, 0.0]
+    try:
+        enemies = UnitedPosition.FieldChassisPos()
+    except Exception:
+        enemies = []
+
+    pose_x = float(pose[0])
+    pose_y = float(pose[1])
+    nearest_enemy = None
+    if enemies:
+        nearest_enemy = min(
+            enemies,
+            key=lambda enemy: math.hypot(float(enemy[0]) - pose_x, float(enemy[1]) - pose_y),
+        )
+    if nearest_enemy is not None and math.hypot(float(nearest_enemy[0]) - pose_x, float(nearest_enemy[1]) - pose_y) <= 54.0:
+        side = 1.0 if pose_y >= float(nearest_enemy[1]) else -1.0
+    else:
+        side = 1.0 if pose_y <= 0.0 else -1.0
+
+    target_yaw = 0.0 if ATTACK_DIR > 0 else 180.0
+    speed_x = -ATTACK_DIR * 18.0
+    speed_y = side * 32.0
+    peripheral.Dribble(False)
+    chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.7)
+    _set_decision(
+        action="shot_release",
+        mode="post_shot_peel",
+        pose=[round(pose_x, 3), round(pose_y, 3), round(float(pose[2]), 3)],
+        blocker=nearest_enemy,
+        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(target_yaw), 3)],
+    )
+    return "shot_release"
+
+
+def _sideline_goal_target(y: float) -> list[float]:
+    post_y = 42.0 * 0.9
+    return [ATTACK_DIR * 110.0, post_y if float(y) >= 0.0 else -post_y]
 
 
 def _carry_own_half(goal_angle, pose, lane_score) -> str:
@@ -190,6 +302,76 @@ def _carry_own_half(goal_angle, pose, lane_score) -> str:
         speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(goal_angle), 3)],
     )
     return "own_half_carry"
+
+
+def _sideline_lane_step(pose, shot_lane_score: float) -> str | None:
+    """Own the sideline decision with one clear gate: drive until ready, then shoot."""
+    x, y, _ = pose
+    progress = ATTACK_DIR * float(x)
+    abs_y = abs(float(y))
+    locked_sideline = _active_drive_intent("sideline_drive")
+    if not locked_sideline and not (progress >= 24.0 and 34.0 <= abs_y <= 66.0):
+        return None
+
+    side = 1.0 if float(y) >= 0.0 else -1.0
+    if progress >= 82.0 and abs_y >= 50.0:
+        _clear_drive_intent()
+        infield_y = side * 34.0
+        recover_angle = UnitedPosition.Pos2Angle([float(x), float(y)], [ATTACK_DIR * 82.0, infield_y]) % 360
+        speed_x = -ATTACK_DIR * 20.0
+        speed_y = clamp((infield_y - float(y)) * 1.2, -34.0, 34.0)
+        peripheral.Dribble(0.65)
+        chassis.FieldMoveVector(speed_x, speed_y, recover_angle, KpW=0.85)
+        _set_decision(
+            action="deep_corner_release",
+            shot_gate="sideline_too_deep_release",
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            target=[round(float(ATTACK_DIR * 82.0), 3), round(float(infield_y), 3), round(float(recover_angle), 3)],
+            speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(recover_angle), 3)],
+        )
+        return "deep_corner_release"
+
+    sideline_target = _sideline_goal_target(float(y))
+    sideline_angle = UnitedPosition.Local2Angle(sideline_target) % 360
+    sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
+    sideline_error_abs = abs(float(sideline_error))
+
+    if progress >= 45.0 and shot_lane_score >= -0.55 and sideline_error_abs <= 104.0:
+        _set_decision(
+            action="sideline_shot",
+            shot_gate="decisive_sideline_window",
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            yaw_error=round(float(sideline_error), 3),
+            lane_score=round(float(shot_lane_score), 3),
+            target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
+        )
+        return _fire_now()
+
+    if progress < 45.0:
+        shot_gate = "sideline_build_progress"
+    elif shot_lane_score < -0.55:
+        shot_gate = "sideline_lane_blocked"
+    else:
+        shot_gate = "sideline_yaw_not_ready"
+
+    _remember_drive_intent("sideline_drive", 0.65, target_y=sideline_target[1])
+    speed_x = ATTACK_DIR * (46.0 if progress < 58.0 else 34.0)
+    speed_y = -side * (18.0 if progress < 58.0 else 14.0)
+    peripheral.Dribble(0.85)
+    chassis.FieldMoveVector(speed_x, speed_y, sideline_angle, KpW=0.9)
+    _set_decision(
+        action="sideline_drive",
+        shot_gate=shot_gate,
+        progress=round(float(progress), 3),
+        y=round(float(y), 3),
+        yaw_error=round(float(sideline_error), 3),
+        lane_score=round(float(shot_lane_score), 3),
+        target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
+        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(sideline_angle), 3)],
+    )
+    return "sideline_drive"
 
 
 def _valid_free_ball(ball) -> bool:
@@ -342,8 +524,59 @@ def _lock_or_chase_free_ball(ball) -> str:
         field_ball_matches_robot = (
             math.hypot(expected_ball_x - float(field_ball[0]), expected_ball_y - float(field_ball[1])) <= 20.0
         )
+        if (
+            field_pose_valid
+            and field_ball_matches_robot
+            and ball_progress >= 108.0
+            and abs(float(field_ball[1])) >= drivable_half_y + 12.0
+        ):
+            _clear_drive_intent()
+            target_x = ATTACK_DIR * 46.0
+            target_y = 0.0
+            target_yaw = 0.0 if ATTACK_DIR > 0 else 180.0
+            speed_x = clamp((target_x - float(pose[0])) * 1.2, -46.0, 46.0)
+            speed_y = clamp((target_y - float(pose[1])) * 1.2, -44.0, 44.0)
+            peripheral.Dribble(False)
+            chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.65)
+            _set_decision(
+                action="post_goal_reset_hold",
+                mode="net_ball",
+                ball=[round(bx, 3), round(by, 3)],
+                field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                target=[round(float(target_x), 3), round(float(target_y), 3), round(float(target_yaw), 3)],
+                speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(target_yaw), 3)],
+            )
+            return "post_goal_reset_hold"
         if OFFENCE_SUPPORT_MODE and field_pose_valid:
             return _support_free_ball(pose, field_ball)
+        if (
+            field_pose_valid
+            and field_ball_matches_robot
+            and abs(float(field_ball[1])) >= drivable_half_y - 4.0
+            and abs(float(pose[1])) < drivable_half_y - 18.0
+        ):
+            side = 1.0 if float(field_ball[1]) >= 0.0 else -1.0
+            safe_y = side * (drivable_half_y - 16.0)
+            target_x = clamp(float(field_ball[0]) - ATTACK_DIR * 26.0, -86.0, 86.0)
+            target_y = clamp(safe_y, -62.0, 62.0)
+            target_yaw = UnitedPosition.Pos2Angle(
+                [target_x, target_y],
+                [float(field_ball[0]), clamp(float(field_ball[1]), -drivable_half_y, drivable_half_y)],
+            ) % 360
+            speed_x = clamp((target_x - float(pose[0])) * 1.35, -58.0, 58.0)
+            speed_y = clamp((target_y - float(pose[1])) * 1.35, -52.0, 52.0)
+            peripheral.Dribble(0.78)
+            chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.9)
+            _set_decision(
+                action="sideline_free_ball_approach",
+                ball=[round(bx, 3), round(by, 3)],
+                field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                target=[round(float(target_x), 3), round(float(target_y), 3), round(float(target_yaw), 3)],
+                speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(target_yaw), 3)],
+            )
+            return "sideline_free_ball_approach"
         if (
             field_pose_valid
             and field_ball_matches_robot
@@ -403,6 +636,33 @@ def _lock_or_chase_free_ball(ball) -> str:
         if field_pose_valid and field_ball_matches_robot:
             behind_gap = ATTACK_DIR * (float(field_ball[0]) - float(pose[0]))
             close_ball = math.hypot(bx, by) <= 34.0
+            pressure_enemy = None
+            pressure_contact = -1.5 <= bx <= 12.5 and abs(by) <= 10.5
+            if close_ball and pressure_contact and robot_progress >= -10.0:
+                for enemy in _relevant_enemies(pose, UnitedPosition.FieldChassisPos()):
+                    ex, ey = float(enemy[0]), float(enemy[1])
+                    pressure_dist = math.hypot(ex - float(pose[0]), ey - float(pose[1]))
+                    forward_gap = ATTACK_DIR * (ex - float(pose[0]))
+                    lateral_gap = ey - float(pose[1])
+                    if pressure_dist <= 38.0 and -4.0 <= forward_gap <= 38.0 and abs(lateral_gap) <= 32.0:
+                        pressure_enemy = {
+                            "x": round(ex, 3),
+                            "y": round(ey, 3),
+                            "dist": round(pressure_dist, 3),
+                            "forward_gap": round(float(forward_gap), 3),
+                            "lateral_gap": round(float(lateral_gap), 3),
+                        }
+                        break
+            if pressure_enemy is not None:
+                _set_decision(
+                    action="pressure_release_shot",
+                    mode="free_ball_contact",
+                    ball=[round(bx, 3), round(by, 3)],
+                    field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                    pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                    pressure=pressure_enemy,
+                )
+                return _fire_now()
             if (
                 close_ball
                 and behind_gap < -6.0
@@ -493,10 +753,24 @@ def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
     x, y, _ = pose
     progress = ATTACK_DIR * float(x)
     blocker = _blocking_enemy(pose, enemies)
+    locked_dodge = _active_drive_intent("attack_dodge")
     yaw_error = angle_error_deg(chassis.GetYaw(), goal_angle)
     abs_y = abs(float(y))
     abs_yaw_error = abs(float(yaw_error))
     front_pressure = _front_pressure_enemies(pose, enemies)
+    if progress >= 30.0 and abs_y <= 24.0 and lane_score >= 0.72 and abs_yaw_error <= 32.0:
+        _set_decision(
+            action="direct_shot",
+            shot_family="direct_shot",
+            shot_gate="decisive_midfield_lane",
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            yaw_error=round(float(yaw_error), 3),
+            lane_score=round(float(lane_score), 3),
+            goal_angle=round(float(goal_angle), 3),
+        )
+        return _fire_now()
+
     if progress >= 58.0 and abs_y >= 42.0:
         side = -1.0 if float(y) > 0 else 1.0
         peel_angle = UnitedPosition.Local2Angle([ATTACK_DIR * 76.0, side * 28.0]) % 360
@@ -596,20 +870,28 @@ def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
         return "wall_setup"
 
     peripheral.Dribble(0.85)
-    if blocker:
-        lateral_gap = float(blocker["lateral_gap"])
-        if abs(lateral_gap) < 6:
-            side = -1.0 if float(y) > 0 else 1.0
+    if blocker or locked_dodge:
+        if blocker:
+            lateral_gap = float(blocker["lateral_gap"])
+            if abs(lateral_gap) < 6:
+                side = -1.0 if float(y) > 0 else 1.0
+            else:
+                side = -1.0 if lateral_gap > 0 else 1.0
+            forward_gap = float(blocker["forward_gap"])
+            _remember_drive_intent("attack_dodge", 0.42, side=side, start_progress=progress)
         else:
-            side = -1.0 if lateral_gap > 0 else 1.0
+            side = float(locked_dodge.get("side", -1.0 if float(y) > 0 else 1.0))
+            forward_gap = 34.0
+            lateral_gap = None
 
         dodge_limit = max(8.0, 45 - 6.0)
         target_y = clamp(float(y) + side * 34, -dodge_limit, dodge_limit)
         speed_y = clamp((target_y - float(y)) * 1.1, -34.0, 34.0)
-        speed_x = ATTACK_DIR * (34 if float(blocker["forward_gap"]) < 35 else 44)
+        speed_x = ATTACK_DIR * (34 if forward_gap < 35 else 44)
         chassis.FieldMoveVector(speed_x, speed_y, goal_angle, KpW=0.95)
         _set_decision(
             action="attack_dodge",
+            mode="blocker" if blocker else "locked",
             force_gate=force_reason,
             progress=round(float(progress), 3),
             y=round(float(y), 3),
@@ -623,9 +905,10 @@ def _attack_with_ball(goal_angle, pose, enemies, lane_score) -> str:
 
     speed_x = 65 if progress >= 35 else 52
     chassis.FieldMoveVector(speed_x * ATTACK_DIR, -float(y) * 1.0, goal_angle, KpW=0.9)
-    action = "fast_attack" if progress >= 35 else "feint_drive"
+    action = "advance_lane"
     _set_decision(
         action=action,
+        mode="fast" if progress >= 35 else "setup",
         force_gate=force_reason,
         progress=round(float(progress), 3),
         y=round(float(y), 3),
@@ -674,21 +957,12 @@ def _controlled_ball_step(pose, search_home) -> str:
     yaw_error = angle_error_deg(chassis.GetYaw(), goal_angle)
     abs_yaw_error = abs(float(yaw_error))
 
-    if progress >= 82.0 and abs_y >= 46.0:
-        infield_y = 34.0 if float(y) > 0.0 else -34.0
-        recover_angle = UnitedPosition.Pos2Angle([float(x), float(y)], [ATTACK_DIR * 82.0, infield_y]) % 360
-        peripheral.Dribble(0.65)
-        chassis.FieldMoveVector(-ATTACK_DIR * 20.0, clamp((infield_y - float(y)) * 1.2, -34.0, 34.0), recover_angle, KpW=0.85)
-        _set_decision(
-            action="deep_corner_release",
-            progress=round(float(progress), 3),
-            y=round(float(y), 3),
-            target=[round(float(ATTACK_DIR * 82.0), 3), round(float(infield_y), 3), round(float(recover_angle), 3)],
-        )
-        return "deep_corner_release"
-
     if progress < 0:
         return _carry_own_half(goal_angle, pose, shot_lane_score)
+
+    sideline_state = _sideline_lane_step(pose, shot_lane_score)
+    if sideline_state is not None:
+        return sideline_state
 
     back_angle = (goal_angle + 180.0) % 360.0
     back_error = angle_error_deg(chassis.GetYaw(), back_angle)
@@ -710,7 +984,7 @@ def _controlled_ball_step(pose, search_home) -> str:
         shot_reason = "too_wide"
     elif abs_y > 45 and progress < 50:
         shot_reason = "wide_before_pressure_zone"
-    elif progress >= 18 and abs_y <= 28 and shot_lane_score >= 0.88:
+    elif progress >= 38 and abs_y <= 12 and shot_lane_score >= 0.88:
         if abs_yaw_error <= 46:
             shot_allowed = True
             shot_reason = "open_goal"
@@ -766,42 +1040,6 @@ def _controlled_ball_step(pose, search_home) -> str:
         )
         return _fire_now()
 
-    plan_action, plan_x, plan_y, plan_speed_x, plan_speed_y = choose_attack_plan(
-        pose,
-        enemies,
-        ATTACK_DIR,
-        shot_lane_score,
-    )
-    if plan_action == "sideline_shot":
-        sideline_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
-        sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
-        if abs(float(sideline_error)) <= 72:
-            _set_decision(
-                action="sideline_shot",
-                shot_gate=shot_reason,
-                progress=round(float(progress), 3),
-                y=round(float(y), 3),
-                yaw_error=round(float(sideline_error), 3),
-                lane_score=round(float(shot_lane_score), 3),
-                target=[round(float(plan_x), 3), round(float(plan_y), 3)],
-            )
-            return _fire_now()
-
-    if plan_action == "sideline_drive":
-        sideline_angle = UnitedPosition.Local2Angle([plan_x, plan_y]) % 360
-        peripheral.Dribble(0.85)
-        chassis.FieldMoveVector(plan_speed_x, plan_speed_y, sideline_angle, KpW=0.9)
-        _set_decision(
-            action="sideline_drive",
-            shot_gate=shot_reason,
-            progress=round(float(progress), 3),
-            y=round(float(y), 3),
-            lane_score=round(float(shot_lane_score), 3),
-            target=[round(float(plan_x), 3), round(float(plan_y), 3)],
-            speed=[round(float(plan_speed_x), 3), round(float(plan_speed_y), 3), round(float(sideline_angle), 3)],
-        )
-        return "sideline_drive"
-
     if abs(float(y)) >= 45 and progress < 50:
         if OhMyBackStep(HomePos=search_home, attack_dir=ATTACK_DIR):
             _set_decision(action="oh_my_back_shot", progress=round(float(progress), 3), y=round(float(y), 3))
@@ -818,6 +1056,10 @@ def OffenceStep():
 
     ball = UnitedPosition.RobotBallPos()
     search_home = _search_home()
+
+    if _active_drive_intent("shot_release"):
+        state = _shot_release_step()
+        return state
 
     if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
         recent_ball = _recent_free_ball()
