@@ -38,6 +38,45 @@ def _read_rows(scene_trace: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _read_robot_traces(run_dir: Path) -> dict[int, dict[str, Any]]:
+    traces: dict[int, dict[str, Any]] = {}
+    for path in sorted(run_dir.glob("robot_*_*.jsonl")):
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if "t_s" not in row:
+                continue
+            rows.append(row)
+        if not rows:
+            continue
+        robot_id = int(rows[0].get("robot_id", 0))
+        if robot_id <= 0:
+            continue
+        traces[robot_id] = {
+            "path": path,
+            "rows": rows,
+            "times": [float(row.get("t_s", 0.0)) for row in rows],
+        }
+    return traces
+
+
+def _trace_at(trace: dict[str, Any] | None, t_rel: float) -> dict[str, Any] | None:
+    if not trace:
+        return None
+    rows = trace.get("rows") or []
+    times = trace.get("times") or []
+    if not rows or not times:
+        return None
+    idx = bisect_right(times, t_rel) - 1
+    if idx < 0:
+        return rows[0]
+    if idx >= len(rows):
+        return rows[-1]
+    return rows[idx]
+
+
 def _point(width: int, height: int, scale: float, x_cm: float, y_cm: float) -> tuple[int, int]:
     return int(width / 2 + x_cm * scale), int(height / 2 - y_cm * scale)
 
@@ -53,6 +92,64 @@ def _draw_text(
     x, y = xy
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, (0, 0, 0), thick + 3, cv2.LINE_AA)
     cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, size, color, thick, cv2.LINE_AA)
+
+
+def _short(text: str, max_chars: int = 44) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
+
+
+def _trace_action(row: dict[str, Any] | None) -> str:
+    if not row:
+        return ""
+    decision = row.get("offence_decision") or row.get("defence_decision") or {}
+    return str(decision.get("action") or row.get("state") or "")
+
+
+def _draw_debug_panel(
+    img: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    trace_snapshots: dict[int, dict[str, Any] | None],
+) -> None:
+    panel_w = 392
+    x0 = width - panel_w - 18
+    y0 = 82
+    y1 = min(height - 18, y0 + 278)
+
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x0, y0), (width - 18, y1), (18, 24, 29), -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.72, img, 0.28, 0, img)
+    cv2.rectangle(img, (x0, y0), (width - 18, y1), (120, 135, 145), 1, cv2.LINE_AA)
+
+    _draw_text(img, "strategy trace", (x0 + 14, y0 + 26), (255, 255, 255), 0.62, 2)
+    y = y0 + 54
+    for robot_id in sorted(trace_snapshots):
+        row = trace_snapshots[robot_id]
+        if not row:
+            continue
+        role = str(row.get("role", ""))
+        state = str(row.get("state", ""))
+        action = _trace_action(row)
+        decision = row.get("offence_decision") or row.get("defence_decision") or {}
+        cmd_vx = float(row.get("cmd_vx", 0.0))
+        cmd_vy = float(row.get("cmd_vy", 0.0))
+        cmd_wz = float(row.get("cmd_wz", 0.0))
+        color = TEAM_COLORS.get(robot_id, (235, 235, 235))
+
+        _draw_text(img, f"R{robot_id} {role}", (x0 + 14, y), color, 0.54, 2)
+        y += 22
+        _draw_text(img, _short(f"fn={role}.{action} state={state}", 50), (x0 + 26, y), (245, 245, 245), 0.47, 1)
+        y += 20
+        if "distance" in decision or "angle" in decision:
+            dist = decision.get("distance", "")
+            angle = decision.get("angle", "")
+            _draw_text(img, _short(f"ball d={dist} angle={angle}", 48), (x0 + 26, y), (220, 230, 235), 0.44, 1)
+            y += 18
+        _draw_text(img, f"cmd vx={cmd_vx:.1f} vy={cmd_vy:.1f} wz={cmd_wz:.1f}", (x0 + 26, y), (220, 230, 235), 0.44, 1)
+        y += 26
 
 
 def _lerp(a: float, b: float, ratio: float) -> float:
@@ -119,6 +216,7 @@ def _draw_pitch(img: np.ndarray, width: int, height: int, scale: float) -> None:
 
 def _render_raw(
     rows: list[dict[str, Any]],
+    robot_traces: dict[int, dict[str, Any]],
     output: Path,
     cover: Path,
     *,
@@ -148,6 +246,10 @@ def _render_raw(
         status = _interpolated_status(rows, times, start_time + t_rel)
         score = status.get("score") or {}
         ball = status.get("ball") or {}
+        trace_snapshots = {
+            robot_id: _trace_at(trace, t_rel)
+            for robot_id, trace in robot_traces.items()
+        }
 
         img = np.zeros((height, width, 3), dtype=np.uint8)
         img[:] = (31, 92, 61)
@@ -187,6 +289,11 @@ def _render_raw(
             _draw_text(img, f"R{robot_id}", (cx - 15, cy - radius - 8), (255, 255, 255), 0.55, 1)
             if robot.get("has_ball"):
                 cv2.circle(img, (cx, cy), radius + 5, (0, 255, 255), 2, cv2.LINE_AA)
+            trace_row = trace_snapshots.get(robot_id)
+            label_action = _trace_action(trace_row)
+            if label_action:
+                label = f"{robot_id}:{label_action}"
+                _draw_text(img, _short(label, 26), (cx + radius + 8, cy + 5), color, 0.42, 1)
 
         _draw_text(img, title, (24, 34), (255, 255, 255), 0.72, 2)
         _draw_text(
@@ -198,6 +305,7 @@ def _render_raw(
             1,
         )
         _draw_text(img, "simulator time 1:1", (width - 250, 34), (235, 235, 235), 0.58, 1)
+        _draw_debug_panel(img, width=width, height=height, trace_snapshots=trace_snapshots)
         writer.write(img)
         last_frame = img
 
@@ -249,6 +357,7 @@ def main() -> int:
     run_dir = args.run_dir
     scene_trace = run_dir / "scene_status.jsonl"
     rows = _read_rows(scene_trace)
+    robot_traces = _read_robot_traces(run_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     stem = args.name or f"{run_dir.name}_realtime"
@@ -256,7 +365,16 @@ def main() -> int:
     output = args.output_dir / f"{stem}_h264_720p.mp4"
     cover = args.output_dir / f"{stem}_cover.jpg"
 
-    duration = _render_raw(rows, raw, cover, fps=args.fps, width=args.width, height=args.height, title=args.title)
+    duration = _render_raw(
+        rows,
+        robot_traces,
+        raw,
+        cover,
+        fps=args.fps,
+        width=args.width,
+        height=args.height,
+        title=args.title,
+    )
     _transcode_h264(raw, output)
     print(f"video={output}")
     print(f"cover={cover}")
