@@ -65,6 +65,20 @@ def _read_robot_traces(run_dir: Path) -> dict[int, dict[str, Any]]:
     return traces
 
 
+def _read_run_timestamp(run_dir: Path) -> str:
+    summary_path = run_dir / "summary.json"
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            started_at = str(summary.get("started_at") or "").strip()
+            if started_at:
+                return started_at.replace("T", " ")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return run_dir.name
+
+
 def _trace_at(trace: dict[str, Any] | None, t_rel: float) -> dict[str, Any] | None:
     if not trace:
         return None
@@ -290,6 +304,7 @@ def _render_raw(
     width: int,
     height: int,
     title: str,
+    run_timestamp: str,
 ) -> float:
     margin = 62
     scale = min((width - margin * 2) / (FIELD_X_CM * 2), (height - margin * 2) / (FIELD_Y_CM * 2))
@@ -373,6 +388,7 @@ def _render_raw(
             1,
         )
         _draw_text(img, "simulator time 1:1", (width - 250, 34), (235, 235, 235), 0.58, 1)
+        _draw_text(img, f"run {run_timestamp}", (width - 360, 64), (235, 235, 235), 0.48, 1)
         _draw_debug_panel(img, width=width, height=height, trace_snapshots=trace_snapshots)
         writer.write(img)
         last_frame = img
@@ -429,6 +445,7 @@ def main() -> int:
     scene_trace = run_dir / "scene_status.jsonl"
     rows = _read_rows(scene_trace)
     robot_traces = _read_robot_traces(run_dir)
+    run_timestamp = _read_run_timestamp(run_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     stem = args.name or f"{run_dir.name}_realtime"
@@ -445,6 +462,7 @@ def main() -> int:
         width=args.width,
         height=args.height,
         title=args.title,
+        run_timestamp=run_timestamp,
     )
     _transcode_h264(raw, output)
     print(f"video={output}")

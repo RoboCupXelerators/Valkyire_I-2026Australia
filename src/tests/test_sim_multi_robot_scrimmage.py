@@ -17,6 +17,7 @@ from sim_multi_robot_scrimmage import (  # noqa: E402
     SIM_LINEAR_SCALE,
     SIM_WHEEL_MAX_RPM,
     SIM_WHEEL_TO_V_56MM_500RPM,
+    _ball_for_round,
     _inactive_parking_pose,
     _layout_for_round,
     _place_robots,
@@ -57,6 +58,37 @@ def test_random_1v1_places_enemy_defender_near_ball_lane():
     assert not (abs(r1[0]) > 65.0 and abs(r1[1]) < 50.0)
     assert not (abs(r3[0]) > 65.0 and abs(r3[1]) < 50.0)
     assert r3[2] == 180.0
+
+
+def test_sideline_shot_layout_starts_attacker_inside_ball_facing_outward():
+    upper = _layout_for_round("sideline-shot", [1], (28.0, 62.0), 7, 0)
+    lower = _layout_for_round("sideline-shot", [1], (28.0, -62.0), 7, 0)
+
+    assert upper[1] == (28.0, 51.0, 90.0)
+    assert lower[1] == (28.0, -51.0, 270.0)
+
+
+def test_sideline_fixed_layout_keeps_robot_position_when_ball_changes():
+    first = _layout_for_round("sideline-fixed", [1], (28.0, 62.0), 7, 0)
+    next_round = _layout_for_round("sideline-fixed", [1], (-44.0, -58.0), 7, 1)
+
+    assert first[1] == (28.0, 51.0, 90.0)
+    assert next_round[1] == (28.0, 51.0, 90.0)
+
+
+def test_random_quadrant_ball_is_seeded_and_covers_all_quadrants():
+    balls = [_ball_for_round("random-quadrants", (0.0, 0.0), 20260702, idx) for idx in range(4)]
+    again = [_ball_for_round("random-quadrants", (0.0, 0.0), 20260702, idx) for idx in range(4)]
+
+    quadrants = {(x > 0.0, y > 0.0) for x, y in balls}
+
+    assert balls == again
+    assert quadrants == {
+        (True, True),
+        (False, True),
+        (False, False),
+        (True, False),
+    }
 
 
 def test_sim_linear_scale_matches_56mm_500rpm_wheel_limit():

@@ -42,6 +42,13 @@ STAGGERED_LAYOUT = {
     4: (95.0, -65.0, 180.0),
 }
 
+SIDELINE_FIXED_LAYOUT = {
+    1: (28.0, 51.0, 90.0),
+    2: (-70.0, 60.0, 0.0),
+    3: (60.0, 30.0, 180.0),
+    4: (70.0, -60.0, 180.0),
+}
+
 INACTIVE_PARKING = {
     1: (-110.0, 82.0, 0.0),
     2: (-98.0, 82.0, 0.0),
@@ -51,10 +58,12 @@ INACTIVE_PARKING = {
 
 LAYOUTS = {
     "default": DEFAULT_LAYOUT,
+    "sideline-fixed": SIDELINE_FIXED_LAYOUT,
     "staggered": STAGGERED_LAYOUT,
 }
 
 DEFAULT_BALL = (-12.0, 0.0)
+BALL_QUADRANTS = ((1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0))
 SIM_WHEEL_DIAMETER_M = 0.056
 SIM_WHEEL_MAX_RPM = 500.0
 SIM_WHEEL_TO_V_56MM_500RPM = math.pi * SIM_WHEEL_DIAMETER_M / 60.0
@@ -113,6 +122,28 @@ def _random_layout(
     return layout
 
 
+def _sideline_shot_layout(
+    robots: list[int],
+    ball: tuple[float, float],
+) -> dict[int, tuple[float, float, float]]:
+    ball_x, ball_y = float(ball[0]), float(ball[1])
+    side = 1.0 if ball_y >= 0.0 else -1.0
+    layout = dict(DEFAULT_LAYOUT)
+    if 1 in robots:
+        layout[1] = (
+            _clip(ball_x, -82.0, 82.0),
+            _clip(ball_y - side * 11.0, -68.0, 68.0),
+            90.0 if side > 0.0 else 270.0,
+        )
+    if 2 in robots:
+        layout[2] = (_clip(ball_x - 44.0, -86.0, 86.0), _clip(-side * 42.0, -58.0, 58.0), 0.0)
+    if 3 in robots:
+        layout[3] = (_clip(ball_x + 72.0, -86.0, 86.0), _clip(-side * 50.0, -58.0, 58.0), 180.0)
+    if 4 in robots:
+        layout[4] = (_clip(ball_x + 84.0, -86.0, 86.0), _clip(side * 52.0, -58.0, 58.0), 180.0)
+    return layout
+
+
 def _layout_for_round(
     layout_name: str,
     robots: list[int],
@@ -122,7 +153,34 @@ def _layout_for_round(
 ) -> dict[int, tuple[float, float, float]]:
     if layout_name == "random":
         return _random_layout(robots, ball, seed + round_index * 7919)
+    if layout_name == "sideline-shot":
+        return _sideline_shot_layout(robots, ball)
     return LAYOUTS.get(layout_name, DEFAULT_LAYOUT)
+
+
+def _random_quadrant_ball(seed: int, round_index: int) -> tuple[float, float]:
+    cycle = round_index // len(BALL_QUADRANTS)
+    slot = round_index % len(BALL_QUADRANTS)
+    quadrant_rng = random.Random(seed + cycle * 104729)
+    quadrants = list(BALL_QUADRANTS)
+    quadrant_rng.shuffle(quadrants)
+    sign_x, sign_y = quadrants[slot]
+
+    position_rng = random.Random(seed + round_index * 15485863)
+    x = sign_x * position_rng.uniform(12.0, 58.0)
+    y = sign_y * position_rng.uniform(18.0, 72.0)
+    return round(x, 2), round(y, 2)
+
+
+def _ball_for_round(
+    ball_layout: str,
+    base_ball: tuple[float, float],
+    seed: int,
+    round_index: int,
+) -> tuple[float, float]:
+    if ball_layout == "random-quadrants":
+        return _random_quadrant_ball(seed, round_index)
+    return float(base_ball[0]), float(base_ball[1])
 
 
 def _inactive_parking_pose(robot_id: int) -> tuple[float, float, float]:
@@ -327,6 +385,7 @@ def _spawn_robot(
     role: str,
     duration_s: float,
     out_dir: Path,
+    component_mode: str = "",
 ) -> subprocess.Popen:
     env = os.environ.copy()
     env.setdefault("ROBOCUPX_BITS", "SIM")
@@ -341,6 +400,8 @@ def _spawn_robot(
     env["XEL_SIM_PORT_FALLBACK"] = "0"
     env.setdefault("OFFENCE_LOG_EVERY", "1.0")
     env.setdefault("LUNAPRE_FULL_LOG", "1")  # enable Pos2Pos PID debug logs
+    if role == "offence" and component_mode:
+        env["OFFENCE_COMPONENT_MODE"] = component_mode
 
     # === Robot-specific strategy differentiation ===
     if robot_id == 1:
@@ -722,6 +783,16 @@ def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
             lines.append(f"- round {item.get('round')}: {' '.join(entries)}")
         lines.append("")
 
+    ball_history = report.get("ball_history") or []
+    if ball_history:
+        lines.extend(["## Ball", ""])
+        for item in ball_history:
+            ball = item.get("ball") if isinstance(item, dict) else None
+            if not ball or len(ball) < 2:
+                continue
+            lines.append(f"- round {item.get('round')}: ({float(ball[0]):.2f},{float(ball[1]):.2f})")
+        lines.append("")
+
     lines.extend(
         [
             "## Robots",
@@ -746,10 +817,27 @@ def main() -> int:
     parser.add_argument("--ball-x", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_BALL_X", str(DEFAULT_BALL[0]))))
     parser.add_argument("--ball-y", type=float, default=float(os.environ.get("SIM_SCRIMMAGE_BALL_Y", str(DEFAULT_BALL[1]))))
     parser.add_argument(
+        "--ball-layout",
+        choices=("fixed", "random-quadrants"),
+        default=os.environ.get("SIM_SCRIMMAGE_BALL_LAYOUT", "fixed"),
+        help="Ball placement per round. random-quadrants cycles through all four quadrants, randomizing within each.",
+    )
+    parser.add_argument(
+        "--ball-seed",
+        type=int,
+        default=None,
+        help="Seed for --ball-layout random-quadrants. Defaults to --seed or current time.",
+    )
+    parser.add_argument(
         "--layout",
-        choices=sorted([*LAYOUTS, "random"]),
+        choices=sorted([*LAYOUTS, "random", "sideline-shot"]),
         default=os.environ.get("SIM_SCRIMMAGE_LAYOUT", "default"),
         help="Initial robot layout. Use 'random' with --seed for reproducible randomized starts.",
+    )
+    parser.add_argument(
+        "--component-mode",
+        default=os.environ.get("SIM_SCRIMMAGE_COMPONENT_MODE", ""),
+        help="Optional offence-only component mode for isolated strategy clips, e.g. sideline_shot.",
     )
     parser.add_argument(
         "--seed",
@@ -784,6 +872,12 @@ def main() -> int:
         help="Keep running for the full duration after a goal instead of ending the smoke run early.",
     )
     parser.add_argument(
+        "--round-seconds",
+        type=float,
+        default=float(os.environ.get("SIM_SCRIMMAGE_ROUND_SECONDS", "0.0")),
+        help="Force a new placement round every N seconds. Use with --ball-layout random-quadrants to show all quadrants.",
+    )
+    parser.add_argument(
         "--target-goals",
         type=int,
         default=int(os.environ.get("SIM_SCRIMMAGE_TARGET_GOALS", "1")),
@@ -805,9 +899,11 @@ def main() -> int:
 
     robots = _parse_robots(args.robots)
     roles = _parse_roles(args.roles, robots)
-    ball = (float(args.ball_x), float(args.ball_y))
+    base_ball = (float(args.ball_x), float(args.ball_y))
     layout_seed = int(args.seed) if args.seed is not None else int(time.time())
+    ball_seed = int(args.ball_seed) if args.ball_seed is not None else layout_seed
     layout_round = 0
+    ball = _ball_for_round(args.ball_layout, base_ball, ball_seed, layout_round)
     layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
     out_dir = Path(args.output) / time.strftime("run_%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -821,6 +917,10 @@ def main() -> int:
         "layout": args.layout,
         "layout_seed": layout_seed,
         "layout_history": [],
+        "ball_layout": args.ball_layout,
+        "ball_seed": ball_seed,
+        "ball_history": [],
+        "component_mode": args.component_mode,
     }
 
     processes: dict[int, subprocess.Popen] = {}
@@ -835,6 +935,7 @@ def main() -> int:
         }
         report["rules_response"] = _set_rules(ctl, enabled=rules_enabled)
         report["physics_tuning"] = _apply_physics_tuning(ctl)
+        report["ball_history"].append({"round": layout_round, "ball": ball})
         report["layout_history"].append({"round": layout_round, "layout": layout})
         _place_robots(ctl, robots, ball, layout)
         report["initial_rule_refresh"] = _refresh_rules_after_manual_place(ctl, enabled=rules_enabled)
@@ -846,6 +947,7 @@ def main() -> int:
                 role=roles[robot_id],
                 duration_s=float(args.duration),
                 out_dir=out_dir,
+                component_mode=str(args.component_mode).strip(),
             )
 
         deadline = time.time() + max(0.2, float(args.duration)) + max(1.0, float(args.startup_grace))
@@ -854,6 +956,9 @@ def main() -> int:
         suspended_robots: set[int] = set()
         previous_goal_total = 0
         status_interval = max(0.02, float(args.status_interval))
+        start_wall = time.time()
+        round_seconds = max(0.0, float(args.round_seconds))
+        next_forced_round_at = start_wall + round_seconds if round_seconds > 0.0 else None
         while time.time() < deadline and any(proc.poll() is None for proc in processes.values()):
             try:
                 status = ctl.status()
@@ -866,7 +971,9 @@ def main() -> int:
                 current_goal_total = _score_total(score)
                 if _uses_controlled_goal_reset(args) and current_goal_total > previous_goal_total:
                     layout_round += 1
+                    ball = _ball_for_round(args.ball_layout, base_ball, ball_seed, layout_round)
                     layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
+                    report["ball_history"].append({"round": layout_round, "ball": ball})
                     report["layout_history"].append({"round": layout_round, "layout": layout})
                     if rules_enabled:
                         report.setdefault("round_rule_suspends", []).append(
@@ -890,6 +997,39 @@ def main() -> int:
                     )
                     time.sleep(0.05)
                     previous_goal_total = current_goal_total
+                    status = ctl.status()
+                    suspended_robots.clear()
+                elif next_forced_round_at is not None and time.time() >= next_forced_round_at:
+                    layout_round += 1
+                    ball = _ball_for_round(args.ball_layout, base_ball, ball_seed, layout_round)
+                    layout = _layout_for_round(args.layout, robots, ball, layout_seed, layout_round)
+                    report["ball_history"].append({"round": layout_round, "ball": ball})
+                    report["layout_history"].append({"round": layout_round, "layout": layout})
+                    if rules_enabled:
+                        report.setdefault("round_rule_suspends", []).append(
+                            {
+                                "round": layout_round,
+                                "reason": "timer",
+                                "response": _set_rules(ctl, enabled=False),
+                            }
+                        )
+                    _place_robots(
+                        ctl,
+                        robots,
+                        ball,
+                        layout,
+                        reset_score=False,
+                    )
+                    report.setdefault("round_rule_refreshes", []).append(
+                        {
+                            "round": layout_round,
+                            "reason": "timer",
+                            "response": _refresh_rules_after_manual_place(ctl, enabled=rules_enabled),
+                        }
+                    )
+                    time.sleep(0.05)
+                    next_forced_round_at += round_seconds
+                    previous_goal_total = _score_total(score)
                     status = ctl.status()
                     suspended_robots.clear()
 

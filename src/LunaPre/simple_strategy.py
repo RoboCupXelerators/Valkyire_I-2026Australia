@@ -47,8 +47,11 @@ def choose_attack_plan(pose, enemies, attack_dir: float, direct_lane_score: floa
         return "direct_shot", attack_dir * GOAL_X_CM, 0.0, 0.0, 0.0
 
     if abs_y >= 38.0 and progress >= 24.0:
-        target_y = side * GOAL_POST_Y_CM
-        if progress >= 58.0:
+        if progress < 68.0 or abs_y < 62.0:
+            target_y = side * min(SIDE_WALL_Y_CM - 28.0, 64.0)
+            return "sideline_hide", attack_dir * 68.0, target_y, attack_dir * 38.0, side * 22.0
+        target_y = -side * (GOAL_POST_Y_CM * 0.5)
+        if progress >= 68.0:
             return "sideline_shot", attack_dir * GOAL_X_CM, target_y, attack_dir * 32.0, -side * 14.0
         return "sideline_drive", attack_dir * 58.0, target_y, attack_dir * 46.0, -side * 18.0
 

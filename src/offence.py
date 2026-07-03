@@ -19,12 +19,26 @@ ATTACK_DIR = 1 if _env_float("OFFENCE_ATTACK_SIGN", "1") >= 0 else -1
 ROBOT_ID = int(_env_float("XEL_ROBOT_ID", "1"))
 OFFENCE_SUPPORT_MODE = str(os.environ.get("OFFENCE_SUPPORT_MODE", "0")).strip().lower() in {"1", "true", "yes"}
 OFFENCE_SUPPORT_SIDE = 1.0 if _env_float("OFFENCE_SUPPORT_SIDE", "1") >= 0 else -1.0
+SIDELINE_BOUNDARY_RESERVE_CM = _env_float("OFFENCE_SIDELINE_BOUNDARY_RESERVE_CM", "18.0")
+SIDELINE_COMPONENT_CENTER_FORWARD_MAX_CM = 17.0
+SIDELINE_COMPONENT_ACQUIRE_OFFSET_CM = 8.0
+SIDELINE_COMPONENT_RECENTER_FORWARD_CM = 8.5
+SIDELINE_COMPONENT_RECENTER_BACKOFF_CM = 14.0
+SIDELINE_COMPONENT_CENTERED_LATERAL_CM = 4.0
 
 state = "boot"
 last_decision = {}
 _last_free_ball = None
 _last_free_ball_ts = 0.0
 _drive_intent = {}
+
+
+def _component_mode() -> str:
+    return str(os.environ.get("OFFENCE_COMPONENT_MODE", "")).strip().lower().replace("-", "_")
+
+
+def _sideline_component_enabled() -> bool:
+    return _component_mode() in {"sideline", "sideline_shot"}
 
 
 def _search_home():
@@ -49,6 +63,7 @@ def _decision_phase(action) -> str:
     if action in {
         "own_half_carry",
         "advance_lane",
+        "sideline_hide",
         "sideline_drive",
         "wall_setup",
         "penalty_mouth_peel",
@@ -282,9 +297,32 @@ def _shot_release_step() -> str:
     return "shot_release"
 
 
-def _sideline_goal_target(y: float) -> list[float]:
-    post_y = 42.0 * 0.9
-    return [ATTACK_DIR * 110.0, post_y if float(y) >= 0.0 else -post_y]
+def _sideline_goal_target(y: float, side: float | None = None) -> list[float]:
+    side = (1.0 if float(y) >= 0.0 else -1.0) if side is None else (1.0 if float(side) >= 0.0 else -1.0)
+    return [ATTACK_DIR * 110.0, -side * 18.0]
+
+
+def _sideline_lane_abs_y() -> float:
+    half_y = float(getattr(Settings.Bounds, "Short", 200)) * 0.5
+    reserve = max(16.0, float(SIDELINE_BOUNDARY_RESERVE_CM))
+    return max(50.0, half_y - reserve)
+
+
+def _sideline_lane_y(side: float) -> float:
+    return (1.0 if float(side) >= 0.0 else -1.0) * _sideline_lane_abs_y()
+
+
+def _sideline_outside_yaw(y: float) -> float:
+    return 90.0 if float(y) >= 0.0 else 270.0
+
+
+def _sideline_locked_side(y: float, locked_sideline) -> float:
+    if locked_sideline:
+        if "side" in locked_sideline:
+            return 1.0 if float(locked_sideline["side"]) >= 0.0 else -1.0
+        if abs(float(locked_sideline.get("target_y", 0.0))) >= 30.0:
+            return 1.0 if float(locked_sideline["target_y"]) >= 0.0 else -1.0
+    return 1.0 if float(y) >= 0.0 else -1.0
 
 
 def _carry_own_half(goal_angle, pose, lane_score) -> str:
@@ -304,17 +342,20 @@ def _carry_own_half(goal_angle, pose, lane_score) -> str:
     return "own_half_carry"
 
 
-def _sideline_lane_step(pose, shot_lane_score: float) -> str | None:
+def _sideline_lane_step(pose, shot_lane_score: float, *, component_mode: bool = False) -> str | None:
     """Own the sideline decision with one clear gate: drive until ready, then shoot."""
     x, y, _ = pose
     progress = ATTACK_DIR * float(x)
     abs_y = abs(float(y))
-    locked_sideline = _active_drive_intent("sideline_drive")
-    if not locked_sideline and not (progress >= 24.0 and 34.0 <= abs_y <= 66.0):
+    lane_abs_y = _sideline_lane_abs_y()
+    locked_sideline = _active_drive_intent()
+    if locked_sideline and locked_sideline.get("action") not in {"sideline_drive", "sideline_hide"}:
+        locked_sideline = None
+    if not locked_sideline and not (progress >= 24.0 and 34.0 <= abs_y <= lane_abs_y + 4.0):
         return None
 
-    side = 1.0 if float(y) >= 0.0 else -1.0
-    if progress >= 82.0 and abs_y >= 50.0:
+    side = _sideline_locked_side(float(y), locked_sideline)
+    if not component_mode and progress >= 90.0 and abs_y >= 50.0:
         _clear_drive_intent()
         infield_y = side * 34.0
         recover_angle = UnitedPosition.Pos2Angle([float(x), float(y)], [ATTACK_DIR * 82.0, infield_y]) % 360
@@ -332,12 +373,51 @@ def _sideline_lane_step(pose, shot_lane_score: float) -> str | None:
         )
         return "deep_corner_release"
 
-    sideline_target = _sideline_goal_target(float(y))
+    corner_y = _sideline_lane_y(side)
+    restore_width = (
+        component_mode
+        and bool(locked_sideline and locked_sideline.get("action") == "sideline_drive")
+        and abs_y < 50.0
+    )
+    needs_corner_entry = progress < 68.0 or (progress < 74.0 and abs_y < lane_abs_y - 8.0) or restore_width
+    hide_locked = bool(locked_sideline and locked_sideline.get("action") == "sideline_hide")
+    if ((not locked_sideline or hide_locked) and needs_corner_entry) or restore_width:
+        outward_yaw = _sideline_outside_yaw(side)
+        if component_mode and progress >= 82.0:
+            speed_x = 0.0 if restore_width else ATTACK_DIR * 8.0
+        else:
+            speed_x = ATTACK_DIR * (38.0 if progress < 60.0 else 28.0)
+        if abs_y < lane_abs_y - 20.0:
+            speed_y = side * (14.0 if restore_width else 22.0)
+        elif abs_y < lane_abs_y - 2.0:
+            speed_y = side * 10.0
+        else:
+            speed_y = -side * 8.0
+        peripheral.Dribble(0.92)
+        chassis.FieldMoveVector(speed_x, speed_y, outward_yaw, KpW=0.85)
+        _remember_drive_intent("sideline_hide", 0.55, target_y=corner_y, side=side)
+        _set_decision(
+            action="sideline_hide",
+            shot_gate="restore_width" if restore_width else "corner_entry",
+            progress=round(float(progress), 3),
+            y=round(float(y), 3),
+            lane_score=round(float(shot_lane_score), 3),
+            target=[round(float(ATTACK_DIR * 68.0), 3), round(float(corner_y), 3), round(float(outward_yaw), 3)],
+            speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(outward_yaw), 3)],
+        )
+        return "sideline_hide"
+
+    sideline_target = _sideline_goal_target(float(y), side=side)
     sideline_angle = UnitedPosition.Local2Angle(sideline_target) % 360
     sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
     sideline_error_abs = abs(float(sideline_error))
 
-    if progress >= 45.0 and shot_lane_score >= -0.55 and sideline_error_abs <= 104.0:
+    if (
+        progress >= 68.0
+        and abs_y >= lane_abs_y - 10.0
+        and shot_lane_score >= -0.55
+        and sideline_error_abs <= 18.0
+    ):
         _set_decision(
             action="sideline_shot",
             shot_gate="decisive_sideline_window",
@@ -349,16 +429,21 @@ def _sideline_lane_step(pose, shot_lane_score: float) -> str | None:
         )
         return _fire_now()
 
-    if progress < 45.0:
+    if needs_corner_entry:
         shot_gate = "sideline_build_progress"
     elif shot_lane_score < -0.55:
         shot_gate = "sideline_lane_blocked"
     else:
         shot_gate = "sideline_yaw_not_ready"
 
-    _remember_drive_intent("sideline_drive", 0.65, target_y=sideline_target[1])
-    speed_x = ATTACK_DIR * (46.0 if progress < 58.0 else 34.0)
-    speed_y = -side * (18.0 if progress < 58.0 else 14.0)
+    _remember_drive_intent("sideline_drive", 0.65, target_y=sideline_target[1], side=side)
+    speed_x = ATTACK_DIR * (46.0 if progress < 58.0 else (28.0 if progress < 78.0 else 18.0))
+    if component_mode and progress >= 86.0:
+        speed_x = -ATTACK_DIR * 8.0
+    if component_mode:
+        speed_y = side * clamp(lane_abs_y - abs_y, -8.0, 12.0)
+    else:
+        speed_y = -side * (18.0 if progress < 58.0 else 10.0)
     peripheral.Dribble(0.85)
     chassis.FieldMoveVector(speed_x, speed_y, sideline_angle, KpW=0.9)
     _set_decision(
@@ -550,6 +635,46 @@ def _lock_or_chase_free_ball(ball) -> str:
             return "post_goal_reset_hold"
         if OFFENCE_SUPPORT_MODE and field_pose_valid:
             return _support_free_ball(pose, field_ball)
+        if (
+            field_pose_valid
+            and field_ball_matches_robot
+            and robot_progress >= 68.0
+            and abs(float(pose[1])) >= 48.0
+            and -4.0 <= bx <= 12.0
+            and abs(by) <= 12.0
+        ):
+            side = 1.0 if float(pose[1]) >= 0.0 else -1.0
+            sideline_target = _sideline_goal_target(float(pose[1]))
+            sideline_angle = UnitedPosition.Local2Angle(sideline_target) % 360
+            sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
+            if abs(float(sideline_error)) <= 22.0:
+                _set_decision(
+                    action="sideline_shot",
+                    mode="free_ball_contact",
+                    shot_gate="decisive_sideline_window",
+                    ball=[round(bx, 3), round(by, 3)],
+                    field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                    pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                    yaw_error=round(float(sideline_error), 3),
+                    target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
+                )
+                return _fire_now()
+            speed_x = ATTACK_DIR * 18.0
+            speed_y = -side * 10.0
+            peripheral.Dribble(0.88)
+            chassis.FieldMoveVector(speed_x, speed_y, sideline_angle, KpW=0.9)
+            _set_decision(
+                action="sideline_drive",
+                mode="free_ball_contact",
+                shot_gate="sideline_yaw_not_ready",
+                ball=[round(bx, 3), round(by, 3)],
+                field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                yaw_error=round(float(sideline_error), 3),
+                target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
+                speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(sideline_angle), 3)],
+            )
+            return "sideline_drive"
         if (
             field_pose_valid
             and field_ball_matches_robot
@@ -1050,6 +1175,199 @@ def _controlled_ball_step(pose, search_home) -> str:
     return _attack_with_ball(goal_angle, pose, enemies, shot_lane_score)
 
 
+def _mark_sideline_component_decision(**fields) -> None:
+    last_decision["component_mode"] = "sideline_shot"
+    last_decision.update(fields)
+
+
+def _sideline_component_controlled_step(pose, *, control_source: str | None = None, contact_ball=None) -> str:
+    x, y, _ = pose
+    progress = ATTACK_DIR * float(x)
+    abs_y = abs(float(y))
+    side = 1.0 if float(y) >= 0.0 else -1.0
+
+    if progress >= 0.0:
+        enemies = _relevant_enemies(pose, UnitedPosition.FieldChassisPos())
+        _, shot_lane_score = _best_goal_target(pose, enemies)
+        sideline_state = _sideline_lane_step(pose, max(0.0, float(shot_lane_score)), component_mode=True)
+        if sideline_state is not None:
+            fields = {}
+            if control_source:
+                fields["control_source"] = control_source
+            if contact_ball is not None:
+                fields["contact_ball"] = [round(float(contact_ball[0]), 3), round(float(contact_ball[1]), 3)]
+            _mark_sideline_component_decision(**fields)
+            return sideline_state
+
+    outward_yaw = _sideline_outside_yaw(float(y))
+    target_y = _sideline_lane_y(side)
+    speed_x = ATTACK_DIR * (42.0 if progress < 54.0 else 30.0)
+    speed_y = clamp((target_y - float(y)) * 1.05, -34.0, 34.0)
+    peripheral.Dribble(0.92)
+    chassis.FieldMoveVector(speed_x, speed_y, outward_yaw, KpW=0.85)
+    _remember_drive_intent("sideline_hide", 0.55, target_y=target_y)
+    _set_decision(
+        action="sideline_hide",
+        mode="component_to_sideline",
+        shot_gate="component_corner_entry",
+        progress=round(float(progress), 3),
+        y=round(float(y), 3),
+        target=[round(float(ATTACK_DIR * 68.0), 3), round(float(target_y), 3), round(float(outward_yaw), 3)],
+        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(outward_yaw), 3)],
+    )
+    fields = {}
+    if control_source:
+        fields["control_source"] = control_source
+    if contact_ball is not None:
+        fields["contact_ball"] = [round(float(contact_ball[0]), 3), round(float(contact_ball[1]), 3)]
+    _mark_sideline_component_decision(**fields)
+    return "sideline_hide"
+
+
+def _sideline_component_free_ball_step(ball) -> str:
+    _remember_free_ball(ball)
+    bx = float(ball[0])
+    by = float(ball[1])
+    try:
+        pose = UnitedPosition.FieldRobotPos()
+        field_ball = UnitedPosition.FieldBallPos()
+        field_long = float(getattr(Settings.Bounds, "Long", 260))
+        field_short = float(getattr(Settings.Bounds, "Short", 200))
+        field_pose_valid = (
+            valid_pose(pose)
+            and field_ball not in (BALL_NOT_FOUND, BALL_HELD)
+            and len(field_ball) >= 2
+            and abs(float(pose[0])) <= field_long * 0.5 + 20.0
+            and abs(float(pose[1])) <= field_short * 0.5 + 20.0
+            and abs(float(field_ball[0])) <= field_long * 0.5 + 20.0
+            and abs(float(field_ball[1])) <= field_short * 0.5 + 20.0
+        )
+        yaw_rad = math.radians(float(pose[2]))
+        expected_ball_x = float(pose[0]) + bx * math.cos(yaw_rad) - by * math.sin(yaw_rad)
+        expected_ball_y = float(pose[1]) + bx * math.sin(yaw_rad) + by * math.cos(yaw_rad)
+        field_ball_matches_robot = field_pose_valid and (
+            math.hypot(expected_ball_x - float(field_ball[0]), expected_ball_y - float(field_ball[1])) <= 24.0
+        )
+
+        if field_ball_matches_robot:
+            component_recovery_contact = (
+                -1.5 <= bx <= 12.5
+                and abs(by) <= SIDELINE_COMPONENT_CENTERED_LATERAL_CM
+            )
+            centered_contact = (
+                _is_dribbler_contact_ball(bx, by)
+                and abs(by) <= SIDELINE_COMPONENT_CENTERED_LATERAL_CM
+            )
+            if centered_contact or component_recovery_contact:
+                return _sideline_component_controlled_step(
+                    pose,
+                    control_source="visible_dribbler_contact",
+                    contact_ball=[bx, by],
+                )
+
+            side = 1.0 if float(field_ball[1]) >= 0.0 else -1.0
+            lane_abs_y = _sideline_lane_abs_y()
+            lane_y = _sideline_lane_y(side)
+            if -2.0 <= bx <= SIDELINE_COMPONENT_CENTER_FORWARD_MAX_CM and abs(by) <= 12.0:
+                if abs(by) > SIDELINE_COMPONENT_CENTERED_LATERAL_CM:
+                    speed_x = clamp((bx - SIDELINE_COMPONENT_RECENTER_BACKOFF_CM) * 1.8, -18.0, -6.0)
+                    speed_y = clamp(by * 1.8, -24.0, 24.0)
+                    speed_w = 0.0
+                    peripheral.Dribble(0.98)
+                    chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+                    _remember_drive_intent("sideline_hide", 0.35, target_y=lane_y, side=side)
+                    _set_decision(
+                        action="sideline_hide",
+                        mode="component_local_recenter",
+                        shot_gate="recover_ball_center",
+                        ball=[round(bx, 3), round(by, 3)],
+                        field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                        pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
+                    )
+                    _mark_sideline_component_decision()
+                    return "sideline_hide"
+
+                speed_x = clamp(5.0 + max(bx, 0.0) * 0.25, 4.0, 8.5)
+                speed_y = clamp(by * 0.45, -6.0, 6.0)
+                speed_w = 0.0
+                peripheral.Dribble(0.98)
+                chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+                _remember_drive_intent("sideline_hide", 0.3, target_y=lane_y, side=side)
+                _set_decision(
+                    action="sideline_hide",
+                    mode="component_local_center",
+                    shot_gate="center_ball_in_dribbler",
+                    ball=[round(bx, 3), round(by, 3)],
+                    field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                    pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                    speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
+                )
+                _mark_sideline_component_decision()
+                return "sideline_hide"
+
+            target_x = clamp(float(field_ball[0]), -86.0, 86.0)
+            target_y = clamp(float(field_ball[1]) - side * SIDELINE_COMPONENT_ACQUIRE_OFFSET_CM, -lane_abs_y, lane_abs_y)
+            target_yaw = _sideline_outside_yaw(float(field_ball[1]))
+            speed_x = clamp((target_x - float(pose[0])) * 1.55, -46.0, 46.0)
+            speed_y = clamp((target_y - float(pose[1])) * 1.55, -42.0, 42.0)
+            peripheral.Dribble(0.95)
+            chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.95)
+            _remember_drive_intent("sideline_hide", 0.5, target_y=lane_y, side=side)
+            _set_decision(
+                action="sideline_hide",
+                mode="component_acquire",
+                shot_gate="approach_ball_from_infield",
+                ball=[round(bx, 3), round(by, 3)],
+                field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                target=[round(float(target_x), 3), round(float(target_y), 3), round(float(target_yaw), 3)],
+                speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(target_yaw), 3)],
+            )
+            _mark_sideline_component_decision()
+            return "sideline_hide"
+    except Exception:
+        pass
+
+    angle = math.degrees(math.atan2(by, bx)) if abs(bx) + abs(by) > 1e-6 else 0.0
+    peripheral.Dribble(0.92)
+    speed_x = clamp(30.0 + max(bx, 0.0) * 1.1, 24.0, 52.0)
+    speed_y = clamp(by * 1.45, -34.0, 34.0)
+    speed_w = clamp(angle * 0.55, -42.0, 42.0)
+    chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+    _set_decision(
+        action="sideline_hide",
+        mode="component_local_acquire",
+        shot_gate="local_ball_approach",
+        ball=[round(bx, 3), round(by, 3)],
+        distance=round(float(math.hypot(bx, by)), 3),
+        angle=round(float(angle), 3),
+        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
+    )
+    _mark_sideline_component_decision()
+    return "sideline_hide"
+
+
+def _sideline_component_step(ball, search_home) -> str:
+    if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
+        recent_ball = _recent_free_ball()
+        if recent_ball is not None:
+            return _sideline_component_free_ball_step(recent_ball)
+        peripheral.Dribble(0.7)
+        UnitedPosition.Pos2Pos(search_home, 4.5)
+        _set_decision(action="search_ball", mode="component_sideline", target=search_home)
+        return "search_ball"
+
+    if ball != BALL_HELD:
+        return _sideline_component_free_ball_step(ball)
+
+    try:
+        pose = UnitedPosition.FieldRobotPos()
+    except Exception:
+        pose = [0, 0, 0]
+    return _sideline_component_controlled_step(pose, control_source="strict_possession")
+
+
 def OffenceStep():
     """执行进攻策略的一个非阻塞 tick，并返回当前状态名。"""
     global state
@@ -1059,6 +1377,10 @@ def OffenceStep():
 
     if _active_drive_intent("shot_release"):
         state = _shot_release_step()
+        return state
+
+    if _sideline_component_enabled():
+        state = _sideline_component_step(ball, search_home)
         return state
 
     if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
