@@ -228,6 +228,23 @@ class Positions:
 
         self.StartVision()
         return self.vision_data["ball_pos"]
+
+    def _robot_ball_out_of_bounds(self, ball_pos) -> bool:
+        try:
+            if not ball_pos or len(ball_pos) < 2:
+                return True
+            bx = float(ball_pos[0])
+            by = float(ball_pos[1])
+        except Exception:
+            return True
+        if not math.isfinite(bx) or not math.isfinite(by):
+            return True
+
+        motion_cfg = getattr(cfg, "Motion", None)
+        max_dist = float(getattr(motion_cfg, "RobotBallMaxDistance", 240.0))
+        max_x = float(getattr(motion_cfg, "RobotBallMaxAbsX", 260.0))
+        max_y = float(getattr(motion_cfg, "RobotBallMaxAbsY", 220.0))
+        return abs(bx) > max_x or abs(by) > max_y or math.hypot(bx, by) > max_dist
     
     def _get_chassis_pos(self):
         v = getattr(runtime, "vision", None)
@@ -320,6 +337,8 @@ class Positions:
             self.ballPosOut = self.ballPos
         # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
         elif self.ballPos == [0,0]:
+            self.ballPosOut = [0xfff,0xfff]
+        elif not runtime.runtime_ball_state_is_authoritative() and self._robot_ball_out_of_bounds(self.ballPos):
             self.ballPosOut = [0xfff,0xfff]
         elif runtime.runtime_ball_state_is_authoritative():
             # Some runtime providers already encode possession state, so the

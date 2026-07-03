@@ -594,49 +594,41 @@ linear_map = LinearMap
 
 
 
-def Slipsideshot(EnemyPos=None): #溜边 10,-90
-    """执行旧版溜边射门逻辑的一个 tick。
-
-    参数:
-        EnemyPos: 敌方在场地坐标系下的位置；缺失或无效时回退到场地中心。
-
-    返回:
-        进入射门分支后返回 ``True``，否则返回 ``False``。
-    """
-    peripheral.Dribble(True)
-    LocalX,LocalY,_ = UnitedPosition.FieldRobotPos()
+def Slipsideshot(attack_dir=1): #溜边
+    """One tick of sideline carry and shot; loop-call like OhMyBackStep."""
+    robot_ball = UnitedPosition.RobotBallPos()
+    field_ball = UnitedPosition.FieldBallPos()
+    if robot_ball != [0xDDD, 0xDDD] and field_ball != [0xDDD, 0xDDD]:
+        return lockball.LockBallSlip()
     try:
-        has_enemy = EnemyPos is not None and len(EnemyPos) >= 2
-    except TypeError:
-        has_enemy = False
-    if has_enemy:
-        EnemyX,EnemyY = EnemyPos[:2]
-    else:
-        EnemyX = 0
-        EnemyY = 0
-    GoalX = 90
-    AimX  = 80
-    AimY  = 40
-    if LocalX > 0:
-        k = -45
-    else:
-        AimY = -AimY
-        k = 45
-    Angle = (math.degrees(math.atan2(LocalX - EnemyX, LocalY - EnemyY)) - 270) % 360
-    UnitedPosition.Pos2Pos([AimX,AimY,Angle],10)
-    if abs(AimX-LocalX)+abs(AimY-LocalY) < 5:
-        DeltaX = LocalX - GoalX
-        DeltaY = LocalY
-        Theta =((math.degrees(math.atan2(DeltaX, DeltaY)) - 270) % 360) + 180 +k
-        Compass = Theta
-        for _ in range(20):
-            # if not AbsBallPos() == [1207, 1207]:
-            #     break
-            chassis.FieldTurn(Compass)
-            time.sleep(0.03)
+        local_x, local_y, _ = UnitedPosition.FieldRobotPos()
+    except Exception:
+        return False
+    peripheral.Dribble(0.9)
+    attack_dir = 1 if attack_dir >= 0 else -1
+    local_x = float(local_x)
+    local_y = float(local_y)
+    side = 1.0 if local_y >= 0.0 else -1.0
+    half_long = float(getattr(cfg.Bounds, "Long", 260)) * 0.5
+    half_short = float(getattr(cfg.Bounds, "Short", 200)) * 0.5
+    lane_y = side * max(50.0, half_short - 18.0)
+    progress = attack_dir * local_x
+    if progress < 68.0 or abs(local_y - lane_y) > 8.0:
+        speed_x = attack_dir * (42.0 if progress < 58.0 else 26.0)
+        speed_y = max(-20.0, min(20.0, (lane_y - local_y) * 0.75))
+        outward_yaw = 90.0 if side > 0.0 else 270.0
+        chassis.FieldMoveVector(speed_x, speed_y, outward_yaw, KpW=0.85)
+        return False
+    aim = UnitedPosition.Pos2Angle([local_x, local_y], [attack_dir * half_long, -side * 18.0]) % 360
+    yaw_error = ((aim - compass() + 180.0) % 360.0) - 180.0
+    if abs(yaw_error) <= 14.0:
         peripheral.ShootBall()
-        logger.success("Ball is in possession, start shotting.")
+        peripheral.Dribble(False)
+        logger.success("Slipsideshot shot.")
         return True
+    speed_x = attack_dir * (18.0 if progress < 86.0 else -6.0)
+    speed_y = max(-8.0, min(8.0, (lane_y - local_y) * 0.4))
+    chassis.FieldMoveVector(speed_x, speed_y, aim, KpW=max(0.35, min(1.0, abs(yaw_error) / 45.0)))
     return False
 
 def _AngleErrorDeg(current, target):

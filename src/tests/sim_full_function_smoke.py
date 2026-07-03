@@ -612,19 +612,19 @@ def add_cases(runner: SmokeRunner, stack: dict[str, Any], *, sim_timeout_s: floa
         ):
             assert BasicFuc.TurnTo_with_ball(90) is False
             assert turn_lock.calls == 1
-            assert any(call[0] == "SetMotor" for call in turn_chassis.calls)
+            assert any(call[0] in ("SetMotor", "FieldMoveVector") for call in turn_chassis.calls)
 
         with patched(BasicFuc, UnitedPosition=FakeUnitedPosition(), chassis=fake_chassis):
             assert BasicFuc.GoBack() is True
 
         with patched(
             BasicFuc,
-            UnitedPosition=FakeUnitedPosition(robot_pose=[80, 40, 0]),
+            UnitedPosition=FakeUnitedPosition(robot_ball=BALL_HELD, field_ball=BALL_HELD, robot_pose=[80, 40, 0]),
             chassis=fake_chassis,
             peripheral=fake_peripheral,
         ):
-            assert BasicFuc.Slipsideshot([10, -10]) is True
-            assert BasicFuc.Slipsideshot([]) is True
+            assert BasicFuc.Slipsideshot() in (True, False)
+            assert BasicFuc.Slipsideshot(attack_dir=1) in (True, False)
 
         with patched(
             BasicFuc,

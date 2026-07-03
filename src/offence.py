@@ -15,14 +15,12 @@ def _env_float(name, default):
 
 OFFENCE_DT = _env_float("OFFENCE_DT", "0.03")
 ATTACK_DIR = 1 if _env_float("OFFENCE_ATTACK_SIGN", "1") >= 0 else -1
-
-SIDELINE_BOUNDARY_RESERVE_CM = _env_float("OFFENCE_SIDELINE_BOUNDARY_RESERVE_CM", "18.0")
-SIDELINE_WIDE_SHOT_MARGIN_CM = 14.0
-SIDELINE_EARLY_SHOT_PROGRESS_CM = 82.0
-SIDELINE_EARLY_SHOT_MIN_ABS_Y_CM = 24.0
-SIDELINE_EARLY_SHOT_MAX_ABS_Y_CM = 45.0
-SIDELINE_EARLY_SHOT_YAW_DEG = 12.0
-SIDELINE_GOAL_HALF_WIDTH_CM = 42.0
+SEARCH_SPEED_GAIN = 1.6
+ROBOT_BALL_MAX_DISTANCE_CM = 240.0
+ROBOT_BALL_MAX_ABS_X_CM = 260.0
+ROBOT_BALL_MAX_ABS_Y_CM = 220.0
+HELD_DEBOUNCE_S = 0.18
+SHOT_COOLDOWN_S = 1.2
 
 QUICK_CAPTURE_FORWARD_MIN_CM = -1.5
 QUICK_CAPTURE_FORWARD_MAX_CM = 12.5
@@ -33,6 +31,8 @@ last_decision = {}
 _last_free_ball = None
 _last_free_ball_ts = 0.0
 _drive_intent = {}
+_held_since = None
+_last_shot_ts = -999999.0
 
 
 def _search_home():
@@ -45,9 +45,9 @@ def _search_home():
 def _decision_phase(action) -> str:
     if action in {"search_ball", "quick_capture", "lockballslip_chase", "lockballslip_last_ball"}:
         return "acquire_ball"
-    if action in {"own_half_carry", "advance_lane", "corner_recover", "sideline_hide", "sideline_drive"}:
+    if action in {"own_half_carry", "advance_lane", "corner_recover", "sideline_drive"}:
         return "advance_lane"
-    if action in {"direct_shot", "back_shot", "sideline_shot", "quick_shot"}:
+    if action in {"direct_shot", "back_shot", "sideline_shot", "quick_shot", "shot_guard_hold"}:
         return "shoot"
     if action in {"post_goal_reset_hold", "shot_release"}:
         return "recover_lane"
@@ -81,14 +81,53 @@ def _clear_drive_intent() -> None:
     _drive_intent = {}
 
 
+def _observe_ball_state(ball) -> None:
+    global _held_since
+    if ball == BALL_HELD:
+        if _held_since is None:
+            _held_since = time.monotonic()
+    else:
+        _held_since = None
+
+
+def _held_is_stable() -> bool:
+    if HELD_DEBOUNCE_S <= 0.0:
+        return True
+    return _held_since is not None and time.monotonic() - float(_held_since) >= HELD_DEBOUNCE_S
+
+
+def _shot_guard_reason():
+    if not _held_is_stable():
+        return "held_debounce"
+    if time.monotonic() - float(_last_shot_ts) < SHOT_COOLDOWN_S:
+        return "shot_cooldown"
+    return None
+
+
 def _goal_angle() -> float:
     return UnitedPosition.Local2Angle([ATTACK_DIR * 110.0, 0.0]) % 360
 
 
 def _fire_now() -> str:
+    global _last_shot_ts
+
+    guard_reason = _shot_guard_reason()
+    if guard_reason:
+        blocked = dict(last_decision)
+        peripheral.Dribble(0.9)
+        chassis.stop()
+        _set_decision(
+            action="shot_guard_hold",
+            mode=guard_reason,
+            blocked_action=blocked.get("action"),
+            blocked_gate=blocked.get("shot_gate"),
+        )
+        return "shot_guard_hold"
+
     _clear_drive_intent()
     peripheral.Dribble(0.85)
     peripheral.ShootBall()
+    _last_shot_ts = time.monotonic()
     peripheral.Dribble(False)
     chassis.stop()
     _remember_drive_intent("shot_release", 0.18)
@@ -119,34 +158,6 @@ def _shot_release_step() -> str:
     return "shot_release"
 
 
-def _sideline_goal_target(y: float, side: float | None = None) -> list[float]:
-    side = (1.0 if float(y) >= 0.0 else -1.0) if side is None else (1.0 if float(side) >= 0.0 else -1.0)
-    return [ATTACK_DIR * 110.0, -side * 18.0]
-
-
-def _sideline_lane_abs_y() -> float:
-    half_y = float(getattr(Settings.Bounds, "Short", 200)) * 0.5
-    reserve = max(16.0, float(SIDELINE_BOUNDARY_RESERVE_CM))
-    return max(50.0, half_y - reserve)
-
-
-def _sideline_lane_y(side: float) -> float:
-    return (1.0 if float(side) >= 0.0 else -1.0) * _sideline_lane_abs_y()
-
-
-def _sideline_outside_yaw(y: float) -> float:
-    return 90.0 if float(y) >= 0.0 else 270.0
-
-
-def _sideline_locked_side(y: float, locked_sideline) -> float:
-    if locked_sideline:
-        if "side" in locked_sideline:
-            return 1.0 if float(locked_sideline["side"]) >= 0.0 else -1.0
-        if abs(float(locked_sideline.get("target_y", 0.0))) >= 30.0:
-            return 1.0 if float(locked_sideline["target_y"]) >= 0.0 else -1.0
-    return 1.0 if float(y) >= 0.0 else -1.0
-
-
 def _carry_own_half(goal_angle, pose) -> str:
     x, y, _ = pose
     progress = ATTACK_DIR * float(x)
@@ -163,116 +174,6 @@ def _carry_own_half(goal_angle, pose) -> str:
     return "own_half_carry"
 
 
-def _sideline_lane_step(pose) -> str | None:
-    x, y, _ = pose
-    progress = ATTACK_DIR * float(x)
-    abs_y = abs(float(y))
-    lane_abs_y = _sideline_lane_abs_y()
-    locked_sideline = _active_drive_intent()
-    if locked_sideline and locked_sideline.get("action") not in {"sideline_drive", "sideline_hide"}:
-        locked_sideline = None
-    if not locked_sideline and not (progress >= 24.0 and 34.0 <= abs_y <= lane_abs_y + 4.0):
-        return None
-
-    side = _sideline_locked_side(float(y), locked_sideline)
-    corner_y = _sideline_lane_y(side)
-    restore_width = bool(locked_sideline and locked_sideline.get("action") == "sideline_drive") and abs_y < 50.0
-    needs_corner_entry = progress < 68.0 or (progress < 74.0 and abs_y < lane_abs_y - 8.0) or restore_width
-    hide_locked = bool(locked_sideline and locked_sideline.get("action") == "sideline_hide")
-
-    if ((not locked_sideline or hide_locked) and needs_corner_entry) or restore_width:
-        outward_yaw = _sideline_outside_yaw(side)
-        if progress >= SIDELINE_EARLY_SHOT_PROGRESS_CM:
-            speed_x = 0.0 if restore_width else ATTACK_DIR * 8.0
-        else:
-            speed_x = ATTACK_DIR * (38.0 if progress < 60.0 else 28.0)
-        if abs_y < lane_abs_y - 20.0:
-            speed_y = side * (14.0 if restore_width else 22.0)
-        elif abs_y < lane_abs_y - 2.0:
-            speed_y = side * 10.0
-        else:
-            speed_y = -side * 8.0
-
-        peripheral.Dribble(0.92)
-        chassis.FieldMoveVector(speed_x, speed_y, outward_yaw, KpW=0.85)
-        _remember_drive_intent("sideline_hide", 0.55, target_y=corner_y, side=side)
-        _set_decision(
-            action="sideline_hide",
-            shot_gate="restore_width" if restore_width else "corner_entry",
-            progress=round(float(progress), 3),
-            y=round(float(y), 3),
-            target=[round(float(ATTACK_DIR * 68.0), 3), round(float(corner_y), 3), round(float(outward_yaw), 3)],
-            speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(outward_yaw), 3)],
-        )
-        return "sideline_hide"
-
-    sideline_target = _sideline_goal_target(float(y), side=side)
-    sideline_angle = UnitedPosition.Local2Angle(sideline_target) % 360
-    yaw = float(chassis.GetYaw())
-    sideline_error = angle_error_deg(yaw, sideline_angle)
-    sideline_error_abs = abs(float(sideline_error))
-    yaw_rad = math.radians(yaw)
-    heading_x = math.cos(yaw_rad)
-    goal_dx = ATTACK_DIR * 110.0 - float(x)
-    shot_y_at_goal = None
-    if ATTACK_DIR * heading_x > 0.12 and ATTACK_DIR * goal_dx > 0.0:
-        shot_y_at_goal = float(y) + math.sin(yaw_rad) * (goal_dx / heading_x)
-    shot_line_hits_goal = shot_y_at_goal is not None and abs(float(shot_y_at_goal)) <= SIDELINE_GOAL_HALF_WIDTH_CM
-
-    wide_sideline_window = (
-        progress >= 68.0
-        and abs_y >= lane_abs_y - SIDELINE_WIDE_SHOT_MARGIN_CM
-        and sideline_error_abs <= 18.0
-        and shot_line_hits_goal
-    )
-    early_shot_window = (
-        progress >= SIDELINE_EARLY_SHOT_PROGRESS_CM
-        and SIDELINE_EARLY_SHOT_MIN_ABS_Y_CM <= abs_y <= SIDELINE_EARLY_SHOT_MAX_ABS_Y_CM
-        and sideline_error_abs <= SIDELINE_EARLY_SHOT_YAW_DEG
-        and shot_line_hits_goal
-    )
-
-    if wide_sideline_window or early_shot_window:
-        _set_decision(
-            action="sideline_shot",
-            shot_gate="early_sideline_shot_window" if early_shot_window and not wide_sideline_window else "decisive_sideline_window",
-            progress=round(float(progress), 3),
-            y=round(float(y), 3),
-            yaw_error=round(float(sideline_error), 3),
-            shot_y_at_goal=None if shot_y_at_goal is None else round(float(shot_y_at_goal), 3),
-            target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
-        )
-        return _fire_now()
-
-    if needs_corner_entry:
-        shot_gate = "sideline_build_progress"
-    elif abs_y < lane_abs_y - SIDELINE_WIDE_SHOT_MARGIN_CM:
-        shot_gate = "sideline_width_not_ready"
-    elif not shot_line_hits_goal:
-        shot_gate = "sideline_goal_line_not_ready"
-    else:
-        shot_gate = "sideline_yaw_not_ready"
-
-    _remember_drive_intent("sideline_drive", 0.65, target_y=sideline_target[1], side=side)
-    speed_x = ATTACK_DIR * (46.0 if progress < 58.0 else (28.0 if progress < 78.0 else 18.0))
-    if progress >= 86.0:
-        speed_x = -ATTACK_DIR * 8.0
-    speed_y = side * clamp(lane_abs_y - abs_y, -8.0, 12.0)
-    peripheral.Dribble(0.85)
-    chassis.FieldMoveVector(speed_x, speed_y, sideline_angle, KpW=0.9)
-    _set_decision(
-        action="sideline_drive",
-        shot_gate=shot_gate,
-        progress=round(float(progress), 3),
-        y=round(float(y), 3),
-        yaw_error=round(float(sideline_error), 3),
-        shot_y_at_goal=None if shot_y_at_goal is None else round(float(shot_y_at_goal), 3),
-        target=[round(float(sideline_target[0]), 3), round(float(sideline_target[1]), 3)],
-        speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(sideline_angle), 3)],
-    )
-    return "sideline_drive"
-
-
 def _valid_free_ball(ball) -> bool:
     if ball in (BALL_NOT_FOUND, BALL_HELD):
         return False
@@ -283,7 +184,11 @@ def _valid_free_ball(ball) -> bool:
         by = float(ball[1])
     except Exception:
         return False
-    return math.isfinite(bx) and math.isfinite(by)
+    if not math.isfinite(bx) or not math.isfinite(by):
+        return False
+    if abs(bx) > ROBOT_BALL_MAX_ABS_X_CM or abs(by) > ROBOT_BALL_MAX_ABS_Y_CM:
+        return False
+    return math.hypot(bx, by) <= ROBOT_BALL_MAX_DISTANCE_CM
 
 
 def _remember_free_ball(ball) -> None:
@@ -433,9 +338,11 @@ def _controlled_ball_step(pose) -> str:
     if progress < 0.0:
         return _carry_own_half(goal_angle, pose)
 
-    sideline_state = _sideline_lane_step(pose)
-    if sideline_state is not None:
-        return sideline_state
+    if progress >= 24.0 and abs_y >= 34.0 and UnitedPosition.RobotBallPos() == BALL_HELD:
+        shot = bool(Slipsideshot(attack_dir=ATTACK_DIR))
+        action = "sideline_shot" if shot else "sideline_drive"
+        _set_decision(action=action, progress=round(float(progress), 3), y=round(float(y), 3))
+        return action
 
     back_angle = (goal_angle + 180.0) % 360.0
     back_error = angle_error_deg(chassis.GetYaw(), back_angle)
@@ -507,6 +414,9 @@ def OffenceStep():
     global state
 
     ball = UnitedPosition.RobotBallPos()
+    if ball != BALL_HELD and ball != BALL_NOT_FOUND and not _valid_free_ball(ball):
+        ball = BALL_NOT_FOUND
+    _observe_ball_state(ball)
     search_home = _search_home()
 
     if _active_drive_intent("shot_release"):
@@ -519,8 +429,8 @@ def OffenceStep():
             state = _direct_chase_ball(recent_ball, stale=True)
             return state
         peripheral.Dribble(0.7)
-        UnitedPosition.Pos2Pos(search_home, 4.5)
-        _set_decision(action="search_ball", target=search_home)
+        UnitedPosition.Pos2Pos(search_home, SEARCH_SPEED_GAIN)
+        _set_decision(action="search_ball", target=search_home, speed_gain=round(float(SEARCH_SPEED_GAIN), 3))
         state = "search_ball"
         return state
 

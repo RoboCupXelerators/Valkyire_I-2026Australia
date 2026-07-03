@@ -32,6 +32,10 @@ def _isolate_live_field_state(monkeypatch):
     monkeypatch.setattr(offence, "_drive_intent", {})
     monkeypatch.setattr(offence, "_last_free_ball", None)
     monkeypatch.setattr(offence, "_last_free_ball_ts", 0.0)
+    monkeypatch.setattr(offence, "_held_since", None)
+    monkeypatch.setattr(offence, "_last_shot_ts", -999999.0)
+    monkeypatch.setattr(offence, "HELD_DEBOUNCE_S", 0.0)
+    monkeypatch.setattr(offence, "SHOT_COOLDOWN_S", 0.0)
     monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [9999, 9999, 0])
     monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: BALL_NOT_FOUND)
     monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
@@ -54,7 +58,27 @@ def test_offence_searches_from_home_when_ball_not_visible(monkeypatch):
     assert offence.OffenceStep() == "search_ball"
     assert calls["dribble"] == 0.7
     assert calls["target"] == [home[0] + 20, home[1], 0]
-    assert calls["speed_gain"] == 4.5
+    assert calls["speed_gain"] == offence.SEARCH_SPEED_GAIN
+
+
+def test_offence_rejects_unphysical_robot_ball_as_not_visible(monkeypatch):
+    calls = {}
+    home = list(offence.Settings.CheckPoints.Home)
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [-5044.88, -4808.92])
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.setdefault("dribble", value))
+
+    def fake_pos2pos(target, speed_gain=None):
+        calls["target"] = target
+        calls["speed_gain"] = speed_gain
+        return False
+
+    monkeypatch.setattr(offence.UnitedPosition, "Pos2Pos", fake_pos2pos)
+
+    assert offence.OffenceStep() == "search_ball"
+    assert offence.last_decision["action"] == "search_ball"
+    assert calls["target"] == [home[0] + 20, home[1], 0]
+    assert calls["speed_gain"] == offence.SEARCH_SPEED_GAIN
 
 
 def test_offence_uses_lockballslip_for_visible_free_ball(monkeypatch):
@@ -97,24 +121,6 @@ def test_offence_treats_visible_dribbler_contact_as_controlled_carry(monkeypatch
     assert offence.last_decision["contact_ball"] == [8.0, -1.0]
     assert calls[0] == ("dribble", 0.95)
     assert calls[1] == ("dribble", 0.9)
-
-
-def test_offence_commits_visible_dribbler_contact_to_sideline(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [7, 2])
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 52, 0])
-    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [37, 54])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 14)
-    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
-
-    assert offence.OffenceStep() == "sideline_hide"
-    assert offence.last_decision["action"] == "sideline_hide"
-    assert offence.last_decision["control_source"] == "quick_capture"
-    assert calls[0] == ("dribble", 0.95)
-    assert calls[1] == ("dribble", 0.92)
 
 
 def test_offence_holds_center_when_ball_is_in_enemy_goal_net(monkeypatch):
@@ -165,6 +171,52 @@ def test_offence_shoots_when_open_goal_is_deep_enough(monkeypatch):
     assert offence.OffenceStep() == "quick_shot"
     assert offence.last_decision["action"] == "direct_shot"
     assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+
+
+def test_offence_debounces_new_possession_before_shoot(monkeypatch):
+    calls = []
+    now = {"value": 100.0}
+
+    monkeypatch.setattr(offence, "HELD_DEBOUNCE_S", 0.18)
+    monkeypatch.setattr(offence.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [40, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "shot_guard_hold"
+    assert offence.last_decision["mode"] == "held_debounce"
+    assert "shoot" not in calls
+
+    calls.clear()
+    now["value"] = 100.2
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert "shoot" in calls
+
+
+def test_offence_blocks_shot_during_cooldown(monkeypatch):
+    calls = []
+    now = {"value": 50.0}
+
+    monkeypatch.setattr(offence, "SHOT_COOLDOWN_S", 1.2)
+    monkeypatch.setattr(offence, "_last_shot_ts", 49.4)
+    monkeypatch.setattr(offence.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [76, 0, 0])
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 180)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "shot_guard_hold"
+    assert offence.last_decision["mode"] == "shot_cooldown"
+    assert offence.last_decision["blocked_action"] == "back_shot"
+    assert "shoot" not in calls
 
 
 def test_offence_advances_when_badly_misaligned(monkeypatch):
@@ -232,80 +284,6 @@ def test_offence_recovers_deep_own_corner(monkeypatch):
 
     assert offence.OffenceStep() == "corner_recover"
     assert calls == [("dribble", 0.9), ("move", (46.0, -44.0, 20), {"KpW": 0.9})]
-
-
-def test_offence_drives_into_sideline_lane_before_shot_window(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [30, 56, 0])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 14)
-    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 90)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
-
-    assert offence.OffenceStep() == "sideline_hide"
-    assert offence.last_decision["shot_gate"] == "corner_entry"
-    assert calls == [("dribble", 0.92), ("move", (38.0, 22.0, 90.0), {"KpW": 0.85})]
-
-
-def test_sideline_restores_width_without_flipping_side(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(
-        offence,
-        "_drive_intent",
-        {"action": "sideline_drive", "until": 9999999999.0, "target_y": -18.0, "side": 1.0},
-    )
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [86.0, 15.0, 303.0])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 303.0)
-    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 303.0)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
-
-    assert offence.OffenceStep() == "sideline_hide"
-    assert offence.last_decision["shot_gate"] == "restore_width"
-    assert offence.last_decision["target"][1] == 82.0
-    assert calls == [("dribble", 0.92), ("move", (0.0, 14.0, 90.0), {"KpW": 0.85})]
-
-
-def test_offence_fires_decisive_sideline_window(monkeypatch):
-    calls = []
-
-    def local_angle(target):
-        return 291 if target[1] < 0 else 0
-
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [72, 82, 0])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", local_angle)
-    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 291)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
-    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
-
-    assert offence.OffenceStep() == "quick_shot"
-    assert offence.last_decision["action"] == "sideline_shot"
-    assert abs(offence.last_decision["shot_y_at_goal"]) <= offence.SIDELINE_GOAL_HALF_WIDTH_CM
-    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
-
-
-def test_offence_stays_in_sideline_drive_when_goal_line_is_not_ready(monkeypatch):
-    calls = []
-
-    def local_angle(target):
-        return 291 if target[1] < 0 else 0
-
-    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
-    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [72, 82, 0])
-    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", local_angle)
-    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 270)
-    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
-    monkeypatch.setattr(offence.chassis, "FieldMoveVector", lambda *args, **kwargs: calls.append(("move", args, kwargs)))
-
-    assert offence.OffenceStep() == "sideline_drive"
-    assert offence.last_decision["shot_gate"] == "sideline_goal_line_not_ready"
-    assert calls == [("dribble", 0.85), ("move", (28.0, 0.0, 291), {"KpW": 0.9})]
 
 
 def test_offence_back_shot_when_front_goal_line_clean(monkeypatch):
