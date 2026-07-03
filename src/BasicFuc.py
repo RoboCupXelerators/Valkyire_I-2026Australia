@@ -188,8 +188,6 @@ class LockSeries:
     def _set_lockball_dribble(self, enabled):
         """仅在目标状态变化时更新吸球输出。"""
         target = self.dribble_power if enabled and self.dribble_power else False
-        if self._lockball_dribble_state == target:
-            return
         try:
             peripheral.Dribble(target)
             self._lockball_dribble_state = target
