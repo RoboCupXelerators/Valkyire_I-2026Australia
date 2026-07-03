@@ -419,11 +419,6 @@ def _spawn_robot(
         env["DEFENCE_INTERCEPT_GAIN"] = "1.8"  # faster intercept
         env["DEFENCE_CHASE_PROGRESS"] = "20"  # intercept further up field
         env["DEFENCE_HOLD_GAIN"] = "1.3"  # faster home return
-        if role == "offence":
-            # In 2v2 videos R2 is the second attacker: occupy a lane and let
-            # R1 be the ball carrier, otherwise both robots pinch the ball.
-            env["OFFENCE_SUPPORT_MODE"] = "1"
-            env["OFFENCE_SUPPORT_SIDE"] = "1"
     elif robot_id == 3:
         # R3: Deep striker - carry deeper before shooting
         env["OFFENCE_DEEP_SHOOT_X"] = "30"  # shoot from very close
