@@ -647,6 +647,53 @@ def test_sideline_component_mode_does_not_deep_corner_release(monkeypatch):
     assert calls == [("dribble", 0.85), ("move", (-8.0, 12.0, 140), {"KpW": 0.9})]
 
 
+def test_sideline_component_mode_shoots_deep_aligned_inboard_ball(monkeypatch):
+    calls = []
+
+    monkeypatch.setenv("OFFENCE_COMPONENT_MODE", "sideline_shot")
+    monkeypatch.setattr(
+        offence,
+        "_drive_intent",
+        {"action": "sideline_hide", "until": 9999999999.0, "target_y": -82.0, "side": -1.0},
+    )
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [86.2, -26.8, 59.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], 1.0))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 62.0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 59.0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert offence.last_decision["component_mode"] == "sideline_shot"
+    assert offence.last_decision["action"] == "sideline_shot"
+    assert offence.last_decision["shot_gate"] == "component_early_shot_window"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+
+
+def test_sideline_component_mode_shoots_with_wider_lateral_window(monkeypatch):
+    calls = []
+
+    monkeypatch.setenv("OFFENCE_COMPONENT_MODE", "sideline_shot")
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_HELD)
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [86.0, 70.0, 287.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(offence, "_best_goal_target", lambda _pose, _enemies: ([110, 0], 1.0))
+    monkeypatch.setattr(offence.UnitedPosition, "Local2Angle", lambda _target: 286.0)
+    monkeypatch.setattr(offence.chassis, "GetYaw", lambda: 287.0)
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.peripheral, "ShootBall", lambda: calls.append("shoot"))
+    monkeypatch.setattr(offence.chassis, "stop", lambda: calls.append("stop"))
+
+    assert offence.OffenceStep() == "quick_shot"
+    assert offence.last_decision["component_mode"] == "sideline_shot"
+    assert offence.last_decision["action"] == "sideline_shot"
+    assert offence.last_decision["shot_gate"] == "decisive_sideline_window"
+    assert calls == [("dribble", 0.85), "shoot", ("dribble", False), "stop"]
+
+
 def test_sideline_component_mode_acquires_ball_from_infield(monkeypatch):
     calls = []
 
@@ -667,6 +714,26 @@ def test_sideline_component_mode_acquires_ball_from_infield(monkeypatch):
     assert offence.last_decision["control_source"] == "visible_dribbler_contact"
     assert offence.last_decision["shot_gate"] == "corner_entry"
     assert calls == [("dribble", 0.92), ("move", (38.0, 22.0, 90.0), {"KpW": 0.85})]
+
+
+def test_sideline_component_mode_fast_chases_before_sideline(monkeypatch):
+    calls = []
+
+    monkeypatch.setenv("OFFENCE_COMPONENT_MODE", "sideline_shot")
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [13.8, 55.1])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldRobotPos", lambda: [28.0, 51.0, 90.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [-27.1, 64.8])
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(offence.chassis, "RobotMoveVector", lambda *args: calls.append(("robot_move", args)))
+
+    assert offence.OffenceStep() == "sideline_fast_chase"
+    assert offence.last_decision["component_mode"] == "sideline_shot"
+    assert offence.last_decision["action"] == "sideline_fast_chase"
+    assert offence.last_decision["mode"] == "component_fast_chase"
+    assert offence.last_decision["shot_gate"] == "fast_chase_before_sideline"
+    assert calls[0] == ("dribble", 1.0)
+    assert calls[1][0] == "robot_move"
+    assert calls[1][1] == pytest.approx((52.49, 70.0, 39.49), abs=0.01)
 
 
 def test_sideline_component_mode_recenters_shallow_lateral_ball(monkeypatch):

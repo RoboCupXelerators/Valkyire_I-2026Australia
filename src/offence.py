@@ -25,6 +25,13 @@ SIDELINE_COMPONENT_ACQUIRE_OFFSET_CM = 8.0
 SIDELINE_COMPONENT_RECENTER_FORWARD_CM = 8.5
 SIDELINE_COMPONENT_RECENTER_BACKOFF_CM = 14.0
 SIDELINE_COMPONENT_CENTERED_LATERAL_CM = 4.0
+SIDELINE_COMPONENT_FAST_CHASE_MIN_DIST_CM = 18.0
+SIDELINE_COMPONENT_FAST_CHASE_MIN_LATERAL_CM = 14.0
+SIDELINE_COMPONENT_WIDE_SHOT_MARGIN_CM = 14.0
+SIDELINE_COMPONENT_EARLY_SHOT_PROGRESS_CM = 82.0
+SIDELINE_COMPONENT_EARLY_SHOT_MIN_ABS_Y_CM = 24.0
+SIDELINE_COMPONENT_EARLY_SHOT_MAX_ABS_Y_CM = 45.0
+SIDELINE_COMPONENT_EARLY_SHOT_YAW_DEG = 12.0
 
 state = "boot"
 last_decision = {}
@@ -53,6 +60,7 @@ def _decision_phase(action) -> str:
         "search_ball",
         "chase_ball",
         "chase_last_ball",
+        "sideline_fast_chase",
         "turn_to_ball",
         "near_ball_control",
         "sideline_free_ball_approach",
@@ -412,15 +420,31 @@ def _sideline_lane_step(pose, shot_lane_score: float, *, component_mode: bool = 
     sideline_error = angle_error_deg(chassis.GetYaw(), sideline_angle)
     sideline_error_abs = abs(float(sideline_error))
 
-    if (
+    wide_shot_margin = SIDELINE_COMPONENT_WIDE_SHOT_MARGIN_CM if component_mode else 10.0
+    wide_sideline_window = (
         progress >= 68.0
-        and abs_y >= lane_abs_y - 10.0
+        and abs_y >= lane_abs_y - wide_shot_margin
         and shot_lane_score >= -0.55
         and sideline_error_abs <= 18.0
-    ):
+    )
+    component_early_window = (
+        component_mode
+        and progress >= SIDELINE_COMPONENT_EARLY_SHOT_PROGRESS_CM
+        and abs_y >= SIDELINE_COMPONENT_EARLY_SHOT_MIN_ABS_Y_CM
+        and abs_y <= SIDELINE_COMPONENT_EARLY_SHOT_MAX_ABS_Y_CM
+        and shot_lane_score >= -0.55
+        and sideline_error_abs <= SIDELINE_COMPONENT_EARLY_SHOT_YAW_DEG
+    )
+
+    if wide_sideline_window or component_early_window:
+        shot_gate = (
+            "component_early_shot_window"
+            if component_early_window and not wide_sideline_window
+            else "decisive_sideline_window"
+        )
         _set_decision(
             action="sideline_shot",
-            shot_gate="decisive_sideline_window",
+            shot_gate=shot_gate,
             progress=round(float(progress), 3),
             y=round(float(y), 3),
             yaw_error=round(float(sideline_error), 3),
@@ -1268,6 +1292,35 @@ def _sideline_component_free_ball_step(ball) -> str:
             side = 1.0 if float(field_ball[1]) >= 0.0 else -1.0
             lane_abs_y = _sideline_lane_abs_y()
             lane_y = _sideline_lane_y(side)
+            ball_dist = math.hypot(bx, by)
+            if (
+                bx >= -6.0
+                and (
+                    ball_dist >= SIDELINE_COMPONENT_FAST_CHASE_MIN_DIST_CM
+                    or abs(by) >= SIDELINE_COMPONENT_FAST_CHASE_MIN_LATERAL_CM
+                )
+            ):
+                angle = math.degrees(math.atan2(by, bx)) if ball_dist > 1e-6 else 0.0
+                speed_x = clamp(38.0 + max(bx, 0.0) * 1.05, 24.0, 72.0)
+                speed_y = clamp(by * 1.65, -70.0, 70.0)
+                speed_w = clamp(angle * 0.52, -52.0, 52.0)
+                peripheral.Dribble(1.0)
+                chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+                _remember_drive_intent("sideline_hide", 0.25, target_y=lane_y, side=side)
+                _set_decision(
+                    action="sideline_fast_chase",
+                    mode="component_fast_chase",
+                    shot_gate="fast_chase_before_sideline",
+                    ball=[round(bx, 3), round(by, 3)],
+                    field_ball=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+                    pose=[round(float(pose[0]), 3), round(float(pose[1]), 3), round(float(pose[2]), 3)],
+                    distance=round(float(ball_dist), 3),
+                    angle=round(float(angle), 3),
+                    speed=[round(float(speed_x), 3), round(float(speed_y), 3), round(float(speed_w), 3)],
+                )
+                _mark_sideline_component_decision()
+                return "sideline_fast_chase"
+
             if -2.0 <= bx <= SIDELINE_COMPONENT_CENTER_FORWARD_MAX_CM and abs(by) <= 12.0:
                 if abs(by) > SIDELINE_COMPONENT_CENTERED_LATERAL_CM:
                     speed_x = clamp((bx - SIDELINE_COMPONENT_RECENTER_BACKOFF_CM) * 1.8, -18.0, -6.0)
