@@ -597,13 +597,12 @@ linear_map = LinearMap
 def Slipsideshot(attack_dir=1): #溜边
     """One tick of sideline carry and shot; loop-call like OhMyBackStep."""
     robot_ball = UnitedPosition.RobotBallPos()
-    field_ball = UnitedPosition.FieldBallPos()
     close_ball = False
     try:
         close_ball = 0.0 <= float(robot_ball[0]) <= 24.0 and abs(float(robot_ball[1])) <= 16.0
     except Exception:
         close_ball = False
-    if not close_ball and robot_ball != [0xDDD, 0xDDD] and field_ball != [0xDDD, 0xDDD]:
+    if not close_ball and robot_ball != [0xDDD, 0xDDD]:
         return lockball.LockBallSlip()
     try:
         local_x, local_y, _ = UnitedPosition.FieldRobotPos()
@@ -611,8 +610,6 @@ def Slipsideshot(attack_dir=1): #溜边
         return False
     peripheral.Dribble(1.0)
     attack_dir = 1 if attack_dir >= 0 else -1
-    local_x = float(local_x)
-    local_y = float(local_y)
     side = 1.0 if local_y >= 0.0 else -1.0
     half_long = float(getattr(cfg.Bounds, "Long", 260)) * 0.5
     half_short = float(getattr(cfg.Bounds, "Short", 200)) * 0.5
@@ -732,4 +729,4 @@ def OHMYBACK(HomePos=[0, -20, 0]):
 
 
 OhMyBack = OhMyBackStep
-        
+

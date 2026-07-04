@@ -305,7 +305,7 @@ class Positions:
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
-        return int(iDeltaAngle)
+        return round(iDeltaAngle,2)
 
     # ********* BASIC FUNCTIONS ********
     # ===== Public API (recommended) =====
