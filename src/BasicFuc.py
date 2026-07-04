@@ -666,13 +666,17 @@ def OhMyBackStep(
     - 到角落：转向球门，角度够就射门
     """
 
-    if UnitedPosition.FieldBallPos() != [0xDDD, 0xDDD]:
+    if UnitedPosition.RobotBallPos() != [0xDDD, 0xDDD]:
         return NormalShoot(x=0, HomePos=HomePos)
+    elif UnitedPosition.RobotBallPos() == [0xFFF, 0xFFF]:
+        return UnitedPosition.Pos2Pos(HomePos)
+    else:
+        lockball.LockBallSlip()
 
     peripheral.Dribble(dribble_power)
 
     try:
-        local_x, local_y, _ = UnitedPosition.FieldRobotPos()
+        local_x, local_y, _ = UnitedPosition.FieldRobotPose()
     except Exception:
         lockball.LockBallSlip()
         return False
