@@ -598,37 +598,62 @@ def Slipsideshot(attack_dir=1): #溜边
     """One tick of sideline carry and shot; loop-call like OhMyBackStep."""
     robot_ball = UnitedPosition.RobotBallPos()
     field_ball = UnitedPosition.FieldBallPos()
-    if robot_ball != [0xDDD, 0xDDD] and field_ball != [0xDDD, 0xDDD]:
+    close_ball = False
+    try:
+        close_ball = 0.0 <= float(robot_ball[0]) <= 24.0 and abs(float(robot_ball[1])) <= 16.0
+    except Exception:
+        close_ball = False
+    if not close_ball and robot_ball != [0xDDD, 0xDDD] and field_ball != [0xDDD, 0xDDD]:
         return lockball.LockBallSlip()
     try:
         local_x, local_y, _ = UnitedPosition.FieldRobotPos()
     except Exception:
         return False
-    peripheral.Dribble(0.9)
+    peripheral.Dribble(1.0)
     attack_dir = 1 if attack_dir >= 0 else -1
     local_x = float(local_x)
     local_y = float(local_y)
     side = 1.0 if local_y >= 0.0 else -1.0
     half_long = float(getattr(cfg.Bounds, "Long", 260)) * 0.5
     half_short = float(getattr(cfg.Bounds, "Short", 200)) * 0.5
-    lane_y = side * max(50.0, half_short - 18.0)
+    edge_y = side * min(68.0, half_short - 24.0)
+    corner_progress = half_long - 30.0
     progress = attack_dir * local_x
-    if progress < 68.0 or abs(local_y - lane_y) > 8.0:
-        speed_x = attack_dir * (42.0 if progress < 58.0 else 26.0)
-        speed_y = max(-20.0, min(20.0, (lane_y - local_y) * 0.75))
-        outward_yaw = 90.0 if side > 0.0 else 270.0
-        chassis.FieldMoveVector(speed_x, speed_y, outward_yaw, KpW=0.85)
+    edge_error = edge_y - local_y
+    forward_yaw = 0.0 if attack_dir > 0 else 180.0
+    hide_yaw = (forward_yaw + side * attack_dir * 20.0) % 360.0
+    near_corner = progress >= corner_progress - 16.0
+    edge_tolerance = 24.0 if near_corner else 9.0
+    if abs(edge_error) > edge_tolerance and progress < corner_progress - 14.0:
+        carry_yaw = hide_yaw
+        yaw_error = ((carry_yaw - compass() + 180.0) % 360.0) - 180.0
+        speed_x = attack_dir * (18.0 if progress < corner_progress - 12.0 else 8.0)
+        speed_y = max(-14.0, min(14.0, edge_error * 0.30))
+        if abs(yaw_error) > 25.0:
+            speed_x *= 0.55
+            speed_y *= 0.35
+        chassis.FieldMoveVector(speed_x, speed_y, carry_yaw, KpW=max(0.18, min(0.55, abs(yaw_error) / 80.0)))
+        return False
+    if progress < corner_progress:
+        carry_yaw = hide_yaw
+        yaw_error = ((carry_yaw - compass() + 180.0) % 360.0) - 180.0
+        speed_x = attack_dir * (28.0 if progress < corner_progress - 28.0 else 18.0)
+        speed_y = max(-5.0, min(5.0, edge_error * 0.18))
+        if abs(yaw_error) > 25.0:
+            speed_x *= 0.55
+            speed_y *= 0.35
+        chassis.FieldMoveVector(speed_x, speed_y, carry_yaw, KpW=max(0.18, min(0.50, abs(yaw_error) / 85.0)))
         return False
     aim = UnitedPosition.Pos2Angle([local_x, local_y], [attack_dir * half_long, -side * 18.0]) % 360
     yaw_error = ((aim - compass() + 180.0) % 360.0) - 180.0
-    if abs(yaw_error) <= 14.0:
+    if abs(yaw_error) <= 18.0 and abs(edge_error) <= 34.0:
         peripheral.ShootBall()
         peripheral.Dribble(False)
         logger.success("Slipsideshot shot.")
         return True
-    speed_x = attack_dir * (18.0 if progress < 86.0 else -6.0)
-    speed_y = max(-8.0, min(8.0, (lane_y - local_y) * 0.4))
-    chassis.FieldMoveVector(speed_x, speed_y, aim, KpW=max(0.35, min(1.0, abs(yaw_error) / 45.0)))
+    speed_x = -attack_dir * 3.0 if progress > corner_progress + 8.0 else 0.0
+    speed_y = max(-2.0, min(2.0, edge_error * 0.06))
+    chassis.FieldMoveVector(speed_x, speed_y, aim, KpW=max(0.22, min(0.60, abs(yaw_error) / 80.0)))
     return False
 
 def _AngleErrorDeg(current, target):
