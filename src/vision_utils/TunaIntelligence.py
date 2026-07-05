@@ -3,7 +3,7 @@
 Jetson Nano (super) oriented inference backend.
 
 This module mirrors the thread/queue interface of `ArisuIntelligence` so that
-`src/Vision.py` can consume the same `ChassisQueue` and `BallQueue` outputs.
+`src/vision_utils/Vision.py` can consume the same `ChassisQueue` and `BallQueue` outputs.
 
 Model path (recommended): `src/vision_utils/models/yolov8nForX5.pt`
 
@@ -47,7 +47,7 @@ class TunaIntelligence(VisionPreUntil):
         ChassisOutputs: [[cam, center_x, bottom_y, w, h, conf], ...]
 
     Important:
-        `src/Vision.py` currently *assumes* OutputBuffer[i] exists for i=0..3.
+        `src/vision_utils/Vision.py` currently *assumes* OutputBuffer[i] exists for i=0..3.
         Therefore we always output at most 1 detection per camera for ball and
         chassis (top-1 by confidence), and we pad missing cameras with dummy
         entries (conf=0).

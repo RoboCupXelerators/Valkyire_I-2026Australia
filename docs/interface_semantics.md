@@ -21,8 +21,6 @@ Current public interfaces:
 | Interface | Semantics |
 | --- | --- |
 | `UnitedPosition.FieldRobotPose()` | field-frame robot pose `[x_forward, y_left, yaw_deg]` |
-| `UnitedPosition.FieldRobotPosition()` | field-frame robot position `[x_forward, y_left]` |
-| `UnitedPosition.FieldRobotPos()` | legacy alias for `FieldRobotPose()` |
 | `UnitedPosition.RobotBallPos()` | robot-frame ball position `[x_forward, y_left]` or sentinel |
 | `UnitedPosition.FieldBallPos()` | field-frame ball position `[x_forward, y_left]` or sentinel |
 | `UnitedPosition.DirectDistance()` | raw wall distances from lidar |
@@ -55,30 +53,12 @@ ball_field_pos   # [x, y] in field frame, only if explicitly needed
 ball_state       # "lost" / "held" / "free"
 ```
 
-## IDLE / Agent Debug Entry
+## Basic Checks
 
-Use `idle_debug.py` when running from IDLE, a local terminal, or an agent test
-with a live Unity simulator or real robot. This script has no offline runtime
-backend.
-
-```bash
-ROBOCUPX_IDLE_BACKEND=SIM python idle_debug.py
-ROBOCUPX_IDLE_BACKEND=REAL python idle_debug.py
-```
-
-`SIM` expects Unity Play mode with `XelUdpBridge` listening on the configured
-UDP ports. `REAL` uses the current `ReasonData` robot configuration as-is.
-
-The script configures the backend before importing `LunaPre`, then reads one
-live debug frame through the same public interfaces:
-
-```python
-frame = run_step()
-```
-
-If Unity/real robot is not available, do not run IDLE runtime debugging. Use
-syntax checks instead:
+If Unity/real robot is not available, prefer syntax checks and pytest instead
+of starting runtime objects:
 
 ```bash
-python -m py_compile src/LunaPre.py src/Sensor.py idle_debug.py
+python -B -m py_compile src/LunaPre/positions.py src/LunaPre/runtime.py src/LunaPre/sensor.py
+../venv/bin/python3 -m pytest
 ```

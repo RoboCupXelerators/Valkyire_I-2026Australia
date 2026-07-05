@@ -19,8 +19,7 @@
 | 函数 | 功能 | 返回值/示例 |
 | :--- | :--- | :--- |
 | `RobotBallPos()` | 获取球在**机体坐标系**下的位置 | `[x, y]` (cm) |
-| `RobotBallAngle()` | 获取球相对机器人角度 | `int` (°) |
-| `FieldRobotPos()` | 获取机器人在**场地坐标系**下的位置 | `[x, y, yaw]` (cm, cm, °) |
+| `FieldRobotPose()` | 获取机器人在**场地坐标系**下的位姿 | `[x, y, yaw]` (cm, cm, °) |
 | `FieldBallPos()` | 获取球在**场地坐标系**下的位置 | `[x, y]` (cm) |
 | `Pos2Pos([x, y, yaw], speed_gain=None)` | 移动到场地坐标系的指定点 | `True` (到达) / `False` (未到达) |
 | `Move2Path(points, iWaitMs=0.1)` | 顺序移动到路径点列表（阻塞） | `True` (完成) |
@@ -28,8 +27,8 @@
 #### 🛞 底盘控制 (chassis)
 | 函数 | 功能 | 返回值/示例 |
 | :--- | :--- | :--- |
-| `RobotMoveVector(x, y, z)` | 机体坐标系向量移动 (x:前, y:左, z:自转) | 无 |
-| `FieldMoveVector(x, y, facing, kp=None)` | 场地坐标系向量移动 + 航向闭环 | 无 |
+| `RobotMoveVector(x, y, z)` | 机体坐标系向量移动 (x/y: m/s, z: deg/s) | 无 |
+| `FieldMoveVector(x, y, facing, kp=None)` | 场地坐标系向量移动 (x/y: m/s) + 航向闭环 | 无 |
 | `FieldTurn(angle)` | 原地转向到场地绝对角度 | 无 |
 | `stop()` | 停止所有电机 | 无 |
 

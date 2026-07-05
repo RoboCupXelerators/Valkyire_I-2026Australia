@@ -242,11 +242,9 @@ python my_first_strategy.py
 ```python
 # 球的位置（相对于机器人）
 ball = UnitedPosition.RobotBallPos()      # 返回 [x, y] cm
-angle = UnitedPosition.RobotBallAngle()   # 返回角度（度）
-dist = UnitedPosition.RobotBallDistance() # 返回距离（cm）
 
 # 机器人的位置（在场地上的绝对位置）
-pos = UnitedPosition.FieldRobotPos()      # 返回 [x, y, yaw]
+pose = UnitedPosition.FieldRobotPose()    # 返回 [x, y, yaw]
 
 # 球的位置（在场地上的绝对位置）
 ball_field = UnitedPosition.FieldBallPos() # 返回 [x, y]

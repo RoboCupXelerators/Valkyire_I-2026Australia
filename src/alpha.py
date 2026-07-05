@@ -5,7 +5,7 @@ alpha.py - 几何特征驱动的策略实验沙盒 v5.1
 核心设计原则：
   1. 以 R-B-G angle（Robot-Ball-Goal 角度）为核心判别特征
   2. 多模式状态机：STRIKING / LATERAL_DRIBBLE / INTERCEPT / RECOVER / POSITIONING
-  3. 不修改基础组件（LunaPre.py, chassis.py, peripheral）
+  3. 不修改基础组件（LunaPre facade, chassis, peripheral）
   4. 几何特征层用于后续 MLP 训练标签
   5. 纯 Python，无 numpy 等外部依赖
 

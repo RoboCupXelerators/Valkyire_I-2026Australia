@@ -2,7 +2,7 @@
 
 状态: Draft v1  
 日期: 2026-05-18  
-适用范围: `Software/src/mlp`、`Software/src/LunaPre.py`、`Software/src/Vision.py`、`SoccerSimulatorForXels`
+适用范围: `Software/src/mlp`、`Software/src/LunaPre/`、`Software/src/vision_utils/`、`SoccerSimulatorForXels`
 
 ## 1. 目标定义
 
@@ -79,9 +79,7 @@
 目前 `LunaPre.Positions` 已经暴露了高价值接口:
 
 - `RobotBallPos`
-- `RobotBallAngle`
-- `RobotBallDistance`
-- `FieldRobotPos`
+- `FieldRobotPose`
 - `FieldBallPos`
 - `DirectDistance`
 - `RobotChassisPos`
@@ -171,7 +169,7 @@ reward / critic / teacher / regression tests / debug UI
 
 | 类别 | 字段 | 来源 | 备注 |
 |---|---|---|---|
-| 自身状态 | `self_x, self_y, self_yaw` | `FieldRobotPos` | 场地坐标 |
+| 自身状态 | `self_x, self_y, self_yaw` | `FieldRobotPose` | 场地坐标 |
 | 自身状态 | `self_vx, self_vy, self_wz` | `IL / chassis / estimator` | 若真实侧暂不稳定，可先降级为可选 |
 | 球观测 | `ball_rel_x, ball_rel_y` | `RobotBallPos` | 不可见时使用哨兵或 mask |
 | 球观测 | `ball_visible` | 由 `RobotBallPos` 推导 | 非真值 |
@@ -743,4 +741,3 @@ SET_DOMAIN_RANDOMIZATION {json payload}
 - `RobotState` 仍然可用，`StateEncoder.encode()` 自动检测输入类型
 - `legacy_action` 输出模式仍然可用，旧训练脚本无需立即全部迁移
 - 新的训练和部署代码应优先使用 `DeployObservationV1` + `decision_packet`
-

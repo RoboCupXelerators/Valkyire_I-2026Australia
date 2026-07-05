@@ -64,7 +64,7 @@ class MatchController:
         for i in [1, 2, 3, 4]:
             # 模拟获取机器人位姿
             try:
-                pose = UnitedPosition.FieldRobotPos()
+                pose = UnitedPosition.FieldRobotPose()
                 poses[i] = pose
             except:
                 poses[i] = None
@@ -94,7 +94,7 @@ class MatchController:
     def _build_observation(self, robot_id: int, attack_dir: int) -> object:
         """构建 Teacher 所需的观察数据"""
         try:
-            pose = UnitedPosition.FieldRobotPos()
+            pose = UnitedPosition.FieldRobotPose()
             if not pose or len(pose) < 3:
                 return None
             

@@ -86,7 +86,7 @@ def get_observation_from_simulator() -> DeployObservationV1:
     
     try:
         # 自身位姿
-        pos = UnitedPosition.FieldRobotPos()
+        pos = UnitedPosition.FieldRobotPose()
         if pos and len(pos) >= 3:
             obs.self_x = float(pos[0])
             obs.self_y = float(pos[1])

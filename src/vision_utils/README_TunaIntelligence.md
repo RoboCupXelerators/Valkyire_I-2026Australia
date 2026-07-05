@@ -10,7 +10,7 @@
 - `self.ChassisQueue`: put `[[cam, cx, bottom_y, w, h, conf] * 4]`
 - `self.BallQueue`: put `[[cam, cx, bottom_y, w, h, conf] * 4]`
 
-这样 `src/Vision.py` 不需要改动即可读取结果。
+这样 `src/vision_utils/Vision.py` 不需要改动即可读取结果。
 
 > Hybrid high-rate vision planning lives in
 > [`README_HybridVision_TODO.md`](README_HybridVision_TODO.md).

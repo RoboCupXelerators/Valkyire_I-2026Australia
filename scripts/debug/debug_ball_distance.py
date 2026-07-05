@@ -40,7 +40,7 @@ def main():
     try:
         while True:
             # 获取机器人位置
-            robot_pos = UnitedPosition.FieldRobotPos()
+            robot_pos = UnitedPosition.FieldRobotPose()
             robot_ball = UnitedPosition.RobotBallPos()
             field_ball = UnitedPosition.FieldBallPos()
             
