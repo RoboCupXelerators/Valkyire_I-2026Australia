@@ -4,25 +4,25 @@ from ReasonData import logger
 import time, threading
 
 from .motion_backend import MotionBackend
-from .robot_state_sync import RobotStateSync
 
 
 class Car:
-    def __init__(self,SetMotorFunc,GetYaw=None,permission=None,MotorEncoder=None, *, auto_start_state_sync=False):
+    def __init__(self, SetMotorFunc, GetYaw=None, permission=None, motor_encoder=None):
         self.SetMotorFunc = SetMotorFunc
         self.GetYaw = GetYaw
         if permission is None:
             self.Permission = lambda: True
         else:
             self.Permission = permission
-        self.MotorEncoder = MotorEncoder
-        self.Kp = 3
-        self.KpW = 1
+        self.MotorEncoder = motor_encoder
+        self.Kp = 1.0
+        self.KpW = 2.0
         self.cfg = Settings
         self.speedCache = [0,0,0,0]
         self._motion_backend = MotionBackend(self.cfg)
         import simple_pid
-        self.Yaw_PID = simple_pid.PID(2.3, 0.08, 0.05, setpoint=0,output_limits=(-100,100),auto_mode=True)
+        max_wz = self._max_physical_wz_degps()
+        self.Yaw_PID = simple_pid.PID(2.3, 0.08, 0.05, setpoint=0,output_limits=(-max_wz, max_wz),auto_mode=True)
         # Always use the unified project logger (ReasonData.logger)
         # to avoid AttributeError when FullLog=False.
         self.logger = logger
@@ -31,22 +31,6 @@ class Car:
         self._last_vy = 0
         self._last_wz = 0
         self._motor_output_hooks = []
-
-        self._state_sync = RobotStateSync(self)
-        if auto_start_state_sync:
-            self.start_state_update()
-
-    def start_state_update(self):
-        """显式启动 robot_state 旁路同步。"""
-        return self._state_sync.start()
-
-    def stop_state_update(self):
-        """停止 robot_state 旁路同步。"""
-        return self._state_sync.stop()
-
-    def _start_state_update_thread(self):
-        """Legacy alias for explicit state sync startup."""
-        return self.start_state_update()
 
     def add_motor_output_hook(self, hook):
         if hook not in self._motor_output_hooks:
@@ -72,6 +56,9 @@ class Car:
 
     def _motion_str(self, name, default):
         return self._motion_backend._motion_str(name, default)
+
+    def _chassis_float(self, name, default):
+        return self._motion_backend._chassis_float(name, default)
 
     @staticmethod
     def _clamp(value, lower, upper):
@@ -107,6 +94,25 @@ class Car:
 
     def _allocate_wheel_mix(self, planar, turn, speed_z):
         return self._motion_backend.allocate_wheel_mix(planar, turn, speed_z)
+
+    def _wheel_radius_m(self):
+        return max(1e-6, self._chassis_float("WheelRadiusM", 0.029))
+
+    def _robot_radius_m(self):
+        return max(1e-6, self._chassis_float("RobotRadiusM", 0.09))
+
+    def _rpm_per_mps(self):
+        return 60.0 / (2.0 * math.pi * self._wheel_radius_m())
+
+    def _rpm_per_radps(self):
+        return self._robot_radius_m() * self._rpm_per_mps()
+
+    def _rpm_per_degps(self):
+        return self._rpm_per_radps() * math.pi / 180.0
+
+    def _max_physical_wz_degps(self):
+        max_rpm = abs(self._chassis_float("MaxWheelRPM", 500))
+        return max_rpm / self._rpm_per_degps()
 
     def SetMotor(self,speedCache:list[int,int,int,int], immediate=False):
         if self.Permission():
@@ -144,27 +150,35 @@ class Car:
     def Compass(self):
         return self.GetYaw()
 
-    def RobotMoveVector(self,SpeedX,SpeedY,SpeedZ):
-        '''
-        a vector movement (SpeedX,SpeedY,SpeedZ) without YawCorrect
-        '''
+    def RobotMoveVector(self, SpeedX, SpeedY, SpeedZ):
+        """机器人坐标系速度控制。
+
+        Args:
+            SpeedX: 前进速度，单位 m/s。
+            SpeedY: 左移速度，单位 m/s。
+            SpeedZ: 逆时针角速度，单位 deg/s。
+
+        电机输出单位为 RPM，四轮顺序为 LF/LB/RB/RF。正 RPM 表示单轮默认顺时针。
+        """
         # 缓存速度用于记录
         SpeedX, SpeedY, SpeedZ = self._filter_chassis_command(SpeedX, SpeedY, SpeedZ)
         self._last_vx = SpeedX
         self._last_vy = SpeedY
         self._last_wz = SpeedZ
 
+        rpm_per_mps = self._rpm_per_mps()
+        rpm_per_degps = self._rpm_per_degps()
         planar = [
-            SpeedX*self.Kp - SpeedY*self.Kp,
-            SpeedX*self.Kp + SpeedY*self.Kp,
-            SpeedX*self.Kp + SpeedY*self.Kp,
-            SpeedX*self.Kp - SpeedY*self.Kp,
+            (SpeedX - SpeedY) * rpm_per_mps,
+            (SpeedX + SpeedY) * rpm_per_mps,
+            (SpeedX + SpeedY) * rpm_per_mps,
+            (SpeedX - SpeedY) * rpm_per_mps,
         ]
         turn = [
-            -SpeedZ*self.KpW,
-            -SpeedZ*self.KpW,
-            SpeedZ*self.KpW,
-            SpeedZ*self.KpW,
+            -SpeedZ * rpm_per_degps,
+            -SpeedZ * rpm_per_degps,
+            SpeedZ * rpm_per_degps,
+            SpeedZ * rpm_per_degps,
         ]
         output = self._allocate_wheel_mix(planar, turn, SpeedZ)
         self.SetMotor(output)
@@ -174,8 +188,8 @@ class Car:
         angle movement (Angle,Speed) without YawCorrect
         '''
         rad = math.radians(Angle)
-        SpeedX = int(math.sin(rad) * Speed)
-        SpeedY = int(math.cos(rad) * Speed)
+        SpeedX = math.sin(rad) * Speed
+        SpeedY = math.cos(rad) * Speed
         self.RobotMoveVector(SpeedY,SpeedX,0)
 
     def FieldMoveAngle(self,FacingAngle,MovingAngle,Speed,Kp:float|None = None):
@@ -184,14 +198,19 @@ class Car:
         '''
         Yaw = self.GetYaw()
         rad = math.radians((MovingAngle-Yaw+FacingAngle))
-        SpeedX = int(math.cos(rad) * Speed)
-        SpeedY = int(math.sin(rad) * Speed)
+        SpeedX = math.cos(rad) * Speed
+        SpeedY = math.sin(rad) * Speed
         self.FieldMoveVector(SpeedX,SpeedY,FacingAngle,Kp)
 
     def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None,KpW:float|None = None):
-        '''
-        vector movement (SpeedX,SpeedY,AngleZ˚,Angle_Gain) with YawCorrect
-        '''
+        """场地坐标系速度控制。
+
+        Args:
+            SpeedX: 场地 X 方向速度，单位 m/s。
+            SpeedY: 场地 Y 方向速度，单位 m/s。
+            FacingAngle: 目标朝向，单位 deg。
+            KpW: 朝向误差增益，单位 1/s；输出角速度为 deg/s。
+        """
         Yaw = self.GetYaw()
         # TODO change facing
         # FacingAngle = 360 - FacingAngle
@@ -220,10 +239,10 @@ class Car:
         self.RobotMoveVector(WheelX, WheelY, SpeedZ)
 
     def RobotXMove(self,Angle,Speed):
-        self.RobotMoveVector(90,Angle,Speed)
+        self.RobotMoveAngle(Angle, Speed)
 
     def RobotYMove(self,Angle,Speed,Kp=None):
-        self.RobotMoveVector(0,Angle,Speed,Kp)
+        self.RobotMoveAngle(Angle, Speed, Kp)
 
     def FieldTurn(self,Angle):
         if self.GetYaw is None:

@@ -113,13 +113,13 @@ class SkillExecutor:
         """Resolve target yaw according to face_mode."""
         if packet.face_mode == FaceMode.FACE_KEEP:
             try:
-                return float(UnitedPosition.FieldRobotPos()[2])
+                return float(UnitedPosition.FieldRobotPose()[2])
             except Exception:
                 return float(packet.target_yaw)
 
         if packet.face_mode == FaceMode.FACE_TARGET:
             try:
-                current = UnitedPosition.FieldRobotPos()
+                current = UnitedPosition.FieldRobotPose()
                 return float(UnitedPosition.Pos2Angle(current, [packet.target_x, packet.target_y]))
             except Exception:
                 return float(packet.target_yaw)
@@ -127,7 +127,7 @@ class SkillExecutor:
         if packet.face_mode == FaceMode.FACE_BALL:
             try:
                 ball = UnitedPosition.FieldBallPos()
-                current = UnitedPosition.FieldRobotPos()
+                current = UnitedPosition.FieldRobotPose()
                 if isinstance(ball, list) and len(ball) >= 2 and ball not in ([0xFFF, 0xFFF], [0xDDD, 0xDDD]):
                     return float(UnitedPosition.Pos2Angle(current, ball))
             except Exception:

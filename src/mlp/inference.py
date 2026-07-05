@@ -458,7 +458,7 @@ class MLPController:
         # 检查边界（如果有位置信息）
         try:
             from LunaPre import UnitedPosition
-            pos = UnitedPosition.FieldRobotPos()
+            pos = UnitedPosition.FieldRobotPose()
             if pos != [0xfff, 0xfff, 0xfff]:
                 x, y = pos[0], pos[1]
                 half_length = self.config.field_length / 2.0 - self.config.safe_margin

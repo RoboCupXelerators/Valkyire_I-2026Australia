@@ -84,45 +84,16 @@ class Preference:
             "Long": 260,            # 长边长度 (cm)
             "Home": [-70, 0, 0],    # 默认回位点
         },
+        "Chassis": {
+            "WheelRadiusM": 0.029,  # 轮子半径，单位 m
+            "RobotRadiusM": 0.09,   # 机器人中心到轮子的半径，单位 m
+            "MaxWheelRPM": 500,     # 电机命令单位 RPM，正方向为单轮顺时针
+        },
         "Motion": {
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
-            "CatchBBoxSize": 90,    # 近距离视觉框大于该值时辅助判断持球
-            "CatchXTol": 1.5,       # 持球判定前向容差，需与 Unity dribbler 窗口一致
-            "CatchYTol": 2.0,       # 持球判定横向容差
-            "CatchBBoxXMargin": 1.5,  # bbox 持球判定允许的前向余量
-            "CatchBBoxYTol": 2,     # bbox 持球判定允许的横向误差
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
-            "MaxSpeed": 500,        # 最大速度值
-            "NormalizeWheelOutput": True,
-            "EnableTractionControl": True,
-            "TractionPlanarAccelLimit": 950.0,
-            "TractionAngularAccelLimit": 1100.0,
-            "TractionDtMax": 0.08,
-            "EnableWheelSlewLimit": True,
-            "TractionWheelSlewRate": 1800.0,
-            "EnableCoupledWheelAllocator": True,
-            "WheelAllocatorSaturationMode": "preserve_twist",
-            "EnableTurnTranslationDerate": True,
-            "TurnTranslationScaleWz": 120.0,
-            "TurnTranslationMinScale": 0.6,
-            "Move2PathPointTimeoutS": 12.0,
-            "LockBallSlipMaxAngle": 82,
-            "LockBallSlipAcquireKpX": 4.2,
-            "LockBallSlipAcquireKpY": 3.1,
-            "LockBallSlipAcquireKpW": 1.7,
-            "LockBallSlipAcquireMaxX": 135,
-            "LockBallSlipAcquireMaxY": 105,
-            "LockBallSlipAcquireMaxW": 175,
-            "LockBallSlipPidKpX": 3.6,
-            "LockBallSlipPidKpY": 2.6,
-            "LockBallSlipPidKpW": 1.1,
-            "LockBallSlipPidMaxX": 135,
-            "LockBallSlipPidMaxY": 95,
-            "LockBallSlipPidMaxW": 85,
-            "LockBallSlipLostHoldSeconds": 0.18,
-            "LockBallSlipDribblePower": 0.75,
             "RestrictedArea": {
-                # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPos，不依赖雷达原始距离。
+                # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
                 "XLimit": 90.0,
                 "YLimit": 70.0,
                 "GoalBoxWidth": 25.0,
@@ -131,47 +102,6 @@ class Preference:
                 "RecoveryClearance": 16.0,
                 "RecoveryExtra": 3.0
             },
-            "Pos2PosPID": {
-                "Enabled": True,
-                "Kp": 1.1,
-                "Ki": 0.0,
-                "Kd": 0.08,
-                "OutputLimit": 340,
-                "SampleTime": 0.02,
-                "ResetFrames": 300,
-                "ArrivalScale": 0.8,
-                "MinSpeedGain": 0.25,
-                "MaxSpeedGain": 4.5
-            },
-        },
-        "Network": {
-            "Type": "Slave",        # Master / Slave
-            "Method": "WIFI",       # WIFI / BLE
-            "SelfIP": "192.168.1.x",
-            "RemoteIP": "192.168.1.x",
-            "Port": 20001,
-            "SSID": "MisakaNetwork",
-            "Password": "MisakaNetwork20001/",
-        },
-        "Sim": {
-            "UnityIP": "127.0.0.1",
-            "RobotId": 1,
-            # 多机器人端口映射: CmdPort = PortBase + (RobotId-1) * PortStride
-            "PortBase": 20001,
-            "PortStride": 10,
-            "MultiRobotMode": "per_port",  # per_port / hub
-            "SceneControlPort": 20100,
-            # 运动参数缩放
-            "WheelToV": 0.0029321531433504737,
-            "WheelToWz": 0.02,
-            "YawOffsetDeg": 0.0,
-            "KickStrength": 1.0,
-            "DribbleScale": 3.0,
-            "MoveScale": 1.0,
-            # Lightweight SIM vision disturbance. Keep only two knobs:
-            # intensity 0..1 and deterministic seed.
-            "VisionNoiseLevel": 0.0,
-            "VisionNoiseSeed": 0,
         },
         "Debug": {
             "FullLog": False,
@@ -208,13 +138,23 @@ class Preference:
 
     def _needs_migration(self):
         """检查是否需要从旧配置迁移"""
+        def has_extra_key(default, current):
+            if not isinstance(default, dict) or not isinstance(current, dict):
+                return False
+            for key, value in current.items():
+                if key not in default:
+                    return True
+                if has_extra_key(default[key], value):
+                    return True
+            return False
+
         for section in self.DEFAULT_CONFIG:
             if section not in self.cfg:
                 return True
             for key in self.DEFAULT_CONFIG[section]:
                 if key not in self.cfg.get(section, {}):
                     return True
-        return False
+        return has_extra_key(self.DEFAULT_CONFIG, self.cfg)
 
     def _migrate_config(self):
         """迁移旧配置到新格式"""
@@ -232,6 +172,8 @@ class Preference:
 
         def merge_existing(dst, src):
             for key, value in src.items():
+                if key not in dst:
+                    continue
                 if isinstance(value, dict) and isinstance(dst.get(key), dict):
                     merge_existing(dst[key], value)
                 else:
@@ -261,21 +203,7 @@ class Preference:
             # ExpectedVals -> Motion
             ("ExpectedVals", "CatchVal"): ("Motion", "CatchVal"),
             ("ExpectedVals", "ErrorRange"): ("Motion", "ErrorRange"),
-            ("ExpectedVals", "MaxSpeedValue"): ("Motion", "MaxSpeed"),
-            # WIFI -> Network
-            ("WIFI", "SelfIP"): ("Network", "SelfIP"),
-            ("WIFI", "RemoteIP"): ("Network", "RemoteIP"),
-            ("WIFI", "Port"): ("Network", "Port"),
-            ("WIFI", "SSID"): ("Network", "SSID"),
-            ("WIFI", "PWD"): ("Network", "Password"),
-            # Transimission -> Network
-            ("Transimission", "Type"): ("Network", "Type"),
-            ("Transimission", "Method"): ("Network", "Method"),
-            # Sim (部分迁移)
-            ("Sim", "CmdPortBase"): ("Sim", "PortBase"),
-            ("Sim", "KickStrength"): ("Sim", "KickStrength"),
-            ("Sim", "DribbleStrengthScale"): ("Sim", "DribbleScale"),
-            ("Sim", "PlanarMoveSpeedScale"): ("Sim", "MoveScale"),
+            ("ExpectedVals", "MaxSpeedValue"): ("Chassis", "MaxWheelRPM"),
         }
 
         for (old_sec, old_key), new_path in migrations.items():
@@ -423,7 +351,7 @@ class _CompatExpectedVals:
     @property
     def ErrorRange(self): return self._s.Motion.ErrorRange
     @property
-    def MaxSpeedValue(self): return self._s.Motion.MaxSpeed
+    def MaxSpeedValue(self): return self._s.Chassis.MaxWheelRPM
     @property
     def MaxWarnCount(self): return 3
 
@@ -457,48 +385,52 @@ class _CompatTransimission:
 
 
 class _CompatSim:
-    """向后兼容层：Sim新属性"""
+    """向后兼容层：旧代码仍可读 Settings.Sim，但默认值由 XeleratorSimBits 管理。"""
     def __init__(self, settings):
         self._s = settings
 
+    def _get(self, key, default):
+        raw_sim = getattr(self._s._raw, "Sim", None)
+        return getattr(raw_sim, key, default)
+
     @property
-    def UnityIP(self): return self._s.Sim.UnityIP
+    def UnityIP(self): return self._get("UnityIP", "127.0.0.1")
     @property
-    def RobotId(self): return self._s.Sim.RobotId
+    def RobotId(self): return self._get("RobotId", getattr(self._s.RoboInfo, "number", 1))
     @property
-    def CmdPortBase(self): return self._s.Sim.PortBase
+    def CmdPortBase(self): return self._get("CmdPortBase", self._get("PortBase", 20001))
     @property
-    def StatusPortBase(self): return self._s.Sim.PortBase + 1
+    def StatusPortBase(self): return self._get("StatusPortBase", self.CmdPortBase + 1)
     @property
-    def PortStride(self): return self._s.Sim.PortStride
+    def PortStride(self): return self._get("PortStride", 10)
     @property
-    def MultiRobotMode(self): return self._s.Sim.MultiRobotMode
+    def MultiRobotMode(self): return self._get("MultiRobotMode", "per_port")
     @property
-    def SceneControlPort(self): return self._s.Sim.SceneControlPort
+    def SceneControlPort(self): return self._get("SceneControlPort", 20100)
     @property
-    def CmdPort(self): return self._s.Sim.PortBase
+    def CmdPort(self): return self._get("CmdPort", self.CmdPortBase)
     @property
-    def StatusPort(self): return self._s.Sim.PortBase + 1
+    def StatusPort(self): return self._get("StatusPort", self.StatusPortBase)
     @property
-    def TwistFromWheels(self): return True
+    def TwistFromWheels(self): return self._get("TwistFromWheels", True)
     @property
-    def WheelToV(self): return self._s.Sim.WheelToV
+    def WheelToV(self): return self._get("WheelToV", 0.0029321531433504737)
     @property
-    def WheelToWz(self): return self._s.Sim.WheelToWz
+    def WheelToWz(self): return self._get("WheelToWz", 0.02)
     @property
-    def YawOffsetDeg(self): return self._s.Sim.YawOffsetDeg
+    def YawOffsetDeg(self): return self._get("YawOffsetDeg", 0.0)
     @property
-    def YawZeroAtStart(self): return False
+    def YawZeroAtStart(self): return self._get("YawZeroAtStart", False)
     @property
-    def KickStrength(self): return self._s.Sim.KickStrength
+    def KickStrength(self): return self._get("KickStrength", 1.0)
     @property
-    def DribbleStrengthScale(self): return self._s.Sim.DribbleScale
+    def DribbleStrengthScale(self): return self._get("DribbleStrengthScale", self._get("DribbleScale", 3.0))
     @property
-    def PlanarMoveSpeedScale(self): return self._s.Sim.MoveScale
+    def PlanarMoveSpeedScale(self): return self._get("PlanarMoveSpeedScale", self._get("MoveScale", 1.0))
     @property
-    def VisionNoiseLevel(self): return getattr(self._s.Sim, "VisionNoiseLevel", 0.0)
+    def VisionNoiseLevel(self): return self._get("VisionNoiseLevel", 0.0)
     @property
-    def VisionNoiseSeed(self): return getattr(self._s.Sim, "VisionNoiseSeed", 0)
+    def VisionNoiseSeed(self): return self._get("VisionNoiseSeed", 0)
     @property
     def UnityToCm(self): return 100.0
     @property
@@ -548,11 +480,22 @@ class SettingsProxy:
     @property
     def Field(self): return self._raw.Field
     @property
+    def Chassis(self): return self._raw.Chassis
+    @property
     def Motion(self): return self._raw.Motion
     @property
-    def Network(self): return self._raw.Network
+    def Network(self):
+        return getattr(self._raw, "Network", ConfigSection({
+            "Type": "Slave",
+            "Method": "WIFI",
+            "SelfIP": "192.168.1.x",
+            "RemoteIP": "192.168.1.x",
+            "Port": 20001,
+            "SSID": "MisakaNetwork",
+            "Password": "MisakaNetwork20001/",
+        }))
     @property
-    def Sim(self): return self._raw.Sim
+    def Sim(self): return getattr(self._raw, "Sim", self._sim_compat)
     @property
     def Debug(self): return self._raw.Debug
     # 向后兼容别名

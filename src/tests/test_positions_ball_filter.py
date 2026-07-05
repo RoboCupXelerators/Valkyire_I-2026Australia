@@ -19,17 +19,17 @@ def test_robot_ball_pos_rejects_unphysical_vision_ball(monkeypatch):
 
     monkeypatch.setattr(positions, "StartVision", lambda: None)
     monkeypatch.setattr(runtime, "vision", None)
-    monkeypatch.setattr(runtime, "get_runtime_ball_pos", lambda: None)
-    monkeypatch.setattr(runtime, "runtime_ball_state_is_authoritative", lambda: False)
 
     assert positions.RobotBallPos() == [0xFFF, 0xFFF]
 
 
-def test_robot_ball_pos_preserves_authoritative_sim_ball(monkeypatch):
+def test_robot_ball_pos_preserves_vision_sentinel(monkeypatch):
     positions = Positions()
-    sim_ball = [-5044.88, -4808.92]
 
-    monkeypatch.setattr(runtime, "get_runtime_ball_pos", lambda: sim_ball)
-    monkeypatch.setattr(runtime, "runtime_ball_state_is_authoritative", lambda: True)
+    class FakeVision:
+        def get_ball_pos(self):
+            return [0xDDD, 0xDDD]
 
-    assert positions.RobotBallPos() == sim_ball
+    monkeypatch.setattr(runtime, "vision", FakeVision())
+
+    assert positions.RobotBallPos() == [0xDDD, 0xDDD]

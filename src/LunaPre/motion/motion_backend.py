@@ -23,6 +23,12 @@ class MotionBackend:
         except Exception:
             return float(default)
 
+    def _chassis_float(self, name, default):
+        try:
+            return float(getattr(self.cfg.Chassis, name, default))
+        except Exception:
+            return float(default)
+
     def _motion_str(self, name, default):
         try:
             return str(getattr(self.cfg.Motion, name, default))
@@ -60,7 +66,7 @@ class MotionBackend:
         self._last_motor_t = time.monotonic()
 
     def clamp_motor_vector(self, values):
-        max_speed = abs(self._motion_float("MaxSpeed", 500))
+        max_speed = abs(self._chassis_float("MaxWheelRPM", 500))
         if max_speed <= 0:
             return [0.0, 0.0, 0.0, 0.0]
 
@@ -112,7 +118,7 @@ class MotionBackend:
         dx = target_x - self._filtered_vx
         dy = target_y - self._filtered_vy
         delta_norm = math.hypot(dx, dy)
-        max_planar_delta = max(0.0, self._motion_float("TractionPlanarAccelLimit", 600.0)) * dt
+        max_planar_delta = max(0.0, self._motion_float("TractionPlanarAccelLimit", 3.0)) * dt
         if delta_norm > max_planar_delta > 0.0:
             scale = max_planar_delta / delta_norm
             dx *= scale
@@ -120,7 +126,7 @@ class MotionBackend:
         self._filtered_vx += dx
         self._filtered_vy += dy
 
-        max_w_delta = max(0.0, self._motion_float("TractionAngularAccelLimit", 900.0)) * dt
+        max_w_delta = max(0.0, self._motion_float("TractionAngularAccelLimit", 450.0)) * dt
         self._filtered_wz = self.slew_value(self._filtered_wz, float(speed_z), max_w_delta)
         return self._filtered_vx, self._filtered_vy, self._filtered_wz
 
@@ -156,7 +162,7 @@ class MotionBackend:
         if not self._motion_bool("EnableCoupledWheelAllocator", True):
             return [p + t for p, t in zip(planar, turn)]
 
-        max_speed = abs(self._motion_float("MaxSpeed", 500))
+        max_speed = abs(self._chassis_float("MaxWheelRPM", 500))
         if max_speed <= 0:
             return [0.0, 0.0, 0.0, 0.0]
 

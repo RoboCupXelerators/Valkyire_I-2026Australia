@@ -65,15 +65,15 @@ STALLED_SHOT_MIN_PROGRESS = 24.0
 STALLED_SHOT_ALIGNMENT_DEG = 35.0
 
 # 运动参数
-STRIKE_SPEED_GAIN = 1.6
-LATERAL_SPEED_GAIN = 1.4
+STRIKE_SPEED_GAIN = 0.0146
+LATERAL_SPEED_GAIN = 0.0128
 INTERCEPT_SPEED_GAIN = 1.4
 RECOVER_SPEED_GAIN = 1.6
 POSITIONING_SPEED_GAIN = 1.0
 CARRY_DRIBBLE_POWER = 0.72
 SECURE_DRIBBLE_POWER = 0.82
 APPROACH_DRIBBLE_POWER = 0.35
-MAX_FIELD_SPEED = 72.0
+MAX_FIELD_SPEED = 0.66
 
 # 场地参数
 FIELD_LONG = 260.0
@@ -109,15 +109,15 @@ STABILITY_SPEED_FACTOR = 0.6
 POSSESSION_GRACE_S = 0.22
 POSSESSION_GRACE_DIST = 28.0
 POSSESSION_SETTLE_S = 0.45
-SETTLE_CARRY_SPEED = 24.0
+SETTLE_CARRY_SPEED = 0.22
 LATERAL_TARGET_Y = 12.0
 LATERAL_CARRY_Y_LIMIT = 42.0
 BLOCKING_ENEMY_FORWARD_CM = 55.0
 BLOCKING_ENEMY_LATERAL_CM = 35.0
 BLOCKING_ENEMY_DODGE_CM = 34.0
-BLOCKING_ENEMY_FORWARD_CAP_CM = 28.0
-BLOCKING_EDGE_FORWARD_CAP_CM = 36.0
-BLOCKING_ENEMY_MIN_LATERAL_CM = 32.0
+BLOCKING_ENEMY_FORWARD_CAP_CM = 0.25
+BLOCKING_EDGE_FORWARD_CAP_CM = 0.33
+BLOCKING_ENEMY_MIN_LATERAL_CM = 0.29
 
 # v5: 站位参数
 POSITIONING_DEFENSE_X = -40.0
@@ -176,7 +176,7 @@ class AlphaFeatures:
 
     @staticmethod
     def get_features(attack_dir: int = 1) -> Optional[Dict[str, Any]]:
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
         if not pose or len(pose) < 3:
             return None
 
@@ -402,14 +402,6 @@ class AlphaStrategy:
         if self._last_dribble == power: return
         peripheral.Dribble(power)
         self._last_dribble = power
-        # LockBallSlip caches its last Dribble() command. Alpha sometimes
-        # releases the dribbler directly before handing acquisition back to
-        # LockBallSlip; keep that cache truthful so LockBallSlip will re-enable
-        # the dribbler instead of silently assuming it is still on.
-        try:
-            lockball._lockball_dribble_state = power if power else False
-        except Exception:
-            pass
 
     def get_mode_name(self, mode: int = None) -> str:
         if mode is None: mode = self.current_mode
@@ -651,7 +643,7 @@ class AlphaStrategy:
             self._sub_state = "settle_carry"
             self._set_dribble(SECURE_DRIBBLE_POWER)
             speed_x = self.attack_dir * SETTLE_CARRY_SPEED
-            speed_y = _clamp(-f['robot_pos'][1] * 0.25, -12.0, 12.0)
+            speed_y = _clamp(-f['robot_pos'][1] * 0.0023, -0.11, 0.11)
             chassis.FieldMoveVector(speed_x, speed_y, f['robot_yaw'], KpW=0.35)
             return
 
@@ -710,8 +702,8 @@ class AlphaStrategy:
                 target_y = _clamp(f['robot_pos'][1] * 0.45, -LATERAL_CARRY_Y_LIMIT, LATERAL_CARRY_Y_LIMIT)
             else:
                 target_y = LATERAL_TARGET_Y if f['robot_pos'][1] <= 0 else -LATERAL_TARGET_Y
-            speed_x = self.attack_dir * 12.0
-            speed_y = _clamp((target_y - f['robot_pos'][1]) * LATERAL_SPEED_GAIN, -24.0, 24.0)
+            speed_x = self.attack_dir * 0.11
+            speed_y = _clamp((target_y - f['robot_pos'][1]) * LATERAL_SPEED_GAIN, -0.22, 0.22)
 
         elif self._lateral_phase < 80:
             # 阶段2：斜向推进
@@ -726,7 +718,7 @@ class AlphaStrategy:
             self._sub_state = "lateral_check"
             self._lateral_phase = 0
             if f['rbg_angle'] >= RBG_ANGLE_STRIKE_THRESHOLD:
-                speed_x, speed_y = self.attack_dir * 20.0, 0.0
+                speed_x, speed_y = self.attack_dir * 0.18, 0.0
             else:
                 target_x = self.attack_dir * min(abs(f['robot_pos'][0]) + 15.0, FIELD_LONG / 2.0 - 20.0)
                 target_y = f['robot_pos'][1] * 0.7
@@ -844,7 +836,7 @@ class AlphaStrategy:
     def _execute_avoid_wall(self, f: Dict[str, Any]) -> None:
         self.state = "avoid_wall"
         self._set_dribble(False)
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
         if pose and len(pose) >= 3:
             try:
                 safe_target = UnitedPosition.ProjectSafePose(list(pose))
@@ -898,8 +890,8 @@ class AlphaStrategy:
         self.state = "stuck_escape"
         self._set_dribble(False)
 
-        speed_x = -self.attack_dir * 20.0
-        speed_y = self._escape_direction * 40.0
+        speed_x = -self.attack_dir * 0.18
+        speed_y = self._escape_direction * 0.36
         goal_yaw = f.get('robot_yaw', 0) if f else 0
         chassis.FieldMoveVector(speed_x, speed_y, goal_yaw)
 

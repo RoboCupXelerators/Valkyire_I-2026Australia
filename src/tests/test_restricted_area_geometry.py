@@ -17,6 +17,15 @@ def test_safe_pose_needs_no_projection():
     assert not UnitedPosition.IsPoseInRestrictedArea([0, 0, 0])
 
 
+def test_point_in_shape_accepts_rectangle_diagonal_points():
+    rect = [[70, 30], [120, 90]]
+
+    assert UnitedPosition.PointInShape([80, 40], rect)
+    assert UnitedPosition.PointInShape([70, 60], rect)
+    assert not UnitedPosition.PointInShape([60, 40], rect)
+    assert UnitedPosition.PointInShape([80, 40], list(reversed(rect)))
+
+
 def test_boundary_pose_projects_inside_coordinate_limits():
     target = UnitedPosition.ProjectSafePose([110, 80, 30])
 

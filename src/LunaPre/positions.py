@@ -1,4 +1,8 @@
-"""Position, localization, vision, and Pos2Pos facade for LunaPre."""
+"""Position, localization, vision, and Pos2Pos facade for LunaPre.
+
+TODO: Split vision subprocess/UDP startup and lidar recovery helpers out of
+this facade. Positions should stay focused on semantic position/ball APIs.
+"""
 
 from __future__ import annotations
 
@@ -17,15 +21,25 @@ import simple_pid
 from ReasonData import logger, Settings
 
 from . import runtime
+from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
 
 cfg = runtime.cfg
+
+POS2POS_KP = 0.018
+POS2POS_KI = 0.00005
+POS2POS_KD = 0.0008
+POS2POS_OUTPUT_LIMIT_MPS = 1.10
+POS2POS_MIN_SPEED_MPS = 0.08
+POS2POS_ARRIVAL_SCALE = 0.5
+ROBOT_BALL_MAX_DISTANCE_CM = 240.0
+ROBOT_BALL_MAX_ABS_X_CM = 260.0
+ROBOT_BALL_MAX_ABS_Y_CM = 220.0
 
 class Positions:
     def __init__(self):
         # Values for Setup Position System
-        self.LidarPos = [0xfff,0xfff,0xfff]  # legacy name
-        self.ballPos = [0xfff,0xfff]         # legacy name
-        self.BallDistance = 0xfff            # legacy name
+        self.LidarPos = [0xfff,0xfff,0xfff]
+        self.ballPos = [0xfff,0xfff]
         # Values for log system
         self.WarnedLidarCount = 0
         # Values for Adjust the scale of Position System
@@ -43,65 +57,31 @@ class Positions:
         self.get_vision_data_process: threading.Thread | None = None
         self._vision_started = False
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
-        self._pos2pos_cfg = self._load_pos2pos_config()
-        self.ResetFlag = 0
+        self._pos2pos_record_enabled = bool(getattr(cfg.Debug, "RecordPos2Pos", False))
+        self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
         self._vision_enabled = runtime.default_vision_enabled()
 
-    def _load_pos2pos_config(self) -> dict:
-        motion_cfg = getattr(cfg, "Motion", None)
-        pid_cfg = getattr(motion_cfg, "Pos2PosPID", None)
-        return {
-            "enabled": bool(getattr(pid_cfg, "Enabled", getattr(cfg.Debug, "Beta", True))),
-            "kp": float(getattr(pid_cfg, "Kp", 1.8)),
-            "ki": float(getattr(pid_cfg, "Ki", 0.03)),
-            "kd": float(getattr(pid_cfg, "Kd", 0.08)),
-            "output_limit": float(getattr(pid_cfg, "OutputLimit", 220)),
-            "sample_time": float(getattr(pid_cfg, "SampleTime", 0.02)),
-            "reset_frames": int(getattr(pid_cfg, "ResetFrames", 300)),
-            "arrival_scale": float(getattr(pid_cfg, "ArrivalScale", 0.5)),
-            "min_speed_gain": float(getattr(pid_cfg, "MinSpeedGain", 1.0)),
-            "max_speed_gain": float(getattr(pid_cfg, "MaxSpeedGain", 6.0)),
-            "record_enabled": bool(getattr(cfg.Debug, "RecordPos2Pos", False)),
-            "record_dir": str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos")),
-        }
-
     def _build_pos2pos_pid(self):
-        limit = abs(float(self._pos2pos_cfg["output_limit"]))
         return simple_pid.PID(
-            self._pos2pos_cfg["kp"],
-            self._pos2pos_cfg["ki"],
-            self._pos2pos_cfg["kd"],
+            POS2POS_KP,
+            POS2POS_KI,
+            POS2POS_KD,
             setpoint=0,
-            output_limits=(-limit, limit),
-            sample_time=max(0.0, float(self._pos2pos_cfg["sample_time"])),
+            output_limits=(-POS2POS_OUTPUT_LIMIT_MPS, POS2POS_OUTPUT_LIMIT_MPS),
+            sample_time=0,
             auto_mode=True,
         )
 
-    def RefreshPos2PosPID(self):
-        """从配置重新加载 Pos2Pos PID，便于真实车现场调参。"""
-        self._pos2pos_cfg = self._load_pos2pos_config()
-        self.Position_X_PID = self._build_pos2pos_pid()
-        self.Position_Y_PID = self._build_pos2pos_pid()
-        self.ResetFlag = 0
-        logger.info(
-            "Pos2Pos PID refreshed: kp={:.3f} ki={:.3f} kd={:.3f} limit={:.1f} sample_time={:.3f} enabled={}",
-            self._pos2pos_cfg["kp"],
-            self._pos2pos_cfg["ki"],
-            self._pos2pos_cfg["kd"],
-            self._pos2pos_cfg["output_limit"],
-            self._pos2pos_cfg["sample_time"],
-            self._pos2pos_cfg["enabled"],
-        )
+    def _reset_pos2pos_pid(self):
+        self.Position_X_PID.reset()
+        self.Position_Y_PID.reset()
 
     def _resolve_speed_gain(self, speed_gain: int | float | None) -> float:
         if speed_gain is None:
             return 1.0
-        gain = float(speed_gain)
-        gain = max(self._pos2pos_cfg["min_speed_gain"], gain)
-        gain = min(self._pos2pos_cfg["max_speed_gain"], gain)
-        return gain
+        return clamp(float(speed_gain), 0.2, 6.0)
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -209,10 +189,7 @@ class Positions:
         # Simulator fast-path
         v = getattr(runtime, "vision", None)
         if v is not None:
-            try:
-                return v.get_vision_data()
-            except Exception:
-                return {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
+            return v.get_vision_data()
 
         # ensure vision thread is running
         self.StartVision()
@@ -221,30 +198,25 @@ class Positions:
     def _get_ball_pos(self):
         v = getattr(runtime, "vision", None)
         if v is not None:
-            try:
-                return v.get_ball_pos()
-            except Exception:
-                return [0, 0]
+            return v.get_ball_pos()
 
         self.StartVision()
         return self.vision_data["ball_pos"]
 
     def _robot_ball_out_of_bounds(self, ball_pos) -> bool:
-        try:
-            if not ball_pos or len(ball_pos) < 2:
-                return True
-            bx = float(ball_pos[0])
-            by = float(ball_pos[1])
-        except Exception:
-            return True
+        # Vision can occasionally output physically impossible coordinates while
+        # losing the ball. This is only a sanity filter; malformed ball_pos should
+        # raise immediately instead of being silently repaired here.
+        bx = float(ball_pos[0])
+        by = float(ball_pos[1])
         if not math.isfinite(bx) or not math.isfinite(by):
             return True
 
-        motion_cfg = getattr(cfg, "Motion", None)
-        max_dist = float(getattr(motion_cfg, "RobotBallMaxDistance", 240.0))
-        max_x = float(getattr(motion_cfg, "RobotBallMaxAbsX", 260.0))
-        max_y = float(getattr(motion_cfg, "RobotBallMaxAbsY", 220.0))
-        return abs(bx) > max_x or abs(by) > max_y or math.hypot(bx, by) > max_dist
+        return (
+            abs(bx) > ROBOT_BALL_MAX_ABS_X_CM
+            or abs(by) > ROBOT_BALL_MAX_ABS_Y_CM
+            or math.hypot(bx, by) > ROBOT_BALL_MAX_DISTANCE_CM
+        )
     
     def _get_chassis_pos(self):
         v = getattr(runtime, "vision", None)
@@ -279,7 +251,7 @@ class Positions:
         '''
         iAimX = AimPos[0]
         iAimY = AimPos[1]
-        iLocX, iLocY = self.FieldRobotPosition()
+        iLocX, iLocY, _ = self.FieldRobotPose()
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         try:
@@ -312,6 +284,17 @@ class Positions:
             x, y = point
         except:
             x, y, w = point
+        if len(polygon) == 2:
+            x1, y1 = polygon[0][0], polygon[0][1]
+            x2, y2 = polygon[1][0], polygon[1][1]
+            left, right = min(x1, x2), max(x1, x2)
+            bottom, top = min(y1, y2), max(y1, y2)
+            polygon = [
+                [left, bottom],
+                [right, bottom],
+                [right, top],
+                [left, top],
+            ]
         inside = False
 
         n = len(polygon)
@@ -381,50 +364,25 @@ class Positions:
             `0xfff` stand for `NoBallFounded`
             `0xddd` stand for `CatchBall`
         '''
-        try:
-            runtime_ball_pos = runtime.get_runtime_ball_pos()
-            if runtime_ball_pos is not None:
-                self.ballPos = runtime_ball_pos
-            else:
-                # 20251017 already changed X,Y dimension
-                self.ballPos = self._get_ball_pos()
-        except Exception:
-            self.ballPos = self._get_ball_pos()
-        if self.ballPos == [0xDDD, 0xDDD] or self.ballPos == [0xFFF, 0xFFF]:
+        # 20251017 already changed X,Y dimension.
+        # Ball semantics belong to the active vision provider. Runtime only wires
+        # providers together; it should not bypass vision with a second Bits path.
+        self.ballPos = self._get_ball_pos()
+        if self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
             self.ballPosOut = self.ballPos
-        # elif self.ballPos == [0,0] or abs(self.ballPos[0]) > 95 or abs(self.ballPos[1]) > 150:
-        elif self.ballPos == [0,0]:
-            self.ballPosOut = [0xfff,0xfff]
-        elif not runtime.runtime_ball_state_is_authoritative() and self._robot_ball_out_of_bounds(self.ballPos):
-            self.ballPosOut = [0xfff,0xfff]
-        elif runtime.runtime_ball_state_is_authoritative():
-            # Some runtime providers already encode possession state, so the
-            # legacy vision geometry heuristic should not override it here.
-            self.ballPosOut = self.ballPos
+        elif self.ballPos == [0, 0]:
+            self.ballPosOut = BALL_NOT_FOUND
+        elif self._robot_ball_out_of_bounds(self.ballPos):
+            self.ballPosOut = BALL_NOT_FOUND
         else:
-            catch_val = getattr(cfg.Motion, "CatchVal", [8.5, 0])
-            catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
-            catch_y = catch_val[1] if len(catch_val) > 1 else 0
-            error_range = getattr(cfg.Motion, "ErrorRange", 10)
-            x_tol = getattr(cfg.Motion, "CatchXTol", error_range / 20)
-            y_tol = getattr(cfg.Motion, "CatchYTol", error_range / 5)
-            bbox_caught = False
-            try:
-                ball_debug = self.vision_data.get("ball_debug") if isinstance(self.vision_data, dict) else None
-                bbox = ball_debug.get("bbox") if isinstance(ball_debug, dict) else None
-                bbox_size = max(float(bbox[0]), float(bbox[1])) if bbox and len(bbox) >= 2 else 0.0
-                bbox_caught = (
-                    bbox_size >= getattr(cfg.Motion, "CatchBBoxSize", 90)
-                    and 0 <= self.ballPos[0] <= catch_x + getattr(cfg.Motion, "CatchBBoxXMargin", 4)
-                    and abs(self.ballPos[1] - catch_y) <= getattr(cfg.Motion, "CatchBBoxYTol", 5)
-                )
-            except Exception:
-                bbox_caught = False
+            catch_x, catch_y = cfg.Motion.CatchVal
+            x_tol = cfg.Motion.ErrorRange / 20
+            y_tol = cfg.Motion.ErrorRange / 5
             if (
                 abs(self.ballPos[1] - catch_y) <= y_tol
                 and round(abs(self.ballPos[0] - catch_x), 0) <= x_tol
-            ) or bbox_caught:
-                self.ballPosOut = [0xddd,0xddd]
+            ):
+                self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos
         if Settings.Debug.FullLog:
@@ -444,9 +402,9 @@ class Positions:
 
         if ball_pos is None:
             ball_pos = self.RobotBallPos()
-        if ball_pos == [0xFFF, 0xFFF]:
+        if ball_pos == BALL_NOT_FOUND:
             return "lost"
-        if ball_pos == [0xDDD, 0xDDD]:
+        if ball_pos == BALL_HELD:
             return "held"
         return "free"
 
@@ -487,11 +445,9 @@ class Positions:
                 logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
-    def FieldRobotPos(self, lower: bool | None = False):
+    def FieldRobotPose(self, lower: bool | None = False):
         '''
         `非阻塞函数`
-
-        Legacy alias for ``FieldRobotPose()``.
 
         获取[机器人几何中心]相对于[场地几何中心]的姿态 [x_forward,y_left,yaw]
 
@@ -503,18 +459,10 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
-        # Simulator fast-path: if runtime.Bits can provide pose, use it.
-        try:
-            if hasattr(runtime.Bits, "GetPose") and callable(getattr(runtime.Bits, "GetPose")):
-                x, y, yaw = runtime.Bits.GetPose()
-                # keep same semantics: [x_forward, y_left, yaw_deg]
-                # IMPORTANT: runtime.Bits.GetPose() already returns field-center based coordinates (cm)
-                # after applying Unity origin shift. Do NOT add extra offsets here, otherwise
-                # strategy logic (RestrictedArea/CheckPoints/etc.) will be inconsistent.
-                self.LidarPos = [round(x, 2), round(y, 2), float(yaw)]
-                return self.LidarPos
-        except Exception:
-            pass
+        pose = runtime.get_field_pose()
+        if pose is not None:
+            self.LidarPos = pose
+            return self.LidarPos
 
         _distance = self.DirectDistance()
         if _distance == [0xfff,0xfff,0xfff,0xfff]:
@@ -537,36 +485,7 @@ class Positions:
         self.LidarPos = [Y/10,X/10,runtime.compass()]
         logger.info("[Field] Robot Pose: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
-        try:
-            if runtime.Odometer:# if use odometer datas
-                # TODO finish lower Positions
-                pass
-        except:
-            pass
         return self.LidarPos
-
-    def FieldRobotPose(self, lower: bool | None = False):
-        """Return robot field-frame pose ``[x_forward, y_left, yaw]``.
-
-        Use **Pose** when yaw is included. ``FieldRobotPos()`` is kept for
-        compatibility and returns the same value.
-        """
-
-        try:
-            return self.FieldRobotPos(lower)
-        except TypeError:
-            return self.FieldRobotPos()
-
-    def FieldRobotPosition(self, lower: bool | None = False):
-        """Return robot field-frame position ``[x_forward, y_left]``.
-
-        Use **Position** only for coordinates without heading.
-        """
-
-        pose = self.FieldRobotPose(lower)
-        if pose == [0xfff, 0xfff, 0xfff] or len(pose) < 2:
-            return [0xfff, 0xfff]
-        return [pose[0], pose[1]]
 
     # Documented API: Robot_Chassis_Pos (robot frame)
     def RobotChassisPos(self):
@@ -638,68 +557,6 @@ class Positions:
         return OutputDistanceList
     
     # ********* UPPER FUNCTIONS ********
-    def RobotBallAngle(self):
-        # TODO 20260503 This method is to be tested.
-        '''
-        `非阻塞函数`
-
-        获取[球]相对于[机器几何中心]的角度
-
-        retrun a relative angle of the ball
-        ### Returns:
-            ballangle: int | relative ball angle
-        '''
-        ballX, ballY = self._get_ball_pos()
-        try:
-            relBallAngle = int(math.degrees(math.atan2(ballY,ballX)))
-        except ZeroDivisionError:
-            relBallAngle = 0
-        return relBallAngle
-    
-    def FieldBallAngle(self):
-        # TODO 20260503 This method is to be tested.
-        '''
-        `非阻塞函数`
-
-        获取[球]相对于[场地几何中心]的角度
-
-        retrun a absolute angle of the ball
-        #### Returns:
-            BallAngle: int | absolute ball angle
-        '''
-        self.BallAngle = (self.RobotBallAngle() + runtime.compass())%360
-        return self.BallAngle
-
-    def RobotBallDistance(self):
-        # TODO 20260503 This method is to be tested.
-        '''
-        `非阻塞函数`
-
-        获取[球]相对于[机器几何中心]的距离
-
-        Get the [Absolute] Distance from Robot to Ball
-        #### Returns:
-            BallDistance: int | absolute Distance from Robot to Ball
-
-        #### Note:
-            `0xfff` stand for `NoBall`
-            `0xddd` stand for `CatchBall`
-        '''
-        ball_pos = self.RobotBallPos()
-        BallX, BallY = ball_pos
-        ball_state = self.BallState(ball_pos)
-        if ball_state == "lost":
-            self.BallDistance = 0xfff
-        elif ball_state == "held":
-            self.BallDistance = 0xddd
-        else:
-            # RobotBallPos is *relative* to robot center in robot frame (cm), so distance
-            # is just the norm of that vector (do NOT mix with field pose).
-            self.BallDistance = math.sqrt((BallX) ** 2 + (BallY) ** 2)
-        if self.FullLog:
-            logger.debug("[RobotFrame] Ball Distance: %s" % self.BallDistance)
-        return self.BallDistance
-
     def FieldBallPos(self):
         # TODO 20260503 This method is to be tested.
         '''
@@ -758,72 +615,110 @@ class Positions:
                 ChassisAngleList.append(0)
         return ChassisAngleList
 
-    @staticmethod
-    def _angle_error_deg(current: float, target: float) -> float:
-        """Signed shortest yaw error in degrees."""
+    def Pos2Pos(self, AimPos: list, speed_gain: int | float | None = None) -> bool:
+        """非阻塞到点控制。
 
-        return (float(target) - float(current) + 180.0) % 360.0 - 180.0
-
-    def Pos2Pos(self, AimPos: list, speed_gain: int | None = None) -> bool:
-        '''
-        `非阻塞函数`
-
-        ### Args:
-            iFacingAngle 移动时面对的方向 0~360
-            lAimPos 目标坐标位置 如[0,0] 距离越近速度越小
-        ### Returns:
-            True 到达目标值
-            False 未到达目标值
-        '''
-        iLocX, iLocY, iLocZ = self.FieldRobotPose()
-        if (iLocX,iLocY,iLocZ) == (0xfff,0xfff,0xfff):
+        AimPos 为 [x_cm, y_cm, yaw_deg]。每次调用只发一帧速度：
+        距离没到就平移并朝向目标 yaw；位置到了但角度没到就原地转向。
+        """
+        loc_x, loc_y, loc_yaw = self.FieldRobotPose()
+        if [loc_x, loc_y, loc_yaw] == [0xfff, 0xfff, 0xfff]:
             runtime.chassis.stop()
             runtime.Morse("No Position Data!")
             return False
-        iAimX,iAimY,iAimZ = AimPos
-        iAimZ = float(iAimZ) % 360.0
-        iErrorX = (iAimX) - (iLocX)
-        iErrorY = (iAimY) - (iLocY)
-        iErrorZ = self._angle_error_deg(iLocZ, iAimZ)
-        pid_enabled = bool(self._pos2pos_cfg.get("enabled", getattr(Settings.Debug, "Beta", True)))
-        if pid_enabled:
-            if self.ResetFlag > self._pos2pos_cfg["reset_frames"]:
-                self.Position_X_PID.reset()
-                self.Position_Y_PID.reset()
-                self.ResetFlag = 0
-            else:
-                self.ResetFlag += 1
-            self.Position_X_PID.setpoint = iAimX
-            self.Position_Y_PID.setpoint = iAimY
-            iDeltaX = self.Position_X_PID(iLocX)
-            iDeltaY = self.Position_Y_PID(iLocY)
-            if Settings.Debug.FullLog:
-                logger.debug(f"PID setpoints: X={self.Position_X_PID.setpoint}, Y={self.Position_Y_PID.setpoint}")
-                logger.debug(f"PID output: iDeltaX={iDeltaX}, iDeltaY={iDeltaY}")
-        else:
-            iDeltaX = iErrorX
-            iDeltaY = iErrorY
-        iErrorRange = Settings.Motion.ErrorRange
-        iArrivalRange = max(1.0, float(iErrorRange) * float(self._pos2pos_cfg["arrival_scale"]))
-        resolved_speed_gain = self._resolve_speed_gain(speed_gain)
-        iMovedAngle = (int(math.degrees(math.atan2(iErrorY,iErrorX))))%360
-        if iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and abs(iErrorRange) > abs(iErrorZ):
-            runtime.chassis.stop()
-            self.ResetFlag = 0
-            self.Position_X_PID.reset()
-            self.Position_Y_PID.reset()
-            return True
-        elif iArrivalRange > abs(iErrorX) and iArrivalRange > abs(iErrorY) and not abs(iErrorRange) > abs(iErrorZ):
-            self.ResetFlag = 0
-            self.Position_X_PID.reset()
-            self.Position_Y_PID.reset()
-            runtime.chassis.FieldTurn(iAimZ)
-            logger.debug("Position reached, adjusting orientation to %s degrees." % iAimZ)
-        else:
-            cmd_x = iDeltaX * resolved_speed_gain
-            cmd_y = iDeltaY * resolved_speed_gain
-            runtime.chassis.FieldMoveVector(cmd_x, cmd_y, iAimZ)
+
+        aim_x, aim_y, aim_yaw = AimPos
+        aim_yaw = float(aim_yaw) % 360.0
+        err_x = float(aim_x) - float(loc_x)
+        err_y = float(aim_y) - float(loc_y)
+        err_yaw = angle_error_deg(loc_yaw, aim_yaw)
+        dist = math.hypot(err_x, err_y)
+        arrival_cm = max(1.0, float(Settings.Motion.ErrorRange) * 0.5)
+
+        if dist <= arrival_cm:
+            if abs(err_yaw) <= float(Settings.Motion.ErrorRange):
+                runtime.chassis.stop()
+                self._reset_pos2pos_pid()
+                return True
+            self._reset_pos2pos_pid()
+            runtime.chassis.FieldTurn(aim_yaw)
             return False
+
+        gain = self._resolve_speed_gain(speed_gain)
+        self.Position_X_PID.setpoint = float(aim_x)
+        self.Position_Y_PID.setpoint = float(aim_y)
+        cmd_x = self.Position_X_PID(float(loc_x)) * gain
+        cmd_y = self.Position_Y_PID(float(loc_y)) * gain
+        cmd_speed = math.hypot(cmd_x, cmd_y)
+        max_speed = clamp(0.35 * gain, 0.20, POS2POS_OUTPUT_LIMIT_MPS)
+        if cmd_speed > max_speed:
+            scale = max_speed / cmd_speed
+            cmd_x *= scale
+            cmd_y *= scale
+        elif cmd_speed < POS2POS_MIN_SPEED_MPS:
+            cmd_x = err_x / dist * POS2POS_MIN_SPEED_MPS
+            cmd_y = err_y / dist * POS2POS_MIN_SPEED_MPS
+        runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
+        return False
+
+    def _path_hits_restricted_area(self, start, target, samples: int = 12) -> bool:
+        if not start or not target or len(start) < 3 or len(target) < 3:
+            return False
+        for idx in range(1, max(2, samples)):
+            t = idx / float(max(2, samples))
+            pose = [
+                float(start[0]) + (float(target[0]) - float(start[0])) * t,
+                float(start[1]) + (float(target[1]) - float(start[1])) * t,
+                float(start[2]) + angle_error_deg(start[2], target[2]) * t,
+            ]
+            if self.IsPoseInRestrictedArea(pose):
+                return True
+        return False
+
+    def _navigate_waypoint(self, start, target):
+        safe_target = self.ProjectSafePose(target)
+        if safe_target is not None:
+            target = safe_target
+        if not self._path_hits_restricted_area(start, target):
+            return target
+
+        params = self._restricted_area_params()
+        y_room = max(0.0, params["y_limit"] - params["recovery_clearance"])
+        y_detour = min(y_room, params["goal_box_y_half"] + params["recovery_clearance"])
+        if y_detour <= params["goal_box_y_half"]:
+            return target
+
+        side = 1.0
+        if abs(float(start[1])) > 1.0:
+            side = 1.0 if float(start[1]) > 0 else -1.0
+        elif abs(float(target[1])) > 1.0:
+            side = 1.0 if float(target[1]) > 0 else -1.0
+
+        candidates = [
+            [float(start[0]), side * y_detour, float(target[2])],
+            [float(target[0]), side * y_detour, float(target[2])],
+            [0.0, side * y_detour, float(target[2])],
+            [float(start[0]), -side * y_detour, float(target[2])],
+            [float(target[0]), -side * y_detour, float(target[2])],
+        ]
+        for waypoint in candidates:
+            if self.ProjectSafePose(waypoint) is None and not self._path_hits_restricted_area(start, waypoint):
+                return waypoint
+        return target
+
+    def Navigate2(self, AimPos: list, speed_gain: int | float | None = None) -> bool:
+        """非阻塞简单导航。
+
+        和 Pos2Pos 的区别：Navigate2 会先检查直线路径是否穿过限制区；
+        如果会穿过，就先给一个绕到限制区上下方的中间点。
+        """
+        start = self.FieldRobotPose()
+        if start == [0xfff, 0xfff, 0xfff]:
+            runtime.chassis.stop()
+            runtime.Morse("No Position Data!")
+            return False
+        waypoint = self._navigate_waypoint(start, AimPos)
+        return self.Pos2Pos(waypoint, speed_gain)
 
     def Move2Path(
         self,
@@ -845,9 +740,7 @@ class Positions:
         if not Posistions:
             return True
 
-        point_timeout = float(timeout_s) if timeout_s is not None else float(
-            getattr(getattr(cfg, "Motion", object()), "Move2PathPointTimeoutS", 12.0)
-        )
+        point_timeout = float(timeout_s) if timeout_s is not None else 12.0
         tick_s = max(0.005, float(tick_s))
 
         for idx, target in enumerate(Posistions):
@@ -894,10 +787,7 @@ class Positions:
         #### Returns:
             RefereeStatus: bool | `True` for unlocked, `False` for locked
         '''
-        try:
-            return runtime.Bits.referee_key
-        except Exception:
-            return False
+        return runtime.get_referee_status()
 
     def _restricted_area_params(self) -> dict:
         """Return coordinate-space safety limits in field centimeters."""
@@ -913,9 +803,7 @@ class Positions:
         clearance = float(getattr(safety_cfg, "Clearance", max(3.0, cfg.Motion.ErrorRange / 2.0)))
         recovery_clearance = float(getattr(safety_cfg, "RecoveryClearance", 0.0))
         if recovery_clearance <= 0.0:
-            pid_cfg = getattr(getattr(cfg, "Motion", None), "Pos2PosPID", None)
-            arrival_scale = float(getattr(pid_cfg, "ArrivalScale", 0.8))
-            arrival_range = float(getattr(cfg.Motion, "ErrorRange", 10.0)) * arrival_scale
+            arrival_range = float(getattr(cfg.Motion, "ErrorRange", 10.0)) * POS2POS_ARRIVAL_SCALE
             recovery_extra = float(getattr(safety_cfg, "RecoveryExtra", 3.0))
             recovery_clearance = clearance + arrival_range + recovery_extra
 
@@ -927,10 +815,6 @@ class Positions:
             "clearance": max(0.0, clearance),
             "recovery_clearance": max(clearance, recovery_clearance),
         }
-
-    @staticmethod
-    def _clamp(value: float, lower: float, upper: float) -> float:
-        return max(lower, min(upper, value))
 
     def ProjectSafePose(self, pose: list | tuple | None):
         """Project an unsafe field pose to the nearest legal coordinate.

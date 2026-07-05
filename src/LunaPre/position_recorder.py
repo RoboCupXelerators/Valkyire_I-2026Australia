@@ -10,6 +10,7 @@ from ReasonData import logger, Settings
 
 from .positions import Positions
 from . import runtime
+from .strategy_tools import angle_error_deg
 
 cfg = runtime.cfg
 
@@ -52,7 +53,7 @@ class RecordingPositions(Positions):
         reached: bool,
         duration_s: float,
     ) -> None:
-        if not self._pos2pos_cfg.get("record_enabled", False):
+        if not self._pos2pos_record_enabled:
             return
 
         try:
@@ -61,7 +62,7 @@ class RecordingPositions(Positions):
             after_x, after_y, after_z = self._normalize_pose(after_pose)
             err_x = aim_x - loc_x
             err_y = aim_y - loc_y
-            err_z = self._angle_error_deg(loc_z, aim_z)
+            err_z = angle_error_deg(loc_z, aim_z)
             record_dir = self._record_dir()
             record_dir.mkdir(parents=True, exist_ok=True)
             session_id = getattr(cfg.Debug, "RecordSessionId", None) or time.strftime("%Y%m%d_%H%M%S", time.localtime())
@@ -98,10 +99,10 @@ class RecordingPositions(Positions):
                     "cmd_x": 0.0,
                     "cmd_y": 0.0,
                     "speed_gain": round(float(speed_gain if speed_gain is not None else 1.0), 4),
-                    "pid_kp": self._pos2pos_cfg["kp"],
-                    "pid_ki": self._pos2pos_cfg["ki"],
-                    "pid_kd": self._pos2pos_cfg["kd"],
-                    "pid_limit": self._pos2pos_cfg["output_limit"],
+                    "pid_kp": getattr(self.Position_X_PID, "Kp", 0.0),
+                    "pid_ki": getattr(self.Position_X_PID, "Ki", 0.0),
+                    "pid_kd": getattr(self.Position_X_PID, "Kd", 0.0),
+                    "pid_limit": getattr(self.Position_X_PID, "output_limits", (0.0, 0.0))[1],
                     "after_x": round(after_x, 4),
                     "after_y": round(after_y, 4),
                     "after_z": round(after_z, 4),
@@ -112,7 +113,7 @@ class RecordingPositions(Positions):
                 logger.debug(f"Pos2Pos record failed: {e}")
 
     def _record_dir(self) -> Path:
-        record_dir = Path(self._pos2pos_cfg["record_dir"]).expanduser()
+        record_dir = Path(self._pos2pos_record_dir).expanduser()
         if not record_dir.is_absolute():
             repo_root = Path(__file__).resolve().parents[2]
             record_dir = repo_root / record_dir

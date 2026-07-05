@@ -10,12 +10,10 @@ v5 fix: avoid_wall caches recovery target and exits on arrival or stuck timeout.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import time
 
 from BasicFuc import lockball
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
-from LunaPre.simple_strategy import choose_defence_cover
 from LunaPre.strategy_tools import (
     BALL_HELD,
     BALL_NOT_FOUND,
@@ -27,25 +25,44 @@ from LunaPre.strategy_tools import (
 )
 
 
+def choose_defence_cover(ball_field, attack_dir: float, field_short: float = 200.0):
+    """Pick the goalie cover point for direct, wall, and sideline shots."""
+
+    if not ball_field or len(ball_field) < 2:
+        return "", 0.0, 0.0
+
+    by = float(ball_field[1])
+    attack_dir = 1.0 if float(attack_dir) >= 0 else -1.0
+    guard_x = -attack_dir * 58.0
+    max_y = min(float(field_short) / 2.0 - 32.0, 58.0)
+
+    if abs(by) >= 45.0:
+        return "cover_sideline_shot", guard_x, clamp(by * 0.85, -max_y, max_y)
+    if abs(by) <= 18.0:
+        return "cover_direct_shot", guard_x, clamp(by * 0.5, -22.0, 22.0)
+    if by > 0.0:
+        return "cover_wall_shot", guard_x, min(max_y, 36.0)
+    return "cover_wall_shot", guard_x, max(-max_y, -36.0)
+
+
 @dataclass(frozen=True)
 class DefenceConfig:
-    loop_dt: float = float(os.environ.get("DEFENCE_DT", "0.03"))
-    log_every_s: float = float(os.environ.get("DEFENCE_LOG_EVERY", "0.7"))
-    guard_x_cm: float = float(os.environ.get("DEFENCE_GUARD_X", "58"))
-    guard_y_cm: float = float(os.environ.get("DEFENCE_GUARD_Y", "0"))
-    intercept_offset_cm: float = float(os.environ.get("DEFENCE_INTERCEPT_OFFSET", "34"))
-    chase_distance_cm: float = float(os.environ.get("DEFENCE_CHASE_DISTANCE", "88"))
-    chase_progress_cm: float = float(os.environ.get("DEFENCE_CHASE_PROGRESS", "10"))
-    chase_retreat_cm: float = float(os.environ.get("DEFENCE_CHASE_RETREAT", "-20"))
-    hold_speed_gain: float = float(os.environ.get("DEFENCE_HOLD_GAIN", "1.25"))
-    intercept_speed_gain: float = float(os.environ.get("DEFENCE_INTERCEPT_GAIN", "2.05"))
-    recovery_speed_gain: float = float(os.environ.get("DEFENCE_BOUNDARY_RECOVERY_GAIN", "1.2"))
-    clear_cooldown_s: float = float(os.environ.get("DEFENCE_CLEAR_COOLDOWN", "0.8"))
-    attack_direction: float = float(os.environ.get("DEFENCE_ATTACK_SIGN", os.environ.get("OFFENCE_ATTACK_SIGN", "0")))
-    # v5: avoid_wall stuck timeout
-    stuck_timeout_s: float = float(os.environ.get("DEFENCE_STUCK_TIMEOUT", "1.5"))
-    stuck_move_cm: float = float(os.environ.get("DEFENCE_STUCK_MOVE", "3.0"))
-    wall_margin_cm: float = float(os.environ.get("DEFENCE_WALL_MARGIN", "30.0"))
+    loop_dt: float = 0.03
+    log_every_s: float = 0.7
+    guard_x_cm: float = 58.0
+    guard_y_cm: float = 0.0
+    intercept_offset_cm: float = 34.0
+    chase_distance_cm: float = 88.0
+    chase_progress_cm: float = 10.0
+    chase_retreat_cm: float = -20.0
+    hold_speed_gain: float = 1.25
+    intercept_speed_gain: float = 2.05
+    recovery_speed_gain: float = 1.2
+    clear_cooldown_s: float = 0.8
+    attack_direction: float = 0.0
+    stuck_timeout_s: float = 1.5
+    stuck_move_cm: float = 3.0
+    wall_margin_cm: float = 30.0
 
 
 class RuleDefenceStrategy:
@@ -86,12 +103,7 @@ class RuleDefenceStrategy:
 
         try:
             bit_mode = str(getattr(Settings.RoboInfo, "Bit", "")).upper()
-            robot_id = int(
-                os.environ.get(
-                    "XEL_ROBOT_ID",
-                    str(getattr(getattr(Settings, "Sim", object()), "RobotId", getattr(Settings.RoboInfo, "number", 1))),
-                )
-            )
+            robot_id = int(getattr(getattr(Settings, "Sim", object()), "RobotId", getattr(Settings.RoboInfo, "number", 1)))
             if bit_mode == "SIM" and robot_id >= 3:
                 return -1.0
         except Exception:
@@ -99,7 +111,7 @@ class RuleDefenceStrategy:
         return 1.0
 
     def step(self) -> None:
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
 
         # 1. Boundary recovery has priority over all ball behavior.
         # Keep the selected recovery target stable until arrival or stuck timeout.
@@ -139,7 +151,7 @@ class RuleDefenceStrategy:
 
         # 3. Visible loose ball: challenge danger, otherwise intercept lane or hold.
         ball_field = UnitedPosition.FieldBallPos()
-        if not valid_pose(pose) or ball_field in (BALL_NOT_FOUND, BALL_HELD):
+        if not valid_pose(pose) or ball_field in [BALL_NOT_FOUND, BALL_HELD]:
             self._hold_home()
             return
 
@@ -147,7 +159,6 @@ class RuleDefenceStrategy:
         ball_progress = self.attack_dir * float(ball_field[0])
         enemies = self._field_enemies()
         contested_ball = self._enemy_near_ball(ball_field, enemies)
-        danger_ball = ball_progress <= self.cfg.chase_retreat_cm
         central_ball = abs(float(ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
         deep_guard = abs(self.cfg.guard_x_cm) >= 68.0
 
@@ -231,7 +242,7 @@ class RuleDefenceStrategy:
         yaw = float(chassis.GetYaw())
         yaw_err = angle_error_deg(yaw, target_yaw)
         if abs(yaw_err) < float(getattr(Settings.Motion, "ErrorRange", 10)):
-            chassis.RobotMoveVector(90, 0, 0)
+            chassis.RobotMoveVector(0.82, 0, 0)
             if time.time() - self._last_clear_ts >= self.cfg.clear_cooldown_s:
                 peripheral.ShootBall()
                 self._last_clear_ts = time.time()

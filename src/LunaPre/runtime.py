@@ -10,14 +10,9 @@
 
 兼容性：为了不一次性炸掉历史代码，旧接口会保留为“别名/包装”。
 
-TODO lower-controller compatibility:
-- Positions should prefer Bits.GetPose() when the lower controller provides
-  fused localization [x, y, yaw].
-- If Bits.GetPose() is absent or invalid, keep falling back to Sensor.Lidar
-  distance parsing through DirectDistance().
-- Pos2Pos remains in the upper controller and should continue using the pose
-  returned by FieldRobotPos(); chassis.py is not part of this compatibility pass.
-- Do not expose this source selection to strategy code.
+Runtime owns hardware/provider selection. Positions consumes runtime-level
+semantic providers such as field pose and vision; it should not reach into
+concrete Bits implementations.
 """
 
 from __future__ import annotations
@@ -49,7 +44,8 @@ Odometer = None
 Morse = None
 referee = None
 vision = None
-_runtime_ball_state_is_authoritative = False
+_field_pose_provider = None
+_referee_status_provider = None
 _runtime_initialized = False
 
 from .sensor import Lidar
@@ -57,34 +53,32 @@ from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 from .motion.recording_chassis import RecordingCar
 
 
-def _start_runtime_state_sync(car: Car) -> None:
-    try:
-        car.start_state_update()
-    except Exception as e:
-        logger.debug(f"Failed to start robot_state sync: {e}")
+def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None):
+    """Build the motion facade from plain callables, not concrete Bits classes."""
+
+    return RecordingCar(
+        set_motor,
+        get_yaw,
+        permission=permission,
+        motor_encoder=motor_encoder,
+    )
 
 
-def get_runtime_ball_pos():
-    """Return ball position from the active runtime provider when available."""
+def get_field_pose():
+    """Return runtime-provided field pose [x_cm, y_cm, yaw_deg], or None."""
 
-    global _runtime_ball_state_is_authoritative
-
-    _runtime_ball_state_is_authoritative = False
-    getter = getattr(Bits, "GetBallPos", None)
-    if not callable(getter):
+    if _field_pose_provider is None:
         return None
-
-    ball_pos = getter()
-    _runtime_ball_state_is_authoritative = _ball_source_preserves_possession_state()
-    return ball_pos
+    x, y, yaw = _field_pose_provider()
+    return [round(float(x), 2), round(float(y), 2), float(yaw)]
 
 
-def runtime_ball_state_is_authoritative() -> bool:
-    return _runtime_ball_state_is_authoritative
+def get_referee_status() -> bool:
+    """Return referee/unlock state without exposing the concrete Bits object."""
 
-
-def _ball_source_preserves_possession_state() -> bool:
-    return str(getattr(cfg.RoboInfo, "Bit", "")).upper() == "SIM"
+    if _referee_status_provider is None:
+        return False
+    return bool(_referee_status_provider())
 
 
 def default_vision_enabled() -> bool:
@@ -103,7 +97,8 @@ def _init_runtime(*, auto_start_lidar: bool = True):
     - IL: IceLoong Bit (比赛机)
     """
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision, _runtime_initialized
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
+    global _field_pose_provider, _referee_status_provider, _runtime_initialized
 
     if _runtime_initialized:
         return
@@ -120,17 +115,20 @@ def _init_runtime(*, auto_start_lidar: bool = True):
                 pass
 
         if str(cfg.RoboInfo.Bit).upper() == "SIM":
-            from utils.XeleratorSimBits import create_runtime
+            from utils.XeleratorSimBits import create_bits_and_lidar
+            from vision_utils.XeleratorVision import XeleratorVision
 
-            Bits, lidar, vision = create_runtime(cfg)
-            chassis = RecordingCar(Bits.SetWheelSpeed, Bits.GetYaw)
-            _start_runtime_state_sync(chassis)
+            Bits, lidar = create_bits_and_lidar(cfg)
+            vision = XeleratorVision(Bits)
+            chassis = _make_chassis(Bits.SetWheelSpeed, Bits.GetYaw)
             compass = Bits.GetYaw
             peripheral = Peripherals(Bits.VirtualPorts)
             key = Key(Bits.GetKey)
             Odometer = None
             referee = None
             Morse = None
+            _field_pose_provider = Bits.GetPose
+            _referee_status_provider = None
             logger.info(
                 f"Simulator Bits loaded: unity={Bits.unity_ip}:{Bits.cmd_port}, "
                 f"status_port={Bits.status_port}, robot_id={Bits.robot_id}"
@@ -144,14 +142,19 @@ def _init_runtime(*, auto_start_lidar: bool = True):
 
             Bits = ArisBit()
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            chassis = RecordingCar(Bits.SetMotor, Bits.GetYaw, Bits.get_motor_encoder)
-            _start_runtime_state_sync(chassis)
+            chassis = _make_chassis(
+                Bits.SetMotor,
+                Bits.GetYaw,
+                motor_encoder=Bits.get_motor_encoder,
+            )
             compass = Bits.GetYaw
             peripheral = Peripherals(Bits.SetIO)
             key = Key(Bits.GetKey)
             Odometer = None
             referee = None
             Morse = None
+            _field_pose_provider = getattr(Bits, "GetPose", None)
+            _referee_status_provider = lambda: bool(getattr(Bits, "referee_key", False))
             logger.info("Arisu Bit loaded.")
             _runtime_initialized = True
             return
@@ -162,13 +165,18 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             Bits = IceLoongBits(port=getattr(cfg.Ports, "IceLoongPort", "/dev/iceloong"))
             lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
             peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
-            chassis = RecordingCar(Bits.SetWheelSpeed, Bits.GetYaw, Bits.GetRefereeUnlockPin)
-            _start_runtime_state_sync(chassis)
+            chassis = _make_chassis(
+                Bits.SetWheelSpeed,
+                Bits.GetYaw,
+                permission=Bits.GetRefereeUnlockPin,
+            )
             compass = Bits.GetYaw
             key = Bits.GetKey
             referee = Bits.GetRefereeUnlockPin
             Morse = Bits.MosePrint
             Odometer = None  # TODO add odometer support
+            _field_pose_provider = getattr(Bits, "GetPose", None)
+            _referee_status_provider = Bits.GetRefereeUnlockPin
             logger.info("IceLoongBits Bit loaded.")
             _runtime_initialized = True
             return

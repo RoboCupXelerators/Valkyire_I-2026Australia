@@ -37,7 +37,7 @@ GOAL_HALF_WIDTH = 24.0
 
 # Lambda 策略参数（比 Alpha 更激进）
 LAMBDA_INTERCEPT_GAIN = 2.0       # 更快的抢球速度
-LAMBDA_CARRY_GAIN = 1.8           # 更快的带球速度
+LAMBDA_CARRY_GAIN = 0.016         # 更快的带球速度，m/s per cm
 LAMBDA_SHOOT_PROGRESS_MIN = 35.0  # 更低的射门门槛
 LAMBDA_SHOOT_YAW_TOL = 25.0       # 更宽的射门角度容差
 LAMBDA_DRIBBLE_POWER = 0.85       # 更强的运球功率
@@ -89,7 +89,7 @@ class LambdaController:
         self._step_count += 1
         
         # 获取传感器数据
-        robot_pos = UnitedPosition.FieldRobotPos()
+        robot_pos = UnitedPosition.FieldRobotPose()
         robot_ball = UnitedPosition.RobotBallPos()
         field_ball = UnitedPosition.FieldBallPos()
         
@@ -190,7 +190,7 @@ class LambdaController:
         speed_y = (target_y - ry) * LAMBDA_CARRY_GAIN
         
         # 限制速度
-        max_speed = 80.0
+        max_speed = 0.73
         speed_mag = math.sqrt(speed_x**2 + speed_y**2)
         if speed_mag > max_speed:
             scale = max_speed / speed_mag
@@ -243,8 +243,8 @@ class LambdaController:
         self._set_dribble(False)
         
         # 快速后退 + 横移
-        speed_x = -self.attack_dir * 30
-        speed_y = self._escape_dir * 50
+        speed_x = -self.attack_dir * 0.27
+        speed_y = self._escape_dir * 0.46
         chassis.FieldMoveVector(speed_x, speed_y, ryaw)
         
         # 检查是否脱困完成
@@ -288,10 +288,6 @@ class LambdaController:
             return
         peripheral.Dribble(power)
         self._last_dribble = power
-        try:
-            lockball._lockball_dribble_state = power if power else False
-        except Exception:
-            pass
     
     def stop(self):
         """停止"""

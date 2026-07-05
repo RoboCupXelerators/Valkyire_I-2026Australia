@@ -1,20 +1,13 @@
+# TODO: Import only the BasicFuc helpers and LunaPre facades this strategy uses.
 from BasicFuc import *
 import math
-import os
 import time
 
 from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop, valid_pose
 
 
-def _env_float(name, default):
-    try:
-        return float(os.environ.get(name, default))
-    except Exception:
-        return float(default)
-
-
-OFFENCE_DT = _env_float("OFFENCE_DT", "0.03")
-ATTACK_DIR = 1 if _env_float("OFFENCE_ATTACK_SIGN", "1") >= 0 else -1
+OFFENCE_DT = 0.03
+ATTACK_DIR = 1
 SEARCH_SPEED_GAIN = 1.6
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
@@ -30,7 +23,7 @@ state = "boot"
 last_decision = {}
 _last_free_ball = None
 _last_free_ball_ts = 0.0
-_drive_intent = {}
+_shot_release_until = 0.0
 _held_since = None
 _last_shot_ts = -999999.0
 
@@ -61,24 +54,18 @@ def _set_decision(**fields):
     return fields
 
 
-def _remember_drive_intent(action: str, duration_s: float = 0.32, **fields) -> None:
-    global _drive_intent
-    _drive_intent = {"action": action, "until": time.monotonic() + duration_s, **fields}
+def _start_shot_release(duration_s: float = 0.18) -> None:
+    global _shot_release_until
+    _shot_release_until = time.monotonic() + duration_s
 
 
-def _active_drive_intent(action: str | None = None):
-    if not _drive_intent:
-        return None
-    if time.monotonic() > float(_drive_intent.get("until", 0.0)):
-        return None
-    if action is not None and _drive_intent.get("action") != action:
-        return None
-    return _drive_intent
+def _shot_release_active() -> bool:
+    return time.monotonic() <= _shot_release_until
 
 
-def _clear_drive_intent() -> None:
-    global _drive_intent
-    _drive_intent = {}
+def _clear_shot_release() -> None:
+    global _shot_release_until
+    _shot_release_until = 0.0
 
 
 def _observe_ball_state(ball) -> None:
@@ -124,19 +111,19 @@ def _fire_now() -> str:
         )
         return "shot_guard_hold"
 
-    _clear_drive_intent()
+    _clear_shot_release()
     peripheral.Dribble(0.85)
     peripheral.ShootBall()
     _last_shot_ts = time.monotonic()
     peripheral.Dribble(False)
     chassis.stop()
-    _remember_drive_intent("shot_release", 0.18)
+    _start_shot_release()
     return "quick_shot"
 
 
 def _shot_release_step() -> str:
     try:
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
     except Exception:
         pose = [0.0, 0.0, 0.0]
 
@@ -144,8 +131,8 @@ def _shot_release_step() -> str:
     pose_y = float(pose[1])
     side = 1.0 if pose_y <= 0.0 else -1.0
     target_yaw = 0.0 if ATTACK_DIR > 0 else 180.0
-    speed_x = -ATTACK_DIR * 18.0
-    speed_y = side * 32.0
+    speed_x = -ATTACK_DIR * 0.16
+    speed_y = side * 0.29
 
     peripheral.Dribble(False)
     chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.7)
@@ -161,8 +148,8 @@ def _shot_release_step() -> str:
 def _carry_own_half(goal_angle, pose) -> str:
     x, y, _ = pose
     progress = ATTACK_DIR * float(x)
-    speed_x = ATTACK_DIR * (62.0 if progress > -35.0 else 54.0)
-    speed_y = clamp(-float(y) * 0.55, -24.0, 24.0)
+    speed_x = ATTACK_DIR * (0.56 if progress > -35.0 else 0.49)
+    speed_y = clamp(-float(y) * 0.005, -0.22, 0.22)
     peripheral.Dribble(0.9)
     chassis.FieldMoveVector(speed_x, speed_y, goal_angle, KpW=0.8)
     _set_decision(
@@ -175,7 +162,7 @@ def _carry_own_half(goal_angle, pose) -> str:
 
 
 def _valid_free_ball(ball) -> bool:
-    if ball in (BALL_NOT_FOUND, BALL_HELD):
+    if ball in [BALL_NOT_FOUND, BALL_HELD]:
         return False
     if not ball or len(ball) < 2:
         return False
@@ -215,7 +202,7 @@ def _direct_chase_ball(ball, *, stale=False) -> str:
 
     if QUICK_CAPTURE_FORWARD_MIN_CM <= bx <= QUICK_CAPTURE_FORWARD_MAX_CM and abs(by) <= QUICK_CAPTURE_LATERAL_CM:
         try:
-            pose = UnitedPosition.FieldRobotPos()
+            pose = UnitedPosition.FieldRobotPose()
             field_long = float(getattr(Settings.Bounds, "Long", 260))
             field_short = float(getattr(Settings.Bounds, "Short", 200))
             if valid_pose(pose) and abs(float(pose[0])) <= field_long * 0.5 + 20.0 and abs(float(pose[1])) <= field_short * 0.5 + 20.0:
@@ -229,9 +216,9 @@ def _direct_chase_ball(ball, *, stale=False) -> str:
             pass
 
         peripheral.Dribble(0.95)
-        speed_x = 28.0
-        speed_y = clamp(by * 1.2, -12.0, 12.0)
-        speed_w = clamp(angle * 0.35, -24.0, 24.0)
+        speed_x = 0.25
+        speed_y = clamp(by * 0.011, -0.11, 0.11)
+        speed_w = clamp(angle * 0.7, -45.0, 45.0)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         _set_decision(
             action="quick_capture",
@@ -262,13 +249,13 @@ def _lock_or_chase_free_ball(ball) -> str:
     bx = float(ball[0])
     by = float(ball[1])
     try:
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
         field_ball = UnitedPosition.FieldBallPos()
         field_long = float(getattr(Settings.Bounds, "Long", 260))
         field_short = float(getattr(Settings.Bounds, "Short", 200))
         field_pose_valid = (
             valid_pose(pose)
-            and field_ball not in (BALL_NOT_FOUND, BALL_HELD)
+            and field_ball not in [BALL_NOT_FOUND, BALL_HELD]
             and len(field_ball) >= 2
             and abs(float(pose[0])) <= field_long * 0.5 + 20.0
             and abs(float(pose[1])) <= field_short * 0.5 + 20.0
@@ -290,12 +277,12 @@ def _lock_or_chase_free_ball(ball) -> str:
             and ATTACK_DIR * float(field_ball[0]) >= 108.0
             and abs(float(field_ball[1])) >= drivable_half_y + 12.0
         ):
-            _clear_drive_intent()
+            _clear_shot_release()
             target_x = ATTACK_DIR * 46.0
             target_y = 0.0
             target_yaw = 0.0 if ATTACK_DIR > 0 else 180.0
-            speed_x = clamp((target_x - float(pose[0])) * 1.2, -46.0, 46.0)
-            speed_y = clamp((target_y - float(pose[1])) * 1.2, -44.0, 44.0)
+            speed_x = clamp((target_x - float(pose[0])) * 0.011, -0.42, 0.42)
+            speed_y = clamp((target_y - float(pose[1])) * 0.011, -0.40, 0.40)
             peripheral.Dribble(False)
             chassis.FieldMoveVector(speed_x, speed_y, target_yaw, KpW=0.65)
             _set_decision(
@@ -323,8 +310,8 @@ def _controlled_ball_step(pose) -> str:
 
     if progress < -45.0 and abs_y >= 58.0:
         recover_angle = UnitedPosition.Local2Angle([ATTACK_DIR * 85.0, 0.0]) % 360
-        speed_x = ATTACK_DIR * 46.0
-        speed_y = clamp(-float(y) * 0.65, -44.0, 44.0)
+        speed_x = ATTACK_DIR * 0.42
+        speed_y = clamp(-float(y) * 0.006, -0.40, 0.40)
         peripheral.Dribble(0.9)
         chassis.FieldMoveVector(speed_x, speed_y, recover_angle, KpW=0.9)
         _set_decision(
@@ -394,8 +381,8 @@ def _controlled_ball_step(pose) -> str:
         )
         return _fire_now()
 
-    speed_x = 65.0 if progress >= 35.0 else 52.0
-    speed_y = clamp(-float(y), -44.0, 44.0)
+    speed_x = 0.59 if progress >= 35.0 else 0.47
+    speed_y = clamp(-float(y) * 0.009, -0.40, 0.40)
     peripheral.Dribble(0.85)
     chassis.FieldMoveVector(speed_x * ATTACK_DIR, speed_y, goal_angle, KpW=0.9)
     _set_decision(
@@ -419,7 +406,7 @@ def OffenceStep():
     _observe_ball_state(ball)
     search_home = _search_home()
 
-    if _active_drive_intent("shot_release"):
+    if _shot_release_active():
         state = _shot_release_step()
         return state
 
@@ -439,7 +426,7 @@ def OffenceStep():
         return state
 
     try:
-        pose = UnitedPosition.FieldRobotPos()
+        pose = UnitedPosition.FieldRobotPose()
     except Exception:
         pose = [0, 0, 0]
     state = _controlled_ball_step(pose)

@@ -41,29 +41,47 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 
-def create_runtime(cfg):
-    """Create simulator Bits, lidar, and vision providers from project config."""
+SIM_DEFAULT_UNITY_IP = "127.0.0.1"
+SIM_DEFAULT_ROBOT_ID = 1
+SIM_DEFAULT_CMD_PORT_BASE = 20001
+SIM_DEFAULT_STATUS_PORT_BASE = 20002
+SIM_DEFAULT_PORT_STRIDE = 10
+SIM_DEFAULT_MULTI_ROBOT_MODE = "per_port"
+SIM_DEFAULT_WHEEL_TO_V = 2.0 * math.pi * 0.029 / 60.0
+SIM_DEFAULT_WHEEL_TO_WZ = 2.0 * math.pi * 0.029 / (60.0 * 0.09)
+SIM_DEFAULT_YAW_OFFSET_DEG = 0.0
+SIM_DEFAULT_YAW_ZERO_AT_START = False
+SIM_DEFAULT_TWIST_FROM_WHEELS = True
+SIM_DEFAULT_KICK_STRENGTH = 1.0
+SIM_DEFAULT_DRIBBLE_SCALE = 3.0
+SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
+SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
+SIM_DEFAULT_VISION_NOISE_SEED = 0
+
+
+def create_bits_and_lidar(cfg):
+    """Create simulator Bits and lidar providers from project config."""
 
     sim_cfg = getattr(cfg, "Sim", None)
-    unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", "127.0.0.1"))
+    unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", SIM_DEFAULT_UNITY_IP))
 
     robot_id = int(
         os.environ.get(
             "XEL_ROBOT_ID",
-            str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", 1))),
+            str(getattr(sim_cfg, "RobotId", getattr(cfg.RoboInfo, "number", SIM_DEFAULT_ROBOT_ID))),
         )
     )
 
-    multi_mode = str(getattr(sim_cfg, "MultiRobotMode", "per_port")).lower()
+    multi_mode = str(getattr(sim_cfg, "MultiRobotMode", SIM_DEFAULT_MULTI_ROBOT_MODE)).lower()
     if multi_mode == "per_port":
-        cmd_base = int(getattr(sim_cfg, "CmdPortBase", 20001))
-        st_base = int(getattr(sim_cfg, "StatusPortBase", 20002))
-        stride = int(getattr(sim_cfg, "PortStride", 10))
+        cmd_base = int(getattr(sim_cfg, "CmdPortBase", SIM_DEFAULT_CMD_PORT_BASE))
+        st_base = int(getattr(sim_cfg, "StatusPortBase", SIM_DEFAULT_STATUS_PORT_BASE))
+        stride = int(getattr(sim_cfg, "PortStride", SIM_DEFAULT_PORT_STRIDE))
         default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
         default_status_port = st_base + (max(robot_id, 1) - 1) * stride
     else:
-        default_cmd_port = int(getattr(sim_cfg, "CmdPort", 20001))
-        default_status_port = int(getattr(sim_cfg, "StatusPort", 20002))
+        default_cmd_port = int(getattr(sim_cfg, "CmdPort", SIM_DEFAULT_CMD_PORT_BASE))
+        default_status_port = int(getattr(sim_cfg, "StatusPort", SIM_DEFAULT_STATUS_PORT_BASE))
 
     cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
     status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
@@ -79,39 +97,42 @@ def create_runtime(cfg):
         auto_start=True,
     )
 
-    from vision_utils.XeleratorVision import XeleratorVision
-
-    vision = XeleratorVision(bits)
-    return bits, lidar, vision
+    return bits, lidar
 
 
 def _apply_sim_env_defaults(cfg, sim_cfg) -> None:
     try:
         sim_twist_from_wheels = bool(
-            getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", True))
+            getattr(sim_cfg, "TwistFromWheels", getattr(cfg.Debug, "SimTwistFromWheels", SIM_DEFAULT_TWIST_FROM_WHEELS))
         )
-        sim_wheel_to_v = float(getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", 0.0029321531433504737)))
-        sim_wheel_to_wz = float(getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", 0.02)))
-        sim_yaw_offset_deg = float(getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", 0.0)))
+        sim_wheel_to_v = float(
+            getattr(sim_cfg, "WheelToV", getattr(cfg.Debug, "SimWheelToV", SIM_DEFAULT_WHEEL_TO_V))
+        )
+        sim_wheel_to_wz = float(
+            getattr(sim_cfg, "WheelToWz", getattr(cfg.Debug, "SimWheelToWz", SIM_DEFAULT_WHEEL_TO_WZ))
+        )
+        sim_yaw_offset_deg = float(
+            getattr(sim_cfg, "YawOffsetDeg", getattr(cfg.Debug, "SimYawOffsetDeg", SIM_DEFAULT_YAW_OFFSET_DEG))
+        )
         sim_yaw_zero_at_start = bool(
-            getattr(sim_cfg, "YawZeroAtStart", getattr(cfg.Debug, "SimYawZeroAtStart", False))
+            getattr(sim_cfg, "YawZeroAtStart", getattr(cfg.Debug, "SimYawZeroAtStart", SIM_DEFAULT_YAW_ZERO_AT_START))
         )
-        sim_kick_strength = float(getattr(sim_cfg, "KickStrength", 1.0))
-        sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", 1.0))
-        sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", 1.0))
-        sim_vision_noise_level = float(getattr(sim_cfg, "VisionNoiseLevel", 0.0))
-        sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", 0))
+        sim_kick_strength = float(getattr(sim_cfg, "KickStrength", SIM_DEFAULT_KICK_STRENGTH))
+        sim_dribble_scale = float(getattr(sim_cfg, "DribbleStrengthScale", SIM_DEFAULT_DRIBBLE_SCALE))
+        sim_planar_move_scale = float(getattr(sim_cfg, "PlanarMoveSpeedScale", SIM_DEFAULT_PLANAR_MOVE_SCALE))
+        sim_vision_noise_level = float(getattr(sim_cfg, "VisionNoiseLevel", SIM_DEFAULT_VISION_NOISE_LEVEL))
+        sim_vision_noise_seed = int(getattr(sim_cfg, "VisionNoiseSeed", SIM_DEFAULT_VISION_NOISE_SEED))
     except Exception:
-        sim_twist_from_wheels = True
-        sim_wheel_to_v = 0.0029321531433504737
-        sim_wheel_to_wz = 0.02
-        sim_yaw_offset_deg = 0.0
-        sim_yaw_zero_at_start = False
-        sim_kick_strength = 1.0
-        sim_dribble_scale = 1.0
-        sim_planar_move_scale = 1.0
-        sim_vision_noise_level = 0.0
-        sim_vision_noise_seed = 0
+        sim_twist_from_wheels = SIM_DEFAULT_TWIST_FROM_WHEELS
+        sim_wheel_to_v = SIM_DEFAULT_WHEEL_TO_V
+        sim_wheel_to_wz = SIM_DEFAULT_WHEEL_TO_WZ
+        sim_yaw_offset_deg = SIM_DEFAULT_YAW_OFFSET_DEG
+        sim_yaw_zero_at_start = SIM_DEFAULT_YAW_ZERO_AT_START
+        sim_kick_strength = SIM_DEFAULT_KICK_STRENGTH
+        sim_dribble_scale = SIM_DEFAULT_DRIBBLE_SCALE
+        sim_planar_move_scale = SIM_DEFAULT_PLANAR_MOVE_SCALE
+        sim_vision_noise_level = SIM_DEFAULT_VISION_NOISE_LEVEL
+        sim_vision_noise_seed = SIM_DEFAULT_VISION_NOISE_SEED
 
     if os.environ.get("XEL_TWIST_FROM_WHEELS") is None:
         os.environ["XEL_TWIST_FROM_WHEELS"] = "1" if sim_twist_from_wheels else "0"
@@ -241,9 +262,9 @@ class XeleratorSimBits:
         self._vy = 0.0
         self._wz = 0.0
         self._w = (0.0, 0.0, 0.0, 0.0)
-        self._kick_strength = float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0"))
+        self._kick_strength = float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)))
         self._kick_strength = max(0.0, self._kick_strength)
-        self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", "1.0"))
+        self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", str(SIM_DEFAULT_DRIBBLE_SCALE)))
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
         self._send_period = 1.0 / float(hz)
@@ -275,10 +296,10 @@ class XeleratorSimBits:
         # Convert wheel-speed commands (strategy code) into twist for Unity controller.
         self._twist_from_wheels = str(os.environ.get("XEL_TWIST_FROM_WHEELS", "1")).lower() not in {"0", "false", "no"}
         # map strategy wheel units to simulator SI
-        self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", "0.0029321531433504737"))
-        self._wheel_to_wz = float(os.environ.get("XEL_WHEEL_TO_WZ", "0.02"))
+        self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", str(SIM_DEFAULT_WHEEL_TO_V)))
+        self._wheel_to_wz = float(os.environ.get("XEL_WHEEL_TO_WZ", str(SIM_DEFAULT_WHEEL_TO_WZ)))
         # Scale planar translation in simulator to reduce overshoot during chase behaviors
-        self._planar_move_scale = float(os.environ.get("XEL_SIM_PLANAR_MOVE_SCALE", "1.0"))
+        self._planar_move_scale = float(os.environ.get("XEL_SIM_PLANAR_MOVE_SCALE", str(SIM_DEFAULT_PLANAR_MOVE_SCALE)))
         self._planar_move_scale = max(0.0, self._planar_move_scale)
 
         self._debug = str(os.environ.get("XEL_DEBUG", "")).lower() in {"1", "true", "yes"}
@@ -290,8 +311,12 @@ class XeleratorSimBits:
         # Two public knobs are intentionally enough:
         #   XEL_SIM_VISION_NOISE_LEVEL: 0..1, where 0 is deterministic truth.
         #   XEL_SIM_VISION_NOISE_SEED: reproducible pseudo-random seed.
-        self._vision_noise_level = self._clamp01_float(os.environ.get("XEL_SIM_VISION_NOISE_LEVEL", "0"))
-        self._vision_noise_seed = int(float(os.environ.get("XEL_SIM_VISION_NOISE_SEED", "0")))
+        self._vision_noise_level = self._clamp01_float(
+            os.environ.get("XEL_SIM_VISION_NOISE_LEVEL", str(SIM_DEFAULT_VISION_NOISE_LEVEL))
+        )
+        self._vision_noise_seed = int(
+            float(os.environ.get("XEL_SIM_VISION_NOISE_SEED", str(SIM_DEFAULT_VISION_NOISE_SEED)))
+        )
         self._vision_rng = None
         if self._vision_noise_level > 0.0:
             import random
@@ -325,8 +350,10 @@ class XeleratorSimBits:
         # Strategy stack assumes a stable field yaw convention. Some prefabs/scenes
         # have a baked rotation or different zero-direction, which can manifest as
         # a constant offset (commonly 45/90 deg).
-        self._yaw_offset_deg = float(os.environ.get("XEL_YAW_OFFSET_DEG", "0"))
-        self._yaw_zero_at_start = str(os.environ.get("XEL_YAW_ZERO_AT_START", "0")).lower() in {"1", "true", "yes"}
+        self._yaw_offset_deg = float(os.environ.get("XEL_YAW_OFFSET_DEG", str(SIM_DEFAULT_YAW_OFFSET_DEG)))
+        self._yaw_zero_at_start = str(
+            os.environ.get("XEL_YAW_ZERO_AT_START", "1" if SIM_DEFAULT_YAW_ZERO_AT_START else "0")
+        ).lower() in {"1", "true", "yes"}
         self._yaw_zero_deg: float | None = None
 
         # Enemy-side robots are already reset in Unity with a 180 degree heading.
@@ -508,7 +535,10 @@ class XeleratorSimBits:
             # Restore the configured kick strength every time a kick is triggered.
             # Do NOT depend on the previous command packet value; peripheral.ShootBall()
             # only toggles the port, it does not continuously stream strength.
-            self._kick_strength = max(0.0, float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0")))
+            self._kick_strength = max(
+                0.0,
+                float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH))),
+            )
         elif int(port) == 4:
             # Dribble strength = config coefficient * command value [0.0, 1.0]
             try:

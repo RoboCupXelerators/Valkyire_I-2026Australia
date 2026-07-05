@@ -15,14 +15,8 @@ from mlp.contracts import (
     IntentId,
     ShootIntent,
 )
-
-
-def _clamp(value: float, lower: float, upper: float) -> float:
-    return max(lower, min(upper, value))
-
-
-def _angle_error_deg(current: float, target: float) -> float:
-    return (float(target) - float(current) + 180.0) % 360.0 - 180.0
+from LunaPre.strategy_tools import angle_error_deg as _angle_error_deg
+from LunaPre.strategy_tools import clamp as _clamp
 
 
 @dataclass(frozen=True)

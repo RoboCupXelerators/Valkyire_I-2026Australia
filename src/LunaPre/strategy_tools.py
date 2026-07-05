@@ -17,6 +17,10 @@ def angle_error_deg(current: float, target: float) -> float:
     return ((float(target) - float(current) + 180.0) % 360.0) - 180.0
 
 
+def nearest_angle(candidates, target: float):
+    return min(candidates, key=lambda angle: abs(angle_error_deg(angle, target)))
+
+
 def distance(p1, p2) -> float:
     dx = float(p1[0]) - float(p2[0])
     dy = float(p1[1]) - float(p2[1])

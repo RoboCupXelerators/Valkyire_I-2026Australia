@@ -3,19 +3,43 @@ from __future__ import annotations
 import time
 
 from LunaPre import UnitedPosition, chassis
+from LunaPre.strategy_tools import angle_error_deg
 
 
 def test_angle_error_uses_shortest_wraparound():
-    assert UnitedPosition._angle_error_deg(330, -30) == 0
-    assert UnitedPosition._angle_error_deg(359, 1) == 2
-    assert UnitedPosition._angle_error_deg(1, 359) == -2
+    assert angle_error_deg(330, -30) == 0
+    assert angle_error_deg(359, 1) == 2
+    assert angle_error_deg(1, 359) == -2
 
 
 def test_pos2pos_arrives_when_negative_target_yaw_matches_wrapped_pose(monkeypatch):
-    monkeypatch.setattr(UnitedPosition, "FieldRobotPos", lambda: [10.0, 20.0, 330.0])
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [10.0, 20.0, 330.0])
     monkeypatch.setattr(chassis, "stop", lambda: None)
 
     assert UnitedPosition.Pos2Pos([10.0, 20.0, -30.0], speed_gain=1.0) is True
+
+
+def test_navigate2_uses_target_when_path_is_clear(monkeypatch):
+    targets_seen = []
+
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [0.0, 0.0, 0.0])
+    monkeypatch.setattr(UnitedPosition, "Pos2Pos", lambda target, speed_gain=None: targets_seen.append(target) or "ok")
+
+    assert UnitedPosition.Navigate2([20.0, 20.0, 90.0], speed_gain=1.0) == "ok"
+    assert targets_seen == [[20.0, 20.0, 90.0]]
+
+
+def test_navigate2_inserts_waypoint_when_straight_path_crosses_goal_box(monkeypatch):
+    targets_seen = []
+
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [80.0, 60.0, 0.0])
+    monkeypatch.setattr(UnitedPosition, "Pos2Pos", lambda target, speed_gain=None: targets_seen.append(target) or False)
+
+    assert UnitedPosition.Navigate2([80.0, -60.0, 0.0], speed_gain=1.0) is False
+    assert targets_seen
+    assert targets_seen[0] != [80.0, -60.0, 0.0]
+    assert abs(targets_seen[0][1]) > 50.0
+    assert UnitedPosition.ProjectSafePose(targets_seen[0]) is None
 
 
 def test_move2path_advances_to_next_point(monkeypatch):

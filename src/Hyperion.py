@@ -65,7 +65,7 @@ def logic_step():
             jump_score]
         logger.info("LockBallSlip executed successfully.")
         if max(scores) == huck_score:
-            if TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[120,0])%360):
+            if TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[120,0])%360,3):
                 peripheral.ShootBall()
         elif max(scores) == uplane_score:
             if lockball.slip():
@@ -96,7 +96,7 @@ def UplaneStep(thershold = [[70,30],[120,90]]):
             peripheral.ShootBall()
     else:
         if TurnTo_with_ball(90*angle_k):
-            chassis.FieldMoveVector(100,0,90*angle_k)
+            chassis.FieldMoveVector(0.91,0,90*angle_k)
         
 
 if __name__ == "__main__":

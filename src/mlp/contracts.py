@@ -153,7 +153,7 @@ class DeployObservationV1:
     参考: MLP_POLICY_ROADMAP.md 4.2 节
     """
     # ==================== 自身状态 ====================
-    # 场地绝对位姿 (来自 FieldRobotPos)
+    # 场地绝对位姿 (来自 FieldRobotPose)
     self_x: float = 0.0          # 场地X坐标 (cm)
     self_y: float = 0.0          # 场地Y坐标 (cm)
     self_yaw: float = 0.0        # 航向角 (deg)
@@ -671,7 +671,7 @@ def observation_from_lunapre() -> DeployObservationV1:
         from LunaPre import UnitedPosition
         
         # 自身位姿
-        pos = UnitedPosition.FieldRobotPos()
+        pos = UnitedPosition.FieldRobotPose()
         if pos:
             obs.self_x = float(pos[0])
             obs.self_y = float(pos[1])

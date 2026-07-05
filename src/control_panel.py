@@ -190,8 +190,8 @@ class ControlPanelApp:
         # 键盘控制状态
         self._control_lock = threading.Lock()
         self._control_enabled = False
-        self._control_speed = 100  # 默认移动速度
-        self._control_turn_speed = 100  # 默认转向速度
+        self._control_speed = 0.5  # 默认移动速度，m/s
+        self._control_turn_speed = 120.0  # 默认转向速度，deg/s
         self._dribble_active = False  # 盘球状态
         self._control_runtime_error = None
         
@@ -354,6 +354,140 @@ class ControlPanelApp:
         self._last_lidar_status = status
         return status
 
+    def _get_positions_facade(self):
+        """Return LunaPre.UnitedPosition without forcing runtime initialization."""
+        try:
+            import LunaPre
+
+            return getattr(LunaPre, "UnitedPosition", None)
+        except Exception:
+            return None
+
+    def _fill_state_from_positions(self, result: dict) -> None:
+        """Use the same semantic position facade consumed by strategies."""
+        positions = self._get_positions_facade()
+        if positions is None:
+            return
+
+        try:
+            pose = positions.FieldRobotPose()
+            if pose and len(pose) >= 3 and list(pose) != [0xFFF, 0xFFF, 0xFFF]:
+                result["robot_x_cm"] = round(float(pose[0]), 2)
+                result["robot_y_cm"] = round(float(pose[1]), 2)
+                result["robot_yaw_deg"] = round(float(pose[2]), 2)
+        except Exception:
+            pass
+
+        try:
+            ball_pos = positions.RobotBallPos()
+            if ball_pos:
+                result["ball_pos_cm"] = ball_pos
+                ball_state = positions.BallState(ball_pos)
+                result["has_ball"] = ball_state == "held"
+        except Exception:
+            pass
+
+        try:
+            chassis_pos = positions.FieldChassisPos()
+            if chassis_pos:
+                result["chassis_list_cm"] = chassis_pos
+        except Exception:
+            pass
+
+        try:
+            goals = positions.RobotGoalsPos()
+            if isinstance(goals, dict):
+                result["blue_goal_pos_cm"] = goals.get("blue_goal")
+                result["yellow_goal_pos_cm"] = goals.get("yellow_goal")
+        except Exception:
+            pass
+
+    def _fill_state_from_runtime_fallback(self, result: dict) -> None:
+        """Fallback for panels started without a usable Positions facade."""
+        try:
+            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
+                chassis, _ = self._get_chassis_and_peripheral()
+                if chassis:
+                    if hasattr(chassis, 'GetPose') and callable(getattr(chassis, 'GetPose')):
+                        try:
+                            xp, yp, yawp = chassis.GetPose()
+                            result["robot_x_cm"] = round(float(xp), 2)
+                            result["robot_y_cm"] = round(float(yp), 2)
+                            result["robot_yaw_deg"] = round(float(yawp), 2)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            yawp = chassis.GetYaw() if hasattr(chassis, 'GetYaw') else None
+                            if yawp is not None:
+                                result["robot_yaw_deg"] = round(float(yawp), 2)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        try:
+            if self.bits is not None and hasattr(self.bits, 'GetYaw') and callable(getattr(self.bits, 'GetYaw')):
+                yawp = self.bits.GetYaw()
+                if yawp is not None:
+                    result["robot_yaw_deg"] = round(float(yawp), 2)
+        except Exception:
+            pass
+
+    def _fill_vision_debug_state(self, result: dict) -> None:
+        """Read vision-only diagnostics that Positions intentionally does not own."""
+        if self.vision is None:
+            return
+
+        for method_name, key in (
+            ("GetBallBBoxes", "ball_bboxes_640"),
+            ("GetChassisBBoxes", "chassis_bboxes_640"),
+            ("GetGoalBBoxes", "goal_bboxes_640"),
+        ):
+            try:
+                method = getattr(self.vision, method_name, None)
+                if callable(method):
+                    value = method()
+                    if value:
+                        result[key] = value
+            except Exception:
+                pass
+
+        try:
+            result["perf"]["preprocess_tf"] = int(getattr(self.vision, 'PreProcessTF', 0))
+            result["perf"]["inference_tf"] = int(getattr(self.vision, 'InferTF', 0))
+            result["perf"]["postprocess_tf"] = int(getattr(self.vision, 'PostProcessTF', 0))
+            result["perf"]["camera_tf"] = int(getattr(self.vision, 'ReadCamTF', 0))
+            for attr, key in (
+                ("PreProcessMs", "preprocess_ms"),
+                ("InferMs", "inference_ms"),
+                ("InferBatchMs", "inference_batch_ms"),
+                ("PostProcessMs", "postprocess_ms"),
+            ):
+                value = getattr(self.vision, attr, None)
+                if value is not None:
+                    value = float(value)
+                    if value > 0:
+                        result["perf"][key] = round(value, 3)
+            result["perf"]["inference_batch_size"] = int(getattr(self.vision, "InferBatchSize", 0) or 0)
+            hybrid_perf_getter = getattr(self.vision, "GetHybridPerf", None)
+            if callable(hybrid_perf_getter):
+                hybrid_perf = hybrid_perf_getter() or {}
+                for key in (
+                    "blob_ms",
+                    "fusion_ms",
+                    "output_hz",
+                    "yolo_hz",
+                    "tracker_hz",
+                    "vision_confidence",
+                    "yolo_backend",
+                    "yolo_error",
+                ):
+                    if key in hybrid_perf:
+                        result["perf"][key] = hybrid_perf[key]
+        except Exception as e:
+            print(f"[ControlPanel] Error getting performance metrics: {e}")
+
     def scan_lidar_usb(self) -> dict:
         """Scan common Linux serial device paths for lidar USB diagnostics."""
         configured_port = None
@@ -451,200 +585,9 @@ class ControlPanelApp:
             },
         }
         
-        # 模拟器环境下优先从 Bits 获取数据
-        if self._is_simulator and self.bits is not None:
-            try:
-                x, y, yaw = self.bits.GetPose()
-                result["robot_x_cm"] = round(x, 2)
-                result["robot_y_cm"] = round(y, 2)
-                result["robot_yaw_deg"] = round(yaw, 2)
-            except Exception:
-                pass
-            
-            try:
-                ball_pos = self.bits.GetBallPos()
-                if ball_pos:
-                    result["ball_pos_cm"] = ball_pos
-            except Exception:
-                pass
-            
-            try:
-                result["has_ball"] = self.bits.HasBall()
-            except Exception:
-                pass
-            
-            try:
-                enemies = self.bits.GetEnemyPos()
-                if enemies:
-                    result["chassis_list_cm"] = enemies
-            except Exception:
-                pass
-        
-        # Try to get robot state from global state module
-        try:
-            from robot_state import get_robot_state
-            robot_state = get_robot_state()
-            # 如果 Bits 没有提供数据，使用 robot_state
-            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
-                result["robot_x_cm"] = robot_state.get("x_cm", 0)
-                result["robot_y_cm"] = robot_state.get("y_cm", 0)
-                result["robot_yaw_deg"] = robot_state.get("yaw_deg", 0)
-                result["has_ball"] = robot_state.get("has_ball", False)
-        except Exception:
-            pass
-
-        # 如果依然未获取位姿，尝试直接从底层 chassis 读取（GetPose 或 GetYaw）
-        try:
-            if result["robot_x_cm"] == 0 and result["robot_y_cm"] == 0:
-                chassis, _ = self._get_chassis_and_peripheral()
-                if chassis:
-                    # 优先使用 GetPose()（返回 x,y,yaw）
-                    if hasattr(chassis, 'GetPose') and callable(getattr(chassis, 'GetPose')):
-                        try:
-                            xp, yp, yawp = chassis.GetPose()
-                            result["robot_x_cm"] = round(float(xp), 2)
-                            result["robot_y_cm"] = round(float(yp), 2)
-                            result["robot_yaw_deg"] = round(float(yawp), 2)
-                        except Exception:
-                            pass
-                    else:
-                        # 回退到 GetYaw()
-                        try:
-                            yawp = chassis.GetYaw() if hasattr(chassis, 'GetYaw') else None
-                            if yawp is not None:
-                                result["robot_yaw_deg"] = float(yawp)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
-
-        # 如果 Bits 有 GetYaw，可以直接显示真实 yaw（真实机器人场景下有效）
-        try:
-            if self.bits is not None and hasattr(self.bits, 'GetYaw') and callable(getattr(self.bits, 'GetYaw')):
-                yawp = self.bits.GetYaw()
-                if yawp is not None:
-                    result["robot_yaw_deg"] = round(float(yawp), 2)
-        except Exception:
-            pass
-
-        # Do not call UnitedPosition.FieldRobotPose() here. It falls back to
-        # DirectDistance(), which sleeps/retries and can stop the chassis when
-        # lidar has no data. The control panel must keep vision responsive even
-        # when lidar USB discovery or scan parsing is broken.
-        
-        # Try to get data from vision module
-        if self.vision is not None:
-            # 模拟器环境使用小写方法名 (XeleratorVision)
-            if self._is_simulator:
-                try:
-                    ball_pos = self.vision.get_ball_pos()
-                    if ball_pos and result["ball_pos_cm"] == [0, 0]:
-                        result["ball_pos_cm"] = ball_pos
-                except Exception:
-                    pass
-                
-                try:
-                    chassis_pos = self.vision.get_chassis_pos()
-                    if chassis_pos and not result["chassis_list_cm"]:
-                        result["chassis_list_cm"] = chassis_pos
-                except Exception:
-                    pass
-                
-                try:
-                    goals = self.vision.get_goals_pos()
-                    if goals:
-                        if goals.get("blue_goal"):
-                            result["blue_goal_pos_cm"] = goals["blue_goal"]
-                        if goals.get("yellow_goal"):
-                            result["yellow_goal_pos_cm"] = goals["yellow_goal"]
-                except Exception:
-                    pass
-            else:
-                # 非模拟器环境使用大写方法名 (UnitedVision)
-                try:
-                    ball_pos = self.vision.GetBallPos()
-                    if ball_pos and result["ball_pos_cm"] == [0, 0]:
-                        result["ball_pos_cm"] = ball_pos
-                except Exception:
-                    pass
-                
-                try:
-                    chassis_pos = self.vision.GetChassisPos()
-                    if chassis_pos:
-                        result["chassis_list_cm"] = chassis_pos
-                except Exception:
-                    pass
-                
-                try:
-                    blue_goal = self.vision.GetBlueGoalPos()
-                    if blue_goal:
-                        result["blue_goal_pos_cm"] = blue_goal
-                except Exception:
-                    pass
-                
-                try:
-                    yellow_goal = self.vision.GetYellowGoalPos()
-                    if yellow_goal:
-                        result["yellow_goal_pos_cm"] = yellow_goal
-                except Exception:
-                    pass
-                
-                try:
-                    ball_bboxes = self.vision.GetBallBBoxes()
-                    if ball_bboxes:
-                        result["ball_bboxes_640"] = ball_bboxes
-                except Exception:
-                    pass
-                
-                try:
-                    chassis_bboxes = self.vision.GetChassisBBoxes()
-                    if chassis_bboxes:
-                        result["chassis_bboxes_640"] = chassis_bboxes
-                except Exception:
-                    pass
-                
-                try:
-                    goal_bboxes = self.vision.GetGoalBBoxes()
-                    if goal_bboxes:
-                        result["goal_bboxes_640"] = goal_bboxes
-                except Exception:
-                    pass
-                
-                # 获取性能指标 - 直接返回帧计数器，前端计算延时
-            try:
-                result["perf"]["preprocess_tf"] = int(getattr(self.vision, 'PreProcessTF', 0))
-                result["perf"]["inference_tf"] = int(getattr(self.vision, 'InferTF', 0))
-                result["perf"]["postprocess_tf"] = int(getattr(self.vision, 'PostProcessTF', 0))
-                result["perf"]["camera_tf"] = int(getattr(self.vision, 'ReadCamTF', 0))
-                for attr, key in (
-                    ("PreProcessMs", "preprocess_ms"),
-                    ("InferMs", "inference_ms"),
-                    ("InferBatchMs", "inference_batch_ms"),
-                    ("PostProcessMs", "postprocess_ms"),
-                ):
-                    value = getattr(self.vision, attr, None)
-                    if value is not None:
-                        value = float(value)
-                        if value > 0:
-                            result["perf"][key] = round(value, 3)
-                result["perf"]["inference_batch_size"] = int(getattr(self.vision, "InferBatchSize", 0) or 0)
-                hybrid_perf_getter = getattr(self.vision, "GetHybridPerf", None)
-                if callable(hybrid_perf_getter):
-                    hybrid_perf = hybrid_perf_getter() or {}
-                    for key in (
-                        "blob_ms",
-                        "fusion_ms",
-                        "output_hz",
-                        "yolo_hz",
-                        "tracker_hz",
-                        "vision_confidence",
-                        "yolo_backend",
-                        "yolo_error",
-                    ):
-                        if key in hybrid_perf:
-                            result["perf"][key] = hybrid_perf[key]
-            except Exception as e:
-                print(f"[ControlPanel] Error getting performance metrics: {e}")
+        self._fill_state_from_positions(result)
+        self._fill_state_from_runtime_fallback(result)
+        self._fill_vision_debug_state(result)
         
         return result
     
@@ -855,7 +798,7 @@ class ControlPanelApp:
         }
     
     def get_simulator_state(self) -> dict:
-        """获取模拟器状态 - 在模拟器环境下提供位姿和球位置"""
+        """获取模拟器状态 - 使用 Positions 的语义口径。"""
         if not self._is_simulator:
             return {
                 "available": False,
@@ -869,36 +812,25 @@ class ControlPanelApp:
             "has_ball": False,
             "enemy_positions": [],
         }
-        
-        # 从 Bits 获取状态
-        if self.bits is not None:
+
+        positions = self._get_positions_facade()
+        if positions is not None:
             try:
-                x, y, yaw = self.bits.GetPose()
-                result["robot_pose"] = {"x_cm": round(x, 2), "y_cm": round(y, 2), "yaw_deg": round(yaw, 2)}
+                x, y, yaw = positions.FieldRobotPose()
+                if [x, y, yaw] != [0xFFF, 0xFFF, 0xFFF]:
+                    result["robot_pose"] = {"x_cm": round(float(x), 2), "y_cm": round(float(y), 2), "yaw_deg": round(float(yaw), 2)}
             except Exception:
                 pass
-            
+
             try:
-                result["ball_pos"] = self.bits.GetBallPos()
+                ball_pos = positions.RobotBallPos()
+                result["ball_pos"] = ball_pos
+                result["has_ball"] = positions.BallState(ball_pos) == "held"
             except Exception:
                 pass
-            
+
             try:
-                result["has_ball"] = self.bits.HasBall()
-            except Exception:
-                pass
-            
-            try:
-                result["enemy_positions"] = self.bits.GetEnemyPos()
-            except Exception:
-                pass
-        
-        # 如果 Bits 不可用，尝试从 vision 获取
-        elif self.vision is not None:
-            try:
-                ball_pos = self.vision.get_ball_pos() if hasattr(self.vision, 'get_ball_pos') else None
-                if ball_pos:
-                    result["ball_pos"] = ball_pos
+                result["enemy_positions"] = positions.FieldChassisPos()
             except Exception:
                 pass
         
@@ -1365,12 +1297,12 @@ class ControlPanelApp:
                 self._control_stop()
             return {"success": True, "enabled": enabled}
     
-    def control_set_speed(self, speed: int, turn_speed: int = None) -> dict:
-        """设置移动速度和转向速度"""
+    def control_set_speed(self, speed: float, turn_speed: float = None) -> dict:
+        """设置移动速度和转向速度，单位分别为 m/s 和 deg/s。"""
         with self._control_lock:
-            self._control_speed = max(0, min(300, speed))
+            self._control_speed = max(0.0, min(1.5, float(speed)))
             if turn_speed is not None:
-                self._control_turn_speed = max(0, min(150, turn_speed))
+                self._control_turn_speed = max(0.0, min(360.0, float(turn_speed)))
         return {"success": True, "speed": self._control_speed, "turn_speed": self._control_turn_speed}
     
     def control_get_status(self) -> dict:
@@ -1465,12 +1397,12 @@ class ControlPanelApp:
             except Exception as e:
                 return {"success": False, "error": str(e)}
     
-    def control_move_vector(self, vx: int, vy: int, wz: int) -> dict:
+    def control_move_vector(self, vx: float, vy: float, wz: float) -> dict:
         """控制机器人移动（全键无冲，支持组合方向）
         
-        vx: X方向速度 (前进为正)
-        vy: Y方向速度 (左移为正)
-        wz: 角速度 (左转为正)
+        vx: X方向速度，m/s，前进为正
+        vy: Y方向速度，m/s，左移为正
+        wz: 角速度，deg/s，左转为正
         """
         with self._control_lock:
             if not self._control_enabled:
@@ -1481,6 +1413,9 @@ class ControlPanelApp:
                 return {"success": False, "error": self._control_runtime_error or "Chassis not available"}
             
             try:
+                vx = float(vx)
+                vy = float(vy)
+                wz = float(wz)
                 chassis.RobotMoveVector(vx, vy, wz)
                 return {"success": True, "vx": vx, "vy": vy, "wz": wz}
             except Exception as e:
@@ -2184,21 +2119,15 @@ def main():
     )
     ap.add_argument("--no-vision", action="store_true", help="Disable vision module")
     ap.add_argument(
-        "--vision-backend",
-        choices=("auto", "vision-utils", "lunapre"),
-        default="vision-utils",
-        help="Vision provider to instantiate when no runtime vision is attached.",
-    )
-    ap.add_argument(
         "--attach-runtime",
         action="store_true",
         help="Attach existing LunaPre runtime objects. Default keeps control panel vision-only and does not start lidar.",
     )
     args = ap.parse_args()
     
-    # Keep the control panel vision-first by default. Importing LunaPre.Bits or
-    # LunaPre.vision resolves lazy runtime proxies and can initialize lidar,
-    # chassis, and serial hardware before the UI is usable.
+    # Keep the control panel vision-first by default. Importing LunaPre.Bits
+    # resolves lazy runtime proxies and can initialize lidar, chassis, and
+    # serial hardware before the UI is usable.
     bits = None
     vision = None
 
@@ -2227,28 +2156,20 @@ def main():
     
     def attach_vision_module():
         errors = []
-        backend_order = (
-            (("vision-utils", "vision_utils.Vision"),)
-            if args.vision_backend == "vision-utils"
-            else (("lunapre", "LunaPre.vision"),)
-        )
-        if args.vision_backend == "auto":
-            backend_order = (("vision-utils", "vision_utils.Vision"), ("lunapre", "LunaPre.vision"))
 
         app.set_vision_status("starting")
-        for backend_name, module_name in backend_order:
-            try:
-                import importlib
+        try:
+            import importlib
 
-                app.set_vision_status("starting", backend=backend_name)
-                module = importlib.import_module(module_name)
-                app.vision = module.UnitedVision()
-                app._register_vision_cameras()
-                app.set_vision_status("ready", backend=backend_name)
-                print(f"[ControlPanel] Vision module attached via {backend_name}")
-                return
-            except Exception as e:
-                errors.append(f"{backend_name}: {e}")
+            app.set_vision_status("starting", backend="vision-utils")
+            module = importlib.import_module("vision_utils.Vision")
+            app.vision = module.UnitedVision()
+            app._register_vision_cameras()
+            app.set_vision_status("ready", backend="vision-utils")
+            print("[ControlPanel] Vision module attached via vision-utils")
+            return
+        except Exception as e:
+            errors.append(f"vision-utils: {e}")
 
         if app.vision is None:
             error_msg = " | ".join(errors)
