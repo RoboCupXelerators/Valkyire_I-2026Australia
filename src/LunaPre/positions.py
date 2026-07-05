@@ -307,6 +307,63 @@ class Positions:
         iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
         return round(iDeltaAngle,2)
 
+    def PointInShape(self, point, polygon: list[list,list]):
+        try:
+            x, y = point
+        except:
+            x, y, w = point
+        inside = False
+
+        n = len(polygon)
+        for i in range(n):
+            try:
+                x1, y1 = polygon[i]
+                x2, y2 = polygon[(i + 1) % n]
+            except:
+                x1, y1, w1 = polygon[i]
+                x2, y2, w2 = polygon[(i + 1) % n]
+
+            # 判断点是否刚好在边上
+            if self.point_on_segment(point, (x1, y1), (x2, y2)):
+                return True
+
+            # 判断从 point 向右的射线是否和当前边相交
+            intersects = (y1 > y) != (y2 > y)
+
+            if intersects:
+                x_intersect = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+
+                if x < x_intersect:
+                    inside = not inside
+            try:
+                if not min(w1,w2) <= w <= max(w1,w2):
+                    inside = False  
+                    print('angle')
+            except:
+                pass
+
+        return inside
+
+
+    def point_on_segment(self, point, a, b):
+        try:
+            x, y = point
+        except:
+            x, y, w = point
+        x1, y1 = a
+        x2, y2 = b
+
+        # 判断三点是否共线
+        cross = (x - x1) * (y2 - y1) - (y - y1) * (x2 - x1)
+        if cross != 0:
+            return False
+
+        # 判断 point 是否在线段范围内
+        return (
+            min(x1, x2) <= x <= max(x1, x2)
+            and min(y1, y2) <= y <= max(y1, y2)
+        )
+
     # ********* BASIC FUNCTIONS ********
     # ===== Public API (recommended) =====
     def RobotBallPos(self):

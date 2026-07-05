@@ -24,6 +24,12 @@ def UplaneScore(pose):
     print(w)
     return round((abs(x/240)*0.2 - abs(y/90)*0.5 + w),2)
 
+def BowScore(pose):
+    x, y, w = pose
+    aim = (UnitedPosition.Pos2Angle([x,y],[120,0])+180)%360
+    error_aUw = abs(w - aim)
+    return round((activate_func((360-error_aUw)/360-0.5)*0.8 - abs(x/120)*0.1 + abs(y/90)*0.1),2)
+
 def HuckScore(pose):
     x, y, w = pose
     aim = UnitedPosition.Pos2Angle([x,y],[120,0])%360
@@ -42,11 +48,12 @@ def JumpScore(pose):
 
 
 def logic_step():
-    logger.critical("UplaneScore: "+str(UplaneScore(UnitedPosition.FieldRobotPose())))
+    logger.success("UplaneScore: "+str(UplaneScore(UnitedPosition.FieldRobotPose())))
     logger.success("HuckScore: "+str(HuckScore(UnitedPosition.FieldRobotPose())))
-    logger.warning("JumpScore: "+str(JumpScore(UnitedPosition.FieldRobotPose())))
-    time.sleep(0.3)
-    return
+    logger.success("JumpScore: "+str(JumpScore(UnitedPosition.FieldRobotPose())))
+    logger.warning("BowScore: "+str(BowScore(UnitedPosition.FieldRobotPose())))
+    # time.sleep(0.3)
+    # return
     if lockball.LockBallSlip():
         pose = UnitedPosition.FieldRobotPose()
         uplane_score = UplaneScore(pose)
@@ -61,7 +68,8 @@ def logic_step():
             if TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[120,0])%360):
                 peripheral.ShootBall()
         elif max(scores) == uplane_score:
-            pass
+            if lockball.slip():
+                UplaneStep()
         elif max(scores) == jump_score:
             peripheral.ShootBall()
     else:
@@ -70,6 +78,26 @@ def logic_step():
             logger.info("Ball position is [0xFFF, 0xFFF], moving to home position.")
             UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
 
+def UplaneStep(thershold = [[70,30],[120,90]]):
+    pose = UnitedPosition.FieldRobotPose()
+    x, y, _ = pose
+    if y < 0:
+        angle_k = -1
+        for t in range(len(thershold)):
+            thershold[t-1][1] = -thershold[t-1][1]
+            try:
+                thershold[t-1][2] = -thershold[t-1][2] %360
+            except:
+                pass
+    else:
+        angle_k = 1
+    if UnitedPosition.PointInShape(pose,thershold):
+        if TurnTo_with_ball(UnitedPosition.Pos2Angle([x,y],[160,0])%360):
+            peripheral.ShootBall()
+    else:
+        if TurnTo_with_ball(90*angle_k):
+            chassis.FieldMoveVector(100,0,90*angle_k)
+        
 
 if __name__ == "__main__":
     try:

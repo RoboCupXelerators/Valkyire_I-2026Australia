@@ -267,19 +267,22 @@ class Peripherals:
         if self.Permission():
             self.SetIO(self.cfg.Ports.ElecMagnet,0)
             self.logger.info("ShootBall Activated")
+            # TODO 用更优雅的实现技能冷却
+            time.sleep(0.3)
         else:
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
     def Dribble(self,Status):
         if self.Permission():
-            if Status == True:
-                self.SetIO(self.cfg.Ports.Dribble,0.5)
-            elif Status == False:
-                self.SetIO(self.cfg.Ports.Dribble,0.0)
-            else:
-                self.SetIO(self.cfg.Ports.Dribble,Status)
-            self.DribbleStatus = Status
-            self.logger.info("Dribble set to %s" % str(Status))
+            if not self.DribbleStatus == Status:
+                if Status == True:
+                    self.SetIO(self.cfg.Ports.Dribble,0.5)
+                elif Status == False:
+                    self.SetIO(self.cfg.Ports.Dribble,0.0)
+                else:
+                    self.SetIO(self.cfg.Ports.Dribble,Status)
+                self.DribbleStatus = Status
+                self.logger.info("Dribble set to %s" % str(Status))
             # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
         else:
             self.SetIO(self.cfg.Ports.Dribble,0.0)

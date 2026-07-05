@@ -185,15 +185,6 @@ class LockSeries:
         """把 ``value`` 限制在 ``[lower, upper]`` 范围内。"""
         return max(lower, min(upper, value))
 
-    def _set_lockball_dribble(self, enabled):
-        """仅在目标状态变化时更新吸球输出。"""
-        target = self.dribble_power if enabled and self.dribble_power else False
-        try:
-            peripheral.Dribble(target)
-            self._lockball_dribble_state = target
-        except Exception:
-            pass
-
     def _capture_control(self):
         """根据视觉框大小缩放前进和转向速度，避免近距离过冲。"""
         try:
@@ -272,13 +263,13 @@ class LockSeries:
                 iBX, iBY = self._lockball_last_seen
                 state_prefix = 'hold_'
             else:
-                self._set_lockball_dribble(False)
+                peripheral.Dribble(True)
                 chassis.stop()
                 self._write_lockball_pid_log('no_ball', iBX, iBY)
                 self._reset_lockball_pid()
                 return False
         elif [iBX,iBY] == [0xddd,0xddd]:
-            self._set_lockball_dribble(True)
+            peripheral.Dribble(True)
             chassis.stop()
             self._write_lockball_pid_log('caught', iBX, iBY)
             self._lockball_rear_acquire_active = False
@@ -289,7 +280,7 @@ class LockSeries:
         else:
             self._lockball_last_seen = [iBX, iBY]
             self._lockball_last_seen_ts = now
-        self._set_lockball_dribble(True)
+        peripheral.Dribble(True)
         angle = self._robot_ball_angle(iBX, iBY)
         if iBX <= 0 or abs(angle) > self.max_lock_angle:
             self._acquire_ball_fast(iBX, iBY, angle, state_prefix)
@@ -358,6 +349,9 @@ class LockSeries:
                 chassis.RobotMoveVector(SpeedX*1.5,SpeedY,turn_speed)
                 self._write_lockball_pid_log(f'{state_prefix}track_legacy', iBX, iBY, angle, pid_x, pid_y, pid_w, SpeedX, SpeedY, turn_speed)
                 return False
+
+    def slip(self):
+        return self.LockBallSlip()
 
     def LockBallDash(self):
         """执行旧版冲球控制器的一个非阻塞 tick。"""
@@ -555,25 +549,31 @@ def CircleAround(iAimAngle, max_ticks: int | None = None):
     return True
 
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
-    """在保持锁球的同时转向指定场地航向。
-
-    返回:
-        航向进入容差且球仍被锁住时返回 ``True``。
-    """
     yaw = chassis.GetYaw()
+    ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
-    logger.debug("TurnTo_with_ball target_yaw={}", Aim_Angle)
-    locked = lockball.LockBallSlip()
-    if locked == True:
-        Error = _AngleErrorDeg(yaw, Aim_Angle)
-        if not abs(Error) <= 10:
-            logger.debug("TurnTo_with_ball yaw_error={}", Error)
-            turn_gain = _Clamp(abs(Error) / 45.0, 0.35, 1.4)
-            chassis.FieldMoveVector(0, 0, Aim_Angle, KpW=turn_gain * (SpeedK or 1))
+    logger.success(Aim_Angle)
+    if lockball.LockBallSlip() == True:
+        # Robot-frame ball angle (0=forward)
+        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
+        Error = ( (yaw - Aim_Angle + 180) % 360 - 180 ) # Normalize to [-180, 180]
+        if Error < 180:
+            iDirectionFactor = -1
+        elif Error >= 180:
+            iDirectionFactor = 1
+        if not abs(Aim_Angle-yaw) <= 10:
+            logger.error(Error)
+            chassis.SetMotor([
+                iDirectionFactor * 15 * SpeedK *Error/30,
+                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30,
+                -iDirectionFactor * 15 * SpeedK *Error/30,
+                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30
+                ])
             return False
         else:
             return True
-    return locked
+    else:
+        return lockball.LockBallSlip()
 
 
 def GoBack():
