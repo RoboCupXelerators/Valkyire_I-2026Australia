@@ -36,8 +36,22 @@ def _first_existing_path(*paths: str) -> str:
 
 def _configured_model_paths() -> tuple[str, str]:
     vision_cfg = getattr(Settings, "Vision", object())
-    configured_model = _norm_model_path(MODEL_DIR, getattr(vision_cfg, "ModelPath", ""))
-    configured_engine = _norm_model_path(MODEL_DIR, getattr(vision_cfg, "EnginePath", ""))
+    
+    # 优先使用统一 ModelName 配置
+    model_name = getattr(vision_cfg, "ModelName", None)
+    
+    # 向后兼容旧配置
+    configured_model_legacy = getattr(vision_cfg, "ModelPath", "")
+    configured_engine_legacy = getattr(vision_cfg, "EnginePath", "")
+    
+    if model_name:
+        # 使用统一 ModelName，自动拼接后缀
+        configured_model = str(MODEL_DIR / f"{model_name}.pt")
+        configured_engine = str(MODEL_DIR / f"{model_name}.engine")
+    else:
+        # 向后兼容旧配置
+        configured_model = _norm_model_path(MODEL_DIR, configured_model_legacy)
+        configured_engine = _norm_model_path(MODEL_DIR, configured_engine_legacy)
 
     model_path = _first_existing_path(
         configured_model,

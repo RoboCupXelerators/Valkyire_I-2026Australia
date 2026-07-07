@@ -532,6 +532,23 @@ class XeleratorVision:
                 except Exception:
                     pass
 
+    # ===== BBox methods for control panel compatibility =====
+    def GetBallBBoxes(self, hold_seconds: float | None = None):
+        """Return per-camera ball bboxes for control panel overlay.
+
+        XeleratorVision (simulator) does not have real detection bboxes,
+        so this returns [None, None, None, None] to indicate no overlay.
+        """
+        return [None, None, None, None]
+
+    def GetChassisBBoxes(self, hold_seconds: float | None = None):
+        """Return per-camera chassis bboxes for control panel overlay."""
+        return [None, None, None, None]
+
+    def GetGoalBBoxes(self, hold_seconds: float | None = None):
+        """Return per-camera goal bboxes for control panel overlay."""
+        return [None, None, None, None]
+
     def close(self, join_timeout: float = 1.0):
         """Stop background frame thread."""
         self._frame_running = False

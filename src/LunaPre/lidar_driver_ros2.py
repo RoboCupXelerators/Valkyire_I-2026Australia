@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import math
 import os
 import queue
@@ -13,6 +14,8 @@ import time
 from pathlib import Path
 
 from ReasonData import DATA_DIR, ROS_ENV, Preference, Settings, logger
+
+DEFAULT_STALE_PROCESS_GRACE_S = 2.0
 
 
 def _add_ros_python_path() -> None:
@@ -112,14 +115,13 @@ def _launch_file_for_type(lidar_type: str) -> str:
 
 
 class _ROSLidarParser(Node):
-    def __init__(self, scan_queue):
+    def __init__(self, scan_queue, owner=None):
         if Settings.Debug.Beta == True and NUMPY_AVAILABLE:
-            lidar_type = _lidar_type_from_settings()
-            NumRanges = 1080 if lidar_type == "s1" else 3240
-            self.dirDistance = np.zeros((NumRanges, 2), dtype=np.float32)
+            self.dirDistance = np.empty((0, 2), dtype=np.float32)
         else:
             self.dirDistance = []
         self.Queue = scan_queue
+        self.owner = owner
         super().__init__("sllidar_node")
 
         qos = QoSProfile(
@@ -135,6 +137,12 @@ class _ROSLidarParser(Node):
             self.subscription = self.create_subscription(LaserScan, "/scan", self.scanCallback, qos_profile=qos)
 
     def _scanCallback_beta(self, msg):
+        try:
+            self._handle_scan_beta(msg)
+        except Exception as e:
+            self._record_callback_error(e)
+
+    def _handle_scan_beta(self, msg):
         if not NUMPY_AVAILABLE:
             return
         AngleMin = msg.angle_min
@@ -142,11 +150,16 @@ class _ROSLidarParser(Node):
         Ranges = np.array(msg.ranges, dtype=np.float32)
 
         angles = (np.degrees(AngleMin + np.arange(len(Ranges)) * AngleIncrement) + 180) % 360
-        self.dirDistance[:, 0] = angles
-        self.dirDistance[:, 1] = Ranges
+        self.dirDistance = np.column_stack((angles.astype(np.float32, copy=False), Ranges))
         self._publish(self.dirDistance)
 
     def scanCallback(self, msg):
+        try:
+            self._handle_scan(msg)
+        except Exception as e:
+            self._record_callback_error(e)
+
+    def _handle_scan(self, msg):
         self.dirDistance.clear()
         AngleMin = msg.angle_min
         AngleIncrement = msg.angle_increment
@@ -156,10 +169,18 @@ class _ROSLidarParser(Node):
             self.dirDistance.append(((math.degrees(Angle) + 180) % 360, Ranges[i]))
         self._publish(tuple(self.dirDistance))
 
+    def _record_callback_error(self, error: Exception):
+        owner = self.owner
+        if owner is not None:
+            owner.callback_error_count += 1
+        logger.error(f"ROS lidar scan callback failed: {error}")
+
     def _publish(self, scan):
         try:
+            dropped = 0
             while self.Queue.full():
                 self.Queue.get_nowait()
+                dropped += 1
             self.Queue.put_nowait(scan)
         except queue.Full:
             pass
@@ -168,15 +189,41 @@ class _ROSLidarParser(Node):
                 self.Queue.put_nowait(scan)
             except queue.Full:
                 pass
+        else:
+            self._record_publish(scan, dropped)
+
+    def _record_publish(self, scan, dropped: int):
+        owner = self.owner
+        if owner is None:
+            return
+        now = time.time()
+        try:
+            point_count = len(scan)
+        except TypeError:
+            point_count = 0
+        if owner.last_publish_ts > 0:
+            owner.last_publish_interval_s = now - owner.last_publish_ts
+        owner.last_publish_ts = now
+        owner.last_scan_point_count = point_count
+        owner.published_scan_count += 1
+        owner.dropped_scan_count += dropped
 
 
 class ROS2LidarDriver:
     """Acquire scan frames from the legacy ROS2 sllidar stack."""
 
-    def __init__(self, *, domain_id: int | None = None, bashrc: str | None = ROS_ENV, serial_port: str | None = None):
+    def __init__(
+        self,
+        *,
+        domain_id: int | None = None,
+        bashrc: str | None = ROS_ENV,
+        serial_port: str | None = None,
+        cleanup_stale: bool = True,
+    ):
         self.domain_id = domain_id
         self.bashrc = bashrc
         self.serial_port = serial_port or _lidar_serial_port_from_settings()
+        self.cleanup_stale = cleanup_stale
         self.lidar_process = None
         self.lidar_log_files = None
         self.current_launch = None
@@ -184,6 +231,15 @@ class ROS2LidarDriver:
         self._thread = None
         self._watcher_thread = None
         self._stop_event = threading.Event()
+        self.published_scan_count = 0
+        self.dropped_scan_count = 0
+        self.last_scan_point_count = 0
+        self.last_publish_ts = 0.0
+        self.last_publish_interval_s = 0.0
+        self.callback_error_count = 0
+        self._atexit_registered = False
+        atexit.register(self.stop)
+        self._atexit_registered = True
 
     def start(self, scan_queue):
         if not ROS_AVAILABLE or rclpy is None:
@@ -194,49 +250,75 @@ class ROS2LidarDriver:
             return False
 
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self.run_forever, args=(scan_queue,))
-        self._thread.daemon = True
-        self._thread.start()
+        if self.cleanup_stale:
+            self.cleanup_stale_processes()
 
         process = self.start_sllidar_driver(enforce_settings=True, bashrc=self.bashrc)
         if process is None:
             logger.error("Warning: failed to start sllidar driver")
+            return False
 
-        self._watcher_thread = threading.Thread(target=self._settings_watcher)
+        self._thread = threading.Thread(target=self.run_forever, args=(scan_queue,), name="ros2-lidar-parser")
+        self._thread.daemon = True
+        self._thread.start()
+
+        self._watcher_thread = threading.Thread(target=self._settings_watcher, name="ros2-lidar-watcher")
         self._watcher_thread.daemon = True
         self._watcher_thread.start()
         return True
 
     def stop(self):
         self._stop_event.set()
+        self._shutdown_rclpy()
         if self.lidar_process is not None:
             self.stop_process_group(self.lidar_process)
             self.lidar_process = None
-        if self.lidar_log_files:
-            for file_obj in self.lidar_log_files:
-                try:
-                    file_obj.flush()
-                    file_obj.close()
-                except Exception:
-                    pass
-            self.lidar_log_files = None
+        self._close_log_files()
+        self._join_threads()
+
+    def _shutdown_rclpy(self):
         try:
             if rclpy is not None:
                 rclpy.shutdown()
         except Exception:
             pass
 
+    def _join_threads(self):
+        current = threading.current_thread()
+        for thread in (self._thread, self._watcher_thread):
+            if thread is not None and thread is not current and thread.is_alive():
+                thread.join(timeout=2.0)
+
+    def _close_log_files(self):
+        if not self.lidar_log_files:
+            return
+        for file_obj in self.lidar_log_files:
+            try:
+                file_obj.flush()
+                file_obj.close()
+            except Exception:
+                pass
+        self.lidar_log_files = None
+
     def run_forever(self, scan_queue):
+        parser = None
         try:
             domain = self._desired_domain()
             self.domain_id = domain
             logger.info(f"Initializing ROS parser with domain_id={domain}")
             rclpy.init(domain_id=domain, signal_handler_options=SignalHandlerOptions(0))
-            parser = _ROSLidarParser(scan_queue)
+            parser = _ROSLidarParser(scan_queue, owner=self)
+            logger.info("ROS parser subscribed to /scan")
             rclpy.spin(parser)
         except Exception as e:
             if not self._stop_event.is_set():
                 logger.error(f"ROS lidar parser exception: {e}")
+        finally:
+            if parser is not None:
+                try:
+                    parser.destroy_node()
+                except Exception:
+                    pass
 
     def _desired_domain(self) -> int:
         if self.domain_id is not None:
@@ -255,6 +337,7 @@ class ROS2LidarDriver:
             logger.warning("ROS_ENV is None, skip starting lidar driver.")
             return None
 
+        self._close_log_files()
         bashrc = os.path.expanduser(str(bashrc))
         if enforce_settings:
             domain = self._desired_domain()
@@ -273,7 +356,7 @@ class ROS2LidarDriver:
         out_path = str(log_dir / f'{launch_file.replace(".py", "")}_d{domain}.out')
         err_path = str(log_dir / f'{launch_file.replace(".py", "")}_d{domain}.err')
 
-        print(f"Starting ROS2 launch (domain={domain}, launch={launch_file}): {cmd}")
+        logger.info(f"Starting ROS2 launch (domain={domain}, launch={launch_file}): {cmd}")
 
         try:
             out = open(out_path, "ab")
@@ -284,50 +367,133 @@ class ROS2LidarDriver:
                 stdout=out,
                 stderr=err,
             )
-            print(f"ROS 2 driver started with PID: {process.pid}, stdout->'{out_path}', stderr->'{err_path}'")
+            logger.info(f"ROS 2 driver started with PID: {process.pid}, stdout='{out_path}', stderr='{err_path}'")
             self.lidar_log_files = (out, err)
             self.lidar_process = process
             self.current_launch = launch_file
             self.current_domain = domain
             return process
         except FileNotFoundError:
-            print("Error: /bin/bash not found. Check your system path.")
+            logger.error("Error: /bin/bash not found. Check your system path.")
             return None
         except Exception as e:
-            print(f"An error occurred while launching ROS 2 driver: {e}")
+            logger.error(f"An error occurred while launching ROS 2 driver: {e}")
             raise e
 
     def stop_process_group(self, process):
         if process is None or process.poll() is not None:
-            print("Process is already stopped or was not started.")
+            logger.debug("Process is already stopped or was not started.")
             return
 
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGINT)
-            print(f"Sent SIGINT to process group {os.getpgid(process.pid)}. Waiting for termination...")
+            logger.info(f"Sent SIGINT to process group {os.getpgid(process.pid)}. Waiting for termination...")
             process.wait(timeout=5)
         except ProcessLookupError:
-            print("Process or process group not found.")
+            logger.debug("Process or process group not found.")
         except subprocess.TimeoutExpired:
-            print("Process did not terminate gracefully. Sending SIGKILL...")
+            logger.warning("Process did not terminate gracefully. Sending SIGKILL...")
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
 
-        print("ROS 2 driver process stopped.")
+        logger.info("ROS 2 driver process stopped.")
+
+    def cleanup_stale_processes(self):
+        targets = self._find_stale_sllidar_processes()
+        if not targets:
+            return
+
+        groups = {}
+        for pid, pgid, args in targets:
+            groups.setdefault(pgid, []).append((pid, args))
+
+        logger.warning(
+            "Cleaning stale ROS2 lidar processes before launch: %s"
+            % ", ".join("%s:%s" % (pgid, [pid for pid, _args in members]) for pgid, members in groups.items())
+        )
+
+        for pgid, members in groups.items():
+            try:
+                os.killpg(pgid, signal.SIGINT)
+            except ProcessLookupError:
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to SIGINT stale sllidar process group {pgid}: {e}")
+
+        deadline = time.time() + DEFAULT_STALE_PROCESS_GRACE_S
+        while time.time() < deadline:
+            if not any(self._pid_alive(pid) for pid, _pgid, _args in targets):
+                return
+            time.sleep(0.1)
+
+        for pgid in groups:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+                logger.warning(f"Sent SIGKILL to stale sllidar process group {pgid}")
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.warning(f"Failed to SIGKILL stale sllidar process group {pgid}: {e}")
+
+    def _find_stale_sllidar_processes(self):
+        try:
+            current_pid = os.getpid()
+            current_pgid = os.getpgid(current_pid)
+            result = subprocess.run(
+                ["ps", "-eo", "pid=,pgid=,args="],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception as e:
+            logger.warning(f"Could not inspect stale ROS2 lidar processes: {e}")
+            return []
+
+        targets = []
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid = int(parts[0])
+                pgid = int(parts[1])
+            except ValueError:
+                continue
+            args = parts[2]
+            if pid == current_pid or pgid == current_pgid:
+                continue
+            is_launch = "ros2 launch" in args and "sllidar_ros2" in args
+            is_node = "sllidar_ros2" in args and "sllidar_node" in args
+            if not (is_launch or is_node):
+                continue
+            targets.append((pid, pgid, args))
+        return targets
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
 
     def _settings_watcher(self):
         while not self._stop_event.wait(5):
             desired_domain = self._desired_domain()
             desired_launch = _launch_file_for_type(_lidar_type_from_settings())
+            process_died = self.lidar_process is not None and self.lidar_process.poll() is not None
 
-            if (self.current_domain != desired_domain) or (self.current_launch != desired_launch):
+            if process_died or (self.current_domain != desired_domain) or (self.current_launch != desired_launch):
                 logger.info(
-                    f"Lidar settings changed: domain {self.current_domain}->{desired_domain}, "
-                    f"launch {self.current_launch}->{desired_launch}"
+                    f"Lidar restart requested: process_died={process_died}, "
+                    f"domain {self.current_domain}->{desired_domain}, launch {self.current_launch}->{desired_launch}"
                 )
                 try:
                     if self.lidar_process is not None:
                         self.stop_process_group(self.lidar_process)
                         self.lidar_process = None
+                    self._close_log_files()
                 except Exception:
                     pass
                 try:

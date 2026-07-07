@@ -98,8 +98,14 @@ class ArisuIntelligence(VisionPreUntil):
                 self._hailo_init_error = None
 
                 with VDevice(self.HailoParams) as hat:
-                    model_path_raw = str(Settings.Vision.HailoModelPath)
-                    model_path = MODEL_DIR / model_path_raw.lstrip("/")
+                    # 从统一 ModelName 配置获取模型名称，自动拼接 .hef 后缀
+                    model_name = getattr(Settings.Vision, "ModelName", "ArisuModel_v1.2s")
+                    # 向后兼容：如果旧配置存在 HailoModelPath，优先使用
+                    hailo_path_legacy = getattr(Settings.Vision, "HailoModelPath", None)
+                    if hailo_path_legacy and hailo_path_legacy.startswith("/"):
+                        model_path = MODEL_DIR / hailo_path_legacy.lstrip("/")
+                    else:
+                        model_path = MODEL_DIR / f"{model_name}.hef"
                     infer_model = hat.create_infer_model(str(model_path))
                     infer_model.set_batch_size(4)
                     self.InputShape = infer_model.input().shape

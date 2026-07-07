@@ -26,13 +26,13 @@ def UplaneScore(pose):
 
 def BowScore(pose):
     x, y, w = pose
-    aim = (UnitedPosition.Pos2Angle([x,y],[120,0])+180)%360
+    aim = (UnitedPosition.Pos2Angle([x,y],[100,0])+180)%360
     error_aUw = abs(w - aim)
     return round((activate_func((360-error_aUw)/360-0.5)*0.8 - abs(x/120)*0.1 + abs(y/90)*0.1),2)
 
 def HuckScore(pose):
     x, y, w = pose
-    aim = UnitedPosition.Pos2Angle([x,y],[120,0])%360
+    aim = UnitedPosition.Pos2Angle([x,y],[100,0])%360
     error_aUw = abs(w - aim)
     return round((activate_func((360-error_aUw)/360-0.5)*0.8 + abs(x/120)*0.1 - abs(y/90)*0.1),2)
 
@@ -54,31 +54,33 @@ def logic_step():
     logger.warning("BowScore: "+str(BowScore(UnitedPosition.FieldRobotPose())))
     # time.sleep(0.3)
     # return
-    if lockball.LockBallSlip():
-        pose = UnitedPosition.FieldRobotPose()
-        uplane_score = UplaneScore(pose)
-        huck_score = HuckScore(pose)
-        jump_score = JumpScore(pose)
-        scores = [
-            uplane_score,
-            huck_score,
-            jump_score]
-        logger.info("LockBallSlip executed successfully.")
-        if max(scores) == huck_score:
-            if TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[120,0])%360,3):
+    logger.info(UnitedPosition.RobotBallPos())
+    if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
+        if lockball.LockBallSlip():
+            pose = UnitedPosition.FieldRobotPose()
+            uplane_score = UplaneScore(pose)
+            huck_score = HuckScore(pose)
+            jump_score = JumpScore(pose)
+            scores = [
+                uplane_score,
+                huck_score,
+                jump_score]
+            logger.info("LockBallSlip executed successfully.")
+            if max(scores) == huck_score:
+                if TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[100,0])%360,3):
+                    peripheral.ShootBall()
+            elif max(scores) == uplane_score:
+                if lockball.slip():
+                    UplaneStep()
+            elif max(scores) == jump_score:
                 peripheral.ShootBall()
-        elif max(scores) == uplane_score:
-            if lockball.slip():
-                UplaneStep()
-        elif max(scores) == jump_score:
-            peripheral.ShootBall()
     else:
-        peripheral.Dribble(0.3)
+        peripheral.Dribble(False)
         if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
             logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
             UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
 
-def UplaneStep(thershold = [[70,30],[120,90]]):
+def UplaneStep(thershold = [[50,30],[100,90]]):
     pose = UnitedPosition.FieldRobotPose()
     x, y, _ = pose
     if y < 0:
@@ -92,10 +94,10 @@ def UplaneStep(thershold = [[70,30],[120,90]]):
     else:
         angle_k = 1
     if UnitedPosition.PointInShape(pose,thershold):
-        if TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x,y],[160,0])%360):
+        if TurnTo_with_ball(UnitedPosition.Pos2Angle([x,y],[100,0])%360):
             peripheral.ShootBall()
     else:
-        if TurnTo_with_ball_orbit(90*angle_k):
+        if TurnTo_with_ball(90*angle_k):
             chassis.FieldMoveVector(0.91,0,90*angle_k)
         
 

@@ -655,6 +655,7 @@ class UnitedVision(Detect_Method):
         Returns:
             list of length 4: each is None or (cam, cls, x1, y1, x2, y2, conf)
         """
+        self.GoalBBoxUpdate()
         hs = self.ball_hold_seconds if hold_seconds is None else float(hold_seconds)
         if self._goal_bboxes is None:
             return [None, None, None, None]
@@ -830,6 +831,43 @@ class UnitedVision(Detect_Method):
         if best is not None:
             self._chassis_bbox = best
             self._chassis_bbox_ts = time.time()
+        self._update_bbox_distance_caches()
+
+    def GoalBBoxUpdate(self):
+        """Read GoalBBoxQueue if available and keep latest goal bboxes."""
+        q = getattr(self, "GoalBBoxQueue", None)
+        if q is None:
+            return
+        try:
+            out = q.get_nowait()
+        except Exception:
+            return
+
+        bboxes = [None, None, None, None]
+        best = None
+        for i in range(4):
+            try:
+                # Goal bbox format: [cam, cls, x1, y1, x2, y2, conf]
+                # cls: 1=BlueGoal, 2=YellowGoal
+                item = out[i]
+                if item is None or len(item) < 7:
+                    continue
+                cam, cls, x1, y1, x2, y2, conf = item[0], item[1], item[2], item[3], item[4], item[5], item[6]
+                if conf is None or conf <= 0:
+                    continue
+                if cls is None or int(cls) < 0:
+                    continue
+                bbox = (int(cam), int(cls), int(x1), int(y1), int(x2), int(y2), float(conf))
+                bboxes[int(cam)] = bbox
+                if best is None or conf > best[6]:
+                    best = bbox
+            except Exception:
+                continue
+        self._goal_bboxes = bboxes
+        self._goal_bboxes_ts = time.time()
+        if best is not None:
+            self._goal_bbox = best
+            self._goal_bbox_ts = time.time()
         self._update_bbox_distance_caches()
 
     def GetChassisBBox(self, hold_seconds: float | None = None):

@@ -26,6 +26,7 @@ import threading
 import queue
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 try:
@@ -111,9 +112,35 @@ class SimYoloVision:
         self.BallBBoxQueue = queue.Queue(maxsize=1)
         self.ChassisBBoxQueue = queue.Queue(maxsize=1)
 
-        # Model paths
-        self.model_path = model_path
-        self.engine_path = engine_path
+        # Model paths (config-driven, same logic as TunaIntelligence)
+        # Priority:
+        #   1) explicit args: model_path/engine_path
+        #   2) config: Settings.Vision.ModelName (统一模型名称，自动拼接后缀)
+        #   3) legacy config: Settings.Vision.ModelPath / EnginePath (向后兼容)
+        #   4) fallback: repo default yolov8s
+        vision_cfg = getattr(Settings, "Vision", object())
+        model_name = getattr(vision_cfg, "ModelName", None)
+        cfg_model_legacy = getattr(vision_cfg, "ModelPath", None)
+        cfg_engine_legacy = getattr(vision_cfg, "EnginePath", None)
+        
+        # Get MODEL_DIR
+        try:
+            from .PreProcess import MODEL_DIR
+        except Exception:
+            MODEL_DIR = Path(__file__).parent / "models"
+        
+        if model_name:
+            cfg_model = str(MODEL_DIR / f"{model_name}.pt")
+            cfg_engine = str(MODEL_DIR / f"{model_name}.engine")
+        elif cfg_model_legacy:
+            cfg_model = str(MODEL_DIR) + cfg_model_legacy
+            cfg_engine = str(MODEL_DIR) + (cfg_engine_legacy or cfg_model_legacy.replace(".pt", ".engine"))
+        else:
+            cfg_model = str(MODEL_DIR / "yolov8s.pt")
+            cfg_engine = str(MODEL_DIR / "yolov8s.engine")
+
+        self.model_path = model_path or cfg_model
+        self.engine_path = engine_path or cfg_engine
         self.device = device
         self.prefer_engine = prefer_engine
 

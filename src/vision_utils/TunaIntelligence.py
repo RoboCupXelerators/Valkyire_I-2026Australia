@@ -99,13 +99,30 @@ class TunaIntelligence(VisionPreUntil):
         # Model paths (config-driven)
         # Priority:
         #   1) explicit args: model_path/engine_path
-        #   2) config: Settings.Vision.ModelPath / EnginePath
-        #   3) fallback: repo default yolov8nForX5
-        cfg_model = str(MODEL_DIR) + getattr(getattr(Settings, "Vision", object()), "ModelPath", None)
-        cfg_engine = str(MODEL_DIR) + getattr(getattr(Settings, "Vision", object()), "EnginePath", None)
+        #   2) config: Settings.Vision.ModelName (统一模型名称，自动拼接后缀)
+        #   3) legacy config: Settings.Vision.ModelPath / EnginePath (向后兼容)
+        #   4) fallback: repo default yolov8s
+        model_name = getattr(getattr(Settings, "Vision", object()), "ModelName", None)
+        
+        # 向后兼容：检查旧配置
+        cfg_model_legacy = getattr(getattr(Settings, "Vision", object()), "ModelPath", None)
+        cfg_engine_legacy = getattr(getattr(Settings, "Vision", object()), "EnginePath", None)
+        
+        if model_name:
+            # 使用统一 ModelName 配置
+            cfg_model = str(MODEL_DIR / f"{model_name}.pt")
+            cfg_engine = str(MODEL_DIR / f"{model_name}.engine")
+        elif cfg_model_legacy:
+            # 向后兼容旧配置
+            cfg_model = str(MODEL_DIR) + cfg_model_legacy
+            cfg_engine = str(MODEL_DIR) + (cfg_engine_legacy or cfg_model_legacy.replace(".pt", ".engine"))
+        else:
+            # 默认 fallback
+            cfg_model = str(MODEL_DIR / "yolov8s.pt")
+            cfg_engine = str(MODEL_DIR / "yolov8s.engine")
 
-        self.model_path = cfg_model
-        self.engine_path = cfg_engine
+        self.model_path = model_path or cfg_model
+        self.engine_path = engine_path or cfg_engine
         self.device = device  # None => auto
         # Default behavior: prefer TensorRT engine if present (Jetson-oriented).
         # Set prefer_engine=False in offline CPU tests.

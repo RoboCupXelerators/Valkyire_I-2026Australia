@@ -62,10 +62,11 @@ class Preference:
         "Vision": {
             # 相机端口映射 (0:Back, 1:Left, 2:Front, 3:Right)
             "CamPorts": [0, 2, 4, 6],
-            # 模型路径 (统一配置，相对于项目根目录)
-            "ModelPath": "YOLO_Models/models/yolov8nForX5.pt",
-            "EnginePath": "YOLO_Models/models/yolov8nForX5.engine",
-            "HailoModelPath": "/yolov8s.hef",
+            # 统一模型名称 (不含后缀，各推理库自动选择所需格式)
+            # - ArisuIntelligence (AI/Hailo): 使用 .hef
+            # - TunaIntelligence/HybridVision (TI/HV): 使用 .pt 和 .engine
+            # - LunaIntelligence/SimYoloVision (SY/LI): 使用 .pt 和 .engine
+            "ModelName": "ArisuModel_v1.2s",
             # 标定文件夹
             "CalibrationFolder": "Calibration",
             # 目标物理尺寸 (cm) - 用于bbox距离估计
@@ -273,11 +274,26 @@ class _CompatVisionVals:
     @property
     def Left(self): return self._s.Vision.CamPorts[1] if len(self._s.Vision.CamPorts) > 1 else 2
     @property
-    def HailoModelName(self): return self._s.Vision.HailoModelPath
+    def HailoModelName(self): 
+        # 向后兼容：返回 ModelName + .hef 或旧配置 HailoModelPath
+        model_name = getattr(self._s.Vision, "ModelName", None)
+        if model_name:
+            return f"/{model_name}.hef"
+        return getattr(self._s.Vision, "HailoModelPath", "/ArisuModel_v1.2s.hef")
     @property
-    def TunaModelName(self): return self._s.Vision.ModelPath
+    def TunaModelName(self):
+        # 向后兼容：返回 ModelName + .pt 或旧配置 ModelPath
+        model_name = getattr(self._s.Vision, "ModelName", None)
+        if model_name:
+            return f"/{model_name}.pt"
+        return getattr(self._s.Vision, "ModelPath", "")
     @property
-    def TunaEnginePath(self): return self._s.Vision.EnginePath
+    def TunaEnginePath(self):
+        # 向后兼容：返回 ModelName + .engine 或旧配置 EnginePath
+        model_name = getattr(self._s.Vision, "ModelName", None)
+        if model_name:
+            return f"/{model_name}.engine"
+        return getattr(self._s.Vision, "EnginePath", "")
     @property
     def CalibrationFolder(self): return self._s.Vision.CalibrationFolder
     @property
