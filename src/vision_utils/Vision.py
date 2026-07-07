@@ -998,6 +998,7 @@ if __name__ == "__main__":
             chassis_pos = vision.GetChassisPos()
             blue_goal = None
             yellow_goal = None
+            goal_bboxes = [None, None, None, None]
             try:
                 goals_pos = vision.GetGoalsPos()
                 if isinstance(goals_pos, (list, tuple)):
@@ -1011,11 +1012,16 @@ if __name__ == "__main__":
             except Exception:
                 blue_goal = None
                 yellow_goal = None
+            try:
+                goal_bboxes = vision.GetGoalBBoxes()
+            except Exception:
+                goal_bboxes = [None, None, None, None]
             data = {
                 "ball_pos": ball_pos,
                 "chassis_pos": chassis_pos,
                 "blue_goal": blue_goal,
                 "yellow_goal": yellow_goal,
+                "goal_bboxes": goal_bboxes,
             }
             # vision.logger.info(data)
             pickled_data = pickle.dumps(data)

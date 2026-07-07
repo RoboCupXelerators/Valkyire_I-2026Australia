@@ -35,6 +35,14 @@ POS2POS_ARRIVAL_SCALE = 0.5
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
 ROBOT_BALL_MAX_ABS_Y_CM = 220.0
+SHOOT_WINDOW_DEFAULT_CAMERA_FOV_DEG = 95.0
+SHOOT_WINDOW_GOAL_KEYS = ("blue_goal", "yellow_goal")
+SHOOT_WINDOW_CAMERA_BASE_BEARING_DEG = {
+    0: 180.0,  # back
+    1: 90.0,   # left
+    2: 0.0,    # front
+    3: -90.0,  # right
+}
 
 class Positions:
     def __init__(self):
@@ -52,7 +60,13 @@ class Positions:
         self.FullLog = cfg.Debug.FullLog
         # Vision data (lazy start)
         self.sock: socket.socket | None = None
-        self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
+        self.vision_data = {
+            "ball_pos": [0, 0],
+            "chassis_pos": [],
+            "blue_goal": None,
+            "yellow_goal": None,
+            "goal_bboxes": [None, None, None, None],
+        }
         self.vision_process = None
         self.vision_data_stop_event = threading.Event()
         self.get_vision_data_process: threading.Thread | None = None
@@ -137,13 +151,20 @@ class Positions:
                     self.vision_data.setdefault("chassis_pos", [])
                     self.vision_data.setdefault("blue_goal", None)
                     self.vision_data.setdefault("yellow_goal", None)
+                    self.vision_data.setdefault("goal_bboxes", [None, None, None, None])
                 # if we can receive packets, reset restart counter
                 restart_count = 0
 
             except (socket.timeout, TimeoutError):
                 if not self._vision_enabled:
                     # vision explicitly disabled
-                    self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
+                    self.vision_data = {
+                        "ball_pos": [0, 0],
+                        "chassis_pos": [],
+                        "blue_goal": None,
+                        "yellow_goal": None,
+                        "goal_bboxes": [None, None, None, None],
+                    }
                     time.sleep(0.05)
                     continue
 
@@ -168,7 +189,13 @@ class Positions:
                     logger.info("Started vision server process")
                     restart_count += 1
 
-                self.vision_data = {"ball_pos": [0, 0], "chassis_pos": [], "blue_goal": None, "yellow_goal": None}
+                self.vision_data = {
+                    "ball_pos": [0, 0],
+                    "chassis_pos": [],
+                    "blue_goal": None,
+                    "yellow_goal": None,
+                    "goal_bboxes": [None, None, None, None],
+                }
 
             except OSError as e:
                 # Socket closed while thread is still running (e.g. Stop called).
@@ -243,6 +270,24 @@ class Positions:
             "blue_goal": self.vision_data.get("blue_goal", None),
             "yellow_goal": self.vision_data.get("yellow_goal", None),
         }
+
+    def _get_goal_bboxes(self):
+        v = getattr(runtime, "vision", None)
+        if v is not None:
+            for method_name in ("GetGoalBBoxes", "get_goal_bboxes"):
+                method = getattr(v, method_name, None)
+                if callable(method):
+                    try:
+                        value = method()
+                        return list(value) if value else [None, None, None, None]
+                    except Exception:
+                        continue
+
+        self.StartVision()
+        value = self.vision_data.get("goal_bboxes", None)
+        if value is None:
+            value = self.vision_data.get("goal_bboxes_640", None)
+        return list(value) if value else [None, None, None, None]
     
     def Local2Angle(self, AimPos: list) -> int:
         '''
@@ -386,7 +431,7 @@ class Positions:
                 self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos
-        if self.WarnedLidarCount:
+        if getattr(self, "WarnedLidarCount", 0):
             if Settings.Debug.FullLog:
                 logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
@@ -510,6 +555,486 @@ class Positions:
     def RobotGoalsPos(self):
         """获取球门检测结果（蓝/黄球门）。"""
         return self._get_goals_pos()
+
+    @staticmethod
+    def _normalize_signed_angle(angle_deg: float) -> float:
+        return ((float(angle_deg) + 180.0) % 360.0) - 180.0
+
+    @staticmethod
+    def _bearing_deg(x_cm: float, y_cm: float) -> float:
+        return Positions._normalize_signed_angle(math.degrees(math.atan2(float(y_cm), float(x_cm))))
+
+    @staticmethod
+    def _normalize_robot_xy(item):
+        if item is None:
+            return None
+        try:
+            if len(item) < 2:
+                return None
+            x = float(item[0])
+            y = float(item[1])
+            if not math.isfinite(x) or not math.isfinite(y):
+                return None
+            if x == 0.0 and y == 0.0:
+                return None
+            conf = float(item[2]) if len(item) > 2 else None
+            if conf is not None and not math.isfinite(conf):
+                conf = None
+            return {"x": x, "y": y, "conf": conf, "distance": math.hypot(x, y)}
+        except Exception:
+            return None
+
+    @staticmethod
+    def _format_angle(angle_deg: float) -> float:
+        return round(Positions._normalize_signed_angle(angle_deg), 2)
+
+    @staticmethod
+    def _format_interval(interval) -> list[float]:
+        return [Positions._format_angle(interval[0]), Positions._format_angle(interval[1])]
+
+    @staticmethod
+    def _interval_contains(interval, angle_deg: float, eps: float = 1e-6) -> bool:
+        return interval[0] - eps <= float(angle_deg) <= interval[1] + eps
+
+    @staticmethod
+    def _subtract_interval(intervals: list[list[float]], cut: list[float]) -> list[list[float]]:
+        next_intervals = []
+        cut_start, cut_end = cut
+        for start, end in intervals:
+            if cut_end <= start or cut_start >= end:
+                next_intervals.append([start, end])
+                continue
+            if cut_start > start:
+                next_intervals.append([start, min(cut_start, end)])
+            if cut_end < end:
+                next_intervals.append([max(cut_end, start), end])
+        return [item for item in next_intervals if (item[1] - item[0]) > 0.25]
+
+    @staticmethod
+    def _nearest_unwrapped_angle(angle_deg: float, reference_deg: float) -> float:
+        return float(reference_deg) + angle_error_deg(reference_deg, angle_deg)
+
+    @staticmethod
+    def _best_open_angle(open_windows: list[list[float]]) -> float | None:
+        if not open_windows:
+            return None
+        for window in open_windows:
+            if Positions._interval_contains(window, 0.0):
+                return 0.0
+
+        best = None
+        best_score = None
+        for start, end in open_windows:
+            width = max(0.0, end - start)
+            inset = min(2.0, width / 2.0)
+            if end < 0.0:
+                candidate = end - inset
+            elif start > 0.0:
+                candidate = start + inset
+            else:
+                candidate = 0.0
+            score = (abs(Positions._normalize_signed_angle(candidate)), -width)
+            if best is None or score < best_score:
+                best = candidate
+                best_score = score
+        return None if best is None else Positions._normalize_signed_angle(best)
+
+    @staticmethod
+    def _empty_shoot_window(target: str, reason: str) -> dict:
+        return {
+            "target": target,
+            "goal_key": None,
+            "goal_color": None,
+            "reason": reason,
+            "window_open": False,
+            "can_shoot_now": False,
+            "raw_window_deg": None,
+            "open_windows_deg": [],
+            "best_bearing_deg": None,
+            "turn_error_deg": None,
+            "target_yaw_deg": None,
+            "goal_distance_cm": None,
+            "blockers": [],
+        }
+
+    def _normalize_goals(self, goals) -> dict:
+        if isinstance(goals, dict):
+            return {
+                "blue_goal": goals.get("blue_goal"),
+                "yellow_goal": goals.get("yellow_goal"),
+            }
+        if isinstance(goals, (list, tuple)):
+            return {
+                "blue_goal": goals[0] if len(goals) > 0 else None,
+                "yellow_goal": goals[1] if len(goals) > 1 else None,
+            }
+        return {"blue_goal": None, "yellow_goal": None}
+
+    def _goal_bboxes_by_key(self) -> dict:
+        result = {"blue_goal": None, "yellow_goal": None}
+        try:
+            bboxes = self._get_goal_bboxes()
+        except Exception:
+            bboxes = [None, None, None, None]
+        for bbox in bboxes or []:
+            try:
+                if bbox is None or len(bbox) < 7:
+                    continue
+                cls_id = int(bbox[1])
+                key = "blue_goal" if cls_id == 1 else "yellow_goal" if cls_id == 2 else None
+                if key is None:
+                    continue
+                conf = float(bbox[6])
+                if result[key] is None or conf > float(result[key][6]):
+                    result[key] = bbox
+            except Exception:
+                continue
+        return result
+
+    def _goal_bbox_sector(self, bbox, camera_fov_deg: float | None = None):
+        if bbox is None or len(bbox) < 7:
+            return None
+        try:
+            cam = int(bbox[0])
+            x1 = max(0.0, min(640.0, float(bbox[2])))
+            x2 = max(0.0, min(640.0, float(bbox[4])))
+        except Exception:
+            return None
+
+        base_bearing = SHOOT_WINDOW_CAMERA_BASE_BEARING_DEG.get(cam)
+        if base_bearing is None:
+            return None
+        fov = self._shoot_camera_fov_deg(camera_fov_deg)
+        left_x = min(x1, x2)
+        right_x = max(x1, x2)
+
+        def bearing_for_x(pixel_x: float) -> float:
+            return float(base_bearing) + ((320.0 - pixel_x) / 640.0) * fov
+
+        bearing_a = bearing_for_x(left_x)
+        bearing_b = bearing_for_x(right_x)
+        start = min(bearing_a, bearing_b)
+        end = max(bearing_a, bearing_b)
+        return {
+            "start": start,
+            "end": end,
+            "center": (start + end) / 2.0,
+            "span": max(0.0, end - start),
+        }
+
+    @staticmethod
+    def _shoot_goal_width_cm(goal_width_cm: float | None = None) -> float:
+        if goal_width_cm is not None:
+            return max(1.0, float(goal_width_cm))
+        vision_cfg = getattr(Settings, "Vision", object())
+        vision_vals = getattr(Settings, "VisionVals", object())
+        value = getattr(vision_cfg, "GoalWidth", None)
+        if value is None:
+            value = getattr(vision_vals, "BlueGoalWidthCM", 90.0)
+        return max(1.0, float(value))
+
+    @staticmethod
+    def _shoot_chassis_width_cm() -> float:
+        vision_cfg = getattr(Settings, "Vision", object())
+        vision_vals = getattr(Settings, "VisionVals", object())
+        value = getattr(vision_cfg, "ChassisWidth", None)
+        if value is None:
+            value = getattr(vision_vals, "ChassisWidthCM", 18.0)
+        return max(1.0, float(value))
+
+    @staticmethod
+    def _shoot_camera_fov_deg(camera_fov_deg: float | None = None) -> float:
+        if camera_fov_deg is not None:
+            return max(1.0, float(camera_fov_deg))
+        vision_cfg = getattr(Settings, "Vision", object())
+        value = getattr(vision_cfg, "CameraFOVDeg", SHOOT_WINDOW_DEFAULT_CAMERA_FOV_DEG)
+        return max(1.0, float(value))
+
+    @staticmethod
+    def _shoot_fallback_goal_distance_cm(fallback_goal_distance_cm: float | None = None) -> float:
+        if fallback_goal_distance_cm is not None:
+            return max(1.0, float(fallback_goal_distance_cm))
+        vision_cfg = getattr(Settings, "Vision", object())
+        value = getattr(vision_cfg, "ShootFallbackGoalDistanceCM", None)
+        if value is None:
+            value = getattr(getattr(Settings, "Bounds", object()), "Long", 260.0)
+        return max(1.0, float(value))
+
+    def _goal_window_from_position(self, point: dict, goal_width_cm: float) -> dict | None:
+        dist = float(point["distance"])
+        if dist <= 1.0:
+            return None
+        bearing = self._bearing_deg(point["x"], point["y"])
+        half_width = math.degrees(math.atan2(goal_width_cm / 2.0, dist))
+        return {
+            "start": bearing - half_width,
+            "end": bearing + half_width,
+            "center": bearing,
+            "span": half_width * 2.0,
+        }
+
+    def _collect_shoot_goal_candidates(
+        self,
+        *,
+        goal_width_cm: float | None = None,
+        camera_fov_deg: float | None = None,
+        min_goal_conf: float = 0.0,
+    ) -> list[dict]:
+        goals = self._normalize_goals(self.RobotGoalsPos())
+        bboxes = self._goal_bboxes_by_key()
+        width = self._shoot_goal_width_cm(goal_width_cm)
+        candidates = []
+
+        for key in SHOOT_WINDOW_GOAL_KEYS:
+            point = self._normalize_robot_xy(goals.get(key))
+            bbox_sector = self._goal_bbox_sector(bboxes.get(key), camera_fov_deg)
+            if point is not None and point["conf"] is not None and point["conf"] < float(min_goal_conf):
+                point = None
+            if point is None and bbox_sector is None:
+                continue
+
+            if bbox_sector is not None:
+                window = bbox_sector
+                source = "bbox"
+            else:
+                window = self._goal_window_from_position(point, width)
+                source = "position"
+            if window is None:
+                continue
+
+            bearing = self._normalize_signed_angle(window["center"])
+            candidates.append({
+                "key": key,
+                "color": "blue" if key == "blue_goal" else "yellow",
+                "point": point,
+                "bbox": bboxes.get(key),
+                "source": source,
+                "bearing": bearing,
+                "window": window,
+                "distance": None if point is None else point["distance"],
+                "conf": None if point is None else point["conf"],
+            })
+        return candidates
+
+    def _estimated_shoot_goal_candidate(
+        self,
+        target: str,
+        *,
+        goal_width_cm: float | None = None,
+        fallback_goal_distance_cm: float | None = None,
+    ) -> dict | None:
+        if target not in ("opponent", "own"):
+            return None
+
+        distance = self._shoot_fallback_goal_distance_cm(fallback_goal_distance_cm)
+        x = distance if target == "opponent" else -distance
+        point = {"x": x, "y": 0.0, "conf": None, "distance": distance}
+        window = self._goal_window_from_position(point, self._shoot_goal_width_cm(goal_width_cm))
+        if window is None:
+            return None
+        bearing = self._normalize_signed_angle(window["center"])
+        return {
+            "key": f"estimated_{target}_goal",
+            "color": "estimated",
+            "point": point,
+            "bbox": None,
+            "source": "estimated",
+            "bearing": bearing,
+            "window": window,
+            "distance": distance,
+            "conf": None,
+        }
+
+    @staticmethod
+    def _is_front_goal(candidate: dict) -> bool:
+        return abs(float(candidate["bearing"])) <= 90.0
+
+    def _select_shoot_goal(self, candidates: list[dict], target: str):
+        target = str(target or "opponent")
+        if target in SHOOT_WINDOW_GOAL_KEYS:
+            for candidate in candidates:
+                if candidate["key"] == target:
+                    return candidate, None
+            return None, "no_goal_visible"
+
+        front_goals = [item for item in candidates if self._is_front_goal(item)]
+        back_goals = [item for item in candidates if not self._is_front_goal(item)]
+        if target == "opponent":
+            if front_goals:
+                return min(front_goals, key=lambda item: abs(float(item["bearing"]))), None
+            if back_goals:
+                return None, "only_own_goal_visible"
+            return None, "no_goal_visible"
+        if target == "own":
+            if back_goals:
+                return min(back_goals, key=lambda item: abs(abs(float(item["bearing"])) - 180.0)), None
+            if front_goals:
+                return None, "only_opponent_goal_visible"
+            return None, "no_goal_visible"
+        return None, "invalid_target"
+
+    def _shoot_blocker_windows(
+        self,
+        raw_window: list[float],
+        center_bearing: float,
+        goal_distance_cm: float | None,
+        blocker_margin_deg: float,
+    ) -> tuple[list[list[float]], list[dict]]:
+        open_windows = [list(raw_window)]
+        blockers = []
+        if goal_distance_cm is None:
+            return open_windows, blockers
+
+        chassis_width = self._shoot_chassis_width_cm()
+        center_rad = math.radians(float(center_bearing))
+        center_cos = math.cos(center_rad)
+        center_sin = math.sin(center_rad)
+
+        try:
+            chassis_list = self.RobotChassisPos()
+        except Exception:
+            chassis_list = []
+
+        for item in chassis_list or []:
+            point = self._normalize_robot_xy(item)
+            if point is None:
+                continue
+            projection = point["x"] * center_cos + point["y"] * center_sin
+            if projection <= 0.0:
+                continue
+            if goal_distance_cm is not None and projection >= float(goal_distance_cm):
+                continue
+
+            bearing = self._bearing_deg(point["x"], point["y"])
+            bearing_unwrapped = self._nearest_unwrapped_angle(bearing, center_bearing)
+            half_width = math.degrees(math.atan2(chassis_width / 2.0, max(1.0, point["distance"])))
+            half_width += max(0.0, float(blocker_margin_deg))
+            blocked = [bearing_unwrapped - half_width, bearing_unwrapped + half_width]
+            overlap_start = max(raw_window[0], blocked[0])
+            overlap_end = min(raw_window[1], blocked[1])
+            if overlap_end <= overlap_start:
+                continue
+
+            blockers.append({
+                "position": [round(point["x"], 2), round(point["y"], 2)],
+                "bearing_deg": self._format_angle(bearing),
+                "distance_cm": round(point["distance"], 2),
+                "window_deg": self._format_interval([overlap_start, overlap_end]),
+                "conf": None if point["conf"] is None else round(point["conf"], 3),
+            })
+            open_windows = self._subtract_interval(open_windows, [overlap_start, overlap_end])
+            if not open_windows:
+                break
+
+        return open_windows, blockers
+
+    def ShootWindow(
+        self,
+        target: str = "opponent",
+        *,
+        current_yaw_deg: float | None = None,
+        goal_width_cm: float | None = None,
+        camera_fov_deg: float | None = None,
+        fallback_goal_distance_cm: float | None = None,
+        use_estimated_goal: bool = True,
+        blocker_margin_deg: float = 3.0,
+        min_goal_conf: float = 0.0,
+    ) -> dict:
+        """Return the robot-frame shooting window for the requested goal.
+
+        Angles are robot-relative degrees: 0 is forward, positive is left, and
+        values are presented in [-180, 180].
+        """
+
+        target = str(target or "opponent")
+        candidates = self._collect_shoot_goal_candidates(
+            goal_width_cm=goal_width_cm,
+            camera_fov_deg=camera_fov_deg,
+            min_goal_conf=min_goal_conf,
+        )
+        if not candidates:
+            goal = (
+                self._estimated_shoot_goal_candidate(
+                    target,
+                    goal_width_cm=goal_width_cm,
+                    fallback_goal_distance_cm=fallback_goal_distance_cm,
+                )
+                if use_estimated_goal
+                else None
+            )
+            if goal is None:
+                return self._empty_shoot_window(target, "no_goal_visible")
+        else:
+            goal, reason = self._select_shoot_goal(candidates, target)
+            if goal is None:
+                goal = (
+                    self._estimated_shoot_goal_candidate(
+                        target,
+                        goal_width_cm=goal_width_cm,
+                        fallback_goal_distance_cm=fallback_goal_distance_cm,
+                    )
+                    if use_estimated_goal and target in ("opponent", "own")
+                    else None
+                )
+                if goal is None:
+                    return self._empty_shoot_window(target, reason or "no_goal_visible")
+
+        estimated = goal.get("source") == "estimated"
+
+        center = float(goal["window"]["center"])
+        raw_window = [float(goal["window"]["start"]), float(goal["window"]["end"])]
+        if raw_window[1] < raw_window[0]:
+            raw_window = [raw_window[1], raw_window[0]]
+
+        goal_distance = goal["distance"]
+        open_windows, blockers = self._shoot_blocker_windows(
+            raw_window,
+            center,
+            goal_distance,
+            blocker_margin_deg,
+        )
+        best_bearing = self._best_open_angle(open_windows)
+        window_open = best_bearing is not None
+        can_shoot_now = bool(window_open and any(self._interval_contains(window, 0.0) for window in open_windows))
+        if not window_open:
+            reason = "blocked"
+        elif can_shoot_now:
+            reason = "ok"
+        else:
+            reason = "need_turn"
+        if estimated:
+            reason = f"estimated_{reason}"
+
+        if best_bearing is None:
+            turn_error = None
+            target_yaw = None
+        else:
+            turn_error = self._normalize_signed_angle(best_bearing)
+            if current_yaw_deg is None:
+                target_yaw = self._normalize_signed_angle(turn_error)
+            else:
+                target_yaw = (float(current_yaw_deg) + turn_error) % 360.0
+
+        return {
+            "target": target,
+            "goal_key": goal["key"],
+            "goal_color": goal["color"],
+            "reason": reason,
+            "window_open": bool(window_open),
+            "can_shoot_now": can_shoot_now,
+            "raw_window_deg": self._format_interval(raw_window),
+            "open_windows_deg": [self._format_interval(window) for window in open_windows],
+            "best_bearing_deg": None if best_bearing is None else self._format_angle(best_bearing),
+            "turn_error_deg": None if turn_error is None else self._format_angle(turn_error),
+            "target_yaw_deg": None if target_yaw is None else round(float(target_yaw), 2),
+            "goal_distance_cm": None if goal_distance is None else round(float(goal_distance), 2),
+            "blockers": blockers,
+        }
+
+    def CanShoot(self, target: str = "opponent", **kwargs) -> bool:
+        """Return True when the current heading is inside an open shooting window."""
+
+        return bool(self.ShootWindow(target=target, **kwargs).get("can_shoot_now", False))
 
     def FieldGoalsPos(self):
         """获取球门在场地坐标系下的位置。"""
