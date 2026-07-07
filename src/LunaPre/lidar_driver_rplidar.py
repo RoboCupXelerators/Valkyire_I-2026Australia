@@ -15,22 +15,23 @@ DEFAULT_RPLIDAR_TIMEOUT = 1.0
 DEFAULT_RPLIDAR_RECONNECT_DELAY = 0.5
 DEFAULT_RPLIDAR_SCAN_MIN_POINTS = 5
 DEFAULT_RPLIDAR_ANGLE_OFFSET_DEG = 0.0
-DEFAULT_RPLIDAR_MAX_BUF_MEAS = 3000
+DEFAULT_RPLIDAR_MAX_BUF_MEAS = 65536
+DEFAULT_RPLIDAR_USE_SCAN_ITERATOR = True
 RPLIDAR_MODEL_CONFIGS = {
     "s1": {
         "baudrate": 256000,
         "scan_type": "normal",
-        "max_buf_meas": 3000,
+        "max_buf_meas": 65536,
     },
     "s2": {
         "baudrate": 1000000,
         "scan_type": "normal",
-        "max_buf_meas": 3000,
+        "max_buf_meas": 131072,
     },
     "s3": {
         "baudrate": 1000000,
         "scan_type": "normal",
-        "max_buf_meas": 3000,
+        "max_buf_meas": 131072,
     },
 }
 
@@ -50,6 +51,33 @@ def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None:
         return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"Invalid {name}={value!r}; using {default}.")
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value_key = str(value).strip().lower()
+    if value_key in {"1", "true", "yes", "on"}:
+        return True
+    if value_key in {"0", "false", "no", "off"}:
+        return False
+    logger.warning(f"Invalid {name}={value!r}; using {default}.")
+    return default
+
+
+def _env_max_buf_meas(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value_key = str(value).strip().lower()
+    if value_key in {"0", "false", "none", "off", "unlimited"}:
+        return 0
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -104,6 +132,7 @@ class RPLidarDriver:
         reconnect_delay: float | None = None,
         scan_min_points: int | None = None,
         max_buf_meas: int | None = None,
+        use_scan_iterator: bool | None = None,
     ):
         self.lidar_type = self._resolve_lidar_type(lidar_type)
         model_config = RPLIDAR_MODEL_CONFIGS[self.lidar_type]
@@ -141,8 +170,13 @@ class RPLidarDriver:
             int(
                 max_buf_meas
                 if max_buf_meas is not None
-                else _env_int("LIDAR_MAX_BUF_MEAS", int(model_config.get("max_buf_meas", DEFAULT_RPLIDAR_MAX_BUF_MEAS)))
+                else _env_max_buf_meas("LIDAR_MAX_BUF_MEAS", int(model_config.get("max_buf_meas", DEFAULT_RPLIDAR_MAX_BUF_MEAS)))
             ),
+        )
+        self.use_scan_iterator = bool(
+            use_scan_iterator
+            if use_scan_iterator is not None
+            else _env_bool("LIDAR_USE_SCAN_ITERATOR", DEFAULT_RPLIDAR_USE_SCAN_ITERATOR)
         )
 
         self._stop_event = threading.Event()
@@ -192,8 +226,15 @@ class RPLidarDriver:
             current_scan = []
             try:
                 logger.info(
-                    "Starting rplidar driver: type=%s port=%s baudrate=%s timeout=%s"
-                    % (self.lidar_type, self.port, self.baudrate, self.timeout)
+                    "Starting rplidar driver: type=%s port=%s baudrate=%s timeout=%s max_buf=%s scan_iterator=%s"
+                    % (
+                        self.lidar_type,
+                        self.port,
+                        self.baudrate,
+                        self.timeout,
+                        self.max_buf_meas or "unlimited",
+                        self.use_scan_iterator,
+                    )
                 )
                 lidar = RPLidar(self.port, baudrate=self.baudrate, timeout=self.timeout)
                 self._lidar = lidar
@@ -243,6 +284,8 @@ class RPLidarDriver:
                 self._stop_event.wait(self.reconnect_delay)
 
     def _iter_measurements(self, lidar):
+        if self.use_scan_iterator and hasattr(lidar, "iter_scans"):
+            return self._iter_scan_measurements(lidar)
         if hasattr(lidar, "iter_measurments"):
             try:
                 return lidar.iter_measurments(max_buf_meas=self.max_buf_meas)
@@ -259,6 +302,34 @@ class RPLidarDriver:
             except TypeError:
                 return lidar.iter_measures()
         raise RuntimeError("rplidar module does not expose a measurement iterator")
+
+    def _iter_scan_measurements(self, lidar):
+        scan_iterator = self._iter_scans(lidar)
+        for scan in scan_iterator:
+            first_measurement = True
+            for item in scan:
+                measurement = self._normalize_measurement(item, default_new_scan=first_measurement)
+                if measurement is None:
+                    continue
+                new_scan, quality, angle, distance = measurement
+                yield bool(first_measurement or new_scan), quality, angle, distance
+                first_measurement = False
+
+    def _iter_scans(self, lidar):
+        try:
+            return lidar.iter_scans(
+                scan_type=self.scan_type,
+                max_buf_meas=self.max_buf_meas,
+                min_len=self.scan_min_points,
+            )
+        except TypeError:
+            try:
+                return lidar.iter_scans(max_buf_meas=self.max_buf_meas, min_len=self.scan_min_points)
+            except TypeError:
+                try:
+                    return lidar.iter_scans(max_buf_meas=self.max_buf_meas)
+                except TypeError:
+                    return lidar.iter_scans()
 
     def _normalize_measurements(self, iterator):
         """Yield measurements as (new_scan, quality, angle, distance)."""

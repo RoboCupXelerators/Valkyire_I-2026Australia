@@ -744,6 +744,7 @@ class VisionPreUntil:
     
     def ReadCams(self):
         FrameCount = 0
+        warn_flag = False
         LastTime = time.time()
         fail_counts = [0] * len(self.Cams)
         while not self._stop_event.is_set():
@@ -764,7 +765,8 @@ class VisionPreUntil:
             FrameCount += 1
             CurrentTime = time.time()
             if CurrentTime - LastTime >= 1.0:
-                if self.cfg.Debug.FullLog:
+                if self.cfg.Debug.FullLog and not warn_flag:
+                    warn_flag = True
                     self.logger.debug("Camera FPS: "+str(FrameCount))
                 FrameCount = 0
                 LastTime = CurrentTime

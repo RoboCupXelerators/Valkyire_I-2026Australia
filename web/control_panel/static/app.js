@@ -64,9 +64,8 @@ function cacheElements() {
     
     // Overview
     elements.uptime = document.getElementById('uptime');
-    elements.robotX = document.getElementById('robot-x');
-    elements.robotY = document.getElementById('robot-y');
-    elements.robotYaw = document.getElementById('robot-yaw');
+    elements.robotPose = document.getElementById('robot-pose');
+    elements.lidarPointCount = document.getElementById('lidar-point-count');
     elements.hasBall = document.getElementById('has-ball');
     elements.ballX = document.getElementById('ball-x');
     elements.ballY = document.getElementById('ball-y');
@@ -293,12 +292,12 @@ function updateLatencyDisplay() {
         const camIdx = CAM_INDICES[i];
         const el = document.getElementById('lat-cam' + i);
         if (!el) continue;
-        
+
         const samples = camLatencies[camIdx];
         if (samples.length > 0) {
             const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
             el.textContent = avg.toFixed(0) + ' ms';
-            
+
             // Color coding based on latency
             el.classList.remove('latency-good', 'latency-medium', 'latency-bad');
             if (avg < 100) {
@@ -384,8 +383,8 @@ function updateVisionState() {
             
             // Update ball position
             const ballPosEl = document.getElementById('ball-pos');
-            if (ballPosEl && data.ball_pos_cm) {
-                ballPosEl.textContent = `(${data.ball_pos_cm[0]?.toFixed(1) || '--'}, ${data.ball_pos_cm[1]?.toFixed(1) || '--'}) cm`;
+            if (ballPosEl) {
+                ballPosEl.textContent = formatBallPositionText(data.ball_pos_cm);
             }
             
             // Update vision status
@@ -604,9 +603,10 @@ function drawRadar(data) {
     let maxDist = 100; // 最小范围 100cm
     
     // 计算球到机器人的距离
-    if (data.ball_pos_cm && data.ball_pos_cm.length >= 2) {
-        const bx = data.ball_pos_cm[0] || 0;
-        const by = data.ball_pos_cm[1] || 0;
+    const freeBall = getFreeBallCoords(data.ball_pos_cm);
+    if (freeBall) {
+        const bx = freeBall.x;
+        const by = freeBall.y;
         const ballDist = Math.sqrt(bx * bx + by * by);
         maxDist = Math.max(maxDist, ballDist * 1.5); // 留出 50% 余量
     }
@@ -666,35 +666,34 @@ function drawRadar(data) {
     ctx.fillText('ROBOT', cx + 12, cy - 4);
     
     // Ball
-    if (data.ball_pos_cm && data.ball_pos_cm.length >= 2) {
-        const bx = data.ball_pos_cm[0], by = data.ball_pos_cm[1];
-        if (bx !== 0 || by !== 0) {
-            const px = cx - by * scale;  // Y left is positive
-            const py = cy - bx * scale;  // X forward is positive
+    if (freeBall) {
+        const bx = freeBall.x;
+        const by = freeBall.y;
+        const px = cx - by * scale;  // Y left is positive
+        const py = cy - bx * scale;  // X forward is positive
+
+        // 检查球是否在可视范围内
+        if (px >= 0 && px <= w && py >= 0 && py <= h) {
+            ctx.fillStyle = 'rgba(247,37,133,0.95)';
+            ctx.beginPath();
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.fill();
             
-            // 检查球是否在可视范围内
-            if (px >= 0 && px <= w && py >= 0 && py <= h) {
-                ctx.fillStyle = 'rgba(247,37,133,0.95)';
-                ctx.beginPath();
-                ctx.arc(px, py, 6, 0, Math.PI * 2);
-                ctx.fill();
-                
-                // 球的标注和距离
-                const ballDist = Math.sqrt(bx * bx + by * by);
-                ctx.fillStyle = 'rgba(247,37,133,0.9)';
-                ctx.font = '10px sans-serif';
-                ctx.fillText(`BALL (${ballDist.toFixed(0)}cm)`, px + 10, py - 6);
-            } else {
-                // 球在范围外，显示指示箭头
-                const angle = Math.atan2(-bx, -by);
-                const arrowDist = Math.min(w, h) * 0.38;
-                const arrowX = cx + Math.cos(angle) * arrowDist;
-                const arrowY = cy + Math.sin(angle) * arrowDist;
-                
-                ctx.fillStyle = 'rgba(247,37,133,0.7)';
-                ctx.font = '10px sans-serif';
-                ctx.fillText('BALL (超出范围)', arrowX - 40, arrowY);
-            }
+            // 球的标注和距离
+            const ballDist = Math.sqrt(bx * bx + by * by);
+            ctx.fillStyle = 'rgba(247,37,133,0.9)';
+            ctx.font = '10px sans-serif';
+            ctx.fillText(`BALL (${ballDist.toFixed(0)}cm)`, px + 10, py - 6);
+        } else {
+            // 球在范围外，显示指示箭头
+            const angle = Math.atan2(-bx, -by);
+            const arrowDist = Math.min(w, h) * 0.38;
+            const arrowX = cx + Math.cos(angle) * arrowDist;
+            const arrowY = cy + Math.sin(angle) * arrowDist;
+
+            ctx.fillStyle = 'rgba(247,37,133,0.7)';
+            ctx.font = '10px sans-serif';
+            ctx.fillText('BALL (超出范围)', arrowX - 40, arrowY);
         }
     }
     
@@ -1170,22 +1169,29 @@ async function updateOverview() {
         // 更新系统在线状态
         updateOnlineStatus(true);
         
-        // Update robot status - use robot_x_cm/robot_y_cm if available
-        if (visionData.robot_x_cm !== undefined && visionData.robot_y_cm !== undefined) {
-            elements.robotX.textContent = visionData.robot_x_cm.toFixed(1) + ' cm';
-            elements.robotY.textContent = visionData.robot_y_cm.toFixed(1) + ' cm';
-        } else if (visionData.chassis_list_cm && visionData.chassis_list_cm.length >= 2) {
+        const poseValid = visionData.robot_pose_valid !== false;
+        let poseX = poseValid ? toFiniteNumber(visionData.robot_x_cm) : NaN;
+        let poseY = poseValid ? toFiniteNumber(visionData.robot_y_cm) : NaN;
+        const poseYaw = poseValid ? toFiniteNumber(visionData.robot_yaw_deg) : NaN;
+        if (poseValid && (!Number.isFinite(poseX) || !Number.isFinite(poseY)) && visionData.chassis_list_cm && visionData.chassis_list_cm.length > 0) {
             // Fallback: chassis_list_cm is a list of detections, use first one
             const firstChassis = visionData.chassis_list_cm[0];
             if (firstChassis && firstChassis.length >= 2) {
-                elements.robotX.textContent = firstChassis[0].toFixed(1) + ' cm';
-                elements.robotY.textContent = firstChassis[1].toFixed(1) + ' cm';
+                poseX = toFiniteNumber(firstChassis[0]);
+                poseY = toFiniteNumber(firstChassis[1]);
             }
         }
-        
-        // Update yaw
-        if (visionData.robot_yaw_deg !== undefined) {
-            elements.robotYaw.textContent = visionData.robot_yaw_deg.toFixed(1) + '°';
+
+        if (elements.robotPose) {
+            elements.robotPose.textContent = formatPose(poseX, poseY, poseYaw);
+        }
+
+        if (elements.lidarPointCount) {
+            const lidarStatus = visionData.lidar_status || {};
+            const pointCount = toFiniteNumber(lidarStatus.point_count ?? lidarStatus.scan_point_count ?? 0);
+            elements.lidarPointCount.textContent = Number.isFinite(pointCount) ? `${pointCount} 点` : '-- 点';
+            elements.lidarPointCount.style.color = lidarStatus.state === 'ok' ? '#22c55e' : 'var(--text-muted)';
+            elements.lidarPointCount.title = `raw=${lidarStatus.raw_point_count ?? '--'}, lines=${lidarStatus.line_count ?? '--'}, state=${lidarStatus.state || '--'}`;
         }
         
         // Update has_ball status
@@ -1194,10 +1200,7 @@ async function updateOverview() {
             elements.hasBall.style.color = visionData.has_ball ? '#22c55e' : 'var(--text-muted)';
         }
         
-        if (visionData.ball_pos_cm) {
-            elements.ballX.textContent = visionData.ball_pos_cm[0] ? visionData.ball_pos_cm[0].toFixed(1) + ' cm' : '-- cm';
-            elements.ballY.textContent = visionData.ball_pos_cm[1] ? visionData.ball_pos_cm[1].toFixed(1) + ' cm' : '-- cm';
-        }
+        updateBallOverview(visionData.ball_pos_cm);
         
         // Update uptime
         if (visionData.uptime_s) {
@@ -1352,6 +1355,74 @@ function formatTime(seconds) {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+function toFiniteNumber(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : NaN;
+}
+
+function getBallObservation(ballPos) {
+    if (!Array.isArray(ballPos) || ballPos.length < 2) {
+        return { state: 'lost' };
+    }
+    const x = toFiniteNumber(ballPos[0]);
+    const y = toFiniteNumber(ballPos[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { state: 'lost' };
+    }
+    if (x === 0xFFF && y === 0xFFF) {
+        return { state: 'lost' };
+    }
+    if (x === 0xDDD && y === 0xDDD) {
+        return { state: 'held' };
+    }
+    return { state: 'free', x, y };
+}
+
+function getFreeBallCoords(ballPos) {
+    const observation = getBallObservation(ballPos);
+    return observation.state === 'free' ? observation : null;
+}
+
+function formatBallPositionText(ballPos) {
+    const observation = getBallObservation(ballPos);
+    if (observation.state === 'lost') return '未发现';
+    if (observation.state === 'held') return '持球中';
+    return `(${observation.x.toFixed(1)}, ${observation.y.toFixed(1)}) cm`;
+}
+
+function formatCm(value) {
+    const num = toFiniteNumber(value);
+    return Number.isFinite(num) ? `${num.toFixed(1)} cm` : '-- cm';
+}
+
+function formatPose(x, y, yaw) {
+    const hasX = Number.isFinite(x);
+    const hasY = Number.isFinite(y);
+    const hasYaw = Number.isFinite(yaw);
+    if (!hasX && !hasY && !hasYaw) return '--';
+    const xyText = hasX && hasY ? `(${x.toFixed(1)}, ${y.toFixed(1)}) cm` : '(--, --) cm';
+    const yawText = hasYaw ? `${yaw.toFixed(1)}°` : '--°';
+    return `${xyText} @ ${yawText}`;
+}
+
+function updateBallOverview(ballPos) {
+    if (!elements.ballX || !elements.ballY) return;
+    const observation = getBallObservation(ballPos);
+    if (observation.state === 'lost') {
+        elements.ballX.textContent = '未发现';
+        elements.ballY.textContent = '未发现';
+        return;
+    }
+    if (observation.state === 'held') {
+        elements.ballX.textContent = '持球中';
+        elements.ballY.textContent = '持球中';
+        return;
+    }
+
+    elements.ballX.textContent = formatCm(observation.x);
+    elements.ballY.textContent = formatCm(observation.y);
 }
 
 // ==================== 工具页面 ====================

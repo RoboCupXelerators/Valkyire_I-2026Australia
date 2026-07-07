@@ -139,6 +139,9 @@ class Lidar:
         self.LidarPositioningThread = None
         self.dirLidarQueue = queue.Queue(maxsize=max(1, int(queue_size)))
         self.dirNormalizedDistance = list(LIDAR_DISABLED_DISTS if self.disabled else LIDAR_ZERO_DISTS)
+        self.last_raw_scan_count = 0
+        self.last_scan_point_count = 0
+        self.last_line_count = 0
 
         if self.driver is None and auto_start:
             try:
@@ -209,16 +212,24 @@ class Lidar:
                     continue
                 lines = []
                 points = []
+                try:
+                    raw_point_count = len(Ranges)
+                except TypeError:
+                    raw_point_count = 0
                 for Element in Ranges:
                     if 0 < Element[1] < 2.5:
                         X = Element[1] * math.sin(math.radians(Element[0]))
                         Y = Element[1] * math.cos(math.radians(Element[0]))
                         points.append((X, Y, Element[0]))
 
+                point_count = len(points)
+                line_pair_count = 0
+                self.last_raw_scan_count = raw_point_count
+                self.last_scan_point_count = point_count
+
                 if points:
-                    c = 0
                     for i in range(0, len(points), step):
-                        c += 1
+                        line_pair_count += 1
                         if i + 1 < len(points):
                             if points[i][0] == points[i + 1][0] and points[i][1] == points[i + 1][1]:
                                 continue
@@ -235,14 +246,20 @@ class Lidar:
                                 Theta,
                                 LidarAVGTheta,
                             ))
-                    frameCount += 1
-                    CurrentTime = time.time()
-                    if CurrentTime - lastTime >= 1.0:
-                        if Settings.Debug.FullLog:
-                            logger.debug(f"FPS: {frameCount}")
-                            logger.debug(f"Points: {c}")
-                            frameCount = 0
-                            lastTime = CurrentTime
+                self.last_line_count = len(lines)
+
+                frameCount += 1
+                CurrentTime = time.time()
+                if CurrentTime - lastTime >= 1.0:
+                    if Settings.Debug.FullLog:
+                        logger.debug(
+                            "Lidar FPS: %s | points=%s | raw=%s | line_pairs=%s"
+                            % (frameCount, point_count, raw_point_count, line_pair_count)
+                        )
+                    frameCount = 0
+                    lastTime = CurrentTime
+
+                if points:
 
                     Compass = self._current_yaw()
                     CompassFull = Compass
@@ -298,6 +315,10 @@ class Lidar:
     def GetDists(self):
         """返回一个列表 [前, 左, 后, 右]，单位 mm。"""
         return self.dirNormalizedDistance
+
+    def GetPointCount(self):
+        """返回最近一帧雷达过滤后的有效点数量。"""
+        return self.last_scan_point_count
 
     def GetFullData(self):
         return self.dirLidarQueue.get()

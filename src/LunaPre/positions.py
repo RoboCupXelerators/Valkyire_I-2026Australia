@@ -386,8 +386,9 @@ class Positions:
                 self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos
-        if Settings.Debug.FullLog:
-            logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
+        if self.WarnedLidarCount:
+            if Settings.Debug.FullLog:
+                logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
 
     def BallState(self, ball_pos: list | None = None) -> str:
@@ -440,13 +441,21 @@ class Positions:
         else:
             if self.WarnedLidarCount:
                 self.WarnedLidarCount = 0
+                if Settings.Debug.FullLog:
+                    logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
             else:
                 pass
-            if Settings.Debug.FullLog:
-                logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
         return self.BoundsDistance
 
-    def FieldRobotPose(self, lower: bool | None = False):
+    def DirectDistanceSnapshot(self):
+        """Return the latest direct lidar distances without retry/sleep side effects."""
+        try:
+            self.BoundsDistance = runtime.lidar.GetDists()
+            return list(self.BoundsDistance)
+        except Exception:
+            return list(LIDAR_DISABLED_DISTS)
+
+    def FieldRobotPose(self, lower: bool | None = False, distance: list | None = None):
         '''
         `非阻塞函数`
 
@@ -465,9 +474,10 @@ class Positions:
             self.LidarPos = pose
             return self.LidarPos
 
-        _distance = self.DirectDistance()
+        _distance = list(distance) if distance is not None else self.DirectDistance()
         if _distance == LIDAR_DISABLED_DISTS:
-            runtime.chassis.stop()
+            if distance is None:
+                runtime.chassis.stop()
             return list(POSE_NOT_FOUND)
         if (_distance[0]+_distance[2]) < (cfg.Bounds.Long)*self.LidarScale*self.BoundsScale:
             if _distance[0] > _distance[2]:
@@ -484,7 +494,7 @@ class Positions:
         else:
             X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
         self.LidarPos = [Y/10,X/10,runtime.compass()]
-        logger.info("[Field] Robot Pose: %s"%self.LidarPos)
+        # logger.info("[Field] Robot Pose: %s"%self.LidarPos)
         # 20251216 already changed X_forward,Y_left dimension  [tested]
         return self.LidarPos
 

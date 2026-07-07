@@ -226,6 +226,8 @@ class ControlPanelApp:
             "backend": None,
             "error": None,
         }
+        self._vision_attach_lock = threading.Lock()
+        self._vision_attaching = False
         
         # 注册 Vision 模块的摄像头
         if self.vision is not None:
@@ -316,6 +318,9 @@ class ControlPanelApp:
             "running": False,
             "disabled": None,
             "dist_mm": list(LIDAR_DISABLED_DISTS),
+            "point_count": 0,
+            "raw_point_count": 0,
+            "line_count": 0,
             "message": "LunaPre runtime not initialized",
         }
 
@@ -336,9 +341,20 @@ class ControlPanelApp:
         status["driver"] = type(getattr(lidar, "driver", None)).__name__ if getattr(lidar, "driver", None) else None
         status["running"] = bool(getattr(lidar, "running", False))
         status["disabled"] = bool(getattr(lidar, "disabled", False))
+        status["point_count"] = int(getattr(lidar, "last_scan_point_count", 0) or 0)
+        status["raw_point_count"] = int(getattr(lidar, "last_raw_scan_count", 0) or 0)
+        status["line_count"] = int(getattr(lidar, "last_line_count", 0) or 0)
 
         try:
-            dists = list(lidar.GetDists())
+            positions = self._get_positions_facade()
+            if positions is not None:
+                snapshot = getattr(positions, "DirectDistanceSnapshot", None)
+                if callable(snapshot):
+                    dists = list(snapshot())
+                else:
+                    dists = list(lidar.GetDists())
+            else:
+                dists = list(lidar.GetDists())
             status["dist_mm"] = dists
         except Exception as e:
             status["state"] = "error"
@@ -358,17 +374,28 @@ class ControlPanelApp:
         self._last_lidar_status = status
         return status
 
+    def _get_runtime_module(self):
+        runtime = sys.modules.get("LunaPre.runtime")
+        if runtime is not None and getattr(runtime, "_runtime_initialized", False):
+            return runtime
+        return None
+
     def _get_positions_facade(self):
-        """Return LunaPre.UnitedPosition without forcing runtime initialization."""
+        """Return an already-loaded LunaPre.UnitedPosition without starting vision/runtime."""
+        runtime = self._get_runtime_module()
+        if runtime is None:
+            return None
         try:
             import LunaPre
-
-            return getattr(LunaPre, "UnitedPosition", None)
+            luna = LunaPre
         except Exception:
+            luna = sys.modules.get("LunaPre")
+        if luna is None:
             return None
+        return getattr(luna, "UnitedPosition", None)
 
     def _fill_state_from_positions(self, result: dict) -> None:
-        """Use the same semantic position facade consumed by strategies."""
+        """Fill lidar-derived pose only; detection data must come from app.vision."""
         positions = self._get_positions_facade()
         if positions is None:
             return
@@ -382,29 +409,125 @@ class ControlPanelApp:
         except Exception:
             pass
 
-        try:
-            ball_pos = positions.RobotBallPos()
-            if ball_pos:
-                result["ball_pos_cm"] = ball_pos
-                ball_state = positions.BallState(ball_pos)
-                result["has_ball"] = ball_state == "held"
-        except Exception:
-            pass
+    def _call_provider(self, provider, *names):
+        if provider is None:
+            return None
+        for name in names:
+            method = getattr(provider, name, None)
+            if callable(method):
+                try:
+                    return method()
+                except Exception:
+                    return None
+        return None
 
-        try:
-            chassis_pos = positions.FieldChassisPos()
-            if chassis_pos:
-                result["chassis_list_cm"] = chassis_pos
-        except Exception:
-            pass
+    def _fill_pose_state(self, result: dict) -> None:
+        """Fill robot pose through the Position facade; never start another runtime."""
+        positions = self._get_positions_facade()
+        if positions is not None:
+            try:
+                snapshot = getattr(positions, "DirectDistanceSnapshot", None)
+                dists = list(snapshot()) if callable(snapshot) else list(LIDAR_DISABLED_DISTS)
+                if dists == LIDAR_DISABLED_DISTS or dists == [0, 0, 0, 0]:
+                    return
+                try:
+                    pose = positions.FieldRobotPose(distance=dists)
+                except TypeError:
+                    pose = positions.FieldRobotPose()
+                if pose and len(pose) >= 3 and list(pose) != POSE_NOT_FOUND:
+                    result["robot_x_cm"] = round(float(pose[0]), 2)
+                    result["robot_y_cm"] = round(float(pose[1]), 2)
+                    result["robot_yaw_deg"] = round(float(pose[2]), 2)
+                    result["robot_pose_valid"] = True
+                    return
+            except Exception:
+                pass
 
+        pose = self._call_provider(self.bits, "GetPose")
+        if pose and len(pose) >= 3:
+            try:
+                result["robot_x_cm"] = round(float(pose[0]), 2)
+                result["robot_y_cm"] = round(float(pose[1]), 2)
+                result["robot_yaw_deg"] = round(float(pose[2]), 2)
+                result["robot_pose_valid"] = True
+                return
+            except Exception:
+                pass
+
+        chassis, _ = self._get_chassis_and_peripheral(initialize=False)
+        pose = self._call_provider(chassis, "GetPose")
+        if pose and len(pose) >= 3:
+            try:
+                result["robot_x_cm"] = round(float(pose[0]), 2)
+                result["robot_y_cm"] = round(float(pose[1]), 2)
+                result["robot_yaw_deg"] = round(float(pose[2]), 2)
+                result["robot_pose_valid"] = True
+                return
+            except Exception:
+                pass
+
+        yaw = self._call_provider(self.bits, "GetYaw")
+        if yaw is None:
+            yaw = self._call_provider(chassis, "GetYaw")
+        if yaw is not None:
+            try:
+                result["robot_yaw_deg"] = round(float(yaw), 2)
+                result["robot_pose_valid"] = True
+            except Exception:
+                pass
+
+    def _normalize_ball_observation(self, ball_pos):
+        if ball_pos is None:
+            return list(BALL_NOT_FOUND)
+        tolist = getattr(ball_pos, "tolist", None)
+        if callable(tolist):
+            try:
+                ball_pos = tolist()
+            except Exception:
+                return list(BALL_NOT_FOUND)
+        if not isinstance(ball_pos, (list, tuple)) or len(ball_pos) < 2:
+            return list(BALL_NOT_FOUND)
         try:
-            goals = positions.RobotGoalsPos()
-            if isinstance(goals, dict):
-                result["blue_goal_pos_cm"] = goals.get("blue_goal")
-                result["yellow_goal_pos_cm"] = goals.get("yellow_goal")
+            x = float(ball_pos[0])
+            y = float(ball_pos[1])
         except Exception:
-            pass
+            return list(BALL_NOT_FOUND)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return list(BALL_NOT_FOUND)
+        if [int(x), int(y)] == BALL_NOT_FOUND:
+            return list(BALL_NOT_FOUND)
+        if [int(x), int(y)] == [0xDDD, 0xDDD]:
+            return [0xDDD, 0xDDD]
+        if x == 0 and y == 0:
+            return list(BALL_NOT_FOUND)
+        return [round(x, 2), round(y, 2)]
+
+    def _fill_state_from_vision_provider(self, result: dict) -> None:
+        """Fill live detection state from the single vision object owned by the panel."""
+        vision = self.vision
+        if vision is None:
+            return
+
+        ball_pos = self._call_provider(vision, "GetBallPos", "get_ball_pos")
+        normalized_ball = self._normalize_ball_observation(ball_pos)
+        result["ball_pos_cm"] = normalized_ball
+
+        has_ball = self._call_provider(self.bits, "HasBall")
+        result["has_ball"] = bool(has_ball) or normalized_ball == [0xDDD, 0xDDD]
+
+        chassis_pos = self._call_provider(vision, "GetChassisPos", "get_chassis_pos")
+        if chassis_pos is not None:
+            result["chassis_list_cm"] = chassis_pos
+
+        goals = self._call_provider(vision, "GetGoalsPos", "get_goals_pos")
+        if isinstance(goals, dict):
+            result["blue_goal_pos_cm"] = goals.get("blue_goal")
+            result["yellow_goal_pos_cm"] = goals.get("yellow_goal")
+        elif isinstance(goals, (list, tuple)):
+            if len(goals) > 0:
+                result["blue_goal_pos_cm"] = goals[0]
+            if len(goals) > 1:
+                result["yellow_goal_pos_cm"] = goals[1]
 
     def _fill_state_from_runtime_fallback(self, result: dict) -> None:
         """Fallback for panels started without a usable Positions facade."""
@@ -553,13 +676,14 @@ class ControlPanelApp:
         result = {
             "ts": time.time(),
             "uptime_s": round(time.time() - self.start_ts, 3),
-            "ball_pos_cm": [0, 0],
+            "ball_pos_cm": list(BALL_NOT_FOUND),
             "chassis_list_cm": [],
             "blue_goal_pos_cm": None,
             "yellow_goal_pos_cm": None,
             "robot_x_cm": 0,
             "robot_y_cm": 0,
             "robot_yaw_deg": 0,
+            "robot_pose_valid": False,
             "has_ball": False,
             "ball_bboxes_640": [None, None, None, None],
             "chassis_bboxes_640": [None, None, None, None],
@@ -589,8 +713,8 @@ class ControlPanelApp:
             },
         }
         
-        self._fill_state_from_positions(result)
-        self._fill_state_from_runtime_fallback(result)
+        self._fill_pose_state(result)
+        self._fill_state_from_vision_provider(result)
         self._fill_vision_debug_state(result)
         
         return result
@@ -1336,8 +1460,21 @@ class ControlPanelApp:
             if not getattr(runtime, "_runtime_initialized", False):
                 runtime._init_runtime(auto_start_lidar=False)
             self.bits = getattr(runtime, "Bits", None)
-            if self.vision is None:
-                self.vision = getattr(runtime, "vision", None)
+            runtime_vision = getattr(runtime, "vision", None)
+            if runtime_vision is not None and self.vision is not runtime_vision:
+                old_vision = self.vision
+                self.vision = runtime_vision
+                if old_vision is not None:
+                    close = getattr(old_vision, "close", None)
+                    if callable(close):
+                        close()
+                self._register_vision_cameras()
+                self.set_vision_status("ready", backend=type(runtime_vision).__name__)
+            elif self.vision is None:
+                self.vision = runtime_vision
+                if self.vision is not None:
+                    self._register_vision_cameras()
+                    self.set_vision_status("ready", backend=type(self.vision).__name__)
             self._control_runtime_error = None
             return runtime
         except Exception as e:
@@ -1761,6 +1898,8 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', len(data))
+        if path.suffix.lower() in {'.html', '.css', '.js'}:
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(data)
     
@@ -2125,30 +2264,33 @@ def main():
     ap.add_argument(
         "--attach-runtime",
         action="store_true",
-        help="Attach existing LunaPre runtime objects. Default keeps control panel vision-only and does not start lidar.",
+        help="Deprecated compatibility flag; runtime is initialized by default unless --no-runtime is set.",
+    )
+    ap.add_argument(
+        "--no-runtime",
+        action="store_true",
+        help="Keep control panel vision-only and do not initialize LunaPre runtime/lidar.",
     )
     args = ap.parse_args()
     
-    # Keep the control panel vision-first by default. Importing LunaPre.Bits
-    # resolves lazy runtime proxies and can initialize lidar, chassis, and
-    # serial hardware before the UI is usable.
     bits = None
     vision = None
 
-    if args.attach_runtime:
+    if not args.no_runtime:
         try:
             import importlib
 
             runtime = importlib.import_module("LunaPre.runtime")
-            if getattr(runtime, "_runtime_initialized", False):
-                bits = getattr(runtime, "Bits", None)
-                vision = getattr(runtime, "vision", None)
-                print(f"[ControlPanel] Attached existing LunaPre runtime Bits: {type(bits).__name__ if bits else None}")
-                print(f"[ControlPanel] Attached existing LunaPre runtime vision: {type(vision).__name__ if vision else None}")
-            else:
-                print("[ControlPanel] LunaPre runtime is not initialized; staying vision-only")
+            if not getattr(runtime, "_runtime_initialized", False):
+                runtime._init_runtime(auto_start_lidar=True)
+            bits = getattr(runtime, "Bits", None)
+            vision = getattr(runtime, "vision", None)
+            print(f"[ControlPanel] Attached LunaPre runtime Bits: {type(bits).__name__ if bits else None}")
+            print(f"[ControlPanel] Attached LunaPre runtime vision: {type(vision).__name__ if vision else None}")
         except Exception as e:
-            print(f"[ControlPanel] Could not inspect LunaPre runtime: {e}")
+            print(f"[ControlPanel] Could not initialize LunaPre runtime; continuing vision-only: {e}")
+    else:
+        print("[ControlPanel] Runtime disabled by --no-runtime; lidar/pose will be unavailable")
     
     # Initialize app with bits
     app = ControlPanelApp(
@@ -2161,19 +2303,38 @@ def main():
     def attach_vision_module():
         errors = []
 
+        with app._vision_attach_lock:
+            if app.vision is not None or app._vision_attaching:
+                return
+            app._vision_attaching = True
+
         app.set_vision_status("starting")
         try:
             import importlib
 
             app.set_vision_status("starting", backend="vision-utils")
             module = importlib.import_module("vision_utils.Vision")
-            app.vision = module.UnitedVision()
+            new_vision = module.UnitedVision()
+            with app._vision_attach_lock:
+                if app.vision is None:
+                    app.vision = new_vision
+                    new_vision = None
+            if new_vision is not None:
+                close = getattr(new_vision, "close", None)
+                if callable(close):
+                    close()
+                if app.vision is not None:
+                    app.set_vision_status("ready", backend=type(app.vision).__name__)
+                return
             app._register_vision_cameras()
             app.set_vision_status("ready", backend="vision-utils")
             print("[ControlPanel] Vision module attached via vision-utils")
             return
         except Exception as e:
             errors.append(f"vision-utils: {e}")
+        finally:
+            with app._vision_attach_lock:
+                app._vision_attaching = False
 
         if app.vision is None:
             error_msg = " | ".join(errors)

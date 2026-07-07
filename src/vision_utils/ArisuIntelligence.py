@@ -23,6 +23,7 @@ class ArisuIntelligence(VisionPreUntil):
         self.HailoParams.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
 
         # Runtime flags
+        self._warned = False
         self._stop_event = threading.Event()
         self._model_ready = threading.Event()
         self._hailo_init_error: str | None = None
@@ -290,9 +291,11 @@ class ArisuIntelligence(VisionPreUntil):
                 best_goal_bbox = None  # (raw_x1, raw_y1, raw_x2, raw_y2, conf)
                 
                 # Debug: log OutputBuffer structure for goal detection
-                if Settings.Debug.FullLog and CameraIndex == 0:
-                    self.logger.debug(f"OutputBuffer len={len(OutputBuffer)}, shapes={[OutputBuffer[i].shape for i in range(min(4, len(OutputBuffer)))]}")
-                
+                if not self._warned:
+                    if Settings.Debug.FullLog and CameraIndex == 0:
+                        self.logger.debug(f"OutputBuffer len={len(OutputBuffer)}, shapes={[OutputBuffer[i].shape for i in range(min(4, len(OutputBuffer)))]}")
+                    self._warned = True
+
                 try:
                     if len(OutputBuffer) > 1 and OutputBuffer[1].shape[0] > 0:
                         for g in OutputBuffer[1]:

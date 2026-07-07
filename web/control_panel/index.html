@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Xelerator 控制面板</title>
-    <link rel="stylesheet" href="static/style.css">
+    <link rel="stylesheet" href="static/style.css?v=20260707-2">
 </head>
 <body>
     <div class="app">
@@ -93,17 +93,13 @@
                     <div class="card">
                         <h3>机器人状态</h3>
                         <div class="status-grid" id="robot-status">
-                            <div class="status-item">
-                                <span class="label">位置 X</span>
-                                <span class="value" id="robot-x">-- cm</span>
+                            <div class="status-item status-item-wide">
+                                <span class="label">当前姿态</span>
+                                <span class="value" id="robot-pose">--</span>
                             </div>
                             <div class="status-item">
-                                <span class="label">位置 Y</span>
-                                <span class="value" id="robot-y">-- cm</span>
-                            </div>
-                            <div class="status-item">
-                                <span class="label">航向角</span>
-                                <span class="value" id="robot-yaw">--°</span>
+                                <span class="label">雷达点数</span>
+                                <span class="value" id="lidar-point-count">-- 点</span>
                             </div>
                             <div class="status-item">
                                 <span class="label">持球状态</span>
@@ -1127,6 +1123,6 @@
         </main>
     </div>
 
-    <script src="static/app.js"></script>
+    <script src="static/app.js?v=20260707-2"></script>
 </body>
 </html>

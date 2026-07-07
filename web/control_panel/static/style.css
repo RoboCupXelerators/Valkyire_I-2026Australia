@@ -194,6 +194,11 @@ body {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
+}
+
+.status-grid .status-item-wide {
+    grid-column: 1 / -1;
 }
 
 .status-grid .label {
@@ -205,6 +210,9 @@ body {
     font-size: 1.1rem;
     font-weight: 600;
     color: var(--text-primary);
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
 }
 
 /* Ball Info */
@@ -240,7 +248,15 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-wrap: wrap;
+    min-width: 0;
     margin-bottom: 16px;
+}
+
+.recording-mini #rec-status {
+    flex: 1 1 120px;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .rec-indicator {
@@ -262,20 +278,26 @@ body {
 
 .rec-frames {
     margin-left: auto;
+    flex: 0 0 auto;
     color: var(--text-muted);
     font-size: 0.85rem;
 }
 
 /* Metrics */
 .metrics {
-    display: flex;
-    gap: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+    gap: 12px;
 }
 
 .metric {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
 }
 
 .metric .label {
@@ -284,8 +306,11 @@ body {
 }
 
 .metric .value {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
     font-weight: 700;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    line-height: 1.2;
 }
 
 /* Buttons */
@@ -696,18 +721,26 @@ body {
 .info-item {
     display: flex;
     justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    min-width: 0;
     padding: 8px 0;
     border-bottom: 1px solid var(--border-color);
 }
 
 .info-item .label {
+    flex: 0 0 auto;
     color: var(--text-muted);
     font-size: 0.85rem;
 }
 
 .info-item .value {
+    min-width: 0;
+    text-align: right;
     color: var(--text-primary);
     font-weight: 500;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
 }
 
 /* Settings Page */
