@@ -641,6 +641,31 @@ class Positions:
 
     @staticmethod
     def _empty_shoot_window(target: str, reason: str) -> dict:
+        """创建一个空的射门窗口结果字典。
+
+        当无法计算有效的射门窗口时，返回此默认结果。
+
+        Args:
+            target: 目标球门标识，可以是 "opponent"（对方球门）、"own"（己方球门）
+                   或具体的球门键名如 "blue_goal"、"yellow_goal"
+            reason: 无法计算射门窗口的原因字符串
+
+        Returns:
+            dict: 空的射门窗口结果字典，包含以下字段：
+                - target: 目标球门标识
+                - goal_key: 实际选中的球门键名（None表示未找到）
+                - goal_color: 球门颜色（None表示未找到）
+                - reason: 结果原因说明
+                - window_open: 射门窗口是否开启（False表示关闭）
+                - can_shoot_now: 是否可以立即射门（False表示不可）
+                - raw_window_deg: 原始射门窗口角度范围（None表示无窗口）
+                - open_windows_deg: 可用射门窗口列表（空列表表示无可用窗口）
+                - best_bearing_deg: 最佳射门方向角度（None表示无最佳方向）
+                - turn_error_deg: 需要转向的角度误差（None表示无法计算）
+                - target_yaw_deg: 目标航向角（None表示无法计算）
+                - goal_distance_cm: 球门距离（厘米）（None表示未知）
+                - blockers: 阻挡物列表（空列表表示无阻挡）
+        """
         return {
             "target": target,
             "goal_key": None,
@@ -692,6 +717,27 @@ class Positions:
         return result
 
     def _goal_bbox_sector(self, bbox, camera_fov_deg: float | None = None):
+        """从球门边界框计算射门窗口的角度扇区。
+
+        根据球门在相机图像中的边界框位置，计算该球门在机器人坐标系下
+        占据的角度范围（扇区）。
+
+        Args:
+            bbox: 球门边界框数据，格式为 [camera_id, class_id, x1, y1, x2, y2, conf]
+                - camera_id: 相机编号（0=后, 1=左, 2=前, 3=右）
+                - class_id: 类别编号（1=蓝色球门, 2=黄色球门）
+                - x1, y1, x2, y2: 边界框坐标（像素，640x分辨率）
+                - conf: 检测置信度
+            camera_fov_deg: 相机视野角度（度），如果为 None 则使用默认值
+
+        Returns:
+            dict | None: 扇区信息字典，包含：
+                - start: 扇区起始角度（度）
+                - end: 扇区结束角度（度）
+                - center: 扇区中心角度（度）
+                - span: 扇区宽度（度）
+            如果边界框无效则返回 None
+        """
         if bbox is None or len(bbox) < 7:
             return None
         try:
@@ -761,6 +807,27 @@ class Positions:
         return max(1.0, float(value))
 
     def _goal_window_from_position(self, point: dict, goal_width_cm: float) -> dict | None:
+        """根据球门位置和宽度计算射门窗口的角度范围。
+
+        通过球门中心点位置和球门宽度，计算从机器人视角看球门占据的角度范围。
+        使用三角函数计算球门边缘相对于球门中心的角度偏移。
+
+        Args:
+            point: 球门位置信息字典，包含：
+                - x: 球门x坐标（厘米）
+                - y: 球门y坐标（厘米）
+                - distance: 球门距离（厘米）
+                - conf: 检测置信度（可选）
+            goal_width_cm: 球门宽度（厘米）
+
+        Returns:
+            dict | None: 射门窗口信息字典，包含：
+                - start: 窗口起始角度（度）
+                - end: 窗口结束角度（度）
+                - center: 窗口中心角度（度），即球门方向
+                - span: 窗口宽度（度）
+            如果距离过近（<=1厘米）则返回 None
+        """
         dist = float(point["distance"])
         if dist <= 1.0:
             return None
@@ -780,6 +847,28 @@ class Positions:
         camera_fov_deg: float | None = None,
         min_goal_conf: float = 0.0,
     ) -> list[dict]:
+        """收集所有可见球门的候选信息列表。
+
+        遍历蓝色和黄色球门，检测它们的可见性并收集射门窗口相关信息。
+        支持从位置坐标和边界框两种来源计算射门窗口。
+
+        Args:
+            goal_width_cm: 球门宽度（厘米）
+            camera_fov_deg: 相机视野角度（度）
+            min_goal_conf: 球门检测的最小置信度阈值
+
+        Returns:
+            list[dict]: 球门候选信息列表，每个元素包含：
+                - key: 球门键名（"blue_goal" 或 "yellow_goal"）
+                - color: 球门颜色（"blue" 或 "yellow"）
+                - point: 球门位置信息字典（包含x, y, conf, distance）
+                - bbox: 球门边界框（如果有）
+                - source: 数据来源（"bbox" 或 "position"）
+                - bearing: 球门中心相对于机器人的方向角度（度）
+                - window: 射门窗口信息字典
+                - distance: 球门距离（厘米）
+                - conf: 检测置信度
+        """
         goals = self._normalize_goals(self.RobotGoalsPos())
         bboxes = self._goal_bboxes_by_key()
         width = self._shoot_goal_width_cm(goal_width_cm)
@@ -880,6 +969,33 @@ class Positions:
         goal_distance_cm: float | None,
         blocker_margin_deg: float,
     ) -> tuple[list[list[float]], list[dict]]:
+        """计算射门窗口被阻挡物遮挡后的剩余可用窗口。
+
+        遍历所有检测到的对方机器人（底盘），判断它们是否在射门路径上，
+        并计算被遮挡的角度范围。通过区间减法算法计算剩余的可射门窗口。
+
+        Args:
+            raw_window: 原始射门窗口角度范围 [起始角度, 结束角度]（度）
+            center_bearing: 球门中心相对于机器人的方向角度（度）
+            goal_distance_cm: 球门距离（厘米），用于判断阻挡物是否在球门前方
+            blocker_margin_deg: 阻挡物的额外边距角度（度），用于安全冗余
+
+        Returns:
+            tuple[list[list[float]], list[dict]]:
+                - list[list[float]]: 剩余可用射门窗口列表，每个元素为 [起始角度, 结束角度]
+                - list[dict]: 阻挡物信息列表，每个元素包含：
+                    - position: 阻挡物位置 [x_cm, y_cm]
+                    - bearing_deg: 阻挡物相对于机器人的方向角度（度）
+                    - distance_cm: 阻挡物距离（厘米）
+                    - window_deg: 被该阻挡物遮挡的角度范围 [起始, 结束]
+                    - conf: 检测置信度
+
+        Note:
+            阻挡物的判断条件：
+            1. 阻挡物在射门方向上有正投影（即在球门方向前方）
+            2. 阻挡物距离小于球门距离（即在机器人与球门之间）
+            3. 阻挡物与射门窗口有角度重叠
+        """
         open_windows = [list(raw_window)]
         blockers = []
         if goal_distance_cm is None:
@@ -940,10 +1056,85 @@ class Positions:
         blocker_margin_deg: float = 3.0,
         min_goal_conf: float = 0.0,
     ) -> dict:
-        """Return the robot-frame shooting window for the requested goal.
+        """计算机器人坐标系下的射门窗口。
 
-        Angles are robot-relative degrees: 0 is forward, positive is left, and
-        values are presented in [-180, 180].
+        该方法用于分析当前机器人朝向目标球门的射门机会，计算射门窗口的角度范围、
+        是否被阻挡、以及最佳射门方向等信息。
+
+        角度采用机器人相对坐标系（度）：
+        - 0度 表示正前方
+        - 正值 表示左侧（如 +90度 表示正左方）
+        - 负值 表示右侧（如 -90度 表示正右方）
+        - 角度范围: [-180, 180]
+
+        Args:
+            target: 目标球门标识，可选值：
+                - "opponent": 对方球门（默认，通常在前方）
+                - "own": 己方球门（通常在后方）
+                - "blue_goal": 指定蓝色球门
+                - "yellow_goal": 指定黄色球门
+            current_yaw_deg: 当前机器人的航向角（度），用于计算目标航向角。
+                如果为 None，则 target_yaw_deg 将相对于当前朝向计算。
+            goal_width_cm: 球门宽度（厘米），用于计算射门窗口角度。
+                如果为 None，则从配置文件读取默认值。
+            camera_fov_deg: 相机视野角度（度），用于从边界框计算射门窗口。
+                如果为 None，则使用默认值 95.0 度。
+            fallback_goal_distance_cm: 当无法检测到球门时，使用的估计球门距离（厘米）。
+                如果为 None，则使用场地长度作为默认值。
+            use_estimated_goal: 是否在无法检测到球门时使用估计位置。
+                True: 使用估计位置计算射门窗口（默认）
+                False: 如果检测不到球门则返回空窗口
+            blocker_margin_deg: 阻挡物的额外边距角度（度），用于扩大阻挡区域以确保安全。
+                默认值为 3.0 度。
+            min_goal_conf: 球门检测的最小置信度阈值，低于此值的检测结果将被忽略。
+                默认值为 0.0（接受所有检测结果）。
+
+        Returns:
+            dict: 射门窗口信息字典，包含以下字段：
+                - target (str): 请求的目标球门标识
+                - goal_key (str | None): 实际选中的球门键名，如 "blue_goal"、"yellow_goal"
+                    或 "estimated_opponent_goal"、"estimated_own_goal"；None 表示未找到
+                - goal_color (str | None): 球门颜色，如 "blue"、"yellow"、"estimated"；
+                    None 表示未找到
+                - reason (str): 结果原因说明，可能的值：
+                    - "ok": 射门窗口开启且可以立即射门
+                    - "blocked": 射门窗口被阻挡
+                    - "need_turn": 射门窗口开启但需要转向
+                    - "no_goal_visible": 未检测到球门
+                    - "only_own_goal_visible": 只能看到己方球门（当目标是对方球门时）
+                    - "only_opponent_goal_visible": 只能看到对方球门（当目标是己方球门时）
+                    - "invalid_target": 无效的目标参数
+                    - 前缀 "estimated_" 表示使用了估计位置
+                - window_open (bool): 射门窗口是否开启（存在可用的射门角度）
+                - can_shoot_now (bool): 是否可以立即射门（当前朝向在射门窗口内）
+                - raw_window_deg (list[float] | None): 原始射门窗口角度范围 [起始角度, 结束角度]
+                    表示不考虑阻挡物时球门占据的角度范围；None 表示无法计算
+                - open_windows_deg (list[list[float]]): 可用射门窗口列表
+                    每个元素为 [起始角度, 结束角度]，表示一个连续的可射门区域
+                - best_bearing_deg (float | None): 最佳射门方向角度（度）
+                    优先选择朝向正前方的窗口；None 表示无可用窗口
+                - turn_error_deg (float | None): 需要转向的角度误差（度）
+                    正值表示需要左转，负值表示需要右转；None 表示无法计算
+                - target_yaw_deg (float | None): 目标航向角（度），范围 [0, 360]
+                    如果提供了 current_yaw_deg，则 target_yaw_deg = (current_yaw_deg + turn_error_deg) % 360
+                    如果未提供 current_yaw_deg，则 target_yaw_deg = turn_error_deg（归一化到 [-180, 180]）
+                - goal_distance_cm (float | None): 球门距离（厘米）；None 表示未知
+                - blockers (list[dict]): 阻挡物信息列表，每个元素包含：
+                    - position (list[float]): 阻挡物位置 [x_cm, y_cm]
+                    - bearing_deg (float): 阻挡物相对于机器人的方向角度
+                    - distance_cm (float): 阻挡物距离（厘米）
+                    - window_deg (list[float]): 被该阻挡物遮挡的角度范围 [起始, 结束]
+                    - conf (float | None): 检测置信度
+
+        Example:
+            >>> pos = Positions()
+            >>> result = pos.ShootWindow("opponent")
+            >>> if result["can_shoot_now"]:
+            ...     print("可以立即射门！")
+            >>> elif result["window_open"]:
+            ...     print(f"需要转向 {result['turn_error_deg']:.1f} 度后射门")
+            >>> else:
+            ...     print("射门窗口被阻挡")
         """
 
         target = str(target or "opponent")

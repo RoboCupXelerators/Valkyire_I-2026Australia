@@ -301,7 +301,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error >= 180:
             iDirectionFactor = 1
-        if not abs(Aim_Angle-yaw) <= 10:
+        if abs(Aim_Angle-yaw) >= 10:
             logger.error(Error)
             # Intentional raw wheel mix: orbit around the held ball while turning.
             chassis.SetMotor([
