@@ -16,7 +16,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .config import MLPConfig
-from .contracts import DecisionPacketV1, DribbleMode, FaceMode, IntentId, ShootIntent
+from .contracts import (
+    DecisionPacketV1,
+    DribbleMode,
+    FaceMode,
+    IntentId,
+    ShootIntent,
+    _BALL_HAS_POSSESSION_SENTINEL,
+    _BALL_NOT_VISIBLE_SENTINEL,
+)
 
 
 @dataclass
@@ -128,7 +136,7 @@ class SkillExecutor:
             try:
                 ball = UnitedPosition.FieldBallPos()
                 current = UnitedPosition.FieldRobotPose()
-                if isinstance(ball, list) and len(ball) >= 2 and ball not in ([0xFFF, 0xFFF], [0xDDD, 0xDDD]):
+                if isinstance(ball, list) and len(ball) >= 2 and tuple(ball[:2]) not in (_BALL_NOT_VISIBLE_SENTINEL, _BALL_HAS_POSSESSION_SENTINEL):
                     return float(UnitedPosition.Pos2Angle(current, ball))
             except Exception:
                 pass

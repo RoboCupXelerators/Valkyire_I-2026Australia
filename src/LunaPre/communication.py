@@ -5,6 +5,7 @@ from __future__ import annotations
 from ReasonData import logger, Settings
 
 from . import runtime
+from .strategy_tools import BALL_NOT_FOUND
 
 cfg = runtime.cfg
 
@@ -53,7 +54,7 @@ class Communication:
             raise RuntimeError("None Transmission Method Selected!")
 
         self.BallFlag = [0, 0]
-        self.PeerPosition = [0xFFF, 0xFFF]
+        self.PeerPosition = list(BALL_NOT_FOUND)
         self.FullLog = cfg.Debug.FullLog
         self.RobotID = int(getattr(cfg.RoboInfo, "number", 1))
         self.Role = self._default_role_from_config()

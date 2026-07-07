@@ -16,6 +16,8 @@ from typing import List, Optional, Dict, Any
 from enum import IntEnum
 import json
 
+from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND
+
 
 # ==================== 枚举定义 ====================
 
@@ -584,9 +586,9 @@ class ResetScenarioV1:
 
 # ==================== 辅助函数 ====================
 
-_BALL_NOT_VISIBLE_SENTINEL = (0xFFF, 0xFFF)
-_BALL_HAS_POSSESSION_SENTINEL = (0xDDD, 0xDDD)
-_INVALID_WALL_SENTINEL = 0xFFF
+_BALL_NOT_VISIBLE_SENTINEL = tuple(BALL_NOT_FOUND)
+_BALL_HAS_POSSESSION_SENTINEL = tuple(BALL_HELD)
+_INVALID_WALL_SENTINEL = BALL_NOT_FOUND[0]
 
 
 def _is_pair(value: Any) -> bool:

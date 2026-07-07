@@ -21,7 +21,8 @@ import simple_pid
 from ReasonData import logger, Settings
 
 from . import runtime
-from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
+from .sensor import LIDAR_DISABLED_DISTS
+from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_error_deg, clamp
 
 cfg = runtime.cfg
 
@@ -38,8 +39,8 @@ ROBOT_BALL_MAX_ABS_Y_CM = 220.0
 class Positions:
     def __init__(self):
         # Values for Setup Position System
-        self.LidarPos = [0xfff,0xfff,0xfff]
-        self.ballPos = [0xfff,0xfff]
+        self.LidarPos = list(POSE_NOT_FOUND)
+        self.ballPos = list(BALL_NOT_FOUND)
         # Values for log system
         self.WarnedLidarCount = 0
         # Values for Adjust the scale of Position System
@@ -424,8 +425,8 @@ class Positions:
         '''
         self.BoundsDistance = runtime.lidar.GetDists()
         # disabled runtime.lidar returns [0xfff,...]
-        if self.BoundsDistance == [0xfff,0xfff,0xfff,0xfff]:
-            return [0xfff,0xfff,0xfff,0xfff]
+        if self.BoundsDistance == LIDAR_DISABLED_DISTS:
+            return list(LIDAR_DISABLED_DISTS)
         if self.BoundsDistance == [0, 0, 0, 0]:
             self.WarnedLidarCount +=1
             logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
@@ -435,7 +436,7 @@ class Positions:
                 logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping runtime.chassis to prevent damage.")
                 runtime.lidar.stop()
                 raise RuntimeError("No Lidar Data Recieved! Please Check Lidar Modules!")
-            return [0xfff,0xfff,0xfff,0xfff]
+            return list(LIDAR_DISABLED_DISTS)
         else:
             if self.WarnedLidarCount:
                 self.WarnedLidarCount = 0
@@ -465,9 +466,9 @@ class Positions:
             return self.LidarPos
 
         _distance = self.DirectDistance()
-        if _distance == [0xfff,0xfff,0xfff,0xfff]:
+        if _distance == LIDAR_DISABLED_DISTS:
             runtime.chassis.stop()
-            return [0xfff,0xfff,0xfff]
+            return list(POSE_NOT_FOUND)
         if (_distance[0]+_distance[2]) < (cfg.Bounds.Long)*self.LidarScale*self.BoundsScale:
             if _distance[0] > _distance[2]:
                 Y = cfg.Bounds.Long*self.LidarScale/2 - _distance[0]
@@ -576,9 +577,9 @@ class Positions:
         ballX, ballY = ball_pos
         ball_state = self.BallState(ball_pos)
         if ball_state == "lost":
-            return [0xfff,0xfff]
+            return list(BALL_NOT_FOUND)
         if ball_state == "held":
-            return [0xddd,0xddd]
+            return list(BALL_HELD)
         else:
             SelfX, SelfY, SelfZ = self.FieldRobotPose()
             # Convert robot-frame relative (x_forward, y_left) into field-frame delta using yaw.
@@ -622,7 +623,7 @@ class Positions:
         距离没到就平移并朝向目标 yaw；位置到了但角度没到就原地转向。
         """
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
-        if [loc_x, loc_y, loc_yaw] == [0xfff, 0xfff, 0xfff]:
+        if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
             runtime.chassis.stop()
             runtime.Morse("No Position Data!")
             return False
@@ -713,7 +714,7 @@ class Positions:
         如果会穿过，就先给一个绕到限制区上下方的中间点。
         """
         start = self.FieldRobotPose()
-        if start == [0xfff, 0xfff, 0xfff]:
+        if start == POSE_NOT_FOUND:
             runtime.chassis.stop()
             runtime.Morse("No Position Data!")
             return False
@@ -824,7 +825,7 @@ class Positions:
             otherwise `None`.
         """
 
-        if not pose or len(pose) < 3 or list(pose[:3]) == [0xfff, 0xfff, 0xfff]:
+        if not pose or len(pose) < 3 or list(pose[:3]) == POSE_NOT_FOUND:
             return None
 
         x, y, yaw = float(pose[0]), float(pose[1]), float(pose[2])

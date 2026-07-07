@@ -17,6 +17,7 @@ import torch
 
 from .config import MLPConfig
 from .contracts import (
+    _INVALID_WALL_SENTINEL,
     DecisionPacketV1,
     DeployObservationV1,
     DribbleMode,
@@ -459,7 +460,7 @@ class MLPController:
         try:
             from LunaPre import UnitedPosition
             pos = UnitedPosition.FieldRobotPose()
-            if pos != [0xfff, 0xfff, 0xfff]:
+            if pos != [_INVALID_WALL_SENTINEL, _INVALID_WALL_SENTINEL, _INVALID_WALL_SENTINEL]:
                 x, y = pos[0], pos[1]
                 half_length = self.config.field_length / 2.0 - self.config.safe_margin
                 half_width = self.config.field_width / 2.0 - self.config.safe_margin

@@ -161,11 +161,13 @@ robot_pos = [90, 0]  # X=90cm（前方），Y=0cm（中间）
 
 ```python
 from LunaPre import *
+from BasicFuc import lockball
+from LunaPre.strategy_tools import BALL_NOT_FOUND, BALL_HELD
 ```
 
 | 对象名 | 作用 | 常用操作 |
 |--------|------|----------|
-| `UnitedPosition` | 定位与导航 | 获取球的位置、机器人位置、移动到目标点 |
+| `UnitedPosition` | 定位与导航 | `RobotBallPos()`、`BallState()`、`FieldRobotPose()`、移动到目标点 |
 | `chassis` | 底盘控制 | 控制机器人移动、转向、停止 |
 | `peripheral` | 外设控制 | 踢球、运球 |
 | `lockball` | 锁球控制 | 自动追踪并锁定球 |
@@ -180,6 +182,7 @@ from LunaPre import *
 
 ```python
 from LunaPre import *
+from BasicFuc import lockball
 
 try:
     while True:
@@ -189,21 +192,19 @@ try:
             # 2. 获取球的位置（相对于机器人）
             ball_pos = UnitedPosition.RobotBallPos()
             
-            # 3. 根据球的位置做决策
-            if ball_pos == [0xFFF, 0xFFF]:
+            # 3. 根据球状态做决策
+            ball_state = UnitedPosition.BallState(ball_pos)
+            if ball_state == "lost":
                 # 没看到球，回到场地中心
-                print("找不到球，回中心...")
                 UnitedPosition.Pos2Pos([0, 0, 0])
                 
-            elif ball_pos == [0xDDD, 0xDDD]:
+            elif ball_state == "held":
                 # 已经抱住球了，踢球！
-                print("抱住球了，射门！")
                 peripheral.Dribble(0.7)  # 开启运球器
                 peripheral.ShootBall()    # 踢球
                 
             else:
                 # 看到球了，追球！
-                print(f"追球中... 球在 [{ball_pos[0]:.1f}, {ball_pos[1]:.1f}]")
                 lockball.LockBallSlip()  # 自动追球
         
         # 等待一小段时间（约 30Hz）
@@ -228,8 +229,8 @@ python my_first_strategy.py
 |------|------|
 | `UnitedPosition.RestrictedArea()` | 检查机器人是否在安全区域（不会撞墙） |
 | `RobotBallPos()` | 获取球相对于机器人的位置 |
-| `[0xFFF, 0xFFF]` | 特殊值，表示"没看到球" |
-| `[0xDDD, 0xDDD]` | 特殊值，表示"已经抱住球" |
+| `UnitedPosition.BallState(ball)` | 返回 `"lost"` / `"held"` / `"free"` |
+| `BALL_NOT_FOUND` / `BALL_HELD` | 需要直接比较哨兵时使用这些常量 |
 | `LockBallSlip()` | 自动追球功能 |
 | `finally` 块 | 确保程序退出时机器人停止 |
 
@@ -355,7 +356,7 @@ lsof -i :20001
 cat src/ReasonData/data/config.json
 ```
 
-### ❓ 找不到球 (返回 0xFFF)
+### ❓ 找不到球 (`BallState()` 返回 `"lost"`)
 
 **可能原因**：
 1. 视觉系统没有启动
@@ -396,7 +397,7 @@ finally:
 
 当你熟悉了基础操作，可以：
 
-1. 阅读 [README_DETAILED.md](./README_DETAILED.md) 了解更多高级功能
+1. 阅读 [README.md](./README.md) 和 [接口语义文档](./docs/interface_semantics.md) 了解更多功能
 2. 查看 `offence.py` 和 `defence.py` 学习更复杂的策略
 3. 尝试修改现有策略，实现自己的想法
 
@@ -404,7 +405,7 @@ finally:
 
 ## 🆘 需要帮助？
 
-- 查看 [详细文档](./README_DETAILED.md)
+- 查看 [快速参考](./README.md) 和 [接口语义文档](./docs/interface_semantics.md)
 - 查看 [项目结构](./STRUCTURE.md)
 - 查看 [模拟器文档](../SoccerSimulatorForXels/README.md)
 

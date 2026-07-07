@@ -23,8 +23,11 @@ from loguru import logger
 from pathlib import Path
 
 APP_DIR = Path(__file__).parent
+PROJECT_DIR = APP_DIR.parent.parent
 DATA_DIR = APP_DIR / "data"
-LOG_FILE = DATA_DIR / f"{Date}.log"
+LOG_DIR = PROJECT_DIR / "log"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / f"{Date}.log"
 logger.add(
     LOG_FILE,
     rotation="5 MB",
@@ -62,5 +65,6 @@ __all__ = [
     "Settings",
     "logger",
     "DATA_DIR",
+    "LOG_DIR",
     "ROS_ENV",
 ]

@@ -7,11 +7,11 @@
 ## 🚀 快速开始
 
 ### 1. 核心对象初始化
-在策略脚本中，通常通过 `from LunaPre import *` 导入所有常用工具。
+在策略脚本中，通常通过 `from LunaPre import *` 导入运行时 facade；锁球工具从 `BasicFuc` 导入，哨兵常量从 `LunaPre.strategy_tools` 导入。
 - `UnitedPosition`: 机器人位置、视觉数据获取及运动控制核心对象。
 - `chassis`: 底盘运动控制接口。
 - `peripheral`: 外设控制（如踢球、运球）。
-- `lockball`: 锁球控制类。
+- `lockball`: 锁球控制对象（`from BasicFuc import lockball`）。
 
 ### 2. 最常用函数速查表
 
@@ -50,22 +50,24 @@
 ### 场景 A: 简单追踪球并踢球
 这是最基础的进攻逻辑：
 ```python
+from LunaPre import *
+from BasicFuc import lockball
+
 if UnitedPosition.RestrictedArea(): # 确保不在限制区/撞墙保护
     ball_pos = UnitedPosition.RobotBallPos()
+    ball_state = UnitedPosition.BallState(ball_pos)
     
-    if ball_pos == [0xFFF, 0xFFF]:
-        print("未发现球")
-    elif ball_pos == [0xDDD, 0xDDD]:
-        print("已抱球，准备射门")
+    if ball_state == "lost":
+        UnitedPosition.Pos2Pos([0, 0, 0])
+    elif ball_state == "held":
         peripheral.Dribble(0.7) # 开启运球/吸球
         peripheral.ShootBall()  # 触发踢球
     else:
-        print("追踪中...")
         lockball.LockBallSlip() # 自动对准并锁定球 (非阻塞)
 ```
 
 ### 场景 B: 场地走点 (Waypoints)
-如 `exec.py` 所示，可以通过 `Move2Path` 实现复杂的路径规划：
+可以通过 `Move2Path` 实现多个路点的路径规划：
 ```python
 # 示例：依次经过五个点
 UnitedPosition.Move2Path([
@@ -82,7 +84,7 @@ UnitedPosition.Move2Path([
 ```python
 # 假设 pan_y 是一个 PID 控制器
 ball_pos = UnitedPosition.RobotBallPos()
-if ball_pos != [0xFFF, 0xFFF] and ball_pos != [0xDDD, 0xDDD]:
+if UnitedPosition.BallState(ball_pos) == "free":
     # 使用 PID 计算 Y 轴移动速度，保持在球的正对面
     speed_y = pan_y(ball_pos[1]) 
     # 保持航向角为 0 (面向对方球门)，沿 Y 轴进行 PID 修正移动
@@ -129,8 +131,6 @@ PYTHONDONTWRITEBYTECODE=1 XEL_SIM_BALL_STATUS_FALLBACK=1 \
 ## ⚠️ 重要提示
 - **坐标系约定**：
     - **机体坐标系**：$x$ 为前， $y$ 为左。
-    - **场地坐标系**：原点在场地中心，方向定义见 `README_DETAILED.md`。
+    - **场地坐标系**：原点在场地中心，方向定义见 `docs/interface_semantics.md`。
 - **安全停止**：在策略脚本的 `finally` 块中，务必调用 `chassis.stop()` 和 `UnitedPosition.Stop()` 释放资源。
-- **哨兵值**：
-    - `0xFFF`: 未检测到球。
-    - `0xDDD`: 已经抱球。
+- **球状态**：新策略优先用 `UnitedPosition.BallState()` 判断，返回 `"lost"` / `"held"` / `"free"`；需要常量时从 `LunaPre.strategy_tools` 导入 `BALL_NOT_FOUND` / `BALL_HELD`，不要在新代码里硬编码原始哨兵。

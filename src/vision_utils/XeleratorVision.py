@@ -9,15 +9,23 @@
 
 当前实现（SIM）：
 - ball_pos: 机器人坐标系下的球相对坐标 [x, y]，单位 cm
-           与 LunaPre.Positions.RobotBallPos 的语义一致。
+           [0, 0] 表示视觉层没有可用球观测。
 - chassis_pos: 对方机器人检测框列表（暂时返回空列表）。
 """
 
 from __future__ import annotations
 
+BALL_NOT_FOUND = [0xFFF, 0xFFF]  # matches LunaPre.strategy_tools.BALL_NOT_FOUND
+BALL_HELD = [0xDDD, 0xDDD]  # matches LunaPre.strategy_tools.BALL_HELD
+
 import os
+import socket
+import time
+import math
 from dataclasses import dataclass
 from typing import Any
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 try:
     from ReasonData import Settings  # type: ignore
@@ -26,6 +34,9 @@ except Exception:  # pragma: no cover
         from src.ReasonData import Settings  # type: ignore
     except Exception:  # pragma: no cover
         Settings = None  # type: ignore
+
+
+NO_BALL_OBSERVATION = [0, 0]
 
 
 @dataclass
@@ -54,37 +65,55 @@ class XeleratorVision:
     For simulator, you should pass `bits` = XeleratorSimBits instance.
     """
 
-    def __init__(self, bits=None):
+    def __init__(self, bits=None, *, start_frame_thread: bool | None = None):
         self.bits = bits
+
+        # Simple logger fallback. This must be ready before the frame thread
+        # starts, otherwise constructor failures can leave a silent worker behind.
+        try:
+            from ReasonData import logger  # type: ignore
+        except Exception:
+            import logging
+
+            logger = logging.getLogger(__name__)
+        self.logger = logger
 
         # reserved for future OpenCV/PT pipeline
         self._camera = None
         self._cameras: list[Any] = []
         self._camera_urls: list[str] = []
         self._model = None
-        
+
+        # Match VisionPreUntil's public shape. UnitedVision still expects this
+        # attribute during calibration setup even when Rec=XV.
+        slots_env = os.environ.get("XEL_CAM_PORTS", "").strip()
+        self.CamPorts = (
+            self._normalize_camera_slots(self._parse_int_list(slots_env))
+            if slots_env
+            else self._camera_slot_defaults()
+        )
+
         # Frames list for dashboard compatibility (like VisionPreUntil)
-        self.Frames = [None, None, None, None]
-        
+        self.Frames = [None for _ in self.CamPorts]
+        self.ReadCamTF = 0
+
         # Start background thread to pull frames from Unity MJPEG server
         self._frame_thread = None
         self._frame_running = False
         self._frame_stop_event = None
-        try:
-            import threading
-            self._frame_stop_event = threading.Event()
-            self._frame_running = True
-            self._frame_thread = threading.Thread(target=self._pull_frames_loop, daemon=True)
-            self._frame_thread.start()
-        except Exception:
-            pass
-        
-        # Simple logger fallback
-        try:
-            from ReasonData import logger  # type: ignore
-        except Exception:
-            import logging
-            logger = logging.getLogger(__name__)
+        if start_frame_thread is None:
+            disabled = os.environ.get("XEL_CAM_DISABLE_FRAMES", "").strip().lower()
+            start_frame_thread = disabled not in {"1", "true", "yes", "on"}
+        if start_frame_thread:
+            try:
+                import threading
+
+                self._frame_stop_event = threading.Event()
+                self._frame_running = True
+                self._frame_thread = threading.Thread(target=self._pull_frames_loop, daemon=True)
+                self._frame_thread.start()
+            except Exception as e:
+                self.logger.warning(f"XeleratorVision frame thread failed to start: {e}")
 
     # ===== Unity camera URL helpers =====
     @staticmethod
@@ -101,6 +130,22 @@ class XeleratorVision:
         return out
 
     @staticmethod
+    def _normalize_camera_slots(cam_ports: list[int]) -> list[int]:
+        defaults = [0, 2, 4, 6]
+        slots: list[int] = []
+        for port in cam_ports:
+            try:
+                slots.append(int(port))
+            except (TypeError, ValueError):
+                pass
+        for port in defaults:
+            if len(slots) >= 4:
+                break
+            if port not in slots:
+                slots.append(port)
+        return slots[:4]
+
+    @staticmethod
     def _camera_slot_defaults() -> list[int]:
         # Keep compatibility with existing vision config and also normalize to
         # the user-friendly 0/2/4/6 slot set.
@@ -108,7 +153,7 @@ class XeleratorVision:
             try:
                 cam_ports = list(getattr(Settings.Vision, "CamPorts", [0, 2, 4, 6]))
                 if cam_ports:
-                    return cam_ports
+                    return XeleratorVision._normalize_camera_slots(cam_ports)
             except Exception:
                 pass
         return [0, 2, 4, 6]
@@ -211,15 +256,67 @@ class XeleratorVision:
         self._camera_urls = []
 
     # ===== SIM fast-path =====
+    @staticmethod
+    def _as_pair(value) -> list | None:
+        if value is None:
+            return None
+
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            try:
+                value = tolist()
+            except Exception:
+                return None
+
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+        return [value[0], value[1]]
+
+    @staticmethod
+    def _sentinel_match(value, sentinel: int) -> bool:
+        try:
+            return int(float(value)) == int(sentinel) and float(value) == float(sentinel)
+        except Exception:
+            return False
+
+    @classmethod
+    def _normalize_ball_pos(cls, value) -> list[float] | list[int]:
+        """Normalize upstream simulator output to vision-layer semantics.
+
+        XeleratorVision is a visual observation provider, not the owner of
+        LunaPre's strategy sentinels. Legacy simulator providers may still
+        return 0xFFF (lost) or 0xDDD (possession); both mean there is no
+        ordinary ball coordinate for this vision layer, so expose [0, 0].
+        """
+        pair = cls._as_pair(value)
+        if pair is None:
+            return list(NO_BALL_OBSERVATION)
+
+        bx_raw, by_raw = pair
+        if cls._sentinel_match(bx_raw, BALL_NOT_FOUND[0]) or cls._sentinel_match(by_raw, BALL_NOT_FOUND[1]):
+            return list(NO_BALL_OBSERVATION)
+        if cls._sentinel_match(bx_raw, BALL_HELD[0]) and cls._sentinel_match(by_raw, BALL_HELD[1]):
+            return list(NO_BALL_OBSERVATION)
+
+        try:
+            bx = float(bx_raw)
+            by = float(by_raw)
+        except Exception:
+            return list(NO_BALL_OBSERVATION)
+
+        if not (math.isfinite(bx) and math.isfinite(by)):
+            return list(NO_BALL_OBSERVATION)
+        return [bx, by]
+
     def get_ball_pos(self):
         if self.bits is None:
-            return [0xFFF, 0xFFF]
+            return list(NO_BALL_OBSERVATION)
         if hasattr(self.bits, "GetBallPos"):
             try:
-                return self.bits.GetBallPos()
+                return self._normalize_ball_pos(self.bits.GetBallPos())
             except Exception:
-                return [0xFFF, 0xFFF]
-        return [0xFFF, 0xFFF]
+                return list(NO_BALL_OBSERVATION)
+        return list(NO_BALL_OBSERVATION)
 
     def get_chassis_pos(self):
         if self.bits is None or not hasattr(self.bits, "GetEnemyPos"):
@@ -255,10 +352,70 @@ class XeleratorVision:
         raise NotImplementedError("Vision inference is not implemented yet.")
 
     # ===== Frame pulling for dashboard =====
+    @staticmethod
+    def _env_float(name: str, default: float, *, minimum: float = 0.05) -> float:
+        try:
+            value = float(os.environ.get(name, str(default)))
+        except (TypeError, ValueError):
+            value = default
+        return max(float(minimum), value)
+
+    @staticmethod
+    def _pop_jpeg(buffer: bytearray, *, max_buffer_bytes: int = 2_000_000) -> bytes | None:
+        start = buffer.find(b"\xff\xd8")
+        if start < 0:
+            if len(buffer) > max_buffer_bytes:
+                del buffer[:-2]
+            return None
+
+        if start > 0:
+            del buffer[:start]
+
+        end = buffer.find(b"\xff\xd9", 2)
+        if end < 0:
+            if len(buffer) > max_buffer_bytes:
+                del buffer[:-2]
+            return None
+
+        end += 2
+        jpeg = bytes(buffer[:end])
+        del buffer[:end]
+        return jpeg
+
+    def _log_camera_warning(
+        self,
+        cam_index: int,
+        message: str,
+        last_logs: list[float],
+        interval: float,
+        *,
+        level: str = "warning",
+    ) -> None:
+        now = time.time()
+        if cam_index >= len(last_logs):
+            return
+        if now - last_logs[cam_index] >= interval:
+            log_method = getattr(self.logger, str(level).lower(), None)
+            if not callable(log_method):
+                log_method = getattr(self.logger, "warning", None)
+            if callable(log_method):
+                log_method(message)
+            last_logs[cam_index] = now
+
     def _pull_frames_loop(self):
-        """Background thread to pull frames from Unity MJPEG server using OpenCV."""
-        import time
-        
+        """Background thread to pull frames from Unity MJPEG streams.
+
+        Do not use OpenCV VideoCapture here: when the Unity MJPEG endpoint is
+        not ready, FFmpeg can block for ~30s per camera before timing out.
+        urllib gives us short socket timeouts and clean reconnect behavior.
+        """
+        try:
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+        except Exception as e:
+            self.logger.warning(f"XeleratorVision frame decoding unavailable: {e}")
+            return
+
         # Get robot ID and camera slots from config
         robot_id = 1
         if Settings is not None and hasattr(Settings, "RoboInfo"):
@@ -266,52 +423,115 @@ class XeleratorVision:
                 robot_id = int(getattr(Settings.RoboInfo, "number", 1))
             except Exception:
                 pass
-        
-        camera_slots = self._camera_slot_defaults()
+
+        camera_slots = list(getattr(self, "CamPorts", None) or self._camera_slot_defaults())
         server_port = int(os.environ.get("XEL_CAM_SERVER_PORT", "20801"))
         host = os.environ.get("XEL_CAM_HOST", "127.0.0.1")
-        
+
         # Build URLs for each camera
         urls = [self.build_camera_url(robot_id, slot, server_port, host) for slot in camera_slots]
-        
-        # Wait a bit for Unity server to start
-        time.sleep(1.0)
-        
-        # OpenCV VideoCapture can handle MJPEG streams
-        import cv2  # type: ignore
-        
-        caps = [None, None, None, None]
-        
+
+        timeout_s = self._env_float("XEL_CAM_HTTP_TIMEOUT_SEC", 1.0)
+        reconnect_delay_s = self._env_float("XEL_CAM_RECONNECT_DELAY_SEC", 1.0)
+        log_interval_s = self._env_float("XEL_CAM_LOG_INTERVAL_SEC", 30.0, minimum=1.0)
+        timeout_log_level = os.environ.get("XEL_CAM_TIMEOUT_LOG_LEVEL", "debug").strip().lower() or "debug"
+        responses: list[Any | None] = [None for _ in urls]
+        buffers = [bytearray() for _ in urls]
+        next_attempt = [0.0 for _ in urls]
+        last_logs = [0.0 for _ in urls]
+
+        self.logger.info(f"XeleratorVision MJPEG cameras: {urls}")
+
         while self._frame_running and not self._frame_stop_event.is_set():
+            any_activity = False
             for i, url in enumerate(urls):
+                if not self._frame_running or self._frame_stop_event.is_set():
+                    break
+
+                now = time.time()
+                if responses[i] is None:
+                    if now < next_attempt[i]:
+                        continue
+                    try:
+                        req = Request(url, headers={"User-Agent": "XeleratorVision/1.0"})
+                        responses[i] = urlopen(req, timeout=timeout_s)
+                        buffers[i].clear()
+                    except (OSError, TimeoutError, URLError, socket.timeout) as e:
+                        self._log_camera_warning(
+                            i,
+                            f"XeleratorVision camera {i} stream unavailable: {url} ({e})",
+                            last_logs,
+                            log_interval_s,
+                            level=timeout_log_level,
+                        )
+                        next_attempt[i] = time.time() + reconnect_delay_s
+                        continue
+                    except Exception as e:
+                        self._log_camera_warning(
+                            i,
+                            f"XeleratorVision camera {i} stream open failed: {url} ({e})",
+                            last_logs,
+                            log_interval_s,
+                            level="warning",
+                        )
+                        next_attempt[i] = time.time() + reconnect_delay_s
+                        continue
+
                 try:
-                    # Open or reopen capture if needed
-                    if caps[i] is None or not caps[i].isOpened():
-                        caps[i] = cv2.VideoCapture(url)
-                        caps[i].set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    
-                    if caps[i] is not None and caps[i].isOpened():
-                        ret, frame = caps[i].read()
-                        if ret and frame is not None:
+                    chunk = responses[i].read(4096)
+                    if not chunk:
+                        raise EOFError("stream ended")
+                    any_activity = True
+                    buffers[i].extend(chunk)
+
+                    jpeg = self._pop_jpeg(buffers[i])
+                    if jpeg is not None:
+                        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                        if frame is not None:
                             self.Frames[i] = frame
-                except Exception:
-                    if caps[i] is not None:
-                        try:
-                            caps[i].release()
-                        except Exception:
-                            pass
-                        caps[i] = None
-            
-            time.sleep(0.03)  # ~30 FPS
-        
+                            self.ReadCamTF += 1
+                except (OSError, TimeoutError, URLError, socket.timeout, EOFError) as e:
+                    self._log_camera_warning(
+                        i,
+                        f"XeleratorVision camera {i} stream lost: {url} ({e})",
+                        last_logs,
+                        log_interval_s,
+                        level=timeout_log_level,
+                    )
+                    try:
+                        responses[i].close()
+                    except Exception:
+                        pass
+                    responses[i] = None
+                    buffers[i].clear()
+                    next_attempt[i] = time.time() + reconnect_delay_s
+                except Exception as e:
+                    self._log_camera_warning(
+                        i,
+                        f"XeleratorVision camera {i} decode error: {url} ({e})",
+                        last_logs,
+                        log_interval_s,
+                        level="warning",
+                    )
+                    try:
+                        responses[i].close()
+                    except Exception:
+                        pass
+                    responses[i] = None
+                    buffers[i].clear()
+                    next_attempt[i] = time.time() + reconnect_delay_s
+
+            if not any_activity:
+                time.sleep(0.05)
+
         # Cleanup
-        for cap in caps:
-            if cap is not None:
+        for response in responses:
+            if response is not None:
                 try:
-                    cap.release()
+                    response.close()
                 except Exception:
                     pass
-    
+
     def close(self, join_timeout: float = 1.0):
         """Stop background frame thread."""
         self._frame_running = False

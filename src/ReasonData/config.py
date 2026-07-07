@@ -416,7 +416,7 @@ class _CompatSim:
     @property
     def WheelToV(self): return self._get("WheelToV", 0.0029321531433504737)
     @property
-    def WheelToWz(self): return self._get("WheelToWz", 0.02)
+    def WheelToWz(self): return self._get("WheelToWz", 0.0337524905204023)
     @property
     def YawOffsetDeg(self): return self._get("YawOffsetDeg", 0.0)
     @property

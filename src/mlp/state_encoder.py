@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from .config import MLPConfig
 from .contracts import (
+    _BALL_HAS_POSSESSION_SENTINEL,
     DecisionPacketV1,
     DeployObservationV1,
     DribbleMode,
@@ -510,7 +511,7 @@ class StateEncoder:
             from LunaPre import UnitedPosition
             ball_pos = UnitedPosition.RobotBallPos()
             ball_x, ball_y = ball_pos[0], ball_pos[1]
-            has_ball = (ball_pos == [0xDDD, 0xDDD])
+            has_ball = (tuple(ball_pos[:2]) == _BALL_HAS_POSSESSION_SENTINEL)
         except:
             ball_x, ball_y = 0.0, 0.0
             has_ball = False

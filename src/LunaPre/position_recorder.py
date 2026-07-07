@@ -10,7 +10,7 @@ from ReasonData import logger, Settings
 
 from .positions import Positions
 from . import runtime
-from .strategy_tools import angle_error_deg
+from .strategy_tools import POSE_NOT_FOUND, angle_error_deg
 
 cfg = runtime.cfg
 
@@ -41,7 +41,7 @@ class RecordingPositions(Positions):
         try:
             return self.FieldRobotPose()
         except Exception:
-            return [0xFFF, 0xFFF, 0xFFF]
+            return list(POSE_NOT_FOUND)
 
     def _record_pos2pos_call(
         self,
@@ -125,6 +125,6 @@ class RecordingPositions(Positions):
 
     @staticmethod
     def _normalize_pose(pose: list) -> tuple[float, float, float]:
-        if not pose or len(pose) < 3 or list(pose[:3]) == [0xFFF, 0xFFF, 0xFFF]:
-            return float(0xFFF), float(0xFFF), float(0xFFF)
+        if not pose or len(pose) < 3 or list(pose[:3]) == POSE_NOT_FOUND:
+            return tuple(float(v) for v in POSE_NOT_FOUND)
         return float(pose[0]), float(pose[1]), float(pose[2])

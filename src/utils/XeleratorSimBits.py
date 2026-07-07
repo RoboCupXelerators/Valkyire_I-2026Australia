@@ -88,7 +88,7 @@ def create_bits_and_lidar(cfg):
 
     _apply_sim_env_defaults(cfg, sim_cfg)
 
-    bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id)
+    bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id, cfg=cfg)
     lidar = Lidar(
         bits.GetYaw,
         get_pose_callable=bits.GetPose,
@@ -190,6 +190,7 @@ class XeleratorSimBits:
         status_port: int = 20002,
         robot_id: int = 1,
         hz: float = 50.0,
+        cfg=None,
     ):
         self.unity_ip = unity_ip
         base_cmd_port = int(cmd_port)
@@ -292,12 +293,14 @@ class XeleratorSimBits:
         self._scene_control = None
         self._scene_status_cache = None
         self._scene_status_cache_ts = 0.0
+        self._held_ball_pos_cm = self._read_catch_val_cm(cfg)
 
         # Convert wheel-speed commands (strategy code) into twist for Unity controller.
         self._twist_from_wheels = str(os.environ.get("XEL_TWIST_FROM_WHEELS", "1")).lower() not in {"0", "false", "no"}
         # map strategy wheel units to simulator SI
         self._wheel_to_v = float(os.environ.get("XEL_WHEEL_TO_V", str(SIM_DEFAULT_WHEEL_TO_V)))
         self._wheel_to_wz = float(os.environ.get("XEL_WHEEL_TO_WZ", str(SIM_DEFAULT_WHEEL_TO_WZ)))
+        self._wheel_delivery_order = self._read_wheel_delivery_order(cfg)
         # Scale planar translation in simulator to reduce overshoot during chase behaviors
         self._planar_move_scale = float(os.environ.get("XEL_SIM_PLANAR_MOVE_SCALE", str(SIM_DEFAULT_PLANAR_MOVE_SCALE)))
         self._planar_move_scale = max(0.0, self._planar_move_scale)
@@ -499,19 +502,20 @@ class XeleratorSimBits:
 
     def SetWheelSpeed(self, w1, w2, w3, w4):
         if self._twist_from_wheels:
-            w1 = float(w1)
-            w2 = float(w2)
-            w3 = float(w3)
-            w4 = float(w4)
+            wheel_by_name = self._wheel_values_by_name(w1, w2, w3, w4)
+            lf = wheel_by_name["LF"]
+            lb = wheel_by_name["LB"]
+            rf = wheel_by_name["RF"]
+            rb = wheel_by_name["RB"]
 
-            # Car.SetMotor calls SetWheelSpeed in physical port order:
-            #   left-front, left-back, right-front, right-back.
             # RobotMoveVector's logical wheel equations are:
             #   LF=x-y-z, LB=x+y-z, RB=x+y+z, RF=x-y+z.
-            # Reconstruct the chassis vector using the incoming physical order.
-            sx = (w1 + w2 + w3 + w4) * 0.25
-            sy = (-w1 + w2 - w3 + w4) * 0.25
-            sz = (-w1 - w2 + w3 + w4) * 0.25
+            # Car.SetMotor may permute wheel outputs according to cfg.Ports before
+            # calling SetWheelSpeed, so undo that permutation before reconstructing
+            # the chassis vector.
+            sx = (lf + lb + rf + rb) * 0.25
+            sy = (-lf + lb - rf + rb) * 0.25
+            sz = (-lf - lb + rf + rb) * 0.25
 
             self.SetTwist(sx * self._wheel_to_v, sy * self._wheel_to_v, sz * self._wheel_to_wz)
             return
@@ -564,6 +568,47 @@ class XeleratorSimBits:
             return 0.0
         return max(0.0, min(1.0, v))
 
+    @staticmethod
+    def _read_catch_val_cm(cfg) -> list[float]:
+        try:
+            catch_val = getattr(getattr(cfg, "Motion", None), "CatchVal")
+            return [float(catch_val[0]), float(catch_val[1])]
+        except Exception:
+            return [8.5, 0.0]
+
+    @staticmethod
+    def _read_wheel_delivery_order(cfg) -> tuple[str, str, str, str]:
+        default_order = ("LF", "LB", "RF", "RB")
+        if cfg is None:
+            return default_order
+        try:
+            ports = getattr(cfg, "Ports")
+            delivery_ports = [
+                int(getattr(ports, "LeftFront")),
+                int(getattr(ports, "LeftBack")),
+                int(getattr(ports, "RightFront")),
+                int(getattr(ports, "RightBack")),
+            ]
+            port_to_logical = {1: "LF", 2: "LB", 3: "RB", 4: "RF"}
+            order = tuple(port_to_logical[p] for p in delivery_ports)
+            if sorted(order) != ["LB", "LF", "RB", "RF"]:
+                raise ValueError(order)
+            return order
+        except Exception as exc:
+            print(f"[XEL_SIM] invalid cfg.Ports for wheel reconstruction; using default order: {exc}")
+            return default_order
+
+    def _wheel_values_by_name(self, w1, w2, w3, w4) -> dict[str, float]:
+        raw = (float(w1), float(w2), float(w3), float(w4))
+        order = getattr(self, "_wheel_delivery_order", ("LF", "LB", "RF", "RB"))
+        return {name: raw[idx] for idx, name in enumerate(order)}
+
+    def _held_ball_observation(self, ball: list[float] | None) -> list[float]:
+        if ball is not None:
+            return ball
+        held = getattr(self, "_held_ball_pos_cm", [8.5, 0.0])
+        return [float(held[0]), float(held[1])]
+
     def _status_planar_speed_mps_locked(self) -> float:
         return math.hypot(float(self._status.vx_mps), float(self._status.vy_mps))
 
@@ -599,13 +644,15 @@ class XeleratorSimBits:
 
         bx = float(ball[0])
         by = float(ball[1])
-        center_x = 8.5
+        held = getattr(self, "_held_ball_pos_cm", [8.5, 0.0])
+        center_x = float(held[0])
+        center_y = float(held[1])
         x_min = max(float(self._infer_dribbler_x_min_cm), center_x - 0.6)
         x_max = min(float(self._infer_dribbler_x_max_cm), center_x + 4.0)
         y_abs = min(float(self._infer_dribbler_y_abs_cm), 0.6)
         return (
             x_min <= bx <= x_max
-            and abs(by) <= y_abs
+            and abs(by - center_y) <= y_abs
         )
 
     def _vision_dropout(self, speed_mps: float, *, multiplier: float = 1.0) -> bool:
@@ -677,27 +724,28 @@ class XeleratorSimBits:
         return False
 
     def GetBallPos(self):
-        """Return RobotBallPos semantic relative ball position [x, y] in cm.
+        """Return relative ball position [x, y] in cm for RobotBallPos().
 
-        - has_ball=True: [0xDDD,0xDDD]
-        - no extension provided: [0xFFF,0xFFF]
-        - else: [ball_x_cm, ball_y_cm]
+        The real robot never emits the held sentinel from vision.  Keep the SIM
+        path equivalent: when Unity reports possession, return the near-dribbler
+        coordinates (or synthesize cfg.Motion.CatchVal if the extension is
+        missing) and let RobotBallPos() classify BALL_HELD.
         """
         with self._status_lock:
-            if self._status.has_ball:
-                return [0xDDD, 0xDDD]
             speed_mps = self._status_planar_speed_mps_locked()
             ball = self._status_ball_relative_cm_locked()
+            if self._status.has_ball:
+                return self._held_ball_observation(ball)
             if ball is not None:
                 if self._infer_has_ball_from_relative(ball):
-                    return [0xDDD, 0xDDD]
+                    return self._held_ball_observation(ball)
                 return self._apply_noisy_ball_observation(ball, speed_mps)
 
         if self._ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
             if fallback is not None:
                 if self._infer_has_ball_from_relative(fallback):
-                    return [0xDDD, 0xDDD]
+                    return self._held_ball_observation(fallback)
                 return self._apply_noisy_ball_observation(fallback, 0.0)
         return [0xFFF, 0xFFF]
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 # TODO: Replace this legacy wildcard import with explicit LunaPre facade names
 # used by this module: Settings, UnitedPosition, chassis, peripheral, logger.
 from LunaPre import *
-from LunaPre.strategy_tools import angle_error_deg, clamp
+from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
 import math
 import simple_pid
 import time
@@ -92,14 +92,14 @@ class LockSeries:
         """
         ball = UnitedPosition.RobotBallPos()
         now = time.time()
-        if ball == [0xfff, 0xfff]:
+        if ball == BALL_NOT_FOUND:
             if (
                 self._lockball_last_seen is not None
                 and now - self._lockball_last_seen_ts <= self.lost_hold_seconds
             ):
                 return self._lockball_last_seen, False
             return ball, False
-        if ball == [0xddd, 0xddd]:
+        if ball == BALL_HELD:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             return ball, True
@@ -115,7 +115,7 @@ class LockSeries:
             chassis.stop()
             self._reset_lockball_pid()
             return True
-        if ball == [0xfff, 0xfff]:
+        if ball == BALL_NOT_FOUND:
             peripheral.Dribble(True)
             chassis.stop()
             self._reset_lockball_pid()
@@ -160,14 +160,14 @@ def NormalShoot(x=1, HomePos=[0, -20, 0]):
     logger.debug("Ball Position: %s" % [bx, by])
 
     # 没看到球。
-    if [bx, by] == [0xFFF, 0xFFF] or (bx == 0 and by == 0):
+    if [bx, by] == BALL_NOT_FOUND or (bx == 0 and by == 0):
         logger.info("Ball not found, go home.")
         UnitedPosition.Pos2Pos(HomePos)
         peripheral.Dribble(False)
         return False
 
     # 已经持球。
-    if [bx, by] == [0xDDD, 0xDDD]:
+    if [bx, by] == BALL_HELD:
         # 已经持球，后续动作由调用方决定。
         return True
 
@@ -317,6 +317,90 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
         return lockball.LockBallSlip()
 
 
+def TurnTo_with_ball_orbit(
+    Aim_Angle,
+    SpeedK: float | None = 1.0,
+    *,
+    angle_tolerance: float = 8.0,
+    turn_kp: float = 2.2,
+    max_wz_deg_s: float | None = None,
+    max_linear_mps: float = 0.38,
+    orbit_radius_cm: float | None = None,
+    center_gain: float = 0.010,
+    dribble_power: float = 0.9,
+    reacquire: bool = True,
+):
+    """绕球转向到目标角度，一次调用只执行一个控制 tick。
+
+    这是 ``TurnTo_with_ball`` 的模拟器友好替代版，但不覆盖旧函数。
+    它不直接写 raw wheel mix，而是把“绕球转”的几何关系转换成底盘速度：
+    若球在机器人坐标 r=(x_forward, y_left)，要让球近似成为瞬时旋转中心，
+    车体速度取 ``vx = omega*y``、``vy = -omega*x``。
+    """
+    try:
+        target = float(Aim_Angle) % 360.0
+    except Exception:
+        chassis.stop()
+        return False
+
+    yaw = float(chassis.GetYaw())
+    error = angle_error_deg(yaw, target)
+    if abs(error) <= max(0.0, float(angle_tolerance)):
+        peripheral.Dribble(dribble_power)
+        chassis.stop()
+        return True
+
+    ball = UnitedPosition.RobotBallPos()
+    if ball == BALL_NOT_FOUND:
+        peripheral.Dribble(dribble_power)
+        if reacquire:
+            return bool(lockball.LockBallSlip())
+        chassis.stop()
+        return False
+
+    if orbit_radius_cm is None:
+        catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0.0])
+        orbit_radius_cm = float(catch_val[0] if len(catch_val) > 0 else 8.5)
+    orbit_radius_m = max(0.02, float(orbit_radius_cm) / 100.0)
+
+    if ball == BALL_HELD:
+        ball_x_m = orbit_radius_m
+        ball_y_m = 0.0
+        center_x_m = 0.0
+        center_y_m = 0.0
+    else:
+        try:
+            ball_x_cm = float(ball[0])
+            ball_y_cm = float(ball[1])
+        except Exception:
+            chassis.stop()
+            return False
+        ball_x_m = ball_x_cm / 100.0
+        ball_y_m = ball_y_cm / 100.0
+        center_x_m = (ball_x_cm - float(orbit_radius_cm)) * float(center_gain)
+        center_y_m = ball_y_cm * float(center_gain)
+
+    speed_k = 1.0 if SpeedK is None else max(0.0, float(SpeedK))
+    if max_wz_deg_s is None:
+        max_wz_deg_s = 110.0 * max(0.35, speed_k)
+    max_wz_deg_s = max(0.0, float(max_wz_deg_s))
+    wz_deg_s = clamp(error * float(turn_kp) * max(0.35, speed_k), -max_wz_deg_s, max_wz_deg_s)
+    omega = math.radians(wz_deg_s)
+
+    speed_x = omega * ball_y_m + center_x_m
+    speed_y = -omega * ball_x_m + center_y_m
+    linear_mag = math.hypot(speed_x, speed_y)
+    max_linear = max(0.0, float(max_linear_mps))
+    if linear_mag > max_linear > 0.0:
+        scale = max_linear / linear_mag
+        speed_x *= scale
+        speed_y *= scale
+
+    peripheral.Dribble(dribble_power)
+    chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
+    return False
+
+
 def GoBack():
     """调用 Pos2Pos 回到配置里的 Home 位姿。"""
     # 当前 config.json 把 Home 存在 CheckPoints 下。
@@ -334,7 +418,7 @@ def Slipsideshot(attack_dir=1): #溜边
         close_ball = 0.0 <= float(robot_ball[0]) <= 24.0 and abs(float(robot_ball[1])) <= 16.0
     except Exception:
         close_ball = False
-    if not close_ball and robot_ball != [0xDDD, 0xDDD]:
+    if not close_ball and robot_ball != BALL_HELD:
         return lockball.LockBallSlip()
     try:
         local_x, local_y, _ = UnitedPosition.FieldRobotPose()
@@ -402,9 +486,9 @@ def OhMyBackStep(
     - 到角落：转向球门，角度够就射门
     """
 
-    if UnitedPosition.RobotBallPos() != [0xDDD, 0xDDD]:
+    if UnitedPosition.RobotBallPos() != BALL_HELD:
         return NormalShoot(x=0, HomePos=HomePos)
-    elif UnitedPosition.RobotBallPos() == [0xFFF, 0xFFF]:
+    elif UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
         return UnitedPosition.Pos2Pos(HomePos)
     else:
         lockball.LockBallSlip()

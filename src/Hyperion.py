@@ -1,6 +1,6 @@
 from BasicFuc import *
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
-from LunaPre.strategy_tools import safe_stop
+from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 
 import numpy as np
 
@@ -65,7 +65,7 @@ def logic_step():
             jump_score]
         logger.info("LockBallSlip executed successfully.")
         if max(scores) == huck_score:
-            if TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[120,0])%360,3):
+            if TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[120,0])%360,3):
                 peripheral.ShootBall()
         elif max(scores) == uplane_score:
             if lockball.slip():
@@ -74,8 +74,8 @@ def logic_step():
             peripheral.ShootBall()
     else:
         peripheral.Dribble(0.3)
-        if UnitedPosition.RobotBallPos() == [0xFFF, 0xFFF]:
-            logger.info("Ball position is [0xFFF, 0xFFF], moving to home position.")
+        if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
+            logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
             UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
 
 def UplaneStep(thershold = [[70,30],[120,90]]):
@@ -92,10 +92,10 @@ def UplaneStep(thershold = [[70,30],[120,90]]):
     else:
         angle_k = 1
     if UnitedPosition.PointInShape(pose,thershold):
-        if TurnTo_with_ball(UnitedPosition.Pos2Angle([x,y],[160,0])%360):
+        if TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x,y],[160,0])%360):
             peripheral.ShootBall()
     else:
-        if TurnTo_with_ball(90*angle_k):
+        if TurnTo_with_ball_orbit(90*angle_k):
             chassis.FieldMoveVector(0.91,0,90*angle_k)
         
 

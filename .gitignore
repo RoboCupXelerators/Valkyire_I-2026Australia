@@ -243,3 +243,9 @@ packages_lock.json
 
 run_*/
 sim_offence_*
+# Runtime logs and caches
+logs/
+src/ReasonData/data/*.log
+src/ReasonData/data/*.sqlite
+.pytest_cache/
+.venv*/

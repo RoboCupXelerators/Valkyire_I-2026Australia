@@ -32,6 +32,10 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 
+BALL_NOT_FOUND = [0xFFF, 0xFFF]  # matches LunaPre.strategy_tools.BALL_NOT_FOUND; avoid importing LunaPre at server import time
+POSE_NOT_FOUND = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
+LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -311,7 +315,7 @@ class ControlPanelApp:
             "driver": None,
             "running": False,
             "disabled": None,
-            "dist_mm": [0xFFF, 0xFFF, 0xFFF, 0xFFF],
+            "dist_mm": list(LIDAR_DISABLED_DISTS),
             "message": "LunaPre runtime not initialized",
         }
 
@@ -341,7 +345,7 @@ class ControlPanelApp:
             status["message"] = str(e)
             return status
 
-        if status["disabled"] or status["dist_mm"] == [0xFFF, 0xFFF, 0xFFF, 0xFFF]:
+        if status["disabled"] or status["dist_mm"] == LIDAR_DISABLED_DISTS:
             status["state"] = "disabled"
             status["message"] = "Lidar driver is disabled"
         elif status["dist_mm"] == [0, 0, 0, 0]:
@@ -371,7 +375,7 @@ class ControlPanelApp:
 
         try:
             pose = positions.FieldRobotPose()
-            if pose and len(pose) >= 3 and list(pose) != [0xFFF, 0xFFF, 0xFFF]:
+            if pose and len(pose) >= 3 and list(pose) != POSE_NOT_FOUND:
                 result["robot_x_cm"] = round(float(pose[0]), 2)
                 result["robot_y_cm"] = round(float(pose[1]), 2)
                 result["robot_yaw_deg"] = round(float(pose[2]), 2)
@@ -808,7 +812,7 @@ class ControlPanelApp:
         result = {
             "available": True,
             "robot_pose": {"x_cm": 0, "y_cm": 0, "yaw_deg": 0},
-            "ball_pos": [0xFFF, 0xFFF],
+            "ball_pos": list(BALL_NOT_FOUND),
             "has_ball": False,
             "enemy_positions": [],
         }
@@ -817,7 +821,7 @@ class ControlPanelApp:
         if positions is not None:
             try:
                 x, y, yaw = positions.FieldRobotPose()
-                if [x, y, yaw] != [0xFFF, 0xFFF, 0xFFF]:
+                if [x, y, yaw] != POSE_NOT_FOUND:
                     result["robot_pose"] = {"x_cm": round(float(x), 2), "y_cm": round(float(y), 2), "yaw_deg": round(float(yaw), 2)}
             except Exception:
                 pass

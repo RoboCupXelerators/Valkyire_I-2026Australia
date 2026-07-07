@@ -18,8 +18,10 @@ import time
 
 from ReasonData import Settings, logger
 
+from .strategy_tools import BALL_NOT_FOUND
 
-LIDAR_DISABLED_DISTS = [0xFFF, 0xFFF, 0xFFF, 0xFFF]
+
+LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
 LIDAR_ZERO_DISTS = [0, 0, 0, 0]
 DEFAULT_SCAN_QUEUE_SIZE = 3
 DEFAULT_LIDAR_BACKEND = "rplidar"

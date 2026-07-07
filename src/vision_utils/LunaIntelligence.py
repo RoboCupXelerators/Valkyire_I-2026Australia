@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+BALL_NOT_FOUND = [0xFFF, 0xFFF]  # matches LunaPre.strategy_tools.BALL_NOT_FOUND
+
 import os
 import threading
 import queue
@@ -635,7 +637,7 @@ class SimYoloVision:
                 return [float(best[1]), float(best[2])]
         except Exception:
             pass
-        return [0xFFF, 0xFFF]
+        return list(BALL_NOT_FOUND)
 
     def get_chassis_pos(self) -> List[List[float]]:
         """Get chassis detections."""

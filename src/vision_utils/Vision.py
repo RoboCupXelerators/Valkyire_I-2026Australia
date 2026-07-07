@@ -6,6 +6,9 @@ import time
 import sys
 from pathlib import Path
 
+BALL_NOT_FOUND = [0xFFF, 0xFFF]  # matches LunaPre.strategy_tools.BALL_NOT_FOUND
+BALL_HELD = [0xDDD, 0xDDD]  # matches LunaPre.strategy_tools.BALL_HELD
+
 if __package__ in (None, ""):
     _SRC_DIR = Path(__file__).resolve().parents[1]
     _REPO_ROOT = _SRC_DIR.parent
@@ -708,7 +711,7 @@ class UnitedVision(Detect_Method):
                 def ball_score(ball):
                     robot_dist = math.hypot(float(ball[0]), float(ball[1]))
                     continuity = 0.0
-                    if last_recent and last_pos not in ([0, 0], [0xfff, 0xfff], [0xddd, 0xddd]):
+                    if last_recent and last_pos not in ([0, 0], BALL_NOT_FOUND, BALL_HELD):
                         continuity = math.hypot(float(ball[0]) - float(last_pos[0]), float(ball[1]) - float(last_pos[1]))
                     return robot_dist + continuity * 0.4 - float(ball[4]) * 5.0
                 Balls = sorted(Balls, key=ball_score)
