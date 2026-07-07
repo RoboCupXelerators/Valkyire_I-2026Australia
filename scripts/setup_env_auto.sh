@@ -228,6 +228,16 @@ install_hailo_debs_pi() {
   sudo apt-get -f install -y
 }
 
+install_ch340_driver() {
+  local installer="$SCRIPT_DIR/install_ch340_driver.sh"
+  if [[ ! -x "$installer" ]]; then
+    chmod +x "$installer"
+  fi
+
+  echo "Installing CH340/CH341 USB serial driver..."
+  "$installer"
+}
+
 install_cuda_jetson() {
   # This matches install_cuda.sh but kept here so we can control sequence.
   echo "Installing JetPack (nvidia-jetpack) ..."
@@ -276,6 +286,10 @@ setup_for_jetson() {
 
   ensure_apt_deps_common
   ensure_python_venv_deps
+
+  # Install the USB serial driver before other Jetson-specific setup.
+  install_ch340_driver
+
   rebuild_venv
   configure_pip_mirror_user
 
