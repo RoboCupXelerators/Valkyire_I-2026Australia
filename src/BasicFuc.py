@@ -75,8 +75,8 @@ class LockSeries:
         self.lost_hold_seconds = 0.12
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
-        self.pan_x = simple_pid.PID(0.05, 0, 0, setpoint=self.catch_x, output_limits=(-1.73, 0), auto_mode=True)
-        self.pan_y = simple_pid.PID(0.04, 0, 0, setpoint=self.catch_y, output_limits=(-1.5, 1.5), auto_mode=True)
+        self.pan_x = simple_pid.PID(0.027, 0, 0, setpoint=self.catch_x, output_limits=(-1.0, 0), auto_mode=True)
+        self.pan_y = simple_pid.PID(0.023, 0, 0, setpoint=self.catch_y, output_limits=(-0.8, 0.8), auto_mode=True)
         self.pan_w = simple_pid.PID(1.3, 0, 0, setpoint=0, output_limits=(-200, 200), auto_mode=True)
 
     def _reset_lockball_pid(self):
