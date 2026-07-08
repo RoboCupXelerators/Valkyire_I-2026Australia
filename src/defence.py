@@ -63,6 +63,9 @@ class DefenceConfig:
     stuck_timeout_s: float = 1.5
     stuck_move_cm: float = 3.0
     wall_margin_cm: float = 30.0
+    predict_ball_horizon_s: float = 0.45
+    predict_ball_max_age_s: float = 0.30
+    predict_ball_min_speed_cm_s: float = 18.0
 
 
 class RuleDefenceStrategy:
@@ -156,10 +159,11 @@ class RuleDefenceStrategy:
             return
 
         ball_distance = distance(ball, [0, 0])
-        ball_progress = self.attack_dir * float(ball_field[0])
+        defence_ball_field = self._predicted_defence_ball(ball_field)
+        ball_progress = self.attack_dir * float(defence_ball_field[0])
         enemies = self._field_enemies()
         contested_ball = self._enemy_near_ball(ball_field, enemies)
-        central_ball = abs(float(ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
+        central_ball = abs(float(defence_ball_field[1])) <= min(self.field_short / 2.0 - 40.0, 58.0)
         deep_guard = abs(self.cfg.guard_x_cm) >= 68.0
 
         if self._own_goal_mouth_dead_ball(ball_field):
@@ -177,7 +181,7 @@ class RuleDefenceStrategy:
             return
 
         if deep_guard:
-            state, target = self._deep_guard_cover_target(ball_field)
+            state, target = self._deep_guard_cover_target(defence_ball_field)
             if state:
                 self._set_state(state)
                 self._set_dribble(False)
@@ -185,7 +189,7 @@ class RuleDefenceStrategy:
                 return
 
         if contested_ball and ball_distance <= self.cfg.chase_distance_cm * 1.75:
-            target = self._pressure_target(ball_field, contested=True)
+            target = self._pressure_target(defence_ball_field, contested=True)
             self._set_state("block_contested_ball")
             self._set_dribble(False)
             UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
@@ -201,7 +205,7 @@ class RuleDefenceStrategy:
         # If the ball is still too far to grab, step forward onto the
         # goal-ball lane. This makes 1v1 defence apply pressure at midfield.
         if ball_distance <= self.cfg.chase_distance_cm * 1.55 and ball_progress >= self.cfg.chase_retreat_cm:
-            target = self._pressure_target(ball_field)
+            target = self._pressure_target(defence_ball_field)
             self._set_state("press_ball")
             self._set_dribble(False)
             UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
@@ -209,13 +213,13 @@ class RuleDefenceStrategy:
 
         # Ball near midfield and close enough: occupy the defensive lane.
         if ball_distance <= self.cfg.chase_distance_cm and ball_progress <= self.cfg.chase_progress_cm:
-            target = self._intercept_target(ball_field)
+            target = self._intercept_target(defence_ball_field)
             self._set_state("intercept_lane")
             self._set_dribble(False)
             UnitedPosition.Pos2Pos(target, self.cfg.intercept_speed_gain)
             return
 
-        state, target = self._cover_shot_target(ball_field)
+        state, target = self._cover_shot_target(defence_ball_field)
         if state:
             self._set_state(state)
             self._set_dribble(False)
@@ -260,6 +264,28 @@ class RuleDefenceStrategy:
         target_x = self.attack_dir * target_progress
         target_yaw = UnitedPosition.Pos2Angle([target_x, target_y], [float(ball_field[0]), float(ball_field[1])]) % 360
         return self._project_target([target_x, target_y, target_yaw])
+
+    def _predicted_defence_ball(self, ball_field: list | tuple) -> list[float]:
+        try:
+            prediction = UnitedPosition.PredictBallLanding(
+                field_ball_pos=ball_field,
+                horizon_s=self.cfg.predict_ball_horizon_s,
+                max_age_s=self.cfg.predict_ball_max_age_s,
+                min_speed_cm_s=self.cfg.predict_ball_min_speed_cm_s,
+            )
+        except Exception:
+            return [float(ball_field[0]), float(ball_field[1])]
+
+        if not isinstance(prediction, dict) or not prediction.get("valid", False):
+            return [float(ball_field[0]), float(ball_field[1])]
+
+        field_pos = prediction.get("field_pos")
+        if not field_pos or field_pos in (BALL_NOT_FOUND, BALL_HELD) or len(field_pos) < 2:
+            return [float(ball_field[0]), float(ball_field[1])]
+        try:
+            return [float(field_pos[0]), float(field_pos[1])]
+        except Exception:
+            return [float(ball_field[0]), float(ball_field[1])]
 
     def _field_enemies(self) -> list:
         try:

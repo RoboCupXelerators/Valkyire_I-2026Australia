@@ -23,6 +23,7 @@ Current public interfaces:
 | `UnitedPosition.FieldRobotPose()` | field-frame robot pose `[x_forward, y_left, yaw_deg]` |
 | `UnitedPosition.RobotBallPos()` | robot-frame ball position `[x_forward, y_left]` or sentinel |
 | `UnitedPosition.FieldBallPos()` | field-frame ball position `[x_forward, y_left]` or sentinel |
+| `UnitedPosition.PredictBallLanding()` | short-horizon field-frame interception prediction dict |
 | `UnitedPosition.DirectDistance()` | raw wall distances from lidar |
 
 ## Ball State
@@ -37,6 +38,16 @@ Legacy ball sentinel values are still supported:
 
 Use `UnitedPosition.BallState(ball_pos=None)` when branching on ball state.
 This avoids scattering raw sentinel comparisons through strategy and MLP code.
+
+## Ball Prediction
+
+`UnitedPosition.PredictBallLanding(horizon_s=0.45)` estimates a short-term
+field-frame interception point from recent `FieldBallPos()` samples. The result
+is a dict with `valid`, `field_pos`, `current_field_pos`, `velocity_cm_s`,
+`speed_cm_s`, `reason`, and confidence fields. Use `field_pos` only when
+`valid` is true; otherwise fall back to the current ball position or home
+defence. When the caller already has the current field ball observation, pass
+it as `field_ball_pos` to avoid a second sensor read in the same control tick.
 
 ## Snapshot Discipline
 

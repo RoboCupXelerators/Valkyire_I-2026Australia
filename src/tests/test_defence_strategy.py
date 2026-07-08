@@ -62,6 +62,37 @@ def test_danger_ball_challenges_with_lockball(monkeypatch):
     assert calls == ["lock"]
 
 
+def test_intercept_lane_uses_predicted_ball_point(monkeypatch):
+    captured = {}
+    strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=1.0))
+
+    monkeypatch.setattr(defence.UnitedPosition, "FieldRobotPose", lambda: [0.0, 0.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "RobotBallPos", lambda: [70.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldBallPos", lambda: [-30.0, 0.0])
+    monkeypatch.setattr(defence.UnitedPosition, "FieldChassisPos", lambda: [])
+    monkeypatch.setattr(
+        defence.UnitedPosition,
+        "PredictBallLanding",
+        lambda **_kwargs: {
+            "valid": True,
+            "field_pos": [-30.0, 50.0],
+            "reason": "ok",
+            "velocity_cm_s": [0.0, 100.0],
+        },
+    )
+    monkeypatch.setattr(defence.peripheral, "Dribble", lambda _status: None)
+    monkeypatch.setattr(
+        defence.UnitedPosition,
+        "Pos2Pos",
+        lambda target, speed_gain=None: captured.update(target=target, speed_gain=speed_gain) or False,
+    )
+
+    strategy.step()
+
+    assert strategy.state == "intercept_lane"
+    assert captured["target"][1] > 30.0
+
+
 def test_wall_recovery_has_priority(monkeypatch):
     captured = {}
     strategy = RuleDefenceStrategy(DefenceConfig(attack_direction=-1.0, wall_margin_cm=30.0))

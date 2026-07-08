@@ -331,6 +331,8 @@ class _CompatVisionVals:
     @property
     def RecordExt(self): return "mp4"
     @property
+    def CamFps(self): return getattr(self._s.Vision, "CamFps", getattr(self._s.Vision, "CaptureFps", 30))
+    @property
     def ExposeVal(self): return 100
     @property
     def AutoExpose(self): return 0

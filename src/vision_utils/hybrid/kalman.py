@@ -6,7 +6,7 @@ import numpy as np
 class BallKalman:
     """Small constant-velocity Kalman filter for ball x/y in robot-frame cm."""
 
-    def __init__(self, process_var: float = 900.0, measurement_var: float = 18.0):
+    def __init__(self, process_var: float = 360.0, measurement_var: float = 50.0):
         self.x = np.zeros((4, 1), dtype=np.float64)
         self.p = np.eye(4, dtype=np.float64) * 500.0
         self.q_base = float(process_var)
@@ -39,6 +39,25 @@ class BallKalman:
         self.p = f @ self.p @ f.T + q
         self.last_ts = float(ts)
         return float(self.x[0, 0]), float(self.x[1, 0])
+
+    def forecast(self, ts: float) -> tuple[float, float]:
+        """Predict position at ``ts`` without advancing the filter state."""
+        if not self.initialized:
+            return 0.0, 0.0
+        dt = max(0.0, min(0.25, float(ts) - float(self.last_ts)))
+        return float(self.x[0, 0] + self.x[2, 0] * dt), float(self.x[1, 0] + self.x[3, 0] * dt)
+
+    def set_position(self, px: float, py: float) -> None:
+        if not self.initialized:
+            return
+        self.x[0, 0] = float(px)
+        self.x[1, 0] = float(py)
+
+    def set_velocity(self, vx: float, vy: float) -> None:
+        if not self.initialized:
+            return
+        self.x[2, 0] = float(vx)
+        self.x[3, 0] = float(vy)
 
     def update(self, px: float, py: float, ts: float, confidence: float = 1.0) -> tuple[float, float]:
         if not self.initialized:

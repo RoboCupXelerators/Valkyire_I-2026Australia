@@ -89,6 +89,8 @@ class HybridVision(VisionPreUntil):
         self._latest_timestamps = [0.0, 0.0, 0.0, 0.0]
         self._latest_output = None
         self._last_yolo_detections = []
+        self._last_tracker_frame_ts = [0.0, 0.0, 0.0, 0.0]
+        self._last_yolo_frame_ts = [0.0, 0.0, 0.0, 0.0]
 
         self.perf = HybridPerf()
         self.BlobMs = 0.0
@@ -211,6 +213,10 @@ class HybridVision(VisionPreUntil):
                     timestamps[i] = now
         return frames, timestamps
 
+    @staticmethod
+    def _is_new_frame(timestamp: float, previous_timestamp: float) -> bool:
+        return float(timestamp) > 0.0 and float(timestamp) > float(previous_timestamp) + 1e-6
+
     def ReadCams(self):
         frame_count = 0
         last_time = time.time()
@@ -256,13 +262,23 @@ class HybridVision(VisionPreUntil):
             t0 = time.perf_counter()
             frames, timestamps = self._copy_frames()
             detections = []
+            new_frame_count = 0
             for cam, frame in enumerate(frames[:4]):
+                if frame is None:
+                    continue
                 ts = timestamps[cam] if cam < len(timestamps) and timestamps[cam] > 0 else now
+                if not self._is_new_frame(ts, self._last_tracker_frame_ts[cam]):
+                    continue
+                self._last_tracker_frame_ts[cam] = float(ts)
+                new_frame_count += 1
                 det = self.blob_tracker.track_frame(cam, frame, ts)
                 if det is not None:
                     detections.append(det)
-            with self._lock:
-                self.fusion.update_blob(detections)
+            if new_frame_count <= 0:
+                continue
+            if detections:
+                with self._lock:
+                    self.fusion.update_blob(detections)
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             self.perf.record_ms("blob_ms", elapsed_ms)
             self.perf.tracker_rate.tick()
@@ -280,10 +296,25 @@ class HybridVision(VisionPreUntil):
             now = time.time()
             t0 = time.perf_counter()
             frames, timestamps = self._copy_frames()
+            yolo_frames = [None, None, None, None]
+            yolo_timestamps = [0.0, 0.0, 0.0, 0.0]
+            new_frame_count = 0
+            for cam, frame in enumerate(frames[:4]):
+                if frame is None:
+                    continue
+                ts = timestamps[cam] if cam < len(timestamps) and timestamps[cam] > 0 else now
+                if not self._is_new_frame(ts, self._last_yolo_frame_ts[cam]):
+                    continue
+                self._last_yolo_frame_ts[cam] = float(ts)
+                yolo_frames[cam] = frame
+                yolo_timestamps[cam] = float(ts)
+                new_frame_count += 1
+            if new_frame_count <= 0:
+                continue
             pp_ms = (time.perf_counter() - t0) * 1000.0
             self.perf.record_ms("preprocess_ms", pp_ms)
             try:
-                detections = self.yolo.detect_batch(frames[:4], timestamps[:4], cv2, np)
+                detections = self.yolo.detect_batch(yolo_frames, yolo_timestamps, cv2, np)
                 with self._lock:
                     self._last_yolo_detections = detections
                     self.fusion.update_yolo(detections)
@@ -301,7 +332,7 @@ class HybridVision(VisionPreUntil):
             self.PreProcessTF += 1
             self.PreProcessMs = self.perf.preprocess_ms
             self.InferBatchMs = self.perf.yolo_ms
-            self.InferBatchSize = min(4, len([f for f in frames[:4] if f is not None]))
+            self.InferBatchSize = new_frame_count
 
     def _output_loop(self):
         gate = RateGate(self.cfg_hybrid.output_hz)

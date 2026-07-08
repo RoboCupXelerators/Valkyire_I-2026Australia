@@ -24,7 +24,11 @@ class HybridConfig:
 
 
 def _value(section: Any, name: str, default: Any) -> Any:
-    return getattr(section, name, default) if section is not None else default
+    if section is None:
+        return default
+    if isinstance(section, dict):
+        return section.get(name, default)
+    return getattr(section, name, default)
 
 
 def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridConfig:
@@ -39,13 +43,20 @@ def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridCo
     else:
         defaults = HybridConfig(profile="orin")
 
-    cam_fps = _value(vision_vals, "CamFps", defaults.capture_fps)
+    cam_fps = _value(vision, "CamFps", _value(vision_vals, "CamFps", defaults.capture_fps))
+    capture_fps = int(_value(vision, "CaptureFps", cam_fps))
+    explicit_yolo_hz = _value(vision, "YoloHz", None)
+    if explicit_yolo_hz is None and profile not in ("rpi5",) and capture_fps <= 30:
+        yolo_hz = float(capture_fps)
+    else:
+        yolo_hz = float(_value(vision, "YoloHz", defaults.yolo_hz))
+
     cfg = HybridConfig(
         mode=str(_value(vision, "Mode", defaults.mode)).lower(),
         profile=profile,
-        capture_fps=int(_value(vision, "CaptureFps", cam_fps)),
+        capture_fps=capture_fps,
         output_hz=float(_value(vision, "OutputHz", defaults.output_hz)),
-        yolo_hz=float(_value(vision, "YoloHz", defaults.yolo_hz)),
+        yolo_hz=yolo_hz,
         tracker_hz=float(_value(vision, "TrackerHz", defaults.tracker_hz)),
         yolo_enabled=bool(_value(vision, "YoloEnabled", defaults.yolo_enabled)),
         yolo_model_size=str(_value(vision, "YoloModelSize", defaults.yolo_model_size)),
@@ -62,8 +73,9 @@ def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridCo
         for key, value in overrides.items():
             if hasattr(cfg, key) and value is not None:
                 setattr(cfg, key, value)
+    cfg.capture_fps = max(1, int(cfg.capture_fps))
     cfg.output_hz = max(1.0, float(cfg.output_hz))
-    cfg.yolo_hz = max(0.0, float(cfg.yolo_hz))
-    cfg.tracker_hz = max(1.0, float(cfg.tracker_hz))
+    cfg.yolo_hz = min(float(cfg.capture_fps), max(0.0, float(cfg.yolo_hz)))
+    cfg.tracker_hz = max(float(cfg.capture_fps), float(cfg.tracker_hz), 1.0)
     cfg.yolo_batch = max(1, int(cfg.yolo_batch))
     return cfg

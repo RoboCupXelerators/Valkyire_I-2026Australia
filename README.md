@@ -21,6 +21,7 @@
 | `RobotBallPos()` | 获取球在**机体坐标系**下的位置 | `[x, y]` (cm) |
 | `FieldRobotPose()` | 获取机器人在**场地坐标系**下的位姿 | `[x, y, yaw]` (cm, cm, °) |
 | `FieldBallPos()` | 获取球在**场地坐标系**下的位置 | `[x, y]` (cm) |
+| `PredictBallLanding(horizon_s=0.45)` | 预测球的短期拦截落点 | `{"valid": bool, "field_pos": [x, y], ...}` |
 | `Pos2Pos([x, y, yaw], speed_gain=None)` | 移动到场地坐标系的指定点 | `True` (到达) / `False` (未到达) |
 | `Move2Path(points, iWaitMs=0.1)` | 顺序移动到路径点列表（阻塞） | `True` (完成) |
 

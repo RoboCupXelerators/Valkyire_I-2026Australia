@@ -43,6 +43,197 @@ SHOOT_WINDOW_CAMERA_BASE_BEARING_DEG = {
     2: 0.0,    # front
     3: -90.0,  # right
 }
+BALL_PREDICT_DEFAULT_HORIZON_S = 0.45
+BALL_PREDICT_MAX_HORIZON_S = 1.0
+BALL_PREDICT_MAX_AGE_S = 0.35
+BALL_PREDICT_MIN_DT_S = 0.02
+BALL_PREDICT_MAX_GAP_S = 0.40
+BALL_PREDICT_MIN_SPEED_CM_S = 12.0
+BALL_PREDICT_MAX_SPEED_CM_S = 500.0
+
+
+class BallLandingPredictor:
+    """Short-horizon field-frame ball predictor for defensive interception."""
+
+    def __init__(
+        self,
+        *,
+        min_dt_s: float = BALL_PREDICT_MIN_DT_S,
+        max_gap_s: float = BALL_PREDICT_MAX_GAP_S,
+        max_speed_cm_s: float = BALL_PREDICT_MAX_SPEED_CM_S,
+        velocity_alpha: float = 0.55,
+    ):
+        self.min_dt_s = max(0.001, float(min_dt_s))
+        self.max_gap_s = max(self.min_dt_s, float(max_gap_s))
+        self.max_speed_cm_s = max(1.0, float(max_speed_cm_s))
+        self.velocity_alpha = clamp(float(velocity_alpha), 0.05, 1.0)
+        self.reset()
+
+    @staticmethod
+    def _sentinel_pair(value, sentinel: list[int]) -> bool:
+        try:
+            return float(value[0]) == float(sentinel[0]) and float(value[1]) == float(sentinel[1])
+        except Exception:
+            return False
+
+    @classmethod
+    def _as_xy(cls, value):
+        if value is None or not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+        if cls._sentinel_pair(value, BALL_NOT_FOUND) or cls._sentinel_pair(value, BALL_HELD):
+            return None
+        try:
+            x = float(value[0])
+            y = float(value[1])
+        except Exception:
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        return [x, y]
+
+    def reset(self) -> None:
+        self.last_pos: list[float] | None = None
+        self.last_ts: float | None = None
+        self.velocity_cm_s = [0.0, 0.0]
+        self.sample_count = 0
+
+    def observe(self, field_pos, timestamp_s: float | None = None) -> bool:
+        xy = self._as_xy(field_pos)
+        if xy is None:
+            return False
+
+        ts = time.monotonic() if timestamp_s is None else float(timestamp_s)
+        if not math.isfinite(ts):
+            return False
+
+        if self.last_pos is None or self.last_ts is None:
+            self.last_pos = xy
+            self.last_ts = ts
+            self.velocity_cm_s = [0.0, 0.0]
+            self.sample_count = 1
+            return True
+
+        dt = ts - self.last_ts
+        if dt < self.min_dt_s:
+            return True
+        if dt > self.max_gap_s:
+            self.last_pos = xy
+            self.last_ts = ts
+            self.velocity_cm_s = [0.0, 0.0]
+            self.sample_count = 1
+            return True
+
+        raw_vx = (xy[0] - self.last_pos[0]) / dt
+        raw_vy = (xy[1] - self.last_pos[1]) / dt
+        raw_speed = math.hypot(raw_vx, raw_vy)
+        if raw_speed > self.max_speed_cm_s:
+            self.last_pos = xy
+            self.last_ts = ts
+            self.velocity_cm_s = [0.0, 0.0]
+            self.sample_count = 1
+            return True
+
+        if self.sample_count < 2:
+            self.velocity_cm_s = [raw_vx, raw_vy]
+        else:
+            alpha = self.velocity_alpha
+            self.velocity_cm_s = [
+                self.velocity_cm_s[0] * (1.0 - alpha) + raw_vx * alpha,
+                self.velocity_cm_s[1] * (1.0 - alpha) + raw_vy * alpha,
+            ]
+        self.last_pos = xy
+        self.last_ts = ts
+        self.sample_count += 1
+        return True
+
+    def _empty_prediction(self, reason: str) -> dict:
+        current = None if self.last_pos is None else [round(self.last_pos[0], 2), round(self.last_pos[1], 2)]
+        return {
+            "valid": False,
+            "reason": reason,
+            "field_pos": list(BALL_NOT_FOUND),
+            "current_field_pos": current,
+            "velocity_cm_s": [round(self.velocity_cm_s[0], 2), round(self.velocity_cm_s[1], 2)],
+            "speed_cm_s": round(math.hypot(self.velocity_cm_s[0], self.velocity_cm_s[1]), 2),
+            "horizon_s": 0.0,
+            "age_s": None,
+            "confidence": 0.0,
+            "clamped": False,
+            "samples": self.sample_count,
+        }
+
+    def predict(
+        self,
+        *,
+        horizon_s: float = BALL_PREDICT_DEFAULT_HORIZON_S,
+        now_s: float | None = None,
+        max_age_s: float = BALL_PREDICT_MAX_AGE_S,
+        min_speed_cm_s: float = BALL_PREDICT_MIN_SPEED_CM_S,
+        max_horizon_s: float = BALL_PREDICT_MAX_HORIZON_S,
+        field_long_cm: float | None = None,
+        field_short_cm: float | None = None,
+        field_margin_cm: float = 0.0,
+    ) -> dict:
+        if self.last_pos is None or self.last_ts is None:
+            return self._empty_prediction("no_history")
+
+        now = time.monotonic() if now_s is None else float(now_s)
+        if not math.isfinite(now):
+            return self._empty_prediction("bad_time")
+
+        max_age = max(0.001, float(max_age_s))
+        age = max(0.0, now - self.last_ts)
+        if age > max_age:
+            result = self._empty_prediction("stale")
+            result["age_s"] = round(age, 3)
+            return result
+
+        horizon = clamp(float(horizon_s), 0.0, max(0.0, float(max_horizon_s)))
+        vx, vy = self.velocity_cm_s
+        speed = math.hypot(vx, vy)
+        if self.sample_count < 2:
+            reason = "warming_up"
+            lead_s = 0.0
+            base_confidence = 0.35
+        elif speed < max(0.0, float(min_speed_cm_s)):
+            reason = "stationary"
+            lead_s = 0.0
+            base_confidence = 0.55
+        else:
+            reason = "ok"
+            lead_s = age + horizon
+            base_confidence = 0.90
+
+        pred_x = self.last_pos[0] + vx * lead_s
+        pred_y = self.last_pos[1] + vy * lead_s
+        clamped = False
+        if field_long_cm is not None and field_short_cm is not None:
+            half_long = max(0.0, float(field_long_cm) / 2.0 - max(0.0, float(field_margin_cm)))
+            half_short = max(0.0, float(field_short_cm) / 2.0 - max(0.0, float(field_margin_cm)))
+            next_x = clamp(pred_x, -half_long, half_long)
+            next_y = clamp(pred_y, -half_short, half_short)
+            clamped = abs(next_x - pred_x) > 1e-6 or abs(next_y - pred_y) > 1e-6
+            pred_x, pred_y = next_x, next_y
+
+        age_factor = max(0.0, 1.0 - age / max_age)
+        confidence = base_confidence * age_factor
+        if clamped:
+            confidence *= 0.85
+
+        return {
+            "valid": True,
+            "reason": reason,
+            "field_pos": [round(pred_x, 2), round(pred_y, 2)],
+            "current_field_pos": [round(self.last_pos[0], 2), round(self.last_pos[1], 2)],
+            "velocity_cm_s": [round(vx, 2), round(vy, 2)],
+            "speed_cm_s": round(speed, 2),
+            "horizon_s": round(horizon, 3),
+            "age_s": round(age, 3),
+            "confidence": round(confidence, 3),
+            "clamped": clamped,
+            "samples": self.sample_count,
+        }
+
 
 class Positions:
     def __init__(self):
@@ -77,6 +268,7 @@ class Positions:
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
         self._vision_enabled = runtime.default_vision_enabled()
+        self._ball_landing_predictor = BallLandingPredictor()
 
     def _build_pos2pos_pid(self):
         return simple_pid.PID(
@@ -454,6 +646,26 @@ class Positions:
         if ball_pos == BALL_HELD:
             return "held"
         return "free"
+
+    def _ball_predictor(self) -> BallLandingPredictor:
+        predictor = getattr(self, "_ball_landing_predictor", None)
+        if predictor is None:
+            predictor = BallLandingPredictor()
+            self._ball_landing_predictor = predictor
+        return predictor
+
+    def ResetBallLandingPredictor(self) -> None:
+        """Clear short-horizon ball prediction history."""
+
+        self._ball_predictor().reset()
+
+    def _observe_field_ball_for_prediction(self, ball_field, timestamp_s: float | None = None) -> None:
+        if BallLandingPredictor._sentinel_pair(ball_field, BALL_HELD):
+            self.ResetBallLandingPredictor()
+            return
+        if BallLandingPredictor._sentinel_pair(ball_field, BALL_NOT_FOUND):
+            return
+        self._ball_predictor().observe(ball_field, timestamp_s=timestamp_s)
 
     def DirectDistance(self):
         '''
@@ -1305,6 +1517,7 @@ class Positions:
         if ball_state == "lost":
             return list(BALL_NOT_FOUND)
         if ball_state == "held":
+            self.ResetBallLandingPredictor()
             return list(BALL_HELD)
         else:
             SelfX, SelfY, SelfZ = self.FieldRobotPose()
@@ -1315,7 +1528,54 @@ class Positions:
             s = math.sin(th)
             dx = float(ballX) * c - float(ballY) * s
             dy = float(ballX) * s + float(ballY) * c
-            return [SelfX + dx, SelfY + dy]
+            field_ball = [SelfX + dx, SelfY + dy]
+            self._observe_field_ball_for_prediction(field_ball)
+            return field_ball
+
+    def PredictBallLanding(
+        self,
+        *,
+        field_ball_pos: list | tuple | None = None,
+        horizon_s: float = BALL_PREDICT_DEFAULT_HORIZON_S,
+        max_age_s: float = BALL_PREDICT_MAX_AGE_S,
+        min_speed_cm_s: float = BALL_PREDICT_MIN_SPEED_CM_S,
+        max_horizon_s: float = BALL_PREDICT_MAX_HORIZON_S,
+        clamp_to_field: bool = True,
+        field_margin_cm: float = 0.0,
+    ) -> dict:
+        """Predict the short-term field-frame ball point for interception.
+
+        The predictor consumes recent ``FieldBallPos()`` observations, estimates
+        field-frame ball velocity, and projects a configurable short horizon.
+        It keeps recent history through brief lost-ball gaps but resets on held
+        ball, because possession changes invalidate the free-ball trajectory.
+        """
+
+        try:
+            ball_field = self.FieldBallPos() if field_ball_pos is None else field_ball_pos
+            self._observe_field_ball_for_prediction(ball_field)
+            if BallLandingPredictor._sentinel_pair(ball_field, BALL_HELD):
+                result = self._ball_predictor()._empty_prediction("held")
+                result["field_pos"] = list(BALL_HELD)
+                return result
+        except Exception:
+            pass
+
+        field_long = None
+        field_short = None
+        if clamp_to_field:
+            field_long = float(getattr(cfg.Bounds, "Long", 260.0))
+            field_short = float(getattr(cfg.Bounds, "Short", 200.0))
+
+        return self._ball_predictor().predict(
+            horizon_s=horizon_s,
+            max_age_s=max_age_s,
+            min_speed_cm_s=min_speed_cm_s,
+            max_horizon_s=max_horizon_s,
+            field_long_cm=field_long,
+            field_short_cm=field_short,
+            field_margin_cm=field_margin_cm,
+        )
 
     def RobotChassisAngle(self):
         # TODO 20260503 This method is to be tested.
