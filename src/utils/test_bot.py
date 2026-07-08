@@ -6,8 +6,8 @@ from IceLoongBits import IceLoongBits, Commands
 
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    # PORT = "/dev/ttyTHS1"
-    PORT = "/dev/iceloong"
+    PORT = "/dev/ttyTHS1"
+    # PORT = "/dev/iceloong"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
 
