@@ -386,6 +386,7 @@ function updateVisionState() {
             if (ballPosEl) {
                 ballPosEl.textContent = formatBallPositionText(data.ball_pos_cm);
             }
+            updateVisionDetails(data);
 
             // Update vision status
             const statusEl = document.getElementById('vision-status');
@@ -1569,6 +1570,63 @@ function formatBallPositionText(ballPos) {
     if (observation.state === 'lost') return '未发现';
     if (observation.state === 'held') return '持球中';
     return `(${observation.x.toFixed(1)}, ${observation.y.toFixed(1)}) cm`;
+}
+
+function bestBboxByConfidence(bboxes, confIndex = 5) {
+    if (!Array.isArray(bboxes)) return null;
+    let best = null;
+    for (const bbox of bboxes) {
+        if (!Array.isArray(bbox) || bbox.length <= confIndex) continue;
+        const conf = toFiniteNumber(bbox[confIndex]);
+        if (!Number.isFinite(conf) || conf <= 0) continue;
+        if (!best || conf > best.conf) {
+            best = { bbox, conf };
+        }
+    }
+    return best ? best.bbox : null;
+}
+
+function formatBboxText(bbox, hasClass = false) {
+    if (!Array.isArray(bbox)) return '--';
+    const cam = Math.round(toFiniteNumber(bbox[0]));
+    const clsOffset = hasClass ? 1 : 0;
+    const cls = hasClass ? Math.round(toFiniteNumber(bbox[1])) : null;
+    const x1 = toFiniteNumber(bbox[1 + clsOffset]);
+    const y1 = toFiniteNumber(bbox[2 + clsOffset]);
+    const x2 = toFiniteNumber(bbox[3 + clsOffset]);
+    const y2 = toFiniteNumber(bbox[4 + clsOffset]);
+    const conf = toFiniteNumber(bbox[5 + clsOffset]);
+    if (![cam, x1, y1, x2, y2, conf].every(Number.isFinite)) return '--';
+    const clsText = hasClass ? ` cls=${cls}` : '';
+    return `cam${cam}${clsText} [${Math.round(x1)},${Math.round(y1)}]-[${Math.round(x2)},${Math.round(y2)}] ${conf.toFixed(2)}`;
+}
+
+function formatGoalPositionText(goalPos) {
+    const point = normalizeRadarPoint(goalPos);
+    if (!point) return '--';
+    let confText = '';
+    if (Array.isArray(goalPos) && goalPos.length >= 3) {
+        const conf = toFiniteNumber(goalPos[2]);
+        if (Number.isFinite(conf)) confText = ` ${conf.toFixed(2)}`;
+    }
+    return `(${point.x.toFixed(1)}, ${point.y.toFixed(1)}) cm${confText}`;
+}
+
+function updateVisionDetails(data) {
+    const ballBboxEl = document.getElementById('ball-bbox');
+    if (ballBboxEl) {
+        ballBboxEl.textContent = formatBboxText(bestBboxByConfidence(data.ball_bboxes_640, 5));
+    }
+
+    const blueGoalEl = document.getElementById('blue-goal');
+    if (blueGoalEl) {
+        blueGoalEl.textContent = formatGoalPositionText(data.blue_goal_pos_cm);
+    }
+
+    const yellowGoalEl = document.getElementById('yellow-goal');
+    if (yellowGoalEl) {
+        yellowGoalEl.textContent = formatGoalPositionText(data.yellow_goal_pos_cm);
+    }
 }
 
 function formatCm(value) {

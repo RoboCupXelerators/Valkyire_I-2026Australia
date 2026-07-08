@@ -40,6 +40,37 @@ def _norm_rel_folder(folder: str | None, default: str) -> str:
         s = default
     return s.strip("/") or default.strip("/")
 
+
+def _cfg(section, name: str, default=None):
+    if section is None:
+        return default
+    return getattr(section, name, default)
+
+
+def _vision_cfg(name: str, default=None):
+    return _cfg(getattr(Settings, "Vision", None), name, default)
+
+
+def _vision_val(name: str, default=None, *, vision_name: str | None = None):
+    vision_vals = getattr(Settings, "VisionVals", None)
+    if vision_vals is not None and hasattr(vision_vals, name):
+        return getattr(vision_vals, name)
+    if vision_name:
+        return _vision_cfg(vision_name, default)
+    return default
+
+
+def _vision_port(slot_name: str, slot_index: int, default: int):
+    vision_vals = getattr(Settings, "VisionVals", None)
+    if vision_vals is not None and hasattr(vision_vals, slot_name):
+        return getattr(vision_vals, slot_name)
+    ports = _vision_cfg("CamPorts", None)
+    try:
+        return list(ports)[slot_index]
+    except Exception:
+        return default
+
+
 class UnitedVision(Detect_Method):
     def __init__(self):
 
@@ -96,20 +127,20 @@ class UnitedVision(Detect_Method):
         self.CalibrationKs = []
         self.CalibrationDists = []
         self.CalibrationModes = []
-        self.EnableBBoxDistanceEstimate = bool(getattr(Settings.VisionVals, "EnableBBoxDistanceEstimate", False))
-        self.BallDiameterCM = float(getattr(Settings.VisionVals, "BallDiameterCM", 4.2))
-        self.ChassisWidthCM = float(getattr(Settings.VisionVals, "ChassisWidthCM", 18.0))
-        self.ChassisHeightCM = float(getattr(Settings.VisionVals, "ChassisHeightCM", 3.5))
-        self.BBoxFusionStrength = float(getattr(Settings.VisionVals, "BBoxFusionStrength", 0.5))
-        self.BBoxLegacyReferenceAreaPx = float(getattr(Settings.VisionVals, "BBoxLegacyReferenceAreaPx", 12000.0))
-        self.BlueGoalWidthCM = float(getattr(Settings.VisionVals, "BlueGoalWidthCM", 90.0))
-        self.BlueGoalHeightCM = float(getattr(Settings.VisionVals, "BlueGoalHeightCM", 18.0))
-        self.YellowGoalWidthCM = float(getattr(Settings.VisionVals, "YellowGoalWidthCM", 90.0))
-        self.YellowGoalHeightCM = float(getattr(Settings.VisionVals, "YellowGoalHeightCM", 18.0))
+        self.EnableBBoxDistanceEstimate = bool(_vision_val("EnableBBoxDistanceEstimate", True))
+        self.BallDiameterCM = float(_vision_val("BallDiameterCM", 4.2, vision_name="BallDiameter"))
+        self.ChassisWidthCM = float(_vision_val("ChassisWidthCM", 18.0, vision_name="ChassisWidth"))
+        self.ChassisHeightCM = float(_vision_val("ChassisHeightCM", 3.5, vision_name="ChassisHeight"))
+        self.BBoxFusionStrength = float(_vision_val("BBoxFusionStrength", 0.5))
+        self.BBoxLegacyReferenceAreaPx = float(_vision_val("BBoxLegacyReferenceAreaPx", 12000.0))
+        self.BlueGoalWidthCM = float(_vision_val("BlueGoalWidthCM", 90.0, vision_name="GoalWidth"))
+        self.BlueGoalHeightCM = float(_vision_val("BlueGoalHeightCM", 18.0, vision_name="GoalHeight"))
+        self.YellowGoalWidthCM = float(_vision_val("YellowGoalWidthCM", 90.0, vision_name="GoalWidth"))
+        self.YellowGoalHeightCM = float(_vision_val("YellowGoalHeightCM", 18.0, vision_name="GoalHeight"))
 
         # Use config folder name if provided; strip leading '/' to avoid
         # accidentally turning it into an absolute path.
-        calib_sub = _norm_rel_folder(getattr(Settings.VisionVals, "CalibrationFolder", None), "Calibration")
+        calib_sub = _norm_rel_folder(_vision_val("CalibrationFolder", None, vision_name="CalibrationFolder"), "Calibration")
         calib_dir = None
         try:
             if DATA_DIR is not None:
@@ -277,10 +308,10 @@ class UnitedVision(Detect_Method):
             port = int(cam_index)
 
         direction_by_port = {
-            int(getattr(Settings.VisionVals, "Back", 0)): "back",
-            int(getattr(Settings.VisionVals, "Left", 2)): "left",
-            int(getattr(Settings.VisionVals, "Front", 4)): "front",
-            int(getattr(Settings.VisionVals, "Right", 6)): "right",
+            int(_vision_port("Back", 0, 0)): "back",
+            int(_vision_port("Left", 1, 2)): "left",
+            int(_vision_port("Front", 2, 4)): "front",
+            int(_vision_port("Right", 3, 6)): "right",
         }
         if port in direction_by_port:
             return direction_by_port[port]
@@ -688,7 +719,7 @@ class UnitedVision(Detect_Method):
                 try:
                     CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = OutputBuffer[i]
                     # Ignore padded/dummy outputs and clipped edge boxes.
-                    min_ball_bbox_area = getattr(Settings.Vision, "MinBallBBoxArea", 40)
+                    min_ball_bbox_area = _vision_cfg("MinBallBBoxArea", 40)
                     if (
                         Confidence is None
                         or Confidence <= 0
@@ -700,7 +731,7 @@ class UnitedVision(Detect_Method):
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
                     robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
-                    BallTuple = (round(robot_x_cm,2), round(robot_y_cm,2), BallWidth, BallHeight, Confidence)
+                    BallTuple = (round(robot_x_cm,2), round(robot_y_cm,2), BallWidth, BallHeight, Confidence, int(CameraIndex))
                     Balls.append(BallTuple)
                 except:
                     continue
@@ -722,15 +753,7 @@ class UnitedVision(Detect_Method):
                 self.BallPosRaw = [robot_x_cm, robot_y_cm]
                 # Pull the position slightly toward the bbox-derived distance.
                 # This keeps the direction from pixel2cm while correcting long-range drift.
-                best_idx = 0
-                for idx, item in enumerate(OutputBuffer):
-                    try:
-                        if item[4] == Ball[2] and item[5] == Ball[3] and item[6] == Ball[4]:
-                            best_idx = idx
-                            break
-                    except Exception:
-                        continue
-                cam = int(OutputBuffer[best_idx][0]) if len(OutputBuffer) > best_idx else 0
+                cam = int(Ball[5])
                 bbox_w = float(Ball[2])
                 bbox_h = float(Ball[3])
                 fused, _ = self._fuse_detection_position(
@@ -743,7 +766,7 @@ class UnitedVision(Detect_Method):
                     self.BallDiameterCM,
                     strength=max(0.55, self.BBoxFusionStrength),
                 )
-                self.BallPos = self.BallPosRaw
+                self.BallPos = [round(float(fused[0]), 2), round(float(fused[1]), 2)]
                 self._ball_pos_ts = time.time()
             else:
                 # hold last position briefly to reduce flicker

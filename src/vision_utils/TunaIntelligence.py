@@ -218,6 +218,40 @@ class TunaIntelligence(VisionPreUntil):
         PaddedImage[YOffset : YOffset + NewHeight, XOffset : XOffset + NewWidth] = ResizedImage
         return PaddedImage
 
+    @staticmethod
+    def _ball_queue_output_from_xyxy(cam_i: int, xyxy: Tuple[float, float, float, float], conf: float):
+        """Convert raw YOLO xyxy into the legacy BallQueue item.
+
+        Keep the raw bbox width/height. Older code only expects the bottom
+        point to use the -80 px calibration offset; shrinking the whole box
+        makes small far-away balls disappear before Pixel2CM can run.
+        """
+        x1, y1, x2, y2 = xyxy
+        x1_i = int(round(float(x1)))
+        y1_i = int(round(float(y1)))
+        x2_i = int(round(float(x2)))
+        y2_i = int(round(float(y2)))
+        cx = int(round((float(x1) + float(x2)) / 2.0))
+        bottom_y = y2_i - 80
+        w = max(0, x2_i - x1_i)
+        h = max(0, y2_i - y1_i)
+        return [int(cam_i), cx, bottom_y, w, h, float(conf)]
+
+    def _drain_latest_queue(self, queue_name: str, cache_name: str):
+        """Read the newest queue item, retaining a cache for direct-backend users."""
+        q = getattr(self, queue_name, None)
+        latest = getattr(self, cache_name, None)
+        if q is None:
+            return latest
+        try:
+            while True:
+                latest = q.get_nowait()
+        except Exception:
+            pass
+        if latest is not None:
+            setattr(self, cache_name, latest)
+        return latest
+
     def _init_backend(self):
         """Initialize TensorRT(ENGINE) backend if possible.
 
@@ -505,16 +539,11 @@ class TunaIntelligence(VisionPreUntil):
                     if ball_candidate is not None:
                         x1, y1, x2, y2 = ball_candidate.xyxy
                         ball_bbox_out[cam_i] = [cam_i, int(x1), int(y1), int(x2), int(y2), float(ball_candidate.conf)]
-                        # Keep Arisu's small biases for ball.
-                        ball_y_min = int(y1) - 80 + 15
-                        ball_x_min = int(x1) + 15
-                        ball_y_max = int(y2) - 80 - 15
-                        ball_x_max = int(x2) - 15
-                        bottom_y = int(ball_y_max)
-                        w = int(ball_x_max - ball_x_min)
-                        h = int(ball_y_max - ball_y_min)
-                        cx = int((ball_x_min + ball_x_max) / 2)
-                        ball_out[cam_i] = [cam_i, cx, bottom_y, w, h, float(ball_candidate.conf)]
+                        ball_out[cam_i] = self._ball_queue_output_from_xyxy(
+                            cam_i,
+                            ball_candidate.xyxy,
+                            float(ball_candidate.conf),
+                        )
 
                     # Choose goal (prefer the more confident between blue/yellow)
                     goal_candidate = next(
@@ -568,6 +597,115 @@ class TunaIntelligence(VisionPreUntil):
             self.GoalQueue.put(goal_out)
 
             time.sleep(0.001)
+
+    # ------------------------- direct backend compatibility -------------------------
+    # UnitedVision owns the real robot-frame coordinate conversion. These helpers are
+    # for direct TunaIntelligence users and dashboard smoke tests that instantiate the
+    # backend without the UnitedVision wrapper.
+
+    def get_ball_pos(self) -> List[float]:
+        ball_data = self._drain_latest_queue("BallQueue", "_latest_ball_queue")
+        try:
+            best = max((b for b in (ball_data or []) if b and len(b) >= 6), key=lambda x: float(x[5]))
+            if best and float(best[5]) > 0:
+                return [float(best[1]), float(best[2])]
+        except Exception:
+            pass
+        return [0xFFF, 0xFFF]
+
+    def get_chassis_pos(self) -> List[List[float]]:
+        chassis_data = self._drain_latest_queue("ChassisQueue", "_latest_chassis_queue")
+        result = []
+        for item in chassis_data or []:
+            try:
+                if item and len(item) >= 6 and float(item[5]) > 0:
+                    result.append(item)
+            except Exception:
+                continue
+        return result
+
+    def get_goals_pos(self) -> dict:
+        goal_data = self._drain_latest_queue("GoalQueue", "_latest_goal_queue")
+        blue_goal = None
+        yellow_goal = None
+        cls_blue_goal = int(getattr(self, "_cls_blue_goal", 1))
+        cls_yellow_goal = int(getattr(self, "_cls_yellow_goal", 2))
+        for item in goal_data or []:
+            try:
+                if item is None or len(item) < 7 or float(item[6]) <= 0:
+                    continue
+                cls_id = int(item[1])
+                goal = [float(item[2]), float(item[3]), float(item[6])]
+                if cls_id == cls_blue_goal:
+                    if blue_goal is None or goal[2] > blue_goal[2]:
+                        blue_goal = goal
+                elif cls_id == cls_yellow_goal:
+                    if yellow_goal is None or goal[2] > yellow_goal[2]:
+                        yellow_goal = goal
+            except Exception:
+                continue
+        return {"blue_goal": blue_goal, "yellow_goal": yellow_goal}
+
+    def GetGoalsPos(self):
+        return self.get_goals_pos()
+
+    def GetBallBBoxes(self) -> List[Optional[tuple]]:
+        bbox_data = self._drain_latest_queue("BallBBoxQueue", "_latest_ball_bbox_queue")
+        result: List[Optional[tuple]] = []
+        for item in bbox_data or []:
+            try:
+                if item and len(item) >= 6 and float(item[5]) > 0:
+                    result.append(tuple(item))
+                else:
+                    result.append(None)
+            except Exception:
+                result.append(None)
+        return result if result else [None, None, None, None]
+
+    def GetChassisBBoxes(self) -> List[Optional[tuple]]:
+        bbox_data = self._drain_latest_queue("ChassisBBoxQueue", "_latest_chassis_bbox_queue")
+        result: List[Optional[tuple]] = []
+        for item in bbox_data or []:
+            try:
+                if item and len(item) >= 6 and float(item[5]) > 0:
+                    result.append(tuple(item))
+                else:
+                    result.append(None)
+            except Exception:
+                result.append(None)
+        return result if result else [None, None, None, None]
+
+    def GetGoalBBoxes(self) -> List[Optional[tuple]]:
+        goal_bbox_queue = getattr(self, "GoalBBoxQueue", None)
+        if goal_bbox_queue is not None:
+            bbox_data = self._drain_latest_queue("GoalBBoxQueue", "_latest_goal_bbox_queue")
+            result: List[Optional[tuple]] = []
+            for item in bbox_data or []:
+                try:
+                    if item and len(item) >= 7 and float(item[6]) > 0:
+                        result.append(tuple(item))
+                    else:
+                        result.append(None)
+                except Exception:
+                    result.append(None)
+            return result if result else [None, None, None, None]
+
+        goal_data = self._drain_latest_queue("GoalQueue", "_latest_goal_queue")
+        result: List[Optional[tuple]] = []
+        for item in goal_data or []:
+            try:
+                if item is None or len(item) < 7 or float(item[6]) <= 0:
+                    result.append(None)
+                    continue
+                cam_i, cls_id, cx, bottom_y, w, h, conf = item
+                x1 = int(round(float(cx) - float(w) / 2.0))
+                y1 = int(round(float(bottom_y) - float(h)))
+                x2 = int(round(float(cx) + float(w) / 2.0))
+                y2 = int(round(float(bottom_y)))
+                result.append((int(cam_i), int(cls_id), x1, y1, x2, y2, float(conf)))
+            except Exception:
+                result.append(None)
+        return result if result else [None, None, None, None]
 
 
 __all__ = ["TunaIntelligence"]

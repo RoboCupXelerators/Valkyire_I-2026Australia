@@ -460,7 +460,9 @@ class VisionPreUntil:
             self.ReadCamsThread.start()
 
         # Recording initialization (isolated; does not affect non-record runs)
-        if getattr(self.cfg.VisionVals, "Record", False):
+        vision_vals = getattr(self.cfg, "VisionVals", object())
+        vision_cfg = getattr(self.cfg, "Vision", object())
+        if getattr(vision_vals, "Record", getattr(vision_cfg, "Record", False)):
             # Ensure mp4/avi headers are finalized on exit.
             atexit.register(self.close)
             try:
@@ -485,7 +487,7 @@ class VisionPreUntil:
                 pass
 
             # Default: store recordings next to ReasonData log file (ReasonData/data).
-            record_dir_val = str(getattr(self.cfg.VisionVals, "RecordDir", "./Records"))
+            record_dir_val = str(getattr(vision_vals, "RecordDir", getattr(vision_cfg, "RecordDir", "./Records")))
             record_dir_path = Path(record_dir_val)
             if not record_dir_path.is_absolute() and REASON_DATA_DIR is not None:
                 # Normalize "./xxx" -> "xxx" so it becomes {DATA_DIR}/xxx
@@ -499,15 +501,15 @@ class VisionPreUntil:
                 cfg=_RecordConfig(
                     enabled=True,
                     record_dir=record_dir_path,
-                    cams=list(getattr(self.cfg.VisionVals, "RecordCams", [0, 1, 2, 3])),
+                    cams=list(getattr(vision_vals, "RecordCams", [0, 1, 2, 3])),
                     record_size=(
-                        int(getattr(self.cfg.VisionVals, "RecordWidth", 320)),
-                        int(getattr(self.cfg.VisionVals, "RecordHeight", 320)),
+                        int(getattr(vision_vals, "RecordWidth", 320)),
+                        int(getattr(vision_vals, "RecordHeight", 320)),
                     ),
-                    segment_seconds=int(getattr(self.cfg.VisionVals, "RecordSegmentSeconds", 60)),
-                    fps=int(getattr(self.cfg.VisionVals, "RecordFPS", 30)),
-                    codec=str(getattr(self.cfg.VisionVals, "RecordCodec", "mp4v")),
-                    ext=str(getattr(self.cfg.VisionVals, "RecordExt", "mp4")),
+                    segment_seconds=int(getattr(vision_vals, "RecordSegmentSeconds", 60)),
+                    fps=int(getattr(vision_vals, "RecordFPS", 30)),
+                    codec=str(getattr(vision_vals, "RecordCodec", "mp4v")),
+                    ext=str(getattr(vision_vals, "RecordExt", "mp4")),
                 ),
             )
 
@@ -564,7 +566,12 @@ class VisionPreUntil:
         self.P2CHB: list[float] = []
         self.P2CVB: list[float] = []
 
-        calib_sub = _norm_rel_folder(getattr(self.cfg.VisionVals, "CalibrationFolder", None), "Calibration")
+        vision_vals = getattr(self.cfg, "VisionVals", object())
+        vision_cfg = getattr(self.cfg, "Vision", object())
+        calib_sub = _norm_rel_folder(
+            getattr(vision_vals, "CalibrationFolder", getattr(vision_cfg, "CalibrationFolder", None)),
+            "Calibration",
+        )
         calib_dir = DATA_DIR / calib_sub
         for port in self.CamPorts:
             npz_path = calib_dir / f"CalibrationData{port}.npz"
@@ -661,7 +668,7 @@ class VisionPreUntil:
         We keep this thread separate from camera reading/inference to avoid
         blocking the pipeline when filesystem is slow.
         """
-        fps = int(getattr(self.cfg.VisionVals, "RecordFPS", 30))
+        fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "RecordFPS", 30))
         period = 1.0 / float(max(1, fps))
         while not self._stop_event.is_set():
             if getattr(self, "_recorder", None) is not None:
