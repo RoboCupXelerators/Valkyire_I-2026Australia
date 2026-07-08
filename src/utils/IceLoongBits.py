@@ -15,6 +15,14 @@ import struct
 import time
 import threading
 
+try:
+    import serial
+    from serial.serialutil import SerialException
+except Exception:  # pragma: no cover - import error handled at runtime
+    serial = None
+    SerialException = Exception
+
+
 class Commands(IntEnum):
     HAND_SHAKE             = 0x01
     GET_BMI088_DATA        = 0x02
@@ -24,6 +32,7 @@ class Commands(IntEnum):
     GET_REFEREE_UNLOCK_PIN = 0x06
     GET_RUN_KEY_DELTA      = 0x07
     MORSE_PLAY             = 0x08
+
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:             1, 
@@ -39,14 +48,15 @@ COMMAND_RESPONSE_LENGTHS = {
 MAX_DRIBBLE_INPUT = 1.0
 MAX_DRIBBLE_SPEED = 0.4
 
-try:
-    import serial
-except Exception:  # pragma: no cover - import error handled at runtime
-    serial = None
 
 class IceLoongBits:
     """串口通信封装类，用于与 F407（STM32）类设备交互。
     方法命名使用大驼峰（PascalCase）。
+    
+    支持串口异常自动恢复：
+    - 当串口 I/O 错误发生时，自动关闭并重新打开串口
+    - 后台命令线程会在异常后继续运行
+    - 提供线程监控和重启机制
     """
 
     def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.05, testing = False):
@@ -56,6 +66,7 @@ class IceLoongBits:
             port: 串口设备路径，例如 "/dev/ttyUSB0" 或 "COM3"。
             baudrate: 波特率，例如 115200。
             timeout: 读超时（秒）。
+            testing: 测试模式，不启动后台线程。
         """
         self.port = port
         self.baudrate = baudrate
@@ -76,27 +87,123 @@ class IceLoongBits:
         self.key = False
         self.referee_key = False
         self.motor_speed_k = 1.3
-        # 串口句柄（运行时为 serial.Serial 实例），这里不在类型注解中引用 serial 变量以避免 lint 问题
+        # 串口句柄（运行时为 serial.Serial 实例）
         self.ser = None
         self._io_lock = threading.RLock()
         self._command_lock = threading.Lock()
+        self._reconnect_lock = threading.Lock()
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 5
+        self._reconnect_delay = 0.3  # 重连间隔秒数
+        self._thread_restart_count = 0
+        
         self.logger = logging.getLogger(self.__class__.__name__)
         if not self.logger.handlers:
-            # 避免多次添加 handler
             self.logger.addHandler(logging.NullHandler())
 
         if not testing:
-            self.SendUnitedCommandThread = threading.Thread(target=self.SendUnitedCommand, daemon=True)
-            self.SendUnitedCommandThread.daemon = True
+            self._stop_thread = threading.Event()
+            self.SendUnitedCommandThread = threading.Thread(
+                target=self._SendUnitedCommandLoop, 
+                daemon=True,
+                name="IceLoongBits-CommandThread"
+            )
             self.SendUnitedCommandThread.start()
 
-    def SendUnitedCommand(self):
-        while (1):
+    def _SendUnitedCommandLoop(self):
+        """后台线程主循环，包含异常恢复机制。"""
+        while not self._stop_thread.is_set():
             try:
                 self._SendUnitedCommandOnce()
+                # 成功执行后重置错误计数
+                self._consecutive_errors = 0
+            except SerialException as e:
+                self._consecutive_errors += 1
+                self.logger.warning(
+                    "Serial I/O error in command loop (attempt %d/%d): %s", 
+                    self._consecutive_errors, self._max_consecutive_errors, e
+                )
+                # 尝试串口重连
+                self._HandleSerialError(e)
             except Exception as e:
                 self.logger.exception("IceLoongBits command loop failed: %s", e)
             time.sleep(0.02)
+
+    def _HandleSerialError(self, error: Exception) -> bool:
+        """处理串口错误，尝试重连。
+        
+        Args:
+            error: 捕获到的异常
+            
+        Returns:
+            bool: 重连是否成功
+        """
+        with self._reconnect_lock:
+            self.logger.info("Attempting serial reconnection due to error: %s", error)
+            
+            # 先关闭现有连接
+            self._ForceClosePort()
+            
+            # 等待一段时间后重连
+            time.sleep(self._reconnect_delay)
+            
+            try:
+                self.OpenPort()
+                self.logger.info("Serial port reconnected successfully: %s", self.port)
+                return True
+            except Exception as e:
+                self.logger.error("Failed to reconnect serial port: %s", e)
+                return False
+
+    def _ForceClosePort(self) -> None:
+        """强制关闭串口，忽略所有错误。"""
+        if self.ser:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            finally:
+                self.ser = None
+
+    def IsThreadAlive(self) -> bool:
+        """检查后台命令线程是否存活。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        return thread is not None and thread.is_alive()
+
+    def RestartThreadIfNeeded(self) -> bool:
+        """如果后台线程已死，尝试重启。
+        
+        Returns:
+            bool: 线程是否存活（重启成功或本来就存活）
+        """
+        if self.IsThreadAlive():
+            return True
+            
+        self.logger.warning("Background command thread is dead, attempting restart...")
+        
+        # 清理旧线程状态
+        if hasattr(self, "_stop_thread"):
+            self._stop_thread.set()
+        
+        # 创建新线程
+        self._stop_thread = threading.Event()
+        self.SendUnitedCommandThread = threading.Thread(
+            target=self._SendUnitedCommandLoop,
+            daemon=True,
+            name=f"IceLoongBits-CommandThread-Restart-{self._thread_restart_count}"
+        )
+        self._thread_restart_count += 1
+        self.SendUnitedCommandThread.start()
+        
+        # 给线程一点时间启动
+        time.sleep(0.1)
+        
+        if self.IsThreadAlive():
+            self.logger.info("Background command thread restarted successfully")
+            return True
+        else:
+            self.logger.error("Failed to restart background command thread")
+            return False
 
     def _CommandSnapshot(self):
         with self._command_lock:
@@ -213,6 +320,9 @@ class IceLoongBits:
 
         Returns:
             bytes: 读取到的响应（如果 read_response=False 返回 b''）。
+            
+        Raises:
+            SerialException: 当串口 I/O 错误时抛出，调用者应处理重连逻辑。
         """
         with self._io_lock:
             if serial is None:
@@ -227,8 +337,15 @@ class IceLoongBits:
                 # 有些 serial 实现可能没有该方法
                 pass
 
-            self.ser.write(data)
-            self.ser.flush()
+            try:
+                self.ser.write(data)
+                self.ser.flush()
+            except SerialException:
+                # 串口写入错误，重新抛出让上层处理
+                raise
+            except OSError as e:
+                # 转换 OSError 为 SerialException 统一处理
+                raise SerialException(f"Serial write failed: {e}") from e
 
             if not read_response:
                 return b""
@@ -245,6 +362,10 @@ class IceLoongBits:
                     # 读取直到超时
                     resp = self._ReadUntilTimeout()
                 return resp
+            except SerialException:
+                raise
+            except OSError as e:
+                raise SerialException(f"Serial read failed: {e}") from e
             finally:
                 if response_timeout is not None:
                     self.ser.timeout = old_timeout
@@ -257,8 +378,17 @@ class IceLoongBits:
         self.ClosePort()
 
     def ExecuteCommands(self, commands: List[tuple]) -> tuple:
-        """执行单条或多条命令"""
+        """执行单条或多条命令
         
+        Args:
+            commands: 命令列表
+            
+        Returns:
+            tuple: 响应数据列表，失败时返回空列表
+            
+        Note:
+            此方法会捕获串口异常并尝试重连，不会向调用者抛出异常。
+        """
         if len(commands) > 1:
             tx_bytes, resp_len = bytes([0x00]), 1
         else:
@@ -298,8 +428,16 @@ class IceLoongBits:
             tx_bytes += bytes([0])
             resp_len += 1
 
-        # 发送帧，返回接收帧
-        resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
+        # 发送帧，返回接收帧（带异常处理）
+        try:
+            resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
+        except SerialException as e:
+            self.logger.warning("ExecuteCommands failed due to serial error: %s", e)
+            self._HandleSerialError(e)
+            return []
+        except Exception as e:
+            self.logger.exception("ExecuteCommands failed with unexpected error: %s", e)
+            return []
 
         rx_data = []
         if resp and len(resp) == resp_len:
@@ -345,21 +483,30 @@ class IceLoongBits:
         self._ApplyResponses(response)
         return self.yaw
     
-    def VirtualPorts(self,port,status):
-        """设置虚拟端口状态"""
+    def VirtualPorts(self, port, status):
+        """设置虚拟端口状态（带异常保护）。
+        
+        此方法会捕获所有串口异常，确保不会阻塞调用者。
+        """
         try:
             port = int(port)
         except Exception:
             pass
 
-        match port:
-            case 3:
-                if not status:
-                    self._KickNow()
-            case 4:
-                self._SetDribbleSpeedNow(left=status)
-            case 5:
-                self._SetDribbleSpeedNow(right=status)
+        try:
+            match port:
+                case 3:
+                    if not status:
+                        self._KickNow()
+                case 4:
+                    self._SetDribbleSpeedNow(left=status)
+                case 5:
+                    self._SetDribbleSpeedNow(right=status)
+        except SerialException as e:
+            self.logger.warning("VirtualPorts operation failed due to serial error: %s", e)
+            self._HandleSerialError(e)
+        except Exception as e:
+            self.logger.exception("VirtualPorts operation failed: %s", e)
 
     @staticmethod
     def _NormalizeDribbleInput(value):
@@ -400,12 +547,12 @@ class IceLoongBits:
         self._ApplyResponses(response)
         return response
 
-    def SetWheelSpeed(self,Speed1,Speed2,Speed3,Speed4):
+    def SetWheelSpeed(self, Speed1, Speed2, Speed3, Speed4):
         """设置轮子速度"""
         with self._command_lock:
             self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
 
-    def MosePrint(self,Msg):
+    def MosePrint(self, Msg):
         """摩斯电码播放"""
         with self._command_lock:
             self.CommandLine['MORSE_PLAY'] = Msg
@@ -422,6 +569,12 @@ class IceLoongBits:
             return True
         else:
             return False
+
+    def Shutdown(self):
+        """安全关闭串口和后台线程。"""
+        self._stop_thread.set()
+        self.ClosePort()
+
 
 if __name__ == "__main__":
     bits = IceLoongBits(port='/dev/iceloong')

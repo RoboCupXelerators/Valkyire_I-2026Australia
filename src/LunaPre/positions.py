@@ -26,10 +26,10 @@ from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_err
 
 cfg = runtime.cfg
 
-POS2POS_KP = 0.018
+POS2POS_KP = 0.04
 POS2POS_KI = 0.00005
 POS2POS_KD = 0.0008
-POS2POS_OUTPUT_LIMIT_MPS = 1.10
+POS2POS_OUTPUT_LIMIT_MPS = 2.2
 POS2POS_MIN_SPEED_MPS = 0.08
 POS2POS_ARRIVAL_SCALE = 0.5
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
@@ -615,10 +615,11 @@ class Positions:
         else:
             catch_x, catch_y = cfg.Motion.CatchVal
             x_tol = cfg.Motion.ErrorRange / 20
-            y_tol = cfg.Motion.ErrorRange / 5
+            y_tol = cfg.Motion.ErrorRange / 8
             if (
                 abs(self.ballPos[1] - catch_y) <= y_tol
-                and round(abs(self.ballPos[0] - catch_x), 0) <= x_tol
+                # and abs(self.ballPos[0] - catch_x) == 0
+                and round(abs(self.ballPos[0] - catch_x), 1) <= x_tol
             ):
                 self.ballPosOut = BALL_HELD
             else:

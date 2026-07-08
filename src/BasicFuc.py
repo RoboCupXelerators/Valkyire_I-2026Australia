@@ -75,9 +75,9 @@ class LockSeries:
         self.lost_hold_seconds = 0.12
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
-        self.pan_x = simple_pid.PID(0.027, 0, 0, setpoint=self.catch_x, output_limits=(-1.09, 0), auto_mode=True)
-        self.pan_y = simple_pid.PID(0.022, 0, 0, setpoint=self.catch_y, output_limits=(-0.73, 0.73), auto_mode=True)
-        self.pan_w = simple_pid.PID(2.3, 0, 0, setpoint=0, output_limits=(-155, 155), auto_mode=True)
+        self.pan_x = simple_pid.PID(0.05, 0, 0, setpoint=self.catch_x, output_limits=(-1.73, 0), auto_mode=True)
+        self.pan_y = simple_pid.PID(0.04, 0, 0, setpoint=self.catch_y, output_limits=(-1.5, 1.5), auto_mode=True)
+        self.pan_w = simple_pid.PID(1.3, 0, 0, setpoint=0, output_limits=(-200, 200), auto_mode=True)
 
     def _reset_lockball_pid(self):
         self.pan_x.reset()
@@ -305,10 +305,10 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             logger.error(Error)
             # Intentional raw wheel mix: orbit around the held ball while turning.
             chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK *Error/30,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30,
-                -iDirectionFactor * 15 * SpeedK *Error/30,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/30
+                iDirectionFactor * 15 * SpeedK *Error/15,
+                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/15,
+                -iDirectionFactor * 15 * SpeedK *Error/15,
+                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/15
                 ])
             return False
         else:
@@ -327,16 +327,24 @@ def TurnTo_with_ball_orbit(
     max_linear_mps: float = 0.38,
     orbit_radius_cm: float | None = None,
     center_gain: float = 0.010,
-    dribble_power: float = 0.9,
+    dribble_power: float = 0.5,
     reacquire: bool = True,
 ):
     """绕球转向到目标角度，一次调用只执行一个控制 tick。
 
     这是 ``TurnTo_with_ball`` 的模拟器友好替代版，但不覆盖旧函数。
-    它不直接写 raw wheel mix，而是把“绕球转”的几何关系转换成底盘速度：
+    它不直接写 raw wheel mix，而是把"绕球转"的几何关系转换成底盘速度：
     若球在机器人坐标 r=(x_forward, y_left)，要让球近似成为瞬时旋转中心，
     车体速度取 ``vx = omega*y``、``vy = -omega*x``。
+
+    逻辑：先抓住球（LockBallSlip 返回 True），再执行绕球转向。
     """
+    # 先尝试抓住球
+    if not lockball.LockBallSlip():
+        # 还没抓住球，继续抢球
+        return False
+
+    # 已持球，执行绕球转向逻辑
     try:
         target = float(Aim_Angle) % 360.0
     except Exception:
@@ -353,13 +361,11 @@ def TurnTo_with_ball_orbit(
     ball = UnitedPosition.RobotBallPos()
     if ball == BALL_NOT_FOUND:
         peripheral.Dribble(dribble_power)
-        if reacquire:
-            return bool(lockball.LockBallSlip())
         chassis.stop()
         return False
 
     if orbit_radius_cm is None:
-        catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0.0])
+        catch_val = getattr(Settings.Motion, "CatchVal", [7.0, 0.0])
         orbit_radius_cm = float(catch_val[0] if len(catch_val) > 0 else 8.5)
     orbit_radius_m = max(0.02, float(orbit_radius_cm) / 100.0)
 

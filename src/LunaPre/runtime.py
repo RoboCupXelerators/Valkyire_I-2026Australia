@@ -88,6 +88,68 @@ def default_vision_enabled() -> bool:
     return True
 
 
+# Bits 线程监控器相关变量
+_bits_monitor_thread = None
+_bits_monitor_stop = None
+
+
+def _start_bits_thread_monitor(bits_obj):
+    """启动后台线程监控器，确保 Bits 命令线程崩溃后能自动重启。
+    
+    Args:
+        bits_obj: Bits 实例（需要有 IsThreadAlive 和 RestartThreadIfNeeded 方法）
+    """
+    global _bits_monitor_thread, _bits_monitor_stop
+    
+    # 检查 Bits 对象是否支持线程监控接口
+    if not hasattr(bits_obj, 'IsThreadAlive') or not hasattr(bits_obj, 'RestartThreadIfNeeded'):
+        logger.debug("Bits object does not support thread monitoring interface")
+        return
+    
+    # 如果已经有监控线程在运行，先停止它
+    if _bits_monitor_stop is not None:
+        _bits_monitor_stop.set()
+    
+    _bits_monitor_stop = threading.Event()
+    
+    def _monitor_loop():
+        """监控循环，定期检查线程状态并在需要时重启。"""
+        while not _bits_monitor_stop.is_set():
+            try:
+                if not bits_obj.IsThreadAlive():
+                    logger.warning("Bits background thread is dead, attempting restart...")
+                    bits_obj.RestartThreadIfNeeded()
+            except Exception as e:
+                logger.exception("Bits thread monitor error: %s", e)
+            # 每 1 秒检查一次
+            _bits_monitor_stop.wait(1.0)
+    
+    _bits_monitor_thread = threading.Thread(
+        target=_monitor_loop,
+        daemon=True,
+        name="Bits-ThreadMonitor"
+    )
+    _bits_monitor_thread.start()
+    logger.info("Bits thread monitor started")
+
+
+def _stop_bits_thread_monitor():
+    """停止 Bits 线程监控器。"""
+    global _bits_monitor_stop, _bits_monitor_thread
+    
+    if _bits_monitor_stop is not None:
+        _bits_monitor_stop.set()
+        _bits_monitor_stop = None
+    
+    if _bits_monitor_thread is not None:
+        try:
+            _bits_monitor_thread.join(timeout=2.0)
+        except Exception:
+            pass
+        _bits_monitor_thread = None
+    logger.info("Bits thread monitor stopped")
+
+
 def _init_runtime(*, auto_start_lidar: bool = True):
     """初始化 Bits / chassis / peripheral / lidar 等全局对象。
 
@@ -177,6 +239,10 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             Odometer = None  # TODO add odometer support
             _field_pose_provider = getattr(Bits, "GetPose", None)
             _referee_status_provider = Bits.GetRefereeUnlockPin
+            
+            # 启动后台线程监控器，确保 IceLoongBits 命令线程崩溃后能自动重启
+            _start_bits_thread_monitor(Bits)
+            
             logger.info("IceLoongBits Bit loaded.")
             _runtime_initialized = True
             return

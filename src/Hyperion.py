@@ -67,6 +67,7 @@ def logic_step():
                 jump_score]
             logger.info("LockBallSlip executed successfully.")
             if max(scores) == huck_score:
+                logger.info("Exe huck")
                 if UnitedPosition.CanShoot():
                     peripheral.ShootBall()
                 else:
