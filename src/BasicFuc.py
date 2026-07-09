@@ -305,10 +305,10 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             logger.error(Error)
             # Intentional raw wheel mix: orbit around the held ball while turning.
             chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK *Error/15,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/15,
-                -iDirectionFactor * 15 * SpeedK *Error/15,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/15
+                iDirectionFactor * 15 * SpeedK *Error/75,
+                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75,
+                -iDirectionFactor * 15 * SpeedK *Error/75,
+                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75
                 ])
             return False
         else:
@@ -322,7 +322,7 @@ def TurnTo_with_ball_orbit(
     SpeedK: float | None = 1.0,
     *,
     angle_tolerance: float = 8.0,
-    turn_kp: float = 2.2,
+    turn_kp: float = 20,
     max_wz_deg_s: float | None = None,
     max_linear_mps: float = 0.38,
     orbit_radius_cm: float | None = None,
@@ -406,6 +406,20 @@ def TurnTo_with_ball_orbit(
     chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
     return False
 
+def TurnTo_With_ball_Strong(angle):
+    if UnitedPosition.RobotBallPos() == BALL_HELD:
+        error = abs(UnitedPosition.FieldRobotPose()[2]- angle)
+        if abs(UnitedPosition.FieldRobotPose()[2]- angle) == cfg.ExpectedVals.ErrorRange:
+            return True
+        else:
+            if error < 0 and error < -100:
+                error = -100
+            elif error > 100:
+                error = 100
+            chassis.RobotTurn(error)
+            return False
+    else:
+        return lockball.slip()
 
 def GoBack():
     """调用 Pos2Pos 回到配置里的 Home 位姿。"""
