@@ -71,6 +71,62 @@ def _vision_port(slot_name: str, slot_index: int, default: int):
         return default
 
 
+def _npz_text(data, key: str, default: str = "") -> str:
+    if key not in data.files:
+        return default
+    try:
+        return str(np.atleast_1d(data[key])[0])
+    except Exception:
+        return default
+
+
+def _npz_bool(data, key: str, default: bool = False) -> bool:
+    if key not in data.files:
+        return default
+    try:
+        value = np.atleast_1d(data[key])[0]
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _modern_pose_from_npz(data):
+    H = np.asarray(data["H"], dtype=np.float64) if "H" in data.files else None
+    rvec = np.asarray(data["rvec"], dtype=np.float64) if "rvec" in data.files else None
+    tvec = np.asarray(data["tvec"], dtype=np.float64) if "tvec" in data.files else None
+    if rvec is not None and rvec.size == 0:
+        rvec = None
+    if tvec is not None and tvec.size == 0:
+        tvec = None
+
+    if (
+        H is not None
+        and _npz_text(data, "origin") == "robot_center"
+        and _npz_text(data, "coordinate_convention") != "robot_center_v2"
+        and "origin_offset_cm" in data.files
+    ):
+        offset = np.asarray(data["origin_offset_cm"], dtype=np.float64).reshape(-1)
+        if offset.size >= 2:
+            dy_mm = 2.0 * float(offset[1]) * 10.0
+            new_to_old = np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, -dy_mm],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
+            )
+            H = H @ new_to_old
+            if rvec is not None and tvec is not None:
+                R, _ = cv2.Rodrigues(rvec)
+                d = np.array([[0.0], [-dy_mm], [0.0]], dtype=np.float64)
+                tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1) + R @ d
+
+    return H, rvec, tvec
+
+
 class UnitedVision(Detect_Method):
     def __init__(self):
 
@@ -120,15 +176,11 @@ class UnitedVision(Detect_Method):
 
         # Calibration for Pixel2CM/CM2Pixel. BlobBased already loads calibration
         # via VisionPreUntil, but AI/TI pipelines historically relied on this class.
-        self.PerspectiveMatrices = []
-        self.P2CK = []
-        self.P2CHB = []
-        self.P2CVB = []
-        self.CalibrationKs = []
-        self.CalibrationDists = []
-        self.CalibrationModes = []
+        self.reload_calibration()
         self.EnableBBoxDistanceEstimate = bool(_vision_val("EnableBBoxDistanceEstimate", True))
         self.BallDiameterCM = float(_vision_val("BallDiameterCM", 4.2, vision_name="BallDiameter"))
+        self.BallOffsetXCM = float(_vision_cfg("BallOffsetXCM", 0.0) or 0.0)
+        self.BallOffsetYCM = float(_vision_cfg("BallOffsetYCM", 0.0) or 0.0)
         self.ChassisWidthCM = float(_vision_val("ChassisWidthCM", 18.0, vision_name="ChassisWidth"))
         self.ChassisHeightCM = float(_vision_val("ChassisHeightCM", 3.5, vision_name="ChassisHeight"))
         self.BBoxFusionStrength = float(_vision_val("BBoxFusionStrength", 0.5))
@@ -137,6 +189,47 @@ class UnitedVision(Detect_Method):
         self.BlueGoalHeightCM = float(_vision_val("BlueGoalHeightCM", 18.0, vision_name="GoalHeight"))
         self.YellowGoalWidthCM = float(_vision_val("YellowGoalWidthCM", 90.0, vision_name="GoalWidth"))
         self.YellowGoalHeightCM = float(_vision_val("YellowGoalHeightCM", 18.0, vision_name="GoalHeight"))
+
+        # For AI/TI-style queue backends, run queue consumers to compute robot-frame positions.
+        # For BlobBased, its own FindBall thread updates self.BallPos directly.
+        self.MergedChassisList = []
+        self.MergedGoalList = []  # list of all goal detections
+        self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
+        self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
+        self.BallPos = [0, 0]
+        self.BallPosRaw = [0, 0]
+        self.BallPixelPoint = None
+        self.ChassisPosRaw = []
+        self.BlueGoalPosRaw = None
+        self.YellowGoalPosRaw = None
+        if self._queue_backend:
+            self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
+            self.ChassisDetectionThread.daemon = True
+            self.ChassisDetectionThread.start()
+
+            self.BallDetectionThread = threading.Thread(target=self.BallDetection)
+            self.BallDetectionThread.daemon = True
+            self.BallDetectionThread.start()
+
+        # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
+        # self._goal_backend = hasattr(self, "GoalQueue")
+        # if self._goal_backend:
+        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+        #     self.GoalDetectionThread.daemon = True
+        #     self.GoalDetectionThread.start()
+
+    def reload_calibration(self):
+        perspective_matrices = []
+        p2ck = []
+        p2chb = []
+        p2cvb = []
+        calibration_ks = []
+        calibration_dists = []
+        calibration_hs = []
+        calibration_rvecs = []
+        calibration_tvecs = []
+        calibration_modes = []
+        calibration_undistort_points = []
 
         # Use config folder name if provided; strip leading '/' to avoid
         # accidentally turning it into an absolute path.
@@ -159,59 +252,58 @@ class UnitedVision(Detect_Method):
             try:
                 NumpyData = np.load(npz, allow_pickle=True)
                 PerspectiveMatrix = NumpyData['matrix']
-                self.PerspectiveMatrices.append(PerspectiveMatrix)
-                self.P2CK.append(float(NumpyData['p2c'][0]))
-                self.P2CHB.append(float(NumpyData['p2c'][1]))
-                self.P2CVB.append(float(NumpyData['p2c'][2]))
+                perspective_matrices.append(PerspectiveMatrix)
+                p2ck.append(float(NumpyData['p2c'][0]))
+                p2chb.append(float(NumpyData['p2c'][1]))
+                p2cvb.append(float(NumpyData['p2c'][2]))
 
                 # New calibration metadata (optional, modern web calibrator)
                 if 'K' in NumpyData.files:
-                    self.CalibrationKs.append(np.asarray(NumpyData['K'], dtype=np.float64))
-                    self.CalibrationDists.append(np.asarray(NumpyData['dist'], dtype=np.float64) if 'dist' in NumpyData.files else None)
-                    self.CalibrationModes.append('modern')
+                    H, rvec, tvec = _modern_pose_from_npz(NumpyData)
+                    calibration_ks.append(np.asarray(NumpyData['K'], dtype=np.float64))
+                    calibration_dists.append(np.asarray(NumpyData['dist'], dtype=np.float64) if 'dist' in NumpyData.files else None)
+                    calibration_hs.append(H)
+                    calibration_rvecs.append(rvec)
+                    calibration_tvecs.append(tvec)
+                    calibration_modes.append('modern')
+                    calibration_undistort_points.append(_npz_bool(NumpyData, "undistort_points", True))
                 else:
-                    self.CalibrationKs.append(None)
-                    self.CalibrationDists.append(None)
-                    self.CalibrationModes.append('legacy')
+                    calibration_ks.append(None)
+                    calibration_dists.append(None)
+                    calibration_hs.append(None)
+                    calibration_rvecs.append(None)
+                    calibration_tvecs.append(None)
+                    calibration_modes.append('legacy')
+                    calibration_undistort_points.append(False)
             except Exception as e:
                 # Don't crash vision server if calibration is missing.
                 # Pixel2CM will fall back (or behave as identity).
                 self.logger.warning(f"UnitedVision: calibration load failed: {npz}: {e}")
-                self.PerspectiveMatrices.append(np.eye(3, dtype=np.float64))
-                self.P2CK.append(1.0)
-                self.P2CHB.append(0.0)
-                self.P2CVB.append(0.0)
-                self.CalibrationKs.append(None)
-                self.CalibrationDists.append(None)
-                self.CalibrationModes.append('missing')
+                perspective_matrices.append(np.eye(3, dtype=np.float64))
+                p2ck.append(1.0)
+                p2chb.append(0.0)
+                p2cvb.append(0.0)
+                calibration_ks.append(None)
+                calibration_dists.append(None)
+                calibration_hs.append(None)
+                calibration_rvecs.append(None)
+                calibration_tvecs.append(None)
+                calibration_modes.append('missing')
+                calibration_undistort_points.append(False)
 
+        self.PerspectiveMatrices = perspective_matrices
+        self.P2CK = p2ck
+        self.P2CHB = p2chb
+        self.P2CVB = p2cvb
+        self.CalibrationKs = calibration_ks
+        self.CalibrationDists = calibration_dists
+        self.CalibrationHs = calibration_hs
+        self.CalibrationRvecs = calibration_rvecs
+        self.CalibrationTvecs = calibration_tvecs
+        self.CalibrationModes = calibration_modes
+        self.CalibrationUndistortPoints = calibration_undistort_points
 
-        # For AI/TI-style queue backends, run queue consumers to compute robot-frame positions.
-        # For BlobBased, its own FindBall thread updates self.BallPos directly.
-        self.MergedChassisList = []
-        self.MergedGoalList = []  # list of all goal detections
-        self.BlueGoalPos = None    # best blue goal detection in robot frame: [x, y, conf]
-        self.YellowGoalPos = None   # best yellow goal detection in robot frame: [x, y, conf]
-        self.BallPos = [0, 0]
-        self.BallPosRaw = [0, 0]
-        self.ChassisPosRaw = []
-        self.BlueGoalPosRaw = None
-        self.YellowGoalPosRaw = None
-        if self._queue_backend:
-            self.ChassisDetectionThread = threading.Thread(target=self.ChassisDetection)
-            self.ChassisDetectionThread.daemon = True
-            self.ChassisDetectionThread.start()
-
-            self.BallDetectionThread = threading.Thread(target=self.BallDetection)
-            self.BallDetectionThread.daemon = True
-            self.BallDetectionThread.start()
-
-        # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
-        # self._goal_backend = hasattr(self, "GoalQueue")
-        # if self._goal_backend:
-        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
-        #     self.GoalDetectionThread.daemon = True
-        #     self.GoalDetectionThread.start()
+        return {"modes": list(calibration_modes)}
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -255,23 +347,85 @@ class UnitedVision(Detect_Method):
         Transformed /= Transformed[2]
         return float(Transformed[0]), float(Transformed[1])
 
+    @staticmethod
+    def _undistort_point(px_x, px_y, K, dist):
+        pt = np.array([[[float(px_x), float(px_y)]]], dtype=np.float64)
+        und = cv2.undistortPoints(pt, K, dist, P=K)
+        return float(und[0, 0, 0]), float(und[0, 0, 1])
+
     def Pixel2CM(self, px_x, px_y, CamIndex):
+        cam_i = int(CamIndex)
+        try:
+            if (
+                0 <= cam_i < len(self.CalibrationModes)
+                and self.CalibrationModes[cam_i] == "modern"
+                and self.CalibrationHs[cam_i] is not None
+            ):
+                u, v = float(px_x), float(px_y)
+                undistort = (
+                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
+                    and self.CalibrationUndistortPoints[cam_i]
+                    and self.CalibrationKs[cam_i] is not None
+                    and self.CalibrationDists[cam_i] is not None
+                )
+                if undistort:
+                    u, v = self._undistort_point(
+                        px_x,
+                        px_y,
+                        self.CalibrationKs[cam_i],
+                        self.CalibrationDists[cam_i],
+                    )
+                wx_mm, wy_mm = self.ApplyPerspectiveTransform(u, v, np.linalg.inv(self.CalibrationHs[cam_i]))
+                return round(wx_mm / 10.0, 2), round(wy_mm / 10.0, 2)
+        except Exception as e:
+            self.logger.warning(f"Modern Pixel2CM failed; falling back to legacy path (CamIndex={CamIndex}): {e}")
+
         # Legacy Jetson/Pixel2CM convention:
         # image pixel -> calibrated plane pixel -> calibrated plane cm.
-        plane_x_px, plane_y_px = self.ApplyPerspectiveTransform(px_x, px_y, self.PerspectiveMatrices[CamIndex])
-        plane_x_cm = round(self.P2CK[CamIndex] * plane_x_px + self.P2CHB[CamIndex], 2)
-        plane_y_cm = round(-self.P2CK[CamIndex] * plane_y_px + self.P2CVB[CamIndex], 2)
+        plane_x_px, plane_y_px = self.ApplyPerspectiveTransform(px_x, px_y, self.PerspectiveMatrices[cam_i])
+        plane_x_cm = round(self.P2CK[cam_i] * plane_x_px + self.P2CHB[cam_i], 2)
+        plane_y_cm = round(-self.P2CK[cam_i] * plane_y_px + self.P2CVB[cam_i], 2)
         return plane_x_cm, plane_y_cm
 
     def CM2Pixel(self, plane_x_cm, plane_y_cm, CamIndex):
+        cam_i = int(CamIndex)
+        try:
+            if (
+                0 <= cam_i < len(self.CalibrationModes)
+                and self.CalibrationModes[cam_i] == "modern"
+            ):
+                undistort = (
+                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
+                    and self.CalibrationUndistortPoints[cam_i]
+                    and self.CalibrationKs[cam_i] is not None
+                    and self.CalibrationDists[cam_i] is not None
+                )
+                obj = np.array([[[float(plane_x_cm) * 10.0, float(plane_y_cm) * 10.0, 0.0]]], dtype=np.float64)
+                rvec = self.CalibrationRvecs[cam_i] if cam_i < len(self.CalibrationRvecs) else None
+                tvec = self.CalibrationTvecs[cam_i] if cam_i < len(self.CalibrationTvecs) else None
+                if undistort and rvec is not None and tvec is not None:
+                    img, _ = cv2.projectPoints(obj, rvec, tvec, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
+                    return int(round(float(img[0, 0, 0]))), int(round(float(img[0, 0, 1])))
+
+                H = self.CalibrationHs[cam_i] if cam_i < len(self.CalibrationHs) else None
+                if H is not None:
+                    raw_px_x, raw_px_y = self.ApplyPerspectiveTransform(
+                        float(plane_x_cm) * 10.0,
+                        float(plane_y_cm) * 10.0,
+                        H,
+                    )
+                    return int(round(raw_px_x)), int(round(raw_px_y))
+        except Exception as e:
+            self.logger.warning(f"Modern CM2Pixel failed; falling back to legacy path (CamIndex={CamIndex}): {e}")
+
         # Inverse of Pixel2CM: board-plane cm -> board-plane pixels -> raw image pixels.
-        plane_x_px = (plane_x_cm - self.P2CHB[CamIndex]) / self.P2CK[CamIndex]
-        plane_y_px = -(plane_y_cm - self.P2CVB[CamIndex]) / self.P2CK[CamIndex]
+        plane_x_px = (plane_x_cm - self.P2CHB[cam_i]) / self.P2CK[cam_i]
+        plane_y_px = -(plane_y_cm - self.P2CVB[cam_i]) / self.P2CK[cam_i]
 
         raw_px_x, raw_px_y = self.ApplyPerspectiveTransform(
             plane_x_px,
             plane_y_px,
-            np.linalg.inv(self.PerspectiveMatrices[CamIndex]),
+            np.linalg.inv(self.PerspectiveMatrices[cam_i]),
         )
 
         return int(raw_px_x), int(raw_px_y)
@@ -289,7 +443,10 @@ class UnitedVision(Detect_Method):
             fy = float(K[1, 1])
         except Exception:
             return None
-        if fx <= 0 or fy <= 0:
+        if fx < 50.0 or fy < 50.0:
+            return None
+        ratio = max(fx, fy) / max(1e-6, min(fx, fy))
+        if ratio > 3.0:
             return None
 
         candidates = []
@@ -400,8 +557,18 @@ class UnitedVision(Detect_Method):
         if not self.EnableBBoxDistanceEstimate:
             return planar_xy, None
         rng = None
+        modern = 0 <= cam_index < len(self.CalibrationModes) and self.CalibrationModes[cam_index] == "modern"
+        raw_homography = (
+            modern
+            and cam_index < len(getattr(self, "CalibrationUndistortPoints", []))
+            and not self.CalibrationUndistortPoints[cam_index]
+        )
+        if raw_homography:
+            return planar_xy, None
         if 0 <= cam_index < len(self.CalibrationKs):
             rng = self._bbox_distance_from_sizes(real_w_cm, real_h_cm, bbox_w_px, bbox_h_px, self.CalibrationKs[cam_index])
+        if modern and rng is None:
+            return planar_xy, None
         if rng is None:
             # Legacy fallback: still produce a usable correction from bbox area.
             real_scale = None
@@ -480,23 +647,23 @@ class UnitedVision(Detect_Method):
     def Resize(self,Frame, TargetSize=(640, 640)):
         Height, Width = Frame.shape[:2]
         TargetHeight, TargetWidth = TargetSize
-        
+
         Scale = min(TargetWidth/Width, TargetHeight/Height)
-        
+
         NewWidth = int(Width * Scale)
         NewHeight = int(Height * Scale)
-        
+
         ResizedImage = cv2.resize(Frame, (NewWidth, NewHeight))
-        
+
         PaddedImage = np.zeros((TargetHeight, TargetWidth, 3), dtype=np.uint8)
-        
+
         YOffset = (TargetHeight - NewHeight) // 2
         XOffset = (TargetWidth - NewWidth) // 2
-        
+
         PaddedImage[YOffset:YOffset+NewHeight, XOffset:XOffset+NewWidth] = ResizedImage
-        
+
         return PaddedImage
-    
+
 
     def ChassisDetection(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
@@ -529,7 +696,7 @@ class UnitedVision(Detect_Method):
                     )
                     ChassisTuple = (CX, CY, ChassisWidth, ChassisHeight, Confidence)
                     # 20251118 already changed X forward,Y left dimension
-                    
+
                     self.MergedChassisList.append(ChassisTuple)
                             # ChassisList.append(ChassisTuple)
                 # if ChassisList:
@@ -559,7 +726,7 @@ class UnitedVision(Detect_Method):
                 #         else:
                 #             Chassis = ChassisList[i]
                 #             self.MergedChassisList.append(Chassis)
-                        
+
 
                 # print(self.MergedChassisList)
                 except:
@@ -702,7 +869,7 @@ class UnitedVision(Detect_Method):
         if (time.time() - self._goal_bbox_ts) > hs:
             return None
         return self._goal_bbox
-    
+
     def BallDetection(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
             try:
@@ -731,7 +898,16 @@ class UnitedVision(Detect_Method):
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
                     # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
                     robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
-                    BallTuple = (round(robot_x_cm,2), round(robot_y_cm,2), BallWidth, BallHeight, Confidence, int(CameraIndex))
+                    BallTuple = (
+                        round(robot_x_cm, 2),
+                        round(robot_y_cm, 2),
+                        BallWidth,
+                        BallHeight,
+                        Confidence,
+                        int(CameraIndex),
+                        int(CenterX),
+                        int(BottomY),
+                    )
                     Balls.append(BallTuple)
                 except:
                     continue
@@ -748,9 +924,12 @@ class UnitedVision(Detect_Method):
                     return robot_dist + continuity * 0.4 - float(ball[4]) * 5.0
                 Balls = sorted(Balls, key=ball_score)
                 Ball = Balls[0]
-                robot_x_cm = Ball[0]
-                robot_y_cm = Ball[1]
-                self.BallPosRaw = [robot_x_cm, robot_y_cm]
+                raw_robot_x_cm = float(Ball[0])
+                raw_robot_y_cm = float(Ball[1])
+                robot_x_cm = raw_robot_x_cm + self.BallOffsetXCM
+                robot_y_cm = raw_robot_y_cm + self.BallOffsetYCM
+                self.BallPosRaw = [round(raw_robot_x_cm, 2), round(raw_robot_y_cm, 2)]
+                self.BallPixelPoint = [int(Ball[5]), int(Ball[6]), int(Ball[7])]
                 # Pull the position slightly toward the bbox-derived distance.
                 # This keeps the direction from pixel2cm while correcting long-range drift.
                 cam = int(Ball[5])
@@ -777,6 +956,12 @@ class UnitedVision(Detect_Method):
 
     def GetBallPos(self):
         return getattr(self, "BallPos", [0, 0])
+
+    def GetBallPosRaw(self):
+        return getattr(self, "BallPosRaw", [0, 0])
+
+    def GetBallPixelPoint(self):
+        return getattr(self, "BallPixelPoint", None)
 
     def BallBBoxUpdate(self):
         """Read TunaIntelligence.BallBBoxQueue if available and keep latest bbox."""
@@ -1004,7 +1189,7 @@ class UnitedVision(Detect_Method):
         if (time.time() - self._goal_distance_ts) > hs:
             return [None, None, None, None]
         return self._goal_distance_bboxes
-    
+
 if __name__ == "__main__":
     import socket
     import pickle

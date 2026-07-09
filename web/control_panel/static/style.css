@@ -1269,6 +1269,136 @@ body {
     padding: 20px;
 }
 
+/* ==================== 动态配置面板 ==================== */
+
+.config-section {
+    margin-bottom: 24px;
+}
+
+.config-section h4 {
+    font-size: 1rem;
+    font-weight: 500;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+
+.config-fields {
+    display: grid;
+    gap: 16px;
+}
+
+.config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.config-field label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.config-field .field-desc {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.config-field input[type="text"],
+.config-field input[type="number"],
+.config-field select {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.config-field input:focus,
+.config-field select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.config-field input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.config-field .list-inputs {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.config-field .list-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 80px;
+}
+
+.config-field .list-item-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.config-field .list-item input {
+    width: 100%;
+}
+
+.config-field .nested-fields {
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+/* Config Field Group - Horizontal Layout */
+.config-field-group {
+    margin-bottom: 16px;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.config-group-label {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    font-weight: 500;
+}
+
+.config-group-fields {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.config-group-fields .config-field {
+    flex: 1;
+    min-width: 100px;
+    margin-bottom: 0;
+}
+
+.config-group-fields .config-field label {
+    font-size: 0.8rem;
+}
+
+.config-group-fields .config-field input[type="number"],
+.config-group-fields .config-field input[type="text"] {
+    padding: 8px 12px;
+    font-size: 0.9rem;
+}
+
 /* ==================== 键盘控制页面 ==================== */
 
 .control-container {

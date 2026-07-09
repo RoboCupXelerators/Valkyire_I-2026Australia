@@ -12,6 +12,8 @@ when available, and fallback to `vision_utils.VisionDatas`.
 
 from pathlib import Path
 
+_REASON_DATA_DIR_FALLBACK = Path(__file__).resolve().parents[1] / "ReasonData" / "data"
+
 # Settings/logger import order:
 #  1) ReasonData (installed package usage)
 #  2) src.ReasonData (running from repo root, imports as "src.*")
@@ -32,7 +34,7 @@ except Exception:  # pragma: no cover
                 import logging
 
                 logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = None  # type: ignore
+            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
         except Exception:  # pragma: no cover
             try:
                 from .VisionDatas import Settings, logger
@@ -41,7 +43,7 @@ except Exception:  # pragma: no cover
                 import logging
 
                 logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = None  # type: ignore
+            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
 import threading
 import queue
 import time
@@ -84,6 +86,61 @@ def _norm_rel_folder(folder: str | None, default: str) -> str:
     # '/Calibration/' -> 'Calibration'
     s = s.strip("/")
     return s or default.strip("/")
+
+
+def _npz_text(data, key: str, default: str = "") -> str:
+    if key not in data.files:
+        return default
+    try:
+        return str(np.atleast_1d(data[key])[0])
+    except Exception:
+        return default
+
+
+def _npz_bool(data, key: str, default: bool = False) -> bool:
+    if key not in data.files:
+        return default
+    try:
+        value = np.atleast_1d(data[key])[0]
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    except Exception:
+        return default
+
+
+def _modern_pose_from_npz(data):
+    H = np.asarray(data["H"], dtype=np.float64)
+    rvec = np.asarray(data["rvec"], dtype=np.float64) if "rvec" in data.files else None
+    tvec = np.asarray(data["tvec"], dtype=np.float64) if "tvec" in data.files else None
+    if rvec is not None and rvec.size == 0:
+        rvec = None
+    if tvec is not None and tvec.size == 0:
+        tvec = None
+
+    if (
+        _npz_text(data, "origin") == "robot_center"
+        and _npz_text(data, "coordinate_convention") != "robot_center_v2"
+        and "origin_offset_cm" in data.files
+    ):
+        offset = np.asarray(data["origin_offset_cm"], dtype=np.float64).reshape(-1)
+        if offset.size >= 2:
+            dy_mm = 2.0 * float(offset[1]) * 10.0
+            new_to_old = np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, -dy_mm],
+                    [0.0, 0.0, 1.0],
+                ],
+                dtype=np.float64,
+            )
+            H = H @ new_to_old
+            if rvec is not None and tvec is not None:
+                R, _ = cv2.Rodrigues(rvec)
+                d = np.array([[0.0], [-dy_mm], [0.0]], dtype=np.float64)
+                tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1) + R @ d
+
+    return H, rvec, tvec
 
 
 def _is_jetson_nano() -> bool:
@@ -545,7 +602,7 @@ class VisionPreUntil:
         except Exception:
             pass
 
-            
+
     def __del__(self):
         try:
             self.close(join_timeout=0.2)
@@ -561,10 +618,17 @@ class VisionPreUntil:
         - p2c: (k, hb, vb)
         """
 
-        self.PerspectiveMatrices: list[np.ndarray] = []
-        self.P2CK: list[float] = []
-        self.P2CHB: list[float] = []
-        self.P2CVB: list[float] = []
+        perspective_matrices: list[np.ndarray] = []
+        p2ck: list[float] = []
+        p2chb: list[float] = []
+        p2cvb: list[float] = []
+        calibration_ks: list[np.ndarray | None] = []
+        calibration_dists: list[np.ndarray | None] = []
+        calibration_hs: list[np.ndarray | None] = []
+        calibration_rvecs: list[np.ndarray | None] = []
+        calibration_tvecs: list[np.ndarray | None] = []
+        calibration_modes: list[str] = []
+        calibration_undistort_points: list[bool] = []
 
         vision_vals = getattr(self.cfg, "VisionVals", object())
         vision_cfg = getattr(self.cfg, "Vision", object())
@@ -580,20 +644,62 @@ class VisionPreUntil:
                 matrix = data["matrix"]
                 p2c = data["p2c"]
 
-                self.PerspectiveMatrices.append(matrix)
+                perspective_matrices.append(matrix)
                 # Be tolerant to p2c shape (sometimes it's nested).
-                self.P2CK.append(float(p2c[0]))
-                self.P2CHB.append(float(p2c[1]))
-                self.P2CVB.append(float(p2c[2]))
+                p2ck.append(float(p2c[0]))
+                p2chb.append(float(p2c[1]))
+                p2cvb.append(float(p2c[2]))
+                if {"K", "dist", "H"}.issubset(set(data.files)) or (
+                    "version" in data.files and int(np.atleast_1d(data["version"])[0]) >= 2
+                ):
+                    H, rvec, tvec = _modern_pose_from_npz(data)
+                    calibration_ks.append(np.asarray(data["K"], dtype=np.float64))
+                    calibration_dists.append(np.asarray(data["dist"], dtype=np.float64))
+                    calibration_hs.append(H)
+                    calibration_rvecs.append(rvec)
+                    calibration_tvecs.append(tvec)
+                    calibration_modes.append("modern")
+                    calibration_undistort_points.append(_npz_bool(data, "undistort_points", True))
+                else:
+                    calibration_ks.append(None)
+                    calibration_dists.append(None)
+                    calibration_hs.append(None)
+                    calibration_rvecs.append(None)
+                    calibration_tvecs.append(None)
+                    calibration_modes.append("legacy")
+                    calibration_undistort_points.append(False)
             except Exception as e:
                 self.logger.warning(
                     f"Calibration load failed for camera port {port} ({npz_path}): {e}. "
                     "Fallback to identity Pixel2CM."
                 )
-                self.PerspectiveMatrices.append(np.eye(3, dtype=np.float64))
-                self.P2CK.append(1.0)
-                self.P2CHB.append(0.0)
-                self.P2CVB.append(0.0)
+                perspective_matrices.append(np.eye(3, dtype=np.float64))
+                p2ck.append(1.0)
+                p2chb.append(0.0)
+                p2cvb.append(0.0)
+                calibration_ks.append(None)
+                calibration_dists.append(None)
+                calibration_hs.append(None)
+                calibration_rvecs.append(None)
+                calibration_tvecs.append(None)
+                calibration_modes.append("missing")
+                calibration_undistort_points.append(False)
+
+        self.PerspectiveMatrices = perspective_matrices
+        self.P2CK = p2ck
+        self.P2CHB = p2chb
+        self.P2CVB = p2cvb
+        self.CalibrationKs = calibration_ks
+        self.CalibrationDists = calibration_dists
+        self.CalibrationHs = calibration_hs
+        self.CalibrationRvecs = calibration_rvecs
+        self.CalibrationTvecs = calibration_tvecs
+        self.CalibrationModes = calibration_modes
+        self.CalibrationUndistortPoints = calibration_undistort_points
+
+    def reload_calibration(self):
+        self._init_calibration()
+        return {"modes": list(getattr(self, "CalibrationModes", []))}
 
 
     def ApplyPerspectiveTransform(self, X, Y, Matrix):
@@ -602,6 +708,20 @@ class VisionPreUntil:
         transformed = Matrix @ point
         transformed /= transformed[2]
         return int(transformed[1]), int(transformed[0])
+
+    def _apply_homography_float(self, X, Y, Matrix):
+        point = np.array([float(X), float(Y), 1.0], dtype=np.float64)
+        transformed = Matrix @ point
+        if abs(float(transformed[2])) < 1e-12:
+            return float(X), float(Y)
+        transformed /= transformed[2]
+        return float(transformed[0]), float(transformed[1])
+
+    @staticmethod
+    def _undistort_point(X, Y, K, dist):
+        pt = np.array([[[float(X), float(Y)]]], dtype=np.float64)
+        und = cv2.undistortPoints(pt, K, dist, P=K)
+        return float(und[0, 0, 0]), float(und[0, 0, 1])
 
 
     def Pixel2CM(self, X, Y, CamIndex: int):
@@ -616,9 +736,27 @@ class VisionPreUntil:
             self._init_calibration()
 
         try:
-            X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[CamIndex])
-            X = round(self.P2CK[CamIndex] * X + self.P2CHB[CamIndex], 2)
-            Y = round(-self.P2CK[CamIndex] * Y + self.P2CVB[CamIndex], 2)
+            cam_i = int(CamIndex)
+            if (
+                0 <= cam_i < len(self.CalibrationModes)
+                and self.CalibrationModes[cam_i] == "modern"
+                and self.CalibrationHs[cam_i] is not None
+            ):
+                u, v = float(X), float(Y)
+                undistort = (
+                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
+                    and self.CalibrationUndistortPoints[cam_i]
+                    and self.CalibrationKs[cam_i] is not None
+                    and self.CalibrationDists[cam_i] is not None
+                )
+                if undistort:
+                    u, v = self._undistort_point(X, Y, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
+                world_x_mm, world_y_mm = self._apply_homography_float(u, v, np.linalg.inv(self.CalibrationHs[cam_i]))
+                return round(world_x_mm / 10.0, 2), round(world_y_mm / 10.0, 2)
+
+            X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[cam_i])
+            X = round(self.P2CK[cam_i] * X + self.P2CHB[cam_i], 2)
+            Y = round(-self.P2CK[cam_i] * Y + self.P2CVB[cam_i], 2)
             return X, Y
         except Exception as e:
             self.logger.warning(f"Pixel2CM failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
@@ -632,13 +770,36 @@ class VisionPreUntil:
             self._init_calibration()
 
         try:
-            p2ck = self.P2CK[CamIndex]
-            p2chb = self.P2CHB[CamIndex]
-            p2cvb = self.P2CVB[CamIndex]
+            cam_i = int(CamIndex)
+            if (
+                0 <= cam_i < len(self.CalibrationModes)
+                and self.CalibrationModes[cam_i] == "modern"
+            ):
+                undistort = (
+                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
+                    and self.CalibrationUndistortPoints[cam_i]
+                    and self.CalibrationKs[cam_i] is not None
+                    and self.CalibrationDists[cam_i] is not None
+                )
+                obj = np.array([[[float(X) * 10.0, float(Y) * 10.0, 0.0]]], dtype=np.float64)
+                rvec = self.CalibrationRvecs[cam_i] if cam_i < len(self.CalibrationRvecs) else None
+                tvec = self.CalibrationTvecs[cam_i] if cam_i < len(self.CalibrationTvecs) else None
+                if undistort and rvec is not None and tvec is not None:
+                    img, _ = cv2.projectPoints(obj, rvec, tvec, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
+                    return int(round(float(img[0, 0, 0]))), int(round(float(img[0, 0, 1])))
+
+                H = self.CalibrationHs[cam_i] if cam_i < len(self.CalibrationHs) else None
+                if H is not None:
+                    px_x, px_y = self._apply_homography_float(float(X) * 10.0, float(Y) * 10.0, H)
+                    return int(round(px_x)), int(round(px_y))
+
+            p2ck = self.P2CK[cam_i]
+            p2chb = self.P2CHB[cam_i]
+            p2cvb = self.P2CVB[cam_i]
 
             X = (X - p2chb) / p2ck
             Y = -(Y - p2cvb) / p2ck
-            X, Y = self.ApplyPerspectiveTransform(X, Y, np.linalg.inv(self.PerspectiveMatrices[CamIndex]))
+            X, Y = self.ApplyPerspectiveTransform(X, Y, np.linalg.inv(self.PerspectiveMatrices[cam_i]))
             return int(X), int(Y)
         except Exception as e:
             self.logger.warning(f"CM2Pixel failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
@@ -652,7 +813,7 @@ class VisionPreUntil:
         Kept to avoid breaking external code that may call InitVideo/CloseVideo.
         """
         return
-    
+
     def CloseVideo(self):
         """Backward-compatible stub. See InitVideo."""
         if getattr(self, "_recorder", None) is not None:
@@ -660,7 +821,7 @@ class VisionPreUntil:
                 self._recorder.close()
             except Exception:
                 pass
-    
+
     def VideoRecord(self):
         """Recording loop.
 
@@ -748,7 +909,7 @@ class VisionPreUntil:
                     self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
 
             self.Cams.append(Cam)
-    
+
     def ReadCams(self):
         FrameCount = 0
         warn_flag = False
@@ -783,7 +944,7 @@ class VisionPreUntil:
             # starve inference threads.
             if not any_ok:
                 time.sleep(0.01)
-        
+
 
 
     # def BinaryObjectDetection(self):

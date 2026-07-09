@@ -385,6 +385,7 @@ function updateVisionState() {
             const ballPosEl = document.getElementById('ball-pos');
             if (ballPosEl) {
                 ballPosEl.textContent = formatBallPositionText(data.ball_pos_cm);
+                ballPosEl.title = `Raw: ${formatBallPositionText(data.ball_pos_raw_cm)}`;
             }
             updateVisionDetails(data);
 
@@ -1170,7 +1171,7 @@ async function updateOverview() {
             elements.hasBall.style.color = visionData.has_ball ? '#22c55e' : 'var(--text-muted)';
         }
 
-        updateBallOverview(visionData.ball_pos_cm);
+        updateBallOverview(visionData.ball_pos_cm, visionData.ball_pos_raw_cm);
 
         // Update uptime
         if (visionData.uptime_s) {
@@ -1601,6 +1602,15 @@ function formatBboxText(bbox, hasClass = false) {
     return `cam${cam}${clsText} [${Math.round(x1)},${Math.round(y1)}]-[${Math.round(x2)},${Math.round(y2)}] ${conf.toFixed(2)}`;
 }
 
+function formatBallPixelPoint(point) {
+    if (!Array.isArray(point) || point.length < 3) return '--';
+    const cam = toFiniteNumber(point[0]);
+    const cx = toFiniteNumber(point[1]);
+    const bottomY = toFiniteNumber(point[2]);
+    if (![cam, cx, bottomY].every(Number.isFinite)) return '--';
+    return `cam${Math.round(cam)} cx=${Math.round(cx)} bottom=${Math.round(bottomY)}`;
+}
+
 function formatGoalPositionText(goalPos) {
     const point = normalizeRadarPoint(goalPos);
     if (!point) return '--';
@@ -1613,6 +1623,16 @@ function formatGoalPositionText(goalPos) {
 }
 
 function updateVisionDetails(data) {
+    const ballRawEl = document.getElementById('ball-pos-raw');
+    if (ballRawEl) {
+        ballRawEl.textContent = formatBallPositionText(data.ball_pos_raw_cm);
+    }
+
+    const ballPixelEl = document.getElementById('ball-pixel-point');
+    if (ballPixelEl) {
+        ballPixelEl.textContent = formatBallPixelPoint(data.ball_pixel_point);
+    }
+
     const ballBboxEl = document.getElementById('ball-bbox');
     if (ballBboxEl) {
         ballBboxEl.textContent = formatBboxText(bestBboxByConfidence(data.ball_bboxes_640, 5));
@@ -1644,9 +1664,12 @@ function formatPose(x, y, yaw) {
     return `${xyText} @ ${yawText}`;
 }
 
-function updateBallOverview(ballPos) {
+function updateBallOverview(ballPos, rawBallPos = null) {
     if (!elements.ballX || !elements.ballY) return;
     const observation = getBallObservation(ballPos);
+    const rawText = rawBallPos ? `Raw: ${formatBallPositionText(rawBallPos)}` : '';
+    elements.ballX.title = rawText;
+    elements.ballY.title = rawText;
     if (observation.state === 'lost') {
         elements.ballX.textContent = '未发现';
         elements.ballY.textContent = '未发现';
@@ -1752,6 +1775,8 @@ async function startCalibStream() {
     const boardW = parseInt(document.getElementById('calib-board-w')?.value || '9');
     const boardH = parseInt(document.getElementById('calib-board-h')?.value || '9');
     const squareMm = parseFloat(document.getElementById('calib-square-mm')?.value || '15');
+    const originXCm = parseFloat(document.getElementById('calib-origin-x-cm')?.value || '6.0');
+    const originYCm = parseFloat(document.getElementById('calib-origin-y-cm')?.value || '17.5');
 
     try {
         const response = await fetch('/api/calib/start', {
@@ -1762,7 +1787,9 @@ async function startCalibStream() {
                 width, height,
                 board_w: boardW,
                 board_h: boardH,
-                square_mm: squareMm
+                square_mm: squareMm,
+                origin_x_cm: originXCm,
+                origin_y_cm: originYCm
             })
         });
 
@@ -1794,6 +1821,55 @@ async function stopCalibStream() {
 
 // 标定预览循环
 let calibPreviewInterval = null;
+
+function escapeCalibHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    })[ch]);
+}
+
+function fmtCalibCm(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toFixed(1) : '--';
+}
+
+function renderCalibResult(data) {
+    const resultEl = document.getElementById('calib-result');
+    if (!resultEl) return;
+
+    const rmse = Number(data?.rmse);
+    const diagnostic = data?.diagnostic || {};
+    const extent = diagnostic.extent_cm || null;
+    const lines = [];
+
+    if (data?.message) {
+        lines.push(`<span class="success">${escapeCalibHtml(data.message)}</span>`);
+    } else if (Number.isFinite(rmse)) {
+        lines.push(`<span class="success">标定成功! RMSE = ${rmse.toFixed(3)} px</span>`);
+    }
+
+    if (extent) {
+        lines.push(
+            `<span class="detail">可见标定平面: ` +
+            `X ${fmtCalibCm(extent.x_min)}..${fmtCalibCm(extent.x_max)} cm, ` +
+            `Y ${fmtCalibCm(extent.y_min)}..${fmtCalibCm(extent.y_max)} cm</span>`
+        );
+    }
+
+    if (diagnostic.warning) {
+        lines.push(`<span class="warning">${escapeCalibHtml(diagnostic.warning)}</span>`);
+    } else if (diagnostic.error) {
+        lines.push(`<span class="warning">自检失败: ${escapeCalibHtml(diagnostic.error)}</span>`);
+    }
+
+    if (lines.length) {
+        resultEl.innerHTML = lines.join('<br>');
+    }
+}
 
 function startCalibPreview() {
     if (calibPreviewInterval) {
@@ -1830,9 +1906,8 @@ function startCalibPreview() {
             document.getElementById('calib-calibrate-btn').disabled = toolsState.calibSamples < 3;
             document.getElementById('calib-save-btn').disabled = !toolsState.calibHasResult;
 
-            if (status.rmse) {
-                document.getElementById('calib-result').innerHTML =
-                    `<span class="success">标定成功! RMSE = ${status.rmse.toFixed(3)} px</span>`;
+            if (Number.isFinite(Number(status.rmse))) {
+                renderCalibResult(status);
             }
         } catch (e) {
             console.error('Failed to get calibration status:', e);
@@ -1897,7 +1972,7 @@ async function calibrateCamera() {
 
         if (data.success) {
             toolsState.calibHasResult = true;
-            resultEl.innerHTML = `<span class="success">${data.message}</span>`;
+            renderCalibResult(data);
             updateCalibUI();
         } else {
             resultEl.innerHTML = `<span class="error">${data.error}</span>`;
@@ -1943,7 +2018,7 @@ async function loadCalibFiles() {
         const tbody = document.getElementById('calib-files-tbody');
         if (tbody) {
             if (toolsState.calibFiles.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">暂无标定文件</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">暂无标定文件</td></tr>';
             } else {
                 tbody.innerHTML = toolsState.calibFiles.map(f => `
                     <tr>
@@ -1951,6 +2026,7 @@ async function loadCalibFiles() {
                         <td>${f.camera_index ?? '--'}</td>
                         <td>${f.board_size ? `${f.board_size[0]}x${f.board_size[1]}` : '--'}</td>
                         <td>${f.square_size_mm ? `${f.square_size_mm} mm` : '--'}</td>
+                        <td>${f.origin_offset_cm ? `${f.origin_offset_cm[0]} / ${f.origin_offset_cm[1]} cm` : '--'}</td>
                         <td>${f.rmse ? `${f.rmse.toFixed(3)} px` : '--'}</td>
                         <td>${f.size || '--'}</td>
                     </tr>
@@ -2248,6 +2324,16 @@ function setupConfigPanel() {
 
 async function loadConfig() {
     try {
+        // Load config template from backend API (auto-generated from config.py)
+        const templateResponse = await fetch('/api/config/schema');
+        if (templateResponse.ok) {
+            state.configTemplate = await templateResponse.json();
+            console.log('[Config] Template loaded from backend:', state.configTemplate);
+        } else {
+            console.warn('[Config] Failed to load template from backend');
+            state.configTemplate = null;
+        }
+
         // Load config
         const configResponse = await fetch('/api/config');
         const config = await configResponse.json();
@@ -2259,8 +2345,12 @@ async function loadConfig() {
         // Load dynamic options for dropdowns
         await loadDynamicOptions();
 
-        // Now populate form (after dynamic options are loaded)
-        populateConfigForm(config);
+        // Render config form from template (or use legacy fallback)
+        if (state.configTemplate && state.configTemplate.sections) {
+            renderConfigFormFromTemplate(config, state.configTemplate);
+        } else {
+            populateConfigForm(config);
+        }
         updateSystemInfoBar(config);
     } catch (e) {
         console.error('Failed to load config:', e);
@@ -2279,6 +2369,183 @@ async function loadConfig() {
     } catch (e) {
         console.error('Failed to load system info:', e);
     }
+}
+
+// Dynamic form rendering from template
+function renderConfigFormFromTemplate(config, template) {
+    console.log('[Config] Rendering form from template');
+
+    const sections = template.sections;
+    if (!sections) return;
+
+    // Group sections by tab
+    const tabSections = {};
+    for (const [sectionKey, sectionInfo] of Object.entries(sections)) {
+        const tab = sectionInfo.tab || 'data';
+        if (!tabSections[tab]) tabSections[tab] = [];
+        tabSections[tab].push({ key: sectionKey, info: sectionInfo });
+    }
+
+    // Render each tab
+    for (const [tabId, sectionList] of Object.entries(tabSections)) {
+        const tabContent = document.getElementById(`tab-${tabId}`);
+        if (!tabContent) continue;
+
+        // Build HTML for all sections in this tab
+        let html = '';
+        for (const { key: sectionKey, info: sectionInfo } of sectionList) {
+            html += renderSection(sectionKey, sectionInfo, config);
+        }
+        tabContent.innerHTML = html;
+    }
+
+    // Update system info bar
+    updateSystemInfoBar(config);
+}
+
+function renderSection(sectionKey, sectionInfo, config) {
+    const sectionData = config[sectionKey] || {};
+    const icon = sectionInfo.icon || '⚙️';
+    const label = sectionInfo.label || sectionKey;
+
+    let html = `<div class="config-section" data-section="${sectionKey}">
+        <h4>${icon} ${label}</h4>
+        <div class="config-fields">`;
+
+    // Sort fields by order
+    const fields = sectionInfo.fields || {};
+    const sortedFields = Object.entries(fields).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+
+    // Group fields by their "group" property
+    const groups = {};
+    const ungrouped = [];
+
+    for (const [fieldKey, fieldInfo] of sortedFields) {
+        if (fieldInfo.group) {
+            if (!groups[fieldInfo.group]) {
+                groups[fieldInfo.group] = { label: fieldInfo.group_label || fieldInfo.group, fields: [] };
+            }
+            groups[fieldInfo.group].fields.push({ key: fieldKey, info: fieldInfo });
+        } else {
+            ungrouped.push({ key: fieldKey, info: fieldInfo });
+        }
+    }
+
+    // Render ungrouped fields first
+    for (const { key: fieldKey, info: fieldInfo } of ungrouped) {
+        const value = sectionData[fieldKey];
+        html += renderField(sectionKey, fieldKey, fieldInfo, value);
+    }
+
+    // Render grouped fields in horizontal layout
+    for (const [groupKey, groupInfo] of Object.entries(groups)) {
+        html += `<div class="config-field-group">
+            <div class="config-group-label">${groupInfo.label}</div>
+            <div class="config-group-fields">`;
+
+        for (const { key: fieldKey, info: fieldInfo } of groupInfo.fields) {
+            const value = sectionData[fieldKey];
+            html += renderField(sectionKey, fieldKey, fieldInfo, value, true);
+        }
+
+        html += '</div></div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+function renderField(sectionKey, fieldKey, fieldInfo, value) {
+    const id = `cfg-${sectionKey}-${fieldKey}`;
+    const label = fieldInfo.label || fieldKey;
+    const type = fieldInfo.type || 'string';
+    const description = fieldInfo.description || '';
+
+    let fieldHtml = `<div class="config-field" data-field="${fieldKey}" data-type="${type}">
+        <label for="${id}">${label}</label>`;
+
+    if (description) {
+        fieldHtml += `<small class="field-desc">${description}</small>`;
+    }
+
+    switch (type) {
+        case 'bool':
+            const checked = value === true ? 'checked' : '';
+            fieldHtml += `<input type="checkbox" id="${id}" ${checked}>`;
+            break;
+
+        case 'int':
+            const intVal = value !== undefined ? value : (fieldInfo.default || 0);
+            const intMin = fieldInfo.min !== undefined ? `min="${fieldInfo.min}"` : '';
+            const intMax = fieldInfo.max !== undefined ? `max="${fieldInfo.max}"` : '';
+            fieldHtml += `<input type="number" id="${id}" value="${intVal}" ${intMin} ${intMax} step="1">`;
+            break;
+
+        case 'float':
+            const floatVal = value !== undefined ? value : (fieldInfo.default || 0);
+            const floatMin = fieldInfo.min !== undefined ? `min="${fieldInfo.min}"` : '';
+            const floatMax = fieldInfo.max !== undefined ? `max="${fieldInfo.max}"` : '';
+            const step = fieldInfo.step ? `step="${fieldInfo.step}"` : 'step="0.01"';
+            fieldHtml += `<input type="number" id="${id}" value="${floatVal}" ${floatMin} ${floatMax} ${step}>`;
+            break;
+
+        case 'select':
+            const selectVal = value !== undefined ? value : (fieldInfo.default || '');
+            fieldHtml += `<select id="${id}">`;
+            for (const opt of (fieldInfo.options || [])) {
+                const optLabel = fieldInfo.option_labels?.[opt] || opt;
+                const selected = opt === selectVal ? 'selected' : '';
+                fieldHtml += `<option value="${opt}" ${selected}>${optLabel}</option>`;
+            }
+            fieldHtml += '</select>';
+            break;
+
+        case 'string':
+            const strVal = value !== undefined && value !== null ? value : (fieldInfo.default || '');
+            const placeholder = fieldInfo.placeholder ? `placeholder="${fieldInfo.placeholder}"` : '';
+            fieldHtml += `<input type="text" id="${id}" value="${strVal}" ${placeholder}>`;
+            break;
+
+        case 'list[int]':
+        case 'list[float]':
+            const arrValue = Array.isArray(value) ? value : (fieldInfo.default || []);
+            const itemLabels = fieldInfo.item_labels || [];
+            const isFloat = type === 'list[float]';
+            const arrStep = isFloat ? 'step="0.01"' : 'step="1"';
+
+            fieldHtml += '<div class="list-inputs">';
+            for (let i = 0; i < arrValue.length; i++) {
+                const itemLabel = itemLabels[i] || `#${i + 1}`;
+                const itemVal = arrValue[i] !== undefined ? arrValue[i] : 0;
+                fieldHtml += `<div class="list-item">
+                    <span class="list-item-label">${itemLabel}</span>
+                    <input type="number" id="${id}-${i}" value="${itemVal}" ${arrStep}>
+                </div>`;
+            }
+            fieldHtml += '</div>';
+            break;
+
+        case 'object':
+            // Recursively render nested fields
+            const nestedData = value || {};
+            const nestedFields = fieldInfo.fields || {};
+            const sortedNestedFields = Object.entries(nestedFields).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+
+            fieldHtml += '<div class="nested-fields">';
+            for (const [nestedKey, nestedInfo] of sortedNestedFields) {
+                const nestedValue = nestedData[nestedKey];
+                fieldHtml += renderField(sectionKey, `${fieldKey}.${nestedKey}`, nestedInfo, nestedValue);
+            }
+            fieldHtml += '</div>';
+            break;
+
+        default:
+            const defVal = value !== undefined ? value : '';
+            fieldHtml += `<input type="text" id="${id}" value="${defVal}">`;
+    }
+
+    fieldHtml += '</div>';
+    return fieldHtml;
 }
 
 async function loadDynamicOptions() {
@@ -3248,6 +3515,113 @@ async function updateControlStatus() {
 }
 
 async function saveConfig() {
+    // Use template-driven collection if available
+    if (state.configTemplate && state.configTemplate.sections) {
+        return saveConfigFromTemplate();
+    }
+
+    // Fallback to legacy save
+    return saveConfigLegacy();
+}
+
+// Save config from dynamic template form
+async function saveConfigFromTemplate() {
+    const template = state.configTemplate;
+    const config = {};
+
+    for (const [sectionKey, sectionInfo] of Object.entries(template.sections)) {
+        config[sectionKey] = {};
+
+        for (const [fieldKey, fieldInfo] of Object.entries(sectionInfo.fields || {})) {
+            const value = collectFieldValue(sectionKey, fieldKey, fieldInfo);
+            config[sectionKey][fieldKey] = value;
+        }
+    }
+
+    console.log('[Config] Saving config from template:', config);
+
+    try {
+        const response = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            state.config = config;
+            updateSystemInfoBar(config);
+            alert('配置已保存');
+        } else {
+            alert('保存失败: ' + result.error);
+        }
+    } catch (e) {
+        console.error('Failed to save config:', e);
+        alert('保存失败: ' + e.message);
+    }
+}
+
+// Collect field value from dynamic form
+function collectFieldValue(sectionKey, fieldKey, fieldInfo) {
+    const type = fieldInfo.type || 'string';
+    const id = `cfg-${sectionKey}-${fieldKey}`;
+
+    switch (type) {
+        case 'bool': {
+            const el = document.getElementById(id);
+            return el ? el.checked : (fieldInfo.default || false);
+        }
+
+        case 'int': {
+            const el = document.getElementById(id);
+            return el ? parseInt(el.value) || 0 : (fieldInfo.default || 0);
+        }
+
+        case 'float': {
+            const el = document.getElementById(id);
+            return el ? parseFloat(el.value) || 0 : (fieldInfo.default || 0);
+        }
+
+        case 'select':
+        case 'string': {
+            const el = document.getElementById(id);
+            return el ? el.value : (fieldInfo.default || '');
+        }
+
+        case 'list[int]':
+        case 'list[float]': {
+            const isFloat = type === 'list[float]';
+            const length = fieldInfo.length || fieldInfo.default?.length || 0;
+            const result = [];
+            for (let i = 0; i < length; i++) {
+                const el = document.getElementById(`${id}-${i}`);
+                if (el) {
+                    result.push(isFloat ? parseFloat(el.value) || 0 : parseInt(el.value) || 0);
+                } else if (fieldInfo.default && fieldInfo.default[i] !== undefined) {
+                    result.push(fieldInfo.default[i]);
+                }
+            }
+            return result;
+        }
+
+        case 'object': {
+            const result = {};
+            for (const [nestedKey, nestedInfo] of Object.entries(fieldInfo.fields || {})) {
+                result[nestedKey] = collectFieldValue(sectionKey, `${fieldKey}.${nestedKey}`, nestedInfo);
+            }
+            return result;
+        }
+
+        default: {
+            const el = document.getElementById(id);
+            return el ? el.value : '';
+        }
+    }
+}
+
+// Legacy save config (fallback for old HTML forms)
+async function saveConfigLegacy() {
     const config = state.config || {};
 
     // Collect form values

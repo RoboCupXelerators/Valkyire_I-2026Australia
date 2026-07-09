@@ -76,6 +76,8 @@ class Preference:
             "GoalWidth": 90.0,
             "GoalHeight": 18.0,
             "MinBallBBoxArea": 40,
+            "BallOffsetXCM": 0.0,
+            "BallOffsetYCM": 0.0,
             # 录制配置
             "Record": False,
             "RecordDir": "./Records",

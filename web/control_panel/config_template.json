@@ -1,0 +1,454 @@
+{
+  "description": "Configuration template for control panel dynamic form generation",
+  "sections": {
+    "RoboInfo": {
+      "label": "机器人信息",
+      "tab": "robot",
+      "icon": "🤖",
+      "fields": {
+        "number": {
+          "type": "int",
+          "label": "机器人编号",
+          "min": 1,
+          "max": 99,
+          "default": 1,
+          "order": 1
+        },
+        "type": {
+          "type": "select",
+          "label": "机器人类型",
+          "options": ["OP", "DP"],
+          "option_labels": {
+            "OP": "OP (进攻)",
+            "DP": "DP (防守)"
+          },
+          "default": "OP",
+          "order": 2
+        },
+        "Bit": {
+          "type": "select",
+          "label": "Bits 类型",
+          "options": ["SIM", "AB", "IL", "3Q"],
+          "option_labels": {
+            "SIM": "SIM (模拟器)",
+            "AB": "AB (Arisu Bits)",
+            "IL": "IL (IceLoong Bits)",
+            "3Q": "3Q (Bits)"
+          },
+          "default": "SIM",
+          "order": 3
+        },
+        "Rec": {
+          "type": "select",
+          "label": "识别类型",
+          "options": ["AI", "TI", "XV", "BB", "SY", "HV"],
+          "option_labels": {
+            "AI": "AI (Arisu Intelligence)",
+            "TI": "TI (Tuna Intelligence)",
+            "XV": "XV (Xelerator Vision)",
+            "BB": "BB (Blob Based)",
+            "SY": "SY (Sim Yolo)",
+            "HV": "HV (Hybrid Vision)"
+          },
+          "default": "TI",
+          "order": 4
+        },
+        "LidarBackend": {
+          "type": "select",
+          "label": "雷达后端",
+          "options": ["rplidar", "ros2"],
+          "option_labels": {
+            "rplidar": "rplidar (原生驱动)",
+            "ros2": "ros2 (ROS2 节点)"
+          },
+          "default": "rplidar",
+          "order": 5
+        },
+        "LidarType": {
+          "type": "select",
+          "label": "雷达型号",
+          "options": ["s1", "s2"],
+          "option_labels": {
+            "s1": "s1 ( Slamtec RPLIDAR S1)",
+            "s2": "s2 ( Slamtec RPLIDAR S2)"
+          },
+          "default": "s1",
+          "order": 6
+        }
+      }
+    },
+    "Ports": {
+      "label": "端口配置",
+      "tab": "robot",
+      "icon": "🔌",
+      "fields": {
+        "LidarID": {
+          "type": "int",
+          "label": "雷达 ID",
+          "min": 1,
+          "max": 255,
+          "default": 21,
+          "order": 1
+        },
+        "LidarPort": {
+          "type": "string",
+          "label": "雷达端口",
+          "default": "/dev/sllidar",
+          "placeholder": "/dev/ttyUSB0",
+          "order": 2
+        },
+        "IceLoongPort": {
+          "type": "string",
+          "label": "IceLoong 端口",
+          "default": "/dev/iceloong",
+          "placeholder": "/dev/ttyTHS1",
+          "order": 3
+        },
+        "ElecMagnet": {
+          "type": "int",
+          "label": "电磁铁端口",
+          "min": 0,
+          "max": 15,
+          "default": 3,
+          "order": 4
+        },
+        "Dribble": {
+          "type": "int",
+          "label": "运球电机端口",
+          "min": 0,
+          "max": 15,
+          "default": 4,
+          "order": 5
+        },
+        "LeftFront": {
+          "type": "int",
+          "label": "左前轮",
+          "min": 0,
+          "max": 15,
+          "default": 1,
+          "order": 6
+        },
+        "LeftBack": {
+          "type": "int",
+          "label": "左后轮",
+          "min": 0,
+          "max": 15,
+          "default": 2,
+          "order": 7
+        },
+        "RightBack": {
+          "type": "int",
+          "label": "右后轮",
+          "min": 0,
+          "max": 15,
+          "default": 3,
+          "order": 8
+        },
+        "RightFront": {
+          "type": "int",
+          "label": "右前轮",
+          "min": 0,
+          "max": 15,
+          "default": 4,
+          "order": 9
+        }
+      }
+    },
+    "Vision": {
+      "label": "视觉配置",
+      "tab": "vision",
+      "icon": "📷",
+      "fields": {
+        "CamPorts": {
+          "type": "list[int]",
+          "label": "摄像头端口",
+          "description": "按顺序: 后, 左, 前, 右",
+          "length": 4,
+          "item_labels": ["后", "左", "前", "右"],
+          "default": [0, 2, 4, 6],
+          "order": 1
+        },
+        "ModelName": {
+          "type": "string",
+          "label": "模型名称",
+          "description": "不含后缀，各推理库自动选择所需格式",
+          "default": "ArisuModel_v1.2s",
+          "placeholder": "模型文件名 (不含后缀)",
+          "order": 2
+        },
+        "CalibrationFolder": {
+          "type": "string",
+          "label": "标定文件夹",
+          "default": "Calibration",
+          "order": 3
+        },
+        "BallDiameter": {
+          "type": "float",
+          "label": "球直径 (CM)",
+          "min": 1.0,
+          "max": 20.0,
+          "step": 0.1,
+          "default": 4.2,
+          "order": 4
+        },
+        "ChassisWidth": {
+          "type": "float",
+          "label": "底盘宽度 (CM)",
+          "min": 5.0,
+          "max": 30.0,
+          "step": 0.5,
+          "default": 18.0,
+          "order": 5
+        },
+        "ChassisHeight": {
+          "type": "float",
+          "label": "底盘高度 (CM)",
+          "min": 5.0,
+          "max": 30.0,
+          "step": 0.5,
+          "default": 18.0,
+          "order": 6
+        },
+        "GoalWidth": {
+          "type": "float",
+          "label": "球门宽度 (CM)",
+          "min": 30.0,
+          "max": 200.0,
+          "step": 1.0,
+          "default": 90.0,
+          "order": 7
+        },
+        "GoalHeight": {
+          "type": "float",
+          "label": "球门高度 (CM)",
+          "min": 5.0,
+          "max": 30.0,
+          "step": 1.0,
+          "default": 18.0,
+          "order": 8
+        },
+        "MinBallBBoxArea": {
+          "type": "int",
+          "label": "最小球检测面积",
+          "description": "bbox 面积阈值，低于此值忽略",
+          "min": 10,
+          "max": 500,
+          "default": 40,
+          "order": 9
+        },
+        "Record": {
+          "type": "bool",
+          "label": "启用录像",
+          "default": false,
+          "order": 10
+        },
+        "RecordDir": {
+          "type": "string",
+          "label": "录像目录",
+          "default": "./Records",
+          "order": 11
+        }
+      }
+    },
+    "Field": {
+      "label": "场地参数",
+      "tab": "data",
+      "icon": "🏟️",
+      "fields": {
+        "Short": {
+          "type": "int",
+          "label": "场地短边 (CM)",
+          "min": 100,
+          "max": 300,
+          "default": 200,
+          "order": 1
+        },
+        "Long": {
+          "type": "int",
+          "label": "场地长边 (CM)",
+          "min": 100,
+          "max": 400,
+          "default": 260,
+          "order": 2
+        },
+        "Home": {
+          "type": "list[float]",
+          "label": "回位点",
+          "description": "[X, Y, θ°]",
+          "length": 3,
+          "item_labels": ["X (CM)", "Y (CM)", "θ (度)"],
+          "default": [-70, 0, 0],
+          "order": 3
+        }
+      }
+    },
+    "Chassis": {
+      "label": "底盘参数",
+      "tab": "robot",
+      "icon": "⚙️",
+      "fields": {
+        "WheelRadiusM": {
+          "type": "float",
+          "label": "轮子半径 (M)",
+          "min": 0.01,
+          "max": 0.1,
+          "step": 0.001,
+          "default": 0.029,
+          "order": 1
+        },
+        "RobotRadiusM": {
+          "type": "float",
+          "label": "机器人半径 (M)",
+          "description": "机器人中心到轮子的半径",
+          "min": 0.05,
+          "max": 0.2,
+          "step": 0.001,
+          "default": 0.09,
+          "order": 2
+        },
+        "MaxWheelRPM": {
+          "type": "int",
+          "label": "最大轮速 (RPM)",
+          "min": 100,
+          "max": 1000,
+          "default": 500,
+          "order": 3
+        }
+      }
+    },
+    "Motion": {
+      "label": "运动参数",
+      "tab": "data",
+      "icon": "🏃",
+      "fields": {
+        "CatchVal": {
+          "type": "list[float]",
+          "label": "抱球位置",
+          "description": "机器人中心到球心的距离和偏移",
+          "length": 2,
+          "item_labels": ["距离 (CM)", "偏移 (CM)"],
+          "default": [8.5, 0],
+          "order": 1
+        },
+        "ErrorRange": {
+          "type": "int",
+          "label": "到达误差范围 (CM)",
+          "min": 1,
+          "max": 50,
+          "default": 10,
+          "order": 2
+        },
+        "RestrictedArea": {
+          "type": "object",
+          "label": "禁区配置",
+          "fields": {
+            "XLimit": {
+              "type": "float",
+              "label": "X 限制 (CM)",
+              "default": 90.0,
+              "order": 1
+            },
+            "YLimit": {
+              "type": "float",
+              "label": "Y 限制 (CM)",
+              "default": 70.0,
+              "order": 2
+            },
+            "GoalBoxWidth": {
+              "type": "float",
+              "label": "球门区宽度 (CM)",
+              "default": 25.0,
+              "order": 3
+            },
+            "GoalBoxYHalf": {
+              "type": "float",
+              "label": "球门区 Y 半宽 (CM)",
+              "default": 50.0,
+              "order": 4
+            },
+            "Clearance": {
+              "type": "float",
+              "label": "安全间隙 (CM)",
+              "default": 5.0,
+              "order": 5
+            },
+            "RecoveryClearance": {
+              "type": "float",
+              "label": "恢复间隙 (CM)",
+              "default": 16.0,
+              "order": 6
+            },
+            "RecoveryExtra": {
+              "type": "float",
+              "label": "恢复额外间隙 (CM)",
+              "default": 3.0,
+              "order": 7
+            }
+          },
+          "order": 3
+        }
+      }
+    },
+    "Debug": {
+      "label": "调试选项",
+      "tab": "data",
+      "icon": "🔧",
+      "fields": {
+        "FullLog": {
+          "type": "bool",
+          "label": "完整日志",
+          "description": "启用详细日志输出",
+          "default": false,
+          "order": 1
+        },
+        "Beta": {
+          "type": "bool",
+          "label": "Beta 功能",
+          "description": "启用实验性功能",
+          "default": true,
+          "order": 2
+        },
+        "RecordMotion": {
+          "type": "bool",
+          "label": "启用动作记录",
+          "description": "用于回放分析",
+          "default": false,
+          "order": 3
+        },
+        "RecordInterval": {
+          "type": "int",
+          "label": "记录间隔 (帧)",
+          "min": 1,
+          "max": 100,
+          "default": 1,
+          "order": 4
+        },
+        "RecordSessionId": {
+          "type": "string",
+          "label": "会话 ID",
+          "description": "可选，留空自动生成",
+          "default": null,
+          "nullable": true,
+          "order": 5
+        },
+        "RecordPos2Pos": {
+          "type": "bool",
+          "label": "记录 Pos2Pos",
+          "default": false,
+          "order": 6
+        },
+        "Pos2PosRecordDir": {
+          "type": "string",
+          "label": "Pos2Pos 目录",
+          "default": "./Records/pos2pos",
+          "order": 7
+        }
+      }
+    }
+  },
+  "_meta": {
+    "version": "1.0",
+    "last_updated": "2026-07-09",
+    "compatible_with": "ReasonData/config.py DEFAULT_CONFIG"
+  }
+}

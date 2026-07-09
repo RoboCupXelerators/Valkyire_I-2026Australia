@@ -59,7 +59,7 @@
                     <h1>系统概览</h1>
                     <span class="uptime">运行时间: <span id="uptime">--</span></span>
                 </header>
-                
+
                 <!-- 系统信息卡片 -->
                 <div class="system-info-bar">
                     <div class="info-badge">
@@ -88,7 +88,7 @@
                         <span class="value" id="rec-type-display">--</span>
                     </div>
                 </div>
-                
+
                 <div class="dashboard-grid">
                     <div class="card">
                         <h3>机器人状态</h3>
@@ -212,6 +212,8 @@
                         <div class="panel-header">状态信息</div>
                         <table class="state-table">
                             <tr><td>球位置</td><td id="ball-pos">--</td></tr>
+                            <tr><td>球位置 Raw</td><td id="ball-pos-raw">--</td></tr>
+                            <tr><td>球取点像素</td><td id="ball-pixel-point">--</td></tr>
                             <tr><td>球检测框</td><td id="ball-bbox">--</td></tr>
                             <tr><td>蓝球门</td><td id="blue-goal">--</td></tr>
                             <tr><td>黄球门</td><td id="yellow-goal">--</td></tr>
@@ -349,7 +351,7 @@
                     <h1>系统设置</h1>
                     <button class="btn btn-primary" id="save-config-btn">💾 保存配置</button>
                 </header>
-                
+
                 <!-- 设置标签页 -->
                 <div class="settings-tabs">
                     <button class="tab-btn active" data-tab="robot">机器人</button>
@@ -358,7 +360,7 @@
                     <button class="tab-btn" data-tab="network">网络</button>
                     <button class="tab-btn" data-tab="data">数据</button>
                 </div>
-                
+
                 <div class="settings-content">
                     <!-- 机器人配置 -->
                     <div id="tab-robot" class="tab-content active">
@@ -439,7 +441,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 模拟器配置 -->
                     <div id="tab-simulator" class="tab-content">
                         <div class="settings-section">
@@ -534,7 +536,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 视觉配置 -->
                     <div id="tab-vision" class="tab-content">
                         <div class="settings-section">
@@ -646,7 +648,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 网络配置 -->
                     <div id="tab-network" class="tab-content">
                         <div class="settings-section">
@@ -698,7 +700,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 数据管理 -->
                     <div id="tab-data" class="tab-content">
                         <div class="settings-section">
@@ -841,14 +843,14 @@
                 <header class="page-header">
                     <h1>工具</h1>
                 </header>
-                
+
                 <!-- 工具标签页 -->
                 <div class="tools-tabs">
                     <button class="tab-btn active" data-tool-tab="calibration">📷 摄像头标定</button>
                     <button class="tab-btn" data-tool-tab="birdeye">🦅 鸟瞰图预览</button>
                     <button class="tab-btn" data-tool-tab="files">📁 标定文件</button>
                 </div>
-                
+
                 <!-- 标定工具 -->
                 <div id="tool-tab-calibration" class="tool-tab-content active">
                     <div class="tool-panel">
@@ -882,6 +884,14 @@
                                     <label>格子大小 (mm)</label>
                                     <input type="number" id="calib-square-mm" value="15" step="0.5">
                                 </div>
+                                <div class="control-group">
+                                    <label>左下到中心横向 (cm)</label>
+                                    <input type="number" id="calib-origin-x-cm" value="7.5" step="0.1">
+                                </div>
+                                <div class="control-group">
+                                    <label>中心到下排纵向 (cm)</label>
+                                    <input type="number" id="calib-origin-y-cm" value="16.5" step="0.1">
+                                </div>
                             </div>
                             <div class="control-row">
                                 <button class="btn btn-primary" id="calib-start-btn">▶ 开始</button>
@@ -914,7 +924,7 @@
                         <div class="calib-result" id="calib-result"></div>
                     </div>
                 </div>
-                
+
                 <!-- 鸟瞰图预览 -->
                 <div id="tool-tab-birdeye" class="tool-tab-content">
                     <div class="tool-panel birdeye-panel">
@@ -977,14 +987,14 @@
                         <span id="birdeye-status-text">状态: 空闲</span>
                     </div>
                 </div>
-                
+
                 <!-- 标定文件列表 -->
                 <div id="tool-tab-files" class="tool-tab-content">
                     <div class="files-header">
                         <h3>标定文件列表</h3>
                         <button class="btn btn-secondary" id="refresh-calib-files-btn">🔄 刷新</button>
                     </div>
-                    <p class="hint">标定文件存储在 <code>Tools/Pixel2CM/Calibration/</code> 或 <code>Calibration/</code> 目录下</p>
+                    <p class="hint">标定文件存储在 <code>src/ReasonData/data/Calibration/</code> 目录下</p>
                     <table class="data-table" id="calib-files-table">
                         <thead>
                             <tr>
@@ -992,12 +1002,13 @@
                                 <th>摄像头</th>
                                 <th>棋盘格</th>
                                 <th>格子大小</th>
+                                <th>中心偏移</th>
                                 <th>RMSE</th>
                                 <th>大小</th>
                             </tr>
                         </thead>
                         <tbody id="calib-files-tbody">
-                            <tr><td colspan="6">加载中...</td></tr>
+                            <tr><td colspan="7">加载中...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1009,7 +1020,7 @@
                     <h1>键盘控制</h1>
                     <span class="status" id="control-status">状态: 未启用</span>
                 </header>
-                
+
                 <div class="control-container">
                     <!-- 控制开关 -->
                     <div class="control-panel">
@@ -1017,7 +1028,7 @@
                             <button class="btn btn-primary btn-large" id="control-enable-btn">🎮 启用键盘控制</button>
                             <p class="hint">启用后，使用键盘控制机器人移动</p>
                         </div>
-                        
+
                         <!-- 速度设置 -->
                         <div class="control-settings">
                             <h3>速度设置</h3>
@@ -1035,7 +1046,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 键盘布局说明 -->
                     <div class="keyboard-layout">
                         <h3>键盘布局</h3>
@@ -1058,7 +1069,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 状态显示 -->
                     <div class="control-state">
                         <h3>状态</h3>

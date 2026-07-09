@@ -11,7 +11,7 @@ Software/
 ├── docs/                   # 当前维护文档与 codegraph
 ├── scripts/                # 可重复运行的部署、调试、模型和图生成脚本
 ├── web/control_panel/      # control_panel.py 使用的前端资源
-├── Tools/                  # 相机/标定辅助工具
+├── Tools/                  # 旧工具归档说明和许可
 ├── Calibration_2605/       # 标定数据
 ├── Records/                # 本地运行/采样记录，默认不作为代码入口
 ├── logs/                   # 本地训练/运行日志
