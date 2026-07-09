@@ -55,36 +55,37 @@ def logic_step():
     # time.sleep(0.3)
     # return
     logger.info(UnitedPosition.RobotBallPos())
-    if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
-        if lockball.LockBallSlip():
-            pose = UnitedPosition.FieldRobotPose()
-            uplane_score = UplaneScore(pose)
-            huck_score = HuckScore(pose)
-            jump_score = JumpScore(pose)
-            scores = [
-                uplane_score,
-                huck_score,
-                jump_score]
-            logger.info("LockBallSlip executed successfully.")
-            if max(scores) == huck_score:
-                logger.info("Exe huck")
-                if UnitedPosition.CanShoot():
+    if UnitedPosition.RestrictedArea():
+        if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
+            if lockball.LockBallSlip():
+                pose = UnitedPosition.FieldRobotPose()
+                uplane_score = UplaneScore(pose)
+                huck_score = HuckScore(pose)
+                jump_score = JumpScore(pose)
+                scores = [
+                    uplane_score,
+                    huck_score,
+                    jump_score]
+                logger.info("LockBallSlip executed successfully.")
+                if max(scores) == huck_score:
+                    logger.info("Exe huck")
+                    if UnitedPosition.CanShoot():
+                        peripheral.ShootBall()
+                    else:
+                        try:
+                            TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
+                        except:
+                            TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[100,0])%360)
+                elif max(scores) == uplane_score:
+                    if lockball.slip():
+                        UplaneStep()
+                elif max(scores) == jump_score:
                     peripheral.ShootBall()
-                else:
-                    try:
-                        TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
-                    except:
-                        TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[100,0])%360)
-            elif max(scores) == uplane_score:
-                if lockball.slip():
-                    UplaneStep()
-            elif max(scores) == jump_score:
-                peripheral.ShootBall()
-    else:
-        peripheral.Dribble(False)
-        if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
-            logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
-            UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
+        else:
+            peripheral.Dribble(False)
+            if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
+                logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
+                UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
 
 def UplaneStep(thershold = [[50,30],[100,90]]):
     pose = UnitedPosition.FieldRobotPose()
