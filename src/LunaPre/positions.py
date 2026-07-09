@@ -26,10 +26,10 @@ from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_err
 
 cfg = runtime.cfg
 
-POS2POS_KP = 0.04
-POS2POS_KI = 0.00005
-POS2POS_KD = 0.0008
-POS2POS_OUTPUT_LIMIT_MPS = 2.2
+POS2POS_KP = 0.018
+POS2POS_KI = 0.00001
+POS2POS_KD = 0.0002
+POS2POS_OUTPUT_LIMIT_MPS = 1.2
 POS2POS_MIN_SPEED_MPS = 0.08
 POS2POS_ARRIVAL_SCALE = 0.5
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
@@ -1637,15 +1637,6 @@ class Positions:
         self.Position_Y_PID.setpoint = float(aim_y)
         cmd_x = self.Position_X_PID(float(loc_x)) * gain
         cmd_y = self.Position_Y_PID(float(loc_y)) * gain
-        cmd_speed = math.hypot(cmd_x, cmd_y)
-        max_speed = clamp(0.35 * gain, 0.20, POS2POS_OUTPUT_LIMIT_MPS)
-        if cmd_speed > max_speed:
-            scale = max_speed / cmd_speed
-            cmd_x *= scale
-            cmd_y *= scale
-        elif cmd_speed < POS2POS_MIN_SPEED_MPS:
-            cmd_x = err_x / dist * POS2POS_MIN_SPEED_MPS
-            cmd_y = err_y / dist * POS2POS_MIN_SPEED_MPS
         runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
         return False
 
