@@ -1886,10 +1886,27 @@ class Positions:
         '''
         ### Function for stopping the vision data thread
         '''
-        runtime.chassis.stop()
-        runtime.peripheral.Dribble(False)
-        runtime.lidar.stop()
-        runtime.chassis.stop()
+        try:
+            if runtime.chassis is not None:
+                runtime.chassis.stop()
+        except Exception:
+            pass
+        try:
+            if runtime.peripheral is not None:
+                runtime.peripheral.Dribble(False)
+        except Exception:
+            pass
+        try:
+            if runtime.lidar is not None:
+                runtime.lidar.stop()
+        except Exception:
+            pass
+        try:
+            if runtime.chassis is not None:
+                runtime.chassis.stop()
+        except Exception:
+            pass
+
         self.vision_data_stop_event.set()
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.
@@ -1903,16 +1920,40 @@ class Positions:
         except Exception:
             pass
 
+        # Terminate vision subprocess. Prefer graceful terminate first so Vision.py
+        # can run its finally-close path and release cameras; escalate to kill if needed.
         if self.vision_process is not None:
+            proc = self.vision_process
             try:
-                self.vision_process.terminate()
-                self.vision_process.wait(timeout=1.0)
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1.5)
+                    except Exception:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except Exception:
+                            pass
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self.vision_process = None
 
         # best-effort join
         try:
             if self.get_vision_data_process is not None:
                 self.get_vision_data_process.join(timeout=0.5)
+        except Exception:
+            pass
+
+        # Also close in-process simulator/runtime vision adapters if present.
+        try:
+            vision = getattr(runtime, "vision", None)
+            close = getattr(vision, "close", None)
+            if callable(close):
+                close(join_timeout=0.5)
         except Exception:
             pass

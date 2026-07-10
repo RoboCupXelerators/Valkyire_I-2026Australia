@@ -1193,6 +1193,7 @@ class UnitedVision(Detect_Method):
 if __name__ == "__main__":
     import socket
     import pickle
+    import signal
 
     # UDP socket setup
     UDP_IP = "127.0.0.1"
@@ -1200,41 +1201,65 @@ if __name__ == "__main__":
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     vision = UnitedVision()
-    while True:
-        try:
-            ball_pos = vision.GetBallPos()
-            chassis_pos = vision.GetChassisPos()
-            blue_goal = None
-            yellow_goal = None
-            goal_bboxes = [None, None, None, None]
+    running = {"value": True}
+
+    def _shutdown(*_args):
+        running["value"] = False
+
+    try:
+        signal.signal(signal.SIGINT, _shutdown)
+        signal.signal(signal.SIGTERM, _shutdown)
+    except Exception:
+        pass
+
+    try:
+        while running["value"]:
             try:
-                goals_pos = vision.GetGoalsPos()
-                if isinstance(goals_pos, (list, tuple)):
-                    if len(goals_pos) >= 1:
-                        blue_goal = goals_pos[0]
-                    if len(goals_pos) >= 2:
-                        yellow_goal = goals_pos[1]
-                elif isinstance(goals_pos, dict):
-                    blue_goal = goals_pos.get("blue_goal")
-                    yellow_goal = goals_pos.get("yellow_goal")
-            except Exception:
+                ball_pos = vision.GetBallPos()
+                chassis_pos = vision.GetChassisPos()
                 blue_goal = None
                 yellow_goal = None
-            try:
-                goal_bboxes = vision.GetGoalBBoxes()
-            except Exception:
                 goal_bboxes = [None, None, None, None]
-            data = {
-                "ball_pos": ball_pos,
-                "chassis_pos": chassis_pos,
-                "blue_goal": blue_goal,
-                "yellow_goal": yellow_goal,
-                "goal_bboxes": goal_bboxes,
-            }
-            # vision.logger.info(data)
-            pickled_data = pickle.dumps(data)
-            # print(data)
-            sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
+                try:
+                    goals_pos = vision.GetGoalsPos()
+                    if isinstance(goals_pos, (list, tuple)):
+                        if len(goals_pos) >= 1:
+                            blue_goal = goals_pos[0]
+                        if len(goals_pos) >= 2:
+                            yellow_goal = goals_pos[1]
+                    elif isinstance(goals_pos, dict):
+                        blue_goal = goals_pos.get("blue_goal")
+                        yellow_goal = goals_pos.get("yellow_goal")
+                except Exception:
+                    blue_goal = None
+                    yellow_goal = None
+                try:
+                    goal_bboxes = vision.GetGoalBBoxes()
+                except Exception:
+                    goal_bboxes = [None, None, None, None]
+                data = {
+                    "ball_pos": ball_pos,
+                    "chassis_pos": chassis_pos,
+                    "blue_goal": blue_goal,
+                    "yellow_goal": yellow_goal,
+                    "goal_bboxes": goal_bboxes,
+                }
+                # vision.logger.info(data)
+                pickled_data = pickle.dumps(data)
+                # print(data)
+                sock.sendto(pickled_data, (UDP_IP, UDP_PORT))
+            except Exception as e:
+                print(f"Error in vision server: {e}")
+            time.sleep(0.01)  # Adjust sleep time as needed for performance
+    finally:
+        # Always release cameras / background threads so the next process can open V4L2 devices.
+        try:
+            close = getattr(vision, "close", None)
+            if callable(close):
+                close(join_timeout=1.0)
         except Exception as e:
-            print(f"Error in vision server: {e}")
-        time.sleep(0.01)  # Adjust sleep time as needed for performance
+            print(f"Vision cleanup failed: {e}")
+        try:
+            sock.close()
+        except Exception:
+            pass

@@ -220,20 +220,37 @@ class HybridVision(VisionPreUntil):
     def ReadCams(self):
         frame_count = 0
         last_time = time.time()
-        fail_counts = [0] * len(self.Cams)
+        fail_counts = []
         while not self._stop_event.is_set():
+            cams = self._camera_snapshot() if hasattr(self, "_camera_snapshot") else list(getattr(self, "Cams", []) or [])
+            if not cams:
+                self._stop_event.wait(0.02)
+                continue
+
+            if len(fail_counts) != len(cams):
+                fail_counts = [0] * len(cams)
+
             frames = []
             timestamps = []
             any_ok = False
-            for idx, cam in enumerate(self.Cams):
-                ret, frame = cam.read()
+            for idx, cam in enumerate(cams):
+                if hasattr(self, "_safe_cam_read"):
+                    ret, frame = self._safe_cam_read(cam)
+                else:
+                    try:
+                        ret, frame = cam.read()
+                    except Exception:
+                        ret, frame = False, None
                 ts = time.time()
                 if (not ret) or frame is None:
                     fail_counts[idx] += 1
                     frames.append(None)
                     timestamps.append(0.0)
                     if fail_counts[idx] in (10, 30, 100):
-                        self.logger.warning(f"HybridVision camera read failed /dev/video{self.CamPorts[idx]} count={fail_counts[idx]}")
+                        port = self.CamPorts[idx] if idx < len(getattr(self, "CamPorts", [])) else idx
+                        self.logger.warning(
+                            f"HybridVision camera read failed /dev/video{port} count={fail_counts[idx]}"
+                        )
                 else:
                     fail_counts[idx] = 0
                     any_ok = True
@@ -242,6 +259,9 @@ class HybridVision(VisionPreUntil):
 
             if any_ok:
                 with self._frame_lock:
+                    while len(frames) < 4:
+                        frames.append(None)
+                        timestamps.append(0.0)
                     self.Frames = frames
                     self._latest_timestamps = timestamps
                 self.ReadCamTF += 1
@@ -251,7 +271,8 @@ class HybridVision(VisionPreUntil):
                 self.logger.debug(f"HybridVision camera loop FPS: {frame_count}")
                 frame_count = 0
                 last_time = current
-            self._stop_event.wait(0.0005)
+            # Prefer a short wait so stop/close can take effect promptly.
+            self._stop_event.wait(0.0005 if any_ok else 0.01)
 
     def _tracker_loop(self):
         gate = RateGate(self.cfg_hybrid.tracker_hz)
@@ -374,6 +395,11 @@ class HybridVision(VisionPreUntil):
     def close(self, join_timeout: float = 1.0):
         try:
             self._stop_event.set()
+            # Unblock camera readers first; OpenCV read() can hang otherwise.
+            try:
+                self._release_cameras()
+            except Exception:
+                pass
             for thread in (self._tracker_thread, self._yolo_thread, self._output_thread):
                 if thread is not None and thread.is_alive():
                     thread.join(timeout=join_timeout)

@@ -469,11 +469,93 @@ class VisionPreUntil:
     background threads immediately. For unit-tests / offline inference we also
     support disabling camera initialization via `init_cams=False`.
     '''
+
+    # Process-level registry so SIGINT/SIGTERM/atexit can release cameras even
+    # when callers forget to call close(), or when a capture thread is stuck in
+    # a blocking VideoCapture.read().
+    _active_instances = set()
+    _lifecycle_lock = threading.RLock()
+    _process_hooks_installed = False
+    _prev_sigint = None
+    _prev_sigterm = None
+
+    @classmethod
+    def _install_process_hooks(cls) -> None:
+        """Register atexit + signal cleanup once per process."""
+        with cls._lifecycle_lock:
+            if cls._process_hooks_installed:
+                return
+            cls._process_hooks_installed = True
+            try:
+                atexit.register(cls._cleanup_all_instances)
+            except Exception:
+                pass
+
+            def _make_handler(previous):
+                def _handler(signum, frame):
+                    try:
+                        cls._cleanup_all_instances(join_timeout=0.3)
+                    except Exception:
+                        pass
+                    if callable(previous):
+                        try:
+                            previous(signum, frame)
+                            return
+                        except Exception:
+                            pass
+                    if signum == signal.SIGINT:
+                        try:
+                            signal.default_int_handler(signum, frame)
+                            return
+                        except Exception:
+                            pass
+                    raise SystemExit(128 + int(signum))
+
+                return _handler
+
+            try:
+                cls._prev_sigint = signal.getsignal(signal.SIGINT)
+                signal.signal(signal.SIGINT, _make_handler(cls._prev_sigint))
+            except Exception:
+                # signal may fail in non-main threads / embedded interpreters
+                pass
+            try:
+                cls._prev_sigterm = signal.getsignal(signal.SIGTERM)
+                signal.signal(signal.SIGTERM, _make_handler(cls._prev_sigterm))
+            except Exception:
+                pass
+
+    @classmethod
+    def _register_instance(cls, instance) -> None:
+        cls._install_process_hooks()
+        with cls._lifecycle_lock:
+            cls._active_instances.add(instance)
+
+    @classmethod
+    def _unregister_instance(cls, instance) -> None:
+        with cls._lifecycle_lock:
+            cls._active_instances.discard(instance)
+
+    @classmethod
+    def _cleanup_all_instances(cls, join_timeout: float = 0.5) -> None:
+        with cls._lifecycle_lock:
+            instances = list(cls._active_instances)
+        for instance in instances:
+            try:
+                instance.close(join_timeout=join_timeout)
+            except Exception:
+                pass
+
     def __init__(self, init_cams: bool = True, cam_ports=None):
         # Allow subclasses to pre-create a stop event.
         # If not provided, create one so we can shutdown gracefully in tests.
         if not hasattr(self, "_stop_event") or self._stop_event is None:
             self._stop_event = threading.Event()
+
+        # Guard against re-entrant/double close (common on signal + atexit + __del__).
+        self._close_lock = threading.RLock()
+        self._closed = False
+        self._cams_lock = threading.RLock()
 
         self.cfg = Settings
         self.logger = logger
@@ -515,34 +597,14 @@ class VisionPreUntil:
             self.ReadCamsThread = threading.Thread(target=self.ReadCams)
             self.ReadCamsThread.daemon = True
             self.ReadCamsThread.start()
+            # Always track live camera owners so unexpected process exit can
+            # still release V4L2/GStreamer handles.
+            self._register_instance(self)
 
         # Recording initialization (isolated; does not affect non-record runs)
         vision_vals = getattr(self.cfg, "VisionVals", object())
         vision_cfg = getattr(self.cfg, "Vision", object())
         if getattr(vision_vals, "Record", getattr(vision_cfg, "Record", False)):
-            # Ensure mp4/avi headers are finalized on exit.
-            atexit.register(self.close)
-            try:
-                # Cleanup on SIGINT/SIGTERM (best effort)
-                def _sig_cleanup_and_exit(signum, frame):
-                    try:
-                        self.stop()
-                        try:
-                            self.CloseVideo()
-                        except Exception:
-                            pass
-                    finally:
-                        if signum == signal.SIGINT:
-                            signal.default_int_handler(signum, frame)
-                        else:
-                            raise SystemExit(0)
-
-                signal.signal(signal.SIGINT, _sig_cleanup_and_exit)
-                signal.signal(signal.SIGTERM, _sig_cleanup_and_exit)
-            except Exception:
-                # signal may fail in some embedded/threads env; atexit still helps.
-                pass
-
             # Default: store recordings next to ReasonData log file (ReasonData/data).
             record_dir_val = str(getattr(vision_vals, "RecordDir", getattr(vision_cfg, "RecordDir", "./Records")))
             record_dir_path = Path(record_dir_val)
@@ -576,32 +638,117 @@ class VisionPreUntil:
 
 
     def close(self, join_timeout: float = 1.0):
-        """Stop background threads and release camera/video resources."""
-        self.stop()
+        """Stop background threads and release camera/video resources.
 
-        for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
+        Important ordering note:
+        OpenCV `VideoCapture.read()` can block indefinitely. We therefore
+        release cameras *before* joining the reader thread so a stuck read is
+        interrupted by the handle teardown whenever the backend allows it.
+        """
+        close_lock = getattr(self, "_close_lock", None)
+        if close_lock is None:
+            close_lock = threading.RLock()
+            self._close_lock = close_lock
+
+        with close_lock:
+            if getattr(self, "_closed", False):
+                return
+            self._closed = True
+
+            self.stop()
+
+            # Release cameras first so blocked reader threads can observe errors
+            # and exit instead of holding device nodes forever.
+            self._release_cameras()
+
+            for t in (getattr(self, "ReadCamsThread", None), getattr(self, "VideoRecordThread", None)):
+                try:
+                    if t is not None and t.is_alive():
+                        t.join(timeout=join_timeout)
+                except Exception:
+                    pass
+
+            # release videos / segment headers
             try:
-                if t is not None and t.is_alive():
-                    t.join(timeout=join_timeout)
+                self.CloseVideo()
             except Exception:
                 pass
 
-        # release cameras
+            self._unregister_instance(self)
+
+    def _release_cameras(self) -> None:
+        """Release all owned VideoCapture handles and clear the camera list."""
+        cams_lock = getattr(self, "_cams_lock", None)
+        if cams_lock is None:
+            cams_lock = threading.RLock()
+            self._cams_lock = cams_lock
+
+        with cams_lock:
+            cams = list(getattr(self, "Cams", []) or [])
+            self.Cams = []
+
+        for cam in cams:
+            try:
+                if cam is None:
+                    continue
+                cam.release()
+            except Exception:
+                pass
+
+    def _camera_snapshot(self) -> list:
+        """Thread-safe snapshot of current camera handles."""
+        cams_lock = getattr(self, "_cams_lock", None)
+        if cams_lock is None:
+            return list(getattr(self, "Cams", []) or [])
         try:
-            for Cam in getattr(self, "Cams", []):
+            with cams_lock:
+                return list(getattr(self, "Cams", []) or [])
+        except Exception:
+            return list(getattr(self, "Cams", []) or [])
+
+    def _safe_cam_read(self, cam):
+        """Read one frame, tolerating released/invalid captures during shutdown."""
+        if cam is None:
+            return False, None
+        try:
+            if hasattr(cam, "isOpened") and not cam.isOpened():
+                return False, None
+        except Exception:
+            return False, None
+        try:
+            return cam.read()
+        except Exception:
+            return False, None
+
+    def reopen_cameras(self, cam_ports=None, **init_kwargs) -> None:
+        """Force-release then re-open cameras.
+
+        Useful after an unclean previous run or when a capture path gets stuck.
+        """
+        ports = list(cam_ports) if cam_ports is not None else list(getattr(self, "CamPorts", []) or [])
+        self.CamPorts = ports
+        self._release_cameras()
+        if not ports:
+            return
+        try:
+            self.InitCam(ports, **init_kwargs)
+        except Exception as e:
+            self.logger.error(f"reopen_cameras failed: {e}")
+
+        # Ensure a reader is running after a forced reopen.
+        thread = getattr(self, "ReadCamsThread", None)
+        if thread is None or not thread.is_alive():
+            if not hasattr(self, "_stop_event") or self._stop_event is None:
+                self._stop_event = threading.Event()
+            else:
                 try:
-                    Cam.release()
+                    self._stop_event.clear()
                 except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # release videos
-        try:
-            self.CloseVideo()
-        except Exception:
-            pass
-
+                    self._stop_event = threading.Event()
+            self._closed = False
+            self.ReadCamsThread = threading.Thread(target=self.ReadCams, daemon=True)
+            self.ReadCamsThread.start()
+            self._register_instance(self)
 
     def __del__(self):
         try:
@@ -907,29 +1054,53 @@ class VisionPreUntil:
                 Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
                 if not Cam.isOpened():
                     self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
+                    try:
+                        Cam.release()
+                    except Exception:
+                        pass
+                    Cam = None
 
-            self.Cams.append(Cam)
+            cams_lock = getattr(self, "_cams_lock", None)
+            if cams_lock is None:
+                self.Cams.append(Cam)
+            else:
+                with cams_lock:
+                    self.Cams.append(Cam)
 
     def ReadCams(self):
         FrameCount = 0
         warn_flag = False
         LastTime = time.time()
-        fail_counts = [0] * len(self.Cams)
+        fail_counts = []
         while not self._stop_event.is_set():
+            cams = self._camera_snapshot()
+            if not cams:
+                # Cameras were released during shutdown/reopen; wait for stop or reinit.
+                self._stop_event.wait(0.02)
+                continue
+
+            if len(fail_counts) != len(cams):
+                fail_counts = [0] * len(cams)
+
             Frames = []
             any_ok = False
-            for idx, Cam in enumerate(self.Cams):
-                ret, Frame = Cam.read()
+            for idx, Cam in enumerate(cams):
+                ret, Frame = self._safe_cam_read(Cam)
                 if (not ret) or Frame is None:
                     fail_counts[idx] += 1
                     Frames.append(None)
                     if fail_counts[idx] in (10, 30, 100):
-                        self.logger.warning(f"Camera read failed /dev/video{self.CamPorts[idx]} count={fail_counts[idx]}")
+                        port = self.CamPorts[idx] if idx < len(self.CamPorts) else idx
+                        self.logger.warning(f"Camera read failed /dev/video{port} count={fail_counts[idx]}")
                 else:
                     any_ok = True
                     fail_counts[idx] = 0
                     Frames.append(Frame)
-            self.Frames = Frames
+
+            # Keep a stable 4-slot Frames list for consumers.
+            while len(Frames) < 4:
+                Frames.append(None)
+            self.Frames = Frames[: max(4, len(Frames))]
             FrameCount += 1
             CurrentTime = time.time()
             if CurrentTime - LastTime >= 1.0:
@@ -943,7 +1114,7 @@ class VisionPreUntil:
             # If all cameras are failing, avoid a busy-loop that will eat CPU and
             # starve inference threads.
             if not any_ok:
-                time.sleep(0.01)
+                self._stop_event.wait(0.01)
 
 
 

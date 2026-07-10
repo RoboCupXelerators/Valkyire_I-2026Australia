@@ -2894,9 +2894,32 @@ def main():
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[ControlPanel] Shutting down...")
-        app.calib_stop_stream()
-        app.birdeye_stop()
-        httpd.shutdown()
+    finally:
+        try:
+            app.calib_stop_stream()
+        except Exception:
+            pass
+        try:
+            app.birdeye_stop()
+        except Exception:
+            pass
+        # Release vision/cameras so a subsequent launch can reopen devices.
+        try:
+            vision = getattr(app, "vision", None)
+            close = getattr(vision, "close", None)
+            if callable(close):
+                close(join_timeout=1.0)
+            app.vision = None
+            try:
+                app.camera_manager.unregister_vision_cams()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[ControlPanel] Vision cleanup failed: {e}")
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
