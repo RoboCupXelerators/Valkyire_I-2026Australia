@@ -5,6 +5,10 @@ from typing import Callable, Optional
 
 from .roi import RoiState, grow_around_bbox
 from .types import Detection
+try:
+    from vision_utils.ball_geometry import reconstruct_ball_contact_point  # type: ignore
+except Exception:  # pragma: no cover
+    from ..ball_geometry import reconstruct_ball_contact_point  # type: ignore
 
 
 RobotFrameFn = Callable[[float, float, int], tuple[float, float]]
@@ -93,7 +97,9 @@ class BlobTracker:
         if area < self.min_area or bbox_area < self.min_area:
             return 0.0
         aspect = max(w, h) / max(1, min(w, h))
-        if aspect > self.max_aspect_ratio:
+        # Allow moderately wide boxes (bottom occlusion by dribbler). Extreme
+        # aspect ratios are still rejected as non-ball noise.
+        if aspect > max(self.max_aspect_ratio, 2.4):
             return 0.0
         fill = float(area) / bbox_area
         if fill < self.min_fill_ratio:
@@ -123,13 +129,20 @@ class BlobTracker:
 
         best = None
         for blob in blobs:
-            conf = self._shape_confidence(blob, frame.shape)
-            if conf <= 0.0:
-                continue
             x, y, w, h, area = blob
-            px_x = int(x + w * 0.5)
-            bottom_y = int(y + h)
-            plane_x, plane_y = self.pixel_to_cm(px_x, bottom_y, cam)
+            px_x = float(x + w * 0.5)
+            bottom_y = float(y + h)
+            contact_x, contact_y, geom = reconstruct_ball_contact_point(px_x, bottom_y, w, h)
+            conf = self._shape_confidence(blob, frame.shape)
+            # Bottom-occluded wide boxes are still valid balls near the dribbler.
+            if conf <= 0.0:
+                if geom.get("occlusion") == "bottom" and geom.get("reconstructed"):
+                    conf = 0.35
+                else:
+                    continue
+            elif geom.get("reconstructed"):
+                conf = max(0.05, conf * 0.95)
+            plane_x, plane_y = self.pixel_to_cm(contact_x, contact_y, cam)
             robot_x, robot_y = self.to_robot_frame(float(plane_x), float(plane_y), cam)
             if robot_x < -10.0 or abs(robot_y) > 180.0:
                 continue

@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from .types import Detection
+try:
+    from vision_utils.ball_geometry import contact_point_from_bbox_xyxy  # type: ignore
+except Exception:  # pragma: no cover
+    from ..ball_geometry import contact_point_from_bbox_xyxy  # type: ignore
 
 
 PixelToCmFn = Callable[[float, float, int], tuple[float, float]]
@@ -166,10 +170,16 @@ class YoloDetector:
                     raw_size = (int(raw_frame.shape[1]), int(raw_frame.shape[0]))
                 bottom_y = float(y2)
                 center_x = (float(x1) + float(x2)) * 0.5
+                contact_x, contact_y = center_x, bottom_y
+                det_conf = float(conf)
+                if label == "ball":
+                    contact_x, contact_y, geom = contact_point_from_bbox_xyxy(x1, y1, x2, y2)
+                    if geom.get("reconstructed"):
+                        det_conf = max(0.05, det_conf * 0.92)
                 pos = None
                 if self.pixel_to_cm is not None and self.to_robot_frame is not None:
                     try:
-                        plane_x, plane_y = self.pixel_to_cm(center_x, bottom_y, cam)
+                        plane_x, plane_y = self.pixel_to_cm(contact_x, contact_y, cam)
                         pos = self.to_robot_frame(float(plane_x), float(plane_y), cam)
                     except Exception:
                         pos = None
@@ -177,7 +187,7 @@ class YoloDetector:
                     Detection(
                         camera_index=cam,
                         label=label,
-                        confidence=float(conf),
+                        confidence=det_conf,
                         bbox_xyxy=bbox,
                         timestamp=ts,
                         source="yolo",

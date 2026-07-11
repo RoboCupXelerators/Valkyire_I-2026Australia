@@ -130,8 +130,12 @@ class LockSeries:
         speed_y = -self.pan_y(ball_y)
         speed_w = -self.pan_w(ball_angle)
 
-        if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2:
-            speed_x = 0
+        # If the ball is already closer than CatchVal but still free, keep a
+        # small forward creep so a ~1cm shortfall still gets eaten into the
+        # dribbler instead of freezing with speed_x=0.
+        if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2.5:
+            creep = min(0.12, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
+            speed_x = max(float(speed_x), creep)
         if ball_x <= 0:
             speed_x = 0
 

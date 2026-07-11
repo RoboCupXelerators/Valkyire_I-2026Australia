@@ -614,13 +614,15 @@ class Positions:
             self.ballPosOut = BALL_NOT_FOUND
         else:
             catch_x, catch_y = cfg.Motion.CatchVal
-            x_tol = cfg.Motion.ErrorRange / 20
-            y_tol = cfg.Motion.ErrorRange / 8
-            if (
-                abs(self.ballPos[1] - catch_y) <= y_tol
-                # and abs(self.ballPos[0] - catch_x) == 0
-                and round(abs(self.ballPos[0] - catch_x), 1) <= x_tol
-            ):
+            # Near-field vision noise / dribbler occlusion is often ~1cm.
+            # Keep a usable catch window instead of ErrorRange/20 (=0.5cm).
+            x_tol = max(1.5, float(cfg.Motion.ErrorRange) / 8.0)
+            y_tol = max(2.0, float(cfg.Motion.ErrorRange) / 5.0)
+            # Asymmetric: accept slightly closer-than-catch readings so a ball
+            # that is almost seated is not forced back into free-ball chasing.
+            dx = float(self.ballPos[0]) - float(catch_x)
+            dy = abs(float(self.ballPos[1]) - float(catch_y))
+            if dy <= y_tol and (-x_tol <= dx <= x_tol * 0.75):
                 self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos

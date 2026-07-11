@@ -9,6 +9,14 @@ from pathlib import Path
 BALL_NOT_FOUND = [0xFFF, 0xFFF]  # matches LunaPre.strategy_tools.BALL_NOT_FOUND
 BALL_HELD = [0xDDD, 0xDDD]  # matches LunaPre.strategy_tools.BALL_HELD
 
+try:
+    from vision_utils.ball_geometry import reconstruct_ball_contact_point  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from .ball_geometry import reconstruct_ball_contact_point  # type: ignore
+    except Exception:  # pragma: no cover
+        from src.vision_utils.ball_geometry import reconstruct_ball_contact_point  # type: ignore
+
 if __package__ in (None, ""):
     _SRC_DIR = Path(__file__).resolve().parents[1]
     _REPO_ROOT = _SRC_DIR.parent
@@ -199,6 +207,7 @@ class UnitedVision(Detect_Method):
         self.BallPos = [0, 0]
         self.BallPosRaw = [0, 0]
         self.BallPixelPoint = None
+        self.BallOcclusion = {"reconstructed": False, "kind": "none", "bbox_wh": [0.0, 0.0]}
         self.ChassisPosRaw = []
         self.BlueGoalPosRaw = None
         self.YellowGoalPosRaw = None
@@ -895,18 +904,30 @@ class UnitedVision(Detect_Method):
                         or BallWidth * BallHeight < min_ball_bbox_area
                     ):
                         continue
-                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
+                    contact_x, contact_y, geom = reconstruct_ball_contact_point(
+                        CenterX,
+                        BottomY,
+                        BallWidth,
+                        BallHeight,
+                    )
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(contact_x, contact_y, CameraIndex)
                     # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
                     robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
+                    conf = float(Confidence)
+                    if geom.get("reconstructed"):
+                        # Occluded boxes are useful but slightly less trustworthy.
+                        conf = max(0.05, conf * 0.92)
                     BallTuple = (
                         round(robot_x_cm, 2),
                         round(robot_y_cm, 2),
                         BallWidth,
                         BallHeight,
-                        Confidence,
+                        conf,
                         int(CameraIndex),
-                        int(CenterX),
-                        int(BottomY),
+                        int(round(contact_x)),
+                        int(round(contact_y)),
+                        bool(geom.get("reconstructed")),
+                        str(geom.get("occlusion") or "none"),
                     )
                     Balls.append(BallTuple)
                 except:
@@ -930,6 +951,11 @@ class UnitedVision(Detect_Method):
                 robot_y_cm = raw_robot_y_cm + self.BallOffsetYCM
                 self.BallPosRaw = [round(raw_robot_x_cm, 2), round(raw_robot_y_cm, 2)]
                 self.BallPixelPoint = [int(Ball[5]), int(Ball[6]), int(Ball[7])]
+                self.BallOcclusion = {
+                    "reconstructed": bool(Ball[8]) if len(Ball) > 8 else False,
+                    "kind": str(Ball[9]) if len(Ball) > 9 else "none",
+                    "bbox_wh": [float(Ball[2]), float(Ball[3])],
+                }
                 # Pull the position slightly toward the bbox-derived distance.
                 # This keeps the direction from pixel2cm while correcting long-range drift.
                 cam = int(Ball[5])
