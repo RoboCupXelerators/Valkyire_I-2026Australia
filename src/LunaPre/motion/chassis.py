@@ -7,14 +7,26 @@ from .motion_backend import MotionBackend
 
 
 class Car:
-    def __init__(self, SetMotorFunc, GetYaw=None, permission=None, motor_encoder=None):
+    def __init__(self, SetMotorFunc=None, GetYaw=None, permission=None, motor_encoder=None,
+                 MotorEncoder=None, SetChassisTwistFunc=None,
+                 GetChassisTelemetryFunc=None, ShutdownFunc=None,
+                 StopFunc=None, DisableFunc=None, EmergencyStopFunc=None,
+                 IsIMUHealthyFunc=None, GetIMUStateFunc=None):
         self.SetMotorFunc = SetMotorFunc
+        self.SetChassisTwistFunc = SetChassisTwistFunc
+        self.GetChassisTelemetryFunc = GetChassisTelemetryFunc
+        self.ShutdownFunc = ShutdownFunc
+        self.StopFunc = StopFunc
+        self.DisableFunc = DisableFunc
+        self.EmergencyStopFunc = EmergencyStopFunc
+        self.IsIMUHealthyFunc = IsIMUHealthyFunc
+        self.GetIMUStateFunc = GetIMUStateFunc
         self.GetYaw = GetYaw
         if permission is None:
             self.Permission = lambda: True
         else:
             self.Permission = permission
-        self.MotorEncoder = motor_encoder
+        self.MotorEncoder = motor_encoder if motor_encoder is not None else MotorEncoder
         self.Kp = 1.0
         self.KpW = 2.0
         self.cfg = Settings
@@ -115,6 +127,8 @@ class Car:
         return max_rpm / self._rpm_per_degps()
 
     def SetMotor(self,speedCache:list[int,int,int,int], immediate=False):
+        if self.SetMotorFunc is None:
+            raise RuntimeError("wheel-speed output is unavailable for this chassis backend")
         if self.Permission():
             self.speedCache = speedCache
             number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
@@ -150,16 +164,43 @@ class Car:
     def Compass(self):
         return self.GetYaw()
 
+    def _field_imu_ready(self):
+        if self.GetYaw is None:
+            return False
+        if self.IsIMUHealthyFunc is None:
+            return True
+        try:
+            return bool(self.IsIMUHealthyFunc())
+        except Exception as error:
+            self.logger.warning(f"IMU health check failed: {error}")
+            return False
+
+    def IsFieldIMUReady(self):
+        """Public health gate for non-chassis field-coordinate controllers."""
+        return self._field_imu_ready()
+
+    def _reject_field_motion(self):
+        self.logger.warning("Field-frame motion rejected: IMU is stale, unhealthy, or axis-unverified.")
+        self.stop()
+        return False
+
     def RobotMoveVector(self, SpeedX, SpeedY, SpeedZ):
-        """机器人坐标系速度控制。
+        """Legacy robot-frame command retained for existing strategies.
 
-        Args:
-            SpeedX: 前进速度，单位 m/s。
-            SpeedY: 左移速度，单位 m/s。
-            SpeedZ: 逆时针角速度，单位 deg/s。
-
-        电机输出单位为 RPM，四轮顺序为 LF/LB/RB/RF。正 RPM 表示单轮默认顺时针。
+        Positive X is forward, positive Y is left, and positive Z is
+        counterclockwise. On the DM backend these historical values are
+        converted with the configured legacy-to-SI scales. New code must use
+        RobotMoveTwist for explicit m/s and rad/s units.
         """
+        if self.SetChassisTwistFunc is not None:
+            linear_scale = self._chassis_float("LegacyLinearScaleMpsPerUnit", 0.001)
+            angular_scale = self._chassis_float("LegacyAngularScaleRadSPerUnit", 0.01)
+            self.RobotMoveTwist(
+                float(SpeedX) * linear_scale,
+                float(SpeedY) * linear_scale,
+                float(SpeedZ) * angular_scale,
+            )
+            return
         # 缓存速度用于记录
         SpeedX, SpeedY, SpeedZ = self._filter_chassis_command(SpeedX, SpeedY, SpeedZ)
         self._last_vx = SpeedX
@@ -183,6 +224,20 @@ class Car:
         output = self._allocate_wheel_mix(planar, turn, SpeedZ)
         self.SetMotor(output)
 
+    def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
+        """SI-unit robot-frame command used by the DM-S2325 production path."""
+        values = (float(vx_mps), float(vy_mps), float(wz_rad_s))
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("chassis twist must be finite")
+        self._last_vx, self._last_vy, self._last_wz = values
+        if not self.Permission():
+            values = (0.0, 0.0, 0.0)
+            self.logger.warning("Permission Denied: chassis twist forced to zero.")
+        if self.SetChassisTwistFunc is not None:
+            return self.SetChassisTwistFunc(*values)
+        # Preserve old backends by converting SI angular velocity to deg/s.
+        return self.RobotMoveVector(values[0], values[1], math.degrees(values[2]))
+
     def RobotMoveAngle(self,Angle,Speed,Kp:float|None = 1):
         '''
         angle movement (Angle,Speed) without YawCorrect
@@ -196,6 +251,8 @@ class Car:
         '''
         angle movement (FacingAngle,MovingAngle,speed) with YawCorrect
         '''
+        if not self._field_imu_ready():
+            return self._reject_field_motion()
         Yaw = self.GetYaw()
         rad = math.radians((MovingAngle-Yaw+FacingAngle))
         SpeedX = math.cos(rad) * Speed
@@ -203,15 +260,18 @@ class Car:
         self.FieldMoveVector(SpeedX,SpeedY,FacingAngle,Kp)
 
     def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None,KpW:float|None = None):
-        """场地坐标系速度控制。
+        """Legacy field-frame command with yaw correction.
 
-        Args:
-            SpeedX: 场地 X 方向速度，单位 m/s。
-            SpeedY: 场地 Y 方向速度，单位 m/s。
-            FacingAngle: 目标朝向，单位 deg。
-            KpW: 朝向误差增益，单位 1/s；输出角速度为 deg/s。
+        SpeedX and SpeedY retain their historical strategy scale and are
+        converted at the RobotMoveVector boundary. FacingAngle is degrees.
+        Field motion is rejected while IMU axis mapping is unverified.
         """
-        Yaw = self.GetYaw()
+        if not self._field_imu_ready():
+            return self._reject_field_motion()
+        try:
+            Yaw = self.GetYaw()
+        except (RuntimeError, ValueError):
+            return self._reject_field_motion()
         # TODO change facing
         # FacingAngle = 360 - FacingAngle
         Error = self._angle_error_deg(Yaw, FacingAngle)
@@ -237,6 +297,7 @@ class Car:
         if getattr(self.cfg.Debug, "FullLog", False):
             self.logger.info(f"used FieldMoveVector: {WheelX, WheelY, SpeedZ}")
         self.RobotMoveVector(WheelX, WheelY, SpeedZ)
+        return True
 
     def RobotXMove(self,Angle,Speed):
         self.RobotMoveAngle(Angle, Speed)
@@ -245,9 +306,9 @@ class Car:
         self.RobotMoveAngle(Angle, Speed, Kp)
 
     def FieldTurn(self,Angle):
-        if self.GetYaw is None:
-            return False
-        self.FieldMoveVector(0,0,Angle)
+        if not self._field_imu_ready():
+            return self._reject_field_motion()
+        return self.FieldMoveVector(0,0,Angle)
 
     def RobotTurn(self,Speed): #自转
         self.RobotMoveVector(0,0,Speed)
@@ -264,7 +325,34 @@ class Car:
 
     def stop(self):
         self._motion_backend.reset_command_filter()
-        self.SetMotor([0,0,0,0], immediate=True)
+        if self.StopFunc is not None:
+            return self.StopFunc()
+        if self.SetChassisTwistFunc is not None:
+            return self.SetChassisTwistFunc(0.0, 0.0, 0.0)
+        return self.SetMotor([0,0,0,0], immediate=True)
+
+    def disable(self):
+        self._motion_backend.reset_command_filter()
+        if self.DisableFunc is not None:
+            return self.DisableFunc()
+        return self.stop()
+
+    def emergency_stop(self):
+        self._motion_backend.reset_command_filter()
+        if self.EmergencyStopFunc is not None:
+            return self.EmergencyStopFunc()
+        return self.disable()
+
+    def shutdown(self):
+        self._motion_backend.reset_command_filter()
+        if self.ShutdownFunc is not None:
+            return self.ShutdownFunc()
+        return self.disable()
+
+    def GetChassisTelemetry(self):
+        if self.GetChassisTelemetryFunc is None:
+            return None
+        return self.GetChassisTelemetryFunc()
 
 
 

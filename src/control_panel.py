@@ -37,6 +37,8 @@ POSE_NOT_FOUND = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
 LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
 DEFAULT_CALIB_ORIGIN_X_CM = 7.5
 DEFAULT_CALIB_ORIGIN_Y_CM = 16.5
+DM_CHASSIS_MAX_LINEAR_MPS = 2.29
+DM_CONTROL_LEASE_TIMEOUT_S = 1.0
 
 
 def _repo_root() -> Path:
@@ -379,6 +381,12 @@ class ControlPanelApp:
         self._control_turn_speed = 120.0  # 默认转向速度，deg/s
         self._dribble_active = False  # 盘球状态
         self._control_runtime_error = None
+        self._control_profile = "normal"
+        self._control_target = (0.0, 0.0, 0.0)
+        self._control_last_lease = 0.0
+        self._control_disable_reason = "not_enabled"
+        self._control_worker_stop = threading.Event()
+        self._control_worker_thread = None
 
         # 摄像头资源管理器
         self.camera_manager = CameraResourceManager()
@@ -607,18 +615,17 @@ class ControlPanelApp:
             try:
                 snapshot = getattr(positions, "DirectDistanceSnapshot", None)
                 dists = list(snapshot()) if callable(snapshot) else list(LIDAR_DISABLED_DISTS)
-                if dists == LIDAR_DISABLED_DISTS or dists == [0, 0, 0, 0]:
-                    return
-                try:
-                    pose = positions.FieldRobotPose(distance=dists)
-                except TypeError:
-                    pose = positions.FieldRobotPose()
-                if pose and len(pose) >= 3 and list(pose) != POSE_NOT_FOUND:
-                    result["robot_x_cm"] = round(float(pose[0]), 2)
-                    result["robot_y_cm"] = round(float(pose[1]), 2)
-                    result["robot_yaw_deg"] = round(float(pose[2]), 2)
-                    result["robot_pose_valid"] = True
-                    return
+                if dists != LIDAR_DISABLED_DISTS and dists != [0, 0, 0, 0]:
+                    try:
+                        pose = positions.FieldRobotPose(distance=dists)
+                    except TypeError:
+                        pose = positions.FieldRobotPose()
+                    if pose and len(pose) >= 3 and list(pose) != POSE_NOT_FOUND:
+                        result["robot_x_cm"] = round(float(pose[0]), 2)
+                        result["robot_y_cm"] = round(float(pose[1]), 2)
+                        result["robot_yaw_deg"] = round(float(pose[2]), 2)
+                        result["robot_pose_valid"] = True
+                        return
             except Exception:
                 pass
 
@@ -645,6 +652,25 @@ class ControlPanelApp:
             except Exception:
                 pass
 
+        candidate = self._call_provider(self.bits, "GetHeadingCandidate")
+        if isinstance(candidate, dict):
+            try:
+                heading = float(candidate["heading_deg"])
+                if math.isfinite(heading):
+                    result["robot_heading_candidate_deg"] = round(heading, 2)
+                    result["robot_heading_available"] = True
+                    result["robot_heading_source"] = candidate.get("source")
+                    result["robot_heading_selected_axis"] = candidate.get("selected_axis")
+                    result["robot_heading_axis_mapping_verified"] = bool(
+                        candidate.get("axis_mapping_verified", False))
+                    result["robot_direction_defined"] = bool(
+                        candidate.get("robot_direction_defined", False))
+                    result["robot_heading_valid_for_motion"] = bool(
+                        candidate.get("valid_for_motion", False))
+                    return
+            except (KeyError, TypeError, ValueError):
+                pass
+
         yaw = self._call_provider(self.bits, "GetYaw")
         if yaw is None:
             yaw = self._call_provider(chassis, "GetYaw")
@@ -652,6 +678,10 @@ class ControlPanelApp:
             try:
                 result["robot_yaw_deg"] = round(float(yaw), 2)
                 result["robot_pose_valid"] = True
+                result["robot_heading_available"] = True
+                result["robot_heading_source"] = "MOTION_SAFE_GET_YAW"
+                result["robot_heading_axis_mapping_verified"] = True
+                result["robot_heading_valid_for_motion"] = True
             except Exception:
                 pass
 
@@ -874,6 +904,13 @@ class ControlPanelApp:
             "robot_y_cm": 0,
             "robot_yaw_deg": 0,
             "robot_pose_valid": False,
+            "robot_heading_candidate_deg": None,
+            "robot_heading_available": False,
+            "robot_heading_source": None,
+            "robot_heading_selected_axis": None,
+            "robot_heading_axis_mapping_verified": False,
+            "robot_direction_defined": False,
+            "robot_heading_valid_for_motion": False,
             "has_ball": False,
             "ball_bboxes_640": [None, None, None, None],
             "chassis_bboxes_640": [None, None, None, None],
@@ -1885,8 +1922,8 @@ class ControlPanelApp:
         """启用/禁用键盘控制"""
         with self._control_lock:
             if enabled:
-                chassis, peripheral = self._get_chassis_and_peripheral(initialize=True)
-                if not chassis or not peripheral:
+                chassis, _ = self._get_chassis_and_peripheral(initialize=True)
+                if not chassis:
                     self._control_enabled = False
                     return {
                         "success": False,
@@ -1894,16 +1931,53 @@ class ControlPanelApp:
                         "error": self._control_runtime_error or "Control runtime unavailable",
                     }
 
-            self._control_enabled = enabled
-            if not enabled:
-                # 禁用时停止机器人
-                self._control_stop()
-            return {"success": True, "enabled": enabled}
+                try:
+                    set_profile = getattr(self.bits, "SetChassisProfile", None)
+                    if callable(set_profile):
+                        set_profile(self._control_profile)
+                    arm = getattr(self.bits, "Arm", None)
+                    if callable(arm):
+                        arm()
+                except Exception as e:
+                    self._control_enabled = False
+                    self._control_runtime_error = str(e)
+                    return {"success": False, "enabled": False, "error": str(e)}
+
+                self._control_target = (0.0, 0.0, 0.0)
+                self._control_last_lease = time.monotonic()
+                self._control_enabled = True
+                self._control_disable_reason = None
+                self._control_runtime_error = None
+                self._ensure_control_worker()
+                return {"success": True, "enabled": True}
+
+            if not self._control_enabled:
+                self._control_target = (0.0, 0.0, 0.0)
+                self._control_runtime_error = None
+                return {"success": True, "enabled": False}
+
+            self._control_enabled = False
+            self._control_target = (0.0, 0.0, 0.0)
+            self._control_disable_reason = "user_disabled"
+            try:
+                self._control_disable_hardware()
+            except Exception as e:
+                self._control_runtime_error = str(e)
+                return {"success": False, "enabled": False, "error": str(e)}
+            self._control_runtime_error = None
+            return {"success": True, "enabled": False}
 
     def control_set_speed(self, speed: float, turn_speed: float = None) -> dict:
         """设置移动速度和转向速度，单位分别为 m/s 和 deg/s。"""
         with self._control_lock:
-            self._control_speed = max(0.0, min(1.5, float(speed)))
+            value = float(speed)
+            if not math.isfinite(value):
+                raise ValueError("speed must be finite")
+            # Cached legacy pages send millimetres per second (for example
+            # 100), while the current API uses SI values (for example 0.10).
+            if abs(value) > DM_CHASSIS_MAX_LINEAR_MPS:
+                value *= 0.001
+            self._control_speed = max(0.0, min(DM_CHASSIS_MAX_LINEAR_MPS, value))
             if turn_speed is not None:
                 self._control_turn_speed = max(0.0, min(360.0, float(turn_speed)))
         return {"success": True, "speed": self._control_speed, "turn_speed": self._control_turn_speed}
@@ -1911,6 +1985,7 @@ class ControlPanelApp:
     def control_get_status(self) -> dict:
         """获取控制状态"""
         chassis, peripheral = self._get_chassis_and_peripheral(initialize=False)
+        lease_age = max(0.0, time.monotonic() - self._control_last_lease)
         return {
             "enabled": self._control_enabled,
             "speed": self._control_speed,
@@ -1919,8 +1994,88 @@ class ControlPanelApp:
             "runtime_initialized": self._is_control_runtime_initialized(),
             "chassis_available": bool(chassis),
             "peripheral_available": bool(peripheral),
+            "backend": type(self.bits).__name__ if self.bits is not None else None,
+            "profile": self._control_profile,
             "runtime_error": self._control_runtime_error,
+            "disable_reason": self._control_disable_reason,
+            "lease_age_ms": round(lease_age * 1000.0, 1),
+            "lease_timeout_ms": round(DM_CONTROL_LEASE_TIMEOUT_S * 1000.0),
         }
+
+    def control_renew_lease(self) -> dict:
+        """Renew browser ownership without adding another serial transaction."""
+        with self._control_lock:
+            if not self._control_enabled:
+                return {
+                    "success": False,
+                    "enabled": False,
+                    "error": "Control not enabled",
+                    "disable_reason": self._control_disable_reason,
+                }
+            self._control_last_lease = time.monotonic()
+            return {"success": True, "enabled": True}
+
+    def control_set_profile(self, profile: str) -> dict:
+        """Select a C-board motion profile while the chassis is Disabled."""
+        value = str(profile).strip().lower()
+        allowed = {"safe", "normal", "competition_candidate"}
+        if value not in allowed:
+            return {"success": False, "error": f"Unknown control profile: {profile}"}
+        with self._control_lock:
+            if self._control_enabled:
+                return {"success": False, "error": "Disable chassis before changing profile"}
+            self._ensure_control_runtime()
+            setter = getattr(self.bits, "SetChassisProfile", None)
+            if not callable(setter):
+                return {"success": False, "error": "DM2325 profile control unavailable"}
+            try:
+                setter(value)
+            except Exception as e:
+                self._control_runtime_error = str(e)
+                return {"success": False, "error": str(e)}
+            self._control_profile = value
+            self._control_runtime_error = None
+            return {"success": True, "profile": value}
+
+    def control_get_telemetry(self) -> dict:
+        """Return real C-board targets and DM2325 feedback for the control page."""
+        # Do not hold the control lock across two CDC exchanges. The 30 ms
+        # command worker must be able to refresh the C-board watchdog between
+        # telemetry transactions while the chassis is moving.
+        with self._control_lock:
+            self._ensure_control_runtime()
+            get_diagnostics = getattr(self.bits, "GetChassisDiagnostics", None)
+            get_status = getattr(self.bits, "GetChassisTelemetry", None)
+            if not callable(get_diagnostics) or not callable(get_status):
+                return {"success": False, "error": "DM2325 telemetry unavailable"}
+        try:
+            diagnostics = get_diagnostics()
+            status = get_status()
+        except Exception as e:
+            self._control_runtime_error = str(e)
+            return {"success": False, "error": str(e)}
+        with self._control_lock:
+            status_by_wheel = {motor.wheel: motor for motor in status.motors}
+            for wheel in diagnostics["wheels"]:
+                motor = status_by_wheel.get(wheel["wheel"])
+                if motor is None:
+                    continue
+                wheel.update({
+                    "online": motor.online,
+                    "measured_position_rad": motor.position_rad if motor.online else None,
+                    "motor_temperature_c": motor.rotor_temperature_c if motor.online else None,
+                    "driver_temperature_c": motor.temperature_c if motor.online else None,
+                    "can_rx_count": motor.rx_count,
+                    "dropped_frame_count": motor.stale_count,
+                })
+            diagnostics.update({
+                "success": True,
+                "runtime_state": status.runtime_state,
+                "runtime_fault": status.runtime_fault,
+                "can_esr": status.can_esr,
+                "watchdog_state": "healthy" if status.runtime_fault == 0 else "fault",
+            })
+            return diagnostics
 
     def _is_control_runtime_initialized(self) -> bool:
         runtime = sys.modules.get("LunaPre.runtime")
@@ -1975,6 +2130,81 @@ class ControlPanelApp:
             except Exception as e:
                 print(f"[ControlPanel] Error stopping chassis: {e}")
 
+    def _control_disable_hardware(self):
+        """Stop and Disable a real DM backend; preserve legacy stop behavior."""
+        stop = getattr(self.bits, "stop", None)
+        disable = getattr(self.bits, "disable", None)
+        if callable(stop) and callable(disable):
+            stop()
+            disable()
+            return
+        self._control_stop()
+
+    def _ensure_control_worker(self):
+        """Keep the latest command fresh for the C-board's 100 ms watchdog."""
+        thread = self._control_worker_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._control_worker_stop.clear()
+        self._control_worker_thread = threading.Thread(
+            target=self._control_worker_loop,
+            daemon=True,
+            name="ControlPanel-DM-Heartbeat",
+        )
+        self._control_worker_thread.start()
+
+    def _control_worker_loop(self):
+        while not self._control_worker_stop.wait(0.03):
+            with self._control_lock:
+                if not self._control_enabled:
+                    continue
+                lease_expired = (
+                    time.monotonic() - self._control_last_lease
+                    > DM_CONTROL_LEASE_TIMEOUT_S
+                )
+                target = self._control_target
+                chassis, _ = self._get_chassis_and_peripheral(initialize=False)
+
+                if lease_expired:
+                    self._control_enabled = False
+                    self._control_target = (0.0, 0.0, 0.0)
+                    self._control_disable_reason = "lease_expired"
+                    print("[ControlPanel] Browser lease expired; disabling chassis")
+                    try:
+                        self._control_disable_hardware()
+                    except Exception as e:
+                        self._control_runtime_error = str(e)
+                        print(f"[ControlPanel] Lease-expiry Disable failed: {e}")
+                    continue
+
+                if chassis is not None:
+                    try:
+                        self._move_chassis_si(chassis, *target)
+                    except Exception as e:
+                        self._control_runtime_error = str(e)
+                        print(f"[ControlPanel] Control heartbeat failed: {e}")
+
+    def control_shutdown(self):
+        """Leave the chassis Disabled when the web process exits."""
+        with self._control_lock:
+            was_enabled = self._control_enabled
+            self._control_enabled = False
+            self._control_target = (0.0, 0.0, 0.0)
+        if was_enabled:
+            try:
+                self._control_disable_hardware()
+            except Exception as e:
+                print(f"[ControlPanel] Shutdown Disable failed: {e}")
+        self._control_worker_stop.set()
+
+    @staticmethod
+    def _move_chassis_si(chassis, vx_mps: float, vy_mps: float, wz_deg_s: float):
+        """Use the DM SI interface while preserving older chassis backends."""
+        move_twist = getattr(chassis, "RobotMoveTwist", None)
+        if callable(move_twist):
+            return move_twist(vx_mps, vy_mps, math.radians(wz_deg_s))
+        return chassis.RobotMoveVector(vx_mps, vy_mps, wz_deg_s)
+
     def control_move(self, direction: str) -> dict:
         """控制机器人移动（单方向，保留兼容性）
 
@@ -1993,21 +2223,35 @@ class ControlPanelApp:
 
             try:
                 if direction == 'forward':
-                    chassis.RobotMoveVector(speed, 0, 0)
+                    self._move_chassis_si(chassis, speed, 0, 0)
                 elif direction == 'backward':
-                    chassis.RobotMoveVector(-speed, 0, 0)
+                    self._move_chassis_si(chassis, -speed, 0, 0)
                 elif direction == 'left':
-                    chassis.RobotMoveVector(0, speed, 0)
+                    self._move_chassis_si(chassis, 0, speed, 0)
                 elif direction == 'right':
-                    chassis.RobotMoveVector(0, -speed, 0)
+                    self._move_chassis_si(chassis, 0, -speed, 0)
                 elif direction == 'turn_left':
-                    chassis.RobotTurn(turn_speed)
+                    self._move_chassis_si(chassis, 0, 0, turn_speed)
                 elif direction == 'turn_right':
-                    chassis.RobotTurn(-turn_speed)
+                    self._move_chassis_si(chassis, 0, 0, -turn_speed)
                 elif direction == 'stop':
+                    self._control_target = (0.0, 0.0, 0.0)
+                    self._control_last_lease = time.monotonic()
                     chassis.stop()
                 else:
                     return {"success": False, "error": f"Unknown direction: {direction}"}
+
+                if direction != 'stop':
+                    targets = {
+                        'forward': (speed, 0.0, 0.0),
+                        'backward': (-speed, 0.0, 0.0),
+                        'left': (0.0, speed, 0.0),
+                        'right': (0.0, -speed, 0.0),
+                        'turn_left': (0.0, 0.0, turn_speed),
+                        'turn_right': (0.0, 0.0, -turn_speed),
+                    }
+                    self._control_target = targets[direction]
+                    self._control_last_lease = time.monotonic()
 
                 return {"success": True, "direction": direction}
             except Exception as e:
@@ -2032,7 +2276,21 @@ class ControlPanelApp:
                 vx = float(vx)
                 vy = float(vy)
                 wz = float(wz)
-                chassis.RobotMoveVector(vx, vy, wz)
+                if not all(math.isfinite(value) for value in (vx, vy, wz)):
+                    raise ValueError("control vector must be finite")
+                # Accept vectors from cached legacy pages that still use
+                # millimetres per second, then enforce one radial speed limit.
+                if max(abs(vx), abs(vy)) > DM_CHASSIS_MAX_LINEAR_MPS:
+                    vx *= 0.001
+                    vy *= 0.001
+                magnitude = math.hypot(vx, vy)
+                if magnitude > DM_CHASSIS_MAX_LINEAR_MPS:
+                    scale = DM_CHASSIS_MAX_LINEAR_MPS / magnitude
+                    vx *= scale
+                    vy *= scale
+                self._move_chassis_si(chassis, vx, vy, wz)
+                self._control_target = (vx, vy, wz)
+                self._control_last_lease = time.monotonic()
                 return {"success": True, "vx": vx, "vy": vy, "wz": wz}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -2457,6 +2715,11 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_file(app.web_dir / 'index.html')
             return
 
+        if path == '/favicon.ico':
+            self.send_response(204)
+            self.end_headers()
+            return
+
         if path.startswith('/static/'):
             file_path = app.web_dir / path[1:]
             self._send_file(file_path)
@@ -2584,6 +2847,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/control/status':
             self._send_json(app.control_get_status())
+            return
+
+        if path == '/api/control/telemetry':
+            self._send_json(app.control_get_telemetry())
             return
 
         self.send_error(404, 'Not found')
@@ -2726,6 +2993,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
 
+        if path == '/api/control/lease':
+            self._send_json(app.control_renew_lease())
+            return
+
         if path == '/api/control/speed':
             data = self._parse_json_body()
             result = app.control_set_speed(
@@ -2733,6 +3004,11 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
                 turn_speed=data.get('turn_speed')
             )
             self._send_json(result)
+            return
+
+        if path == '/api/control/profile':
+            data = self._parse_json_body()
+            self._send_json(app.control_set_profile(data.get('profile', 'normal')))
             return
 
         if path == '/api/control/move':
@@ -2895,6 +3171,7 @@ def main():
     except KeyboardInterrupt:
         print("\n[ControlPanel] Shutting down...")
     finally:
+        app.control_shutdown()
         try:
             app.calib_stop_stream()
         except Exception:

@@ -53,7 +53,10 @@ from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 from .motion.recording_chassis import RecordingCar
 
 
-def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None):
+def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None,
+                  set_chassis_twist=None, get_chassis_telemetry=None,
+                  shutdown=None, stop=None, disable=None, emergency_stop=None,
+                  is_imu_healthy=None, get_imu_state=None):
     """Build the motion facade from plain callables, not concrete Bits classes."""
 
     return RecordingCar(
@@ -61,6 +64,14 @@ def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None):
         get_yaw,
         permission=permission,
         motor_encoder=motor_encoder,
+        SetChassisTwistFunc=set_chassis_twist,
+        GetChassisTelemetryFunc=get_chassis_telemetry,
+        ShutdownFunc=shutdown,
+        StopFunc=stop,
+        DisableFunc=disable,
+        EmergencyStopFunc=emergency_stop,
+        IsIMUHealthyFunc=is_imu_healthy,
+        GetIMUStateFunc=get_imu_state,
     )
 
 
@@ -247,12 +258,43 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             _runtime_initialized = True
             return
 
-        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL")
+        if str(cfg.RoboInfo.Bit).upper() in {"DM", "DM2325"}:
+            from utils.DM2325Bits import DM2325Bits
+
+            Bits = DM2325Bits(port=getattr(cfg.Ports, "DM2325Port", "/dev/ttyACM0"))
+            Bits.HandShake()
+            chassis = _make_chassis(
+                None, Bits.GetYaw,
+                set_chassis_twist=Bits.SetChassisTwist,
+                get_chassis_telemetry=Bits.GetChassisTelemetry,
+                shutdown=Bits.shutdown,
+                stop=Bits.stop,
+                disable=Bits.disable,
+                emergency_stop=Bits.emergency_stop,
+                is_imu_healthy=Bits.IsIMUHealthy,
+                get_imu_state=Bits.GetIMUState,
+            )
+            compass = Bits.GetYaw
+            # Lidar runs in a background thread. It may read the last fresh
+            # snapshot, but must never become a second CDC RX owner.
+            lidar = Lidar(Bits.GetCachedYaw, auto_start=auto_start_lidar)
+            peripheral = None
+            key = None
+            Odometer = None
+            referee = None
+            Morse = None
+            _field_pose_provider = None
+            _referee_status_provider = None
+            logger.info("DM2325 chassis backend loaded; explicit Arm is required before motion.")
+            _runtime_initialized = True
+            return
+
+        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL, DM")
 
     except Exception as e:
         logger.error(f"Failed to init runtime: {e}")
         raise RuntimeError(
-            f"Runtime initialization failed. Ensure config.RoboInfo.Bit is set correctly (SIM/AB/IL). Error: {e}"
+            f"Runtime initialization failed. Ensure config.RoboInfo.Bit is set correctly (SIM/AB/IL/DM2325). Error: {e}"
         ) from e
 
 

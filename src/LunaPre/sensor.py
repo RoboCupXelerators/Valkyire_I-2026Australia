@@ -177,13 +177,13 @@ class Lidar:
             return False
         return bool(self.running)
 
-    def _current_yaw(self) -> float:
+    def _current_yaw(self) -> float | None:
         if not callable(self.GetYaw):
-            return 0.0
+            return None
         try:
             return float(self.GetYaw())
         except Exception:
-            return 0.0
+            return None
 
     def stop(self):
         """Stop the sensor facade and its active scan driver."""
@@ -262,6 +262,10 @@ class Lidar:
                 if points:
 
                     Compass = self._current_yaw()
+                    if Compass is None or not math.isfinite(Compass):
+                        # A stale/unavailable heading must not masquerade as
+                        # 0 degrees. Keep the last valid normalized frame.
+                        continue
                     CompassFull = Compass
 
                     if Compass > 180:
