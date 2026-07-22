@@ -330,7 +330,7 @@ def build_payload() -> dict:
     duplicate_names.sort(key=lambda item: (-item["count"], item["name"]))
 
     return {
-        "generated_from": str(ROOT),
+        "generated_from": "Software/src",
         "node_count": len(nodes),
         "edge_count": len(edges),
         "nodes": nodes,

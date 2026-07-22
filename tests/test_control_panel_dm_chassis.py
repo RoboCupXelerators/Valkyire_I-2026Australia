@@ -1,3 +1,4 @@
+import importlib
 import math
 import struct
 import threading
@@ -237,3 +238,114 @@ def test_reverse_diagnostics_decode_real_and_unsupported_fields():
     assert decoded["wheels"][0]["measured_current_a"] is None
     assert decoded["wheels"][0]["bus_voltage_v"] is None
     assert decoded["latest_reverse_event"]["command_to_brake_latency_ms"] == 10
+
+
+def test_control_panel_formats_imu_state_without_web_specific_driver_code():
+    state = SimpleNamespace(
+        healthy=True,
+        source="GYRO_RELATIVE",
+        age_ms=4.5,
+        received_monotonic=time.monotonic(),
+        flags=0x4000,
+        accel_mps2=(0.1, 0.2, 9.8),
+        gyro_rad_s=(0.01, 0.02, 0.03),
+        roll_rad=math.radians(10),
+        pitch_rad=math.radians(-5),
+        yaw_rad=math.radians(370),
+        temperature_c=33.25,
+        calibration_state=2,
+        sample_count=123,
+        missed_sample_count=1,
+        spi_error_count=0,
+    )
+
+    telemetry = ControlPanelApp._control_imu_telemetry(state)
+
+    assert telemetry["available"] is True
+    assert telemetry["attitude_deg"] == pytest.approx({
+        "roll": 10.0,
+        "pitch": -5.0,
+        "yaw": 10.0,
+    })
+    assert telemetry["accel_mps2"] == [0.1, 0.2, 9.8]
+    assert telemetry["flags"] == 0x4000
+
+
+def test_control_panel_replaces_nonfinite_imu_values_with_null():
+    state = SimpleNamespace(
+        healthy=False,
+        source="GYRO_RELATIVE",
+        age_ms=float("inf"),
+        received_monotonic=time.monotonic(),
+        flags=0,
+        accel_mps2=(float("nan"), 0.0, 9.8),
+        gyro_rad_s=(0.0, 0.0, 0.0),
+        roll_rad=float("nan"),
+        pitch_rad=0.0,
+        yaw_rad=0.0,
+        temperature_c=float("nan"),
+        calibration_state=0,
+        sample_count=0,
+        missed_sample_count=0,
+        spi_error_count=0,
+    )
+
+    telemetry = ControlPanelApp._control_imu_telemetry(state)
+
+    assert telemetry["age_ms"] is None
+    assert telemetry["accel_mps2"][0] is None
+    assert telemetry["attitude_deg"]["roll"] is None
+    assert telemetry["temperature_c"] is None
+
+
+def test_enabled_control_panel_reads_cached_imu_without_extra_cdc_exchange():
+    calls = []
+    imu_state = SimpleNamespace(
+        healthy=True,
+        source="GYRO_RELATIVE",
+        age_ms=1.0,
+        received_monotonic=time.monotonic(),
+        flags=0,
+        accel_mps2=(0.0, 0.0, 9.8),
+        gyro_rad_s=(0.0, 0.0, 0.0),
+        roll_rad=0.0,
+        pitch_rad=0.0,
+        yaw_rad=0.0,
+        temperature_c=32.0,
+        calibration_state=2,
+        sample_count=1,
+        missed_sample_count=0,
+        spi_error_count=0,
+    )
+    bits = SimpleNamespace(
+        GetChassisDiagnostics=lambda: {"wheels": []},
+        GetChassisTelemetry=lambda: SimpleNamespace(
+            motors=(), runtime_state=3, runtime_fault=0, can_esr=0
+        ),
+        GetCachedIMUState=lambda: (calls.append("cached") or imu_state),
+        GetIMUState=lambda: pytest.fail("enabled telemetry started an IMU CDC exchange"),
+    )
+    app = _app(SimpleNamespace())
+    app.bits = bits
+    app._ensure_control_runtime = lambda: None
+
+    telemetry = app.control_get_telemetry()
+
+    assert telemetry["success"] is True
+    assert telemetry["imu"]["available"] is True
+    assert calls == ["cached"]
+
+
+def test_no_runtime_mode_blocks_lazy_lunapre_initialization(monkeypatch):
+    app = ControlPanelApp.__new__(ControlPanelApp)
+    app._allow_runtime_init = False
+    app._control_runtime_error = None
+
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda _name: pytest.fail("--no-runtime imported LunaPre lazily"),
+    )
+
+    assert app._ensure_control_runtime() is None
+    assert app._control_runtime_error == "Runtime initialization disabled"

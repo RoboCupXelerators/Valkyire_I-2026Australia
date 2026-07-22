@@ -1,8 +1,9 @@
-"""Minimal YDLIDAR 0x55AA serial driver.
+"""Serial driver for the LDROBOT LD07 solid-state lidar.
 
-The driver uses only pyserial, which is already a project dependency.  It
-publishes scans as ``(angle_deg, distance_m)`` tuples, matching the direct
-RPLidar driver used by LunaPre.
+The LD07 is sometimes confused with YDLIDAR's rotating lidar protocol.  It
+uses a command protocol at 921600 baud and returns one 160-point frame per
+measurement request.  The public class name is kept for compatibility with
+the first driver draft.
 """
 
 from __future__ import annotations
@@ -10,28 +11,40 @@ from __future__ import annotations
 import logging
 import math
 import os
+import struct
 import threading
-import time
 
 import serial
 
 
 LOGGER = logging.getLogger(__name__)
 
-PACKET_HEADER = b"\xaa\x55"
-PACKET_HEADER_VALUE = 0x55AA
-PACKET_FIXED_LENGTH = 10  # PH + CT + LSN + FSA + LSA + CS
-START_SCAN_COMMAND = b"\xa5\x60"
-STOP_SCAN_COMMAND = b"\xa5\x65"
+SYNC = b"\xaa\xaa\xaa\xaa"
+SYNC_VALUE = 0xAAAAAAAA
+FRAME_HEADER_LENGTH = 10  # sync + device + command + offset + data length
+FRAME_PAYLOAD_PREFIX_LENGTH = 4  # timestamp
+POINT_COUNT = 160
+POINT_BYTES = 2
+EXPECTED_DATA_LENGTH = FRAME_PAYLOAD_PREFIX_LENGTH + POINT_COUNT * POINT_BYTES
+
+DEVICE_ADDRESS = 0x01
+GET_DISTANCE_COMMAND = 0x02
+STOP_MEASUREMENT_COMMAND = 0x0F
+START_MEASUREMENT_COMMAND = struct.pack(
+    "<LBBHHB", SYNC_VALUE, DEVICE_ADDRESS, GET_DISTANCE_COMMAND, 0, 0, 0x03
+)
+STOP_COMMAND = struct.pack(
+    "<LBBHHB", SYNC_VALUE, DEVICE_ADDRESS, STOP_MEASUREMENT_COMMAND, 0, 0, 0x10
+)
 
 DEFAULT_PORT = "/dev/ttyACM0"
-DEFAULT_BAUDRATE = 230400
+DEFAULT_BAUDRATE = 921600
 DEFAULT_SERIAL_TIMEOUT = 0.2
 DEFAULT_RECONNECT_DELAY = 0.5
 DEFAULT_SCAN_MIN_POINTS = 5
-DEFAULT_SAMPLE_BYTES = 3
-DEFAULT_DISTANCE_MODE = "triangle"
-DEFAULT_ANGLE_CORRECTION = True
+DEFAULT_FOV_DEG = 90.0
+DEFAULT_ANGLE_START_DEG = -45.0
+DISTANCE_MASK = 0x01FF
 
 
 def _env_int(name: str, default: int) -> int:
@@ -56,11 +69,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 class YDLidarDriver:
-    """Read YDLIDAR ``0x55AA`` packets and publish complete scans.
-
-    Each queue item is a tuple of ``(angle_deg, distance_m)``.  The public
-    ``decode_packet`` method is also useful for offline protocol tests.
-    """
+    """Read LD07 frames and publish ``(angle_deg, distance_m)`` scans."""
 
     def __init__(
         self,
@@ -68,28 +77,32 @@ class YDLidarDriver:
         port: str | None = None,
         baudrate: int | None = None,
         timeout: float | None = None,
-        sample_bytes: int | None = None,
-        distance_mode: str | None = None,
-        angle_correction: bool | None = None,
+        angle_start_deg: float | None = None,
+        fov_deg: float | None = None,
         angle_offset_deg: float | None = None,
         reconnect_delay: float | None = None,
         scan_min_points: int | None = None,
+        verify_checksum: bool | None = None,
     ):
         self.port = port or os.environ.get("YDLIDAR_PORT", DEFAULT_PORT)
-        self.baudrate = int(baudrate or _env_int("YDLIDAR_BAUDRATE", DEFAULT_BAUDRATE))
-        self.timeout = float(timeout if timeout is not None else _env_float("YDLIDAR_TIMEOUT", DEFAULT_SERIAL_TIMEOUT))
-        self.sample_bytes = int(sample_bytes or _env_int("YDLIDAR_SAMPLE_BYTES", DEFAULT_SAMPLE_BYTES))
-        if self.sample_bytes not in (2, 3):
-            raise ValueError("sample_bytes must be 2 or 3")
-
-        self.distance_mode = (distance_mode or os.environ.get("YDLIDAR_DISTANCE_MODE", DEFAULT_DISTANCE_MODE)).lower()
-        if self.distance_mode not in {"triangle", "tof"}:
-            raise ValueError("distance_mode must be 'triangle' or 'tof'")
-        self.angle_correction = bool(
-            angle_correction
-            if angle_correction is not None
-            else _env_bool("YDLIDAR_ANGLE_CORRECTION", DEFAULT_ANGLE_CORRECTION)
+        self.baudrate = int(
+            baudrate
+            if baudrate is not None
+            else _env_int("YDLIDAR_BAUDRATE", DEFAULT_BAUDRATE)
         )
+        self.timeout = float(
+            timeout if timeout is not None else _env_float("YDLIDAR_TIMEOUT", DEFAULT_SERIAL_TIMEOUT)
+        )
+        self.angle_start_deg = float(
+            angle_start_deg
+            if angle_start_deg is not None
+            else _env_float("YDLIDAR_ANGLE_START_DEG", DEFAULT_ANGLE_START_DEG)
+        )
+        self.fov_deg = float(
+            fov_deg if fov_deg is not None else _env_float("YDLIDAR_FOV_DEG", DEFAULT_FOV_DEG)
+        )
+        if self.fov_deg <= 0 or self.fov_deg > 360:
+            raise ValueError("fov_deg must be in the range (0, 360]")
         self.angle_offset_deg = float(
             angle_offset_deg
             if angle_offset_deg is not None
@@ -108,13 +121,18 @@ class YDLidarDriver:
                 else _env_int("YDLIDAR_SCAN_MIN_POINTS", DEFAULT_SCAN_MIN_POINTS)
             ),
         )
+        self.verify_checksum = bool(
+            verify_checksum
+            if verify_checksum is not None
+            else _env_bool("YDLIDAR_VERIFY_CHECKSUM", True)
+        )
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._serial: serial.Serial | None = None
         self.last_packet: dict | None = None
-        self.last_scan_frequency_hz = 0.0
         self.invalid_packet_count = 0
+        self.last_frame_timestamp = 0
 
     def start(self, scan_queue) -> bool:
         """Start the background serial reader."""
@@ -126,12 +144,13 @@ class YDLidarDriver:
         return True
 
     def stop(self) -> None:
-        """Stop scanning and close the serial port."""
+        """Stop measurement and close the serial port."""
         self._stop_event.set()
         lidar_serial = self._serial
         if lidar_serial is not None:
             try:
-                lidar_serial.write(STOP_SCAN_COMMAND)
+                lidar_serial.write(STOP_COMMAND)
+                lidar_serial.flush()
             except Exception:
                 pass
             try:
@@ -141,52 +160,53 @@ class YDLidarDriver:
         self._serial = None
 
     def run_forever(self, scan_queue) -> None:
-        """Reconnect as needed and publish one queue item per completed scan."""
+        """Reconnect as needed and publish one complete LD07 frame at a time."""
         while not self._stop_event.is_set():
             lidar_serial = None
             try:
-                LOGGER.info("Opening YDLIDAR port=%s baudrate=%s", self.port, self.baudrate)
-                lidar_serial = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
+                LOGGER.info("Opening LD07 port=%s baudrate=%s", self.port, self.baudrate)
+                lidar_serial = serial.Serial(
+                    self.port,
+                    baudrate=self.baudrate,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=self.timeout,
+                )
                 self._serial = lidar_serial
                 lidar_serial.reset_input_buffer()
-                lidar_serial.write(START_SCAN_COMMAND)
+                lidar_serial.write(START_MEASUREMENT_COMMAND)
                 lidar_serial.flush()
 
                 buffer = bytearray()
-                current_scan = []
                 while not self._stop_event.is_set():
                     chunk = lidar_serial.read(4096)
                     if chunk:
                         buffer.extend(chunk)
-                    for packet in self._take_packets(buffer):
-                        decoded = self.decode_packet(packet)
+                    for frame in self._take_frames(buffer):
+                        decoded = self.decode_packet(frame)
                         if decoded is None:
                             self.invalid_packet_count += 1
                             continue
                         self.last_packet = decoded
-                        self.last_scan_frequency_hz = decoded["scan_frequency_hz"]
-
-                        if decoded["start_of_scan"] and current_scan:
-                            if len(current_scan) >= self.scan_min_points:
-                                self._publish_scan(scan_queue, current_scan)
-                            current_scan = []
-
-                        for sample in decoded["samples"]:
-                            if sample["distance_m"] > 0:
-                                current_scan.append((sample["angle_deg"], sample["distance_m"]))
-
-                if current_scan and len(current_scan) >= self.scan_min_points:
-                    self._publish_scan(scan_queue, current_scan)
+                        self.last_frame_timestamp = decoded["timestamp"]
+                        scan = tuple(
+                            (sample["angle_deg"], sample["distance_m"])
+                            for sample in decoded["samples"]
+                            if sample["distance_m"] > 0
+                        )
+                        if len(scan) >= self.scan_min_points:
+                            self._publish_scan(scan_queue, scan)
             except (serial.SerialException, OSError) as error:
                 if not self._stop_event.is_set():
-                    LOGGER.warning("YDLIDAR serial error: %s; reconnecting", error)
+                    LOGGER.warning("LD07 serial error: %s; reconnecting", error)
             except Exception:
                 if not self._stop_event.is_set():
-                    LOGGER.exception("YDLIDAR driver error; reconnecting")
+                    LOGGER.exception("LD07 driver error; reconnecting")
             finally:
                 if lidar_serial is not None:
                     try:
-                        lidar_serial.write(STOP_SCAN_COMMAND)
+                        lidar_serial.write(STOP_COMMAND)
                     except Exception:
                         pass
                     try:
@@ -198,104 +218,160 @@ class YDLidarDriver:
 
             self._stop_event.wait(self.reconnect_delay)
 
-    def _take_packets(self, buffer: bytearray):
-        """Yield complete packets while retaining an incomplete tail."""
+    @staticmethod
+    def _take_frames(buffer: bytearray):
+        """Yield complete variable-length frames and retain an incomplete tail."""
         while True:
-            header_index = buffer.find(PACKET_HEADER)
+            header_index = buffer.find(SYNC)
             if header_index < 0:
-                if len(buffer) > 1:
-                    del buffer[:-1]
+                if len(buffer) >= len(SYNC):
+                    del buffer[:-len(SYNC) + 1]
                 return
             if header_index:
                 del buffer[:header_index]
-            if len(buffer) < PACKET_FIXED_LENGTH:
+            if len(buffer) < FRAME_HEADER_LENGTH:
                 return
 
-            sample_count = buffer[3]
-            if sample_count == 0:
-                del buffer[0]
+            data_length = int.from_bytes(buffer[8:10], "little")
+            if data_length < FRAME_PAYLOAD_PREFIX_LENGTH or data_length > 800:
+                del buffer[:len(SYNC)]
                 continue
-            sample_bytes = self.sample_bytes
-            packet_length = PACKET_FIXED_LENGTH + sample_count * sample_bytes
-            if len(buffer) < packet_length:
+
+            frame_length = FRAME_HEADER_LENGTH + data_length + 1
+            if len(buffer) < frame_length:
                 return
-            packet = bytes(buffer[:packet_length])
-            del buffer[:packet_length]
-            yield packet
+            frame = bytes(buffer[:frame_length])
+            del buffer[:frame_length]
+            yield frame
 
     def decode_packet(self, packet: bytes | bytearray) -> dict | None:
-        """Decode and checksum one complete YDLIDAR packet."""
+        """Decode one complete LD07 frame, returning ``None`` on bad input."""
         packet = bytes(packet)
-        if len(packet) < PACKET_FIXED_LENGTH or packet[:2] != PACKET_HEADER:
+        if len(packet) < FRAME_HEADER_LENGTH + 1 or packet[:4] != SYNC:
             return None
 
-        ct = packet[2]
-        sample_count = packet[3]
-        sample_bytes = (len(packet) - PACKET_FIXED_LENGTH) // sample_count if sample_count else 0
-        if sample_bytes not in (2, 3) or len(packet) != PACKET_FIXED_LENGTH + sample_count * sample_bytes:
+        device, command, offset, data_length = struct.unpack_from("<BBHH", packet, 4)
+        frame_length = FRAME_HEADER_LENGTH + data_length + 1
+        if len(packet) != frame_length or data_length != EXPECTED_DATA_LENGTH:
+            return None
+        if device != DEVICE_ADDRESS or command != GET_DISTANCE_COMMAND:
             return None
 
-        fsa_raw = int.from_bytes(packet[4:6], "little")
-        lsa_raw = int.from_bytes(packet[6:8], "little")
-        checksum = int.from_bytes(packet[8:10], "little")
-        if self._checksum(packet[2:8], packet[10:], sample_bytes) != checksum:
+        payload = packet[FRAME_HEADER_LENGTH:FRAME_HEADER_LENGTH + data_length]
+        received_checksum = packet[-1]
+        if self.verify_checksum and received_checksum != self._checksum(packet[4:10], payload):
             return None
 
-        fsa_deg = (fsa_raw >> 1) / 64.0
-        lsa_deg = (lsa_raw >> 1) / 64.0
-        angle_diff = (lsa_deg - fsa_deg) % 360.0
+        timestamp = int.from_bytes(payload[:FRAME_PAYLOAD_PREFIX_LENGTH], "little")
         samples = []
-        for index in range(sample_count):
-            offset = 10 + index * sample_bytes
-            raw = packet[offset:offset + sample_bytes]
-            if sample_bytes == 3:
-                intensity = ((raw[1] & 0x03) << 8) | raw[0]
-                distance_raw = (raw[2] << 8) | raw[1]
-                distance_mm = distance_raw >> 2 if self.distance_mode == "triangle" else distance_raw
-            else:
-                intensity = None
-                distance_raw = int.from_bytes(raw, "little")
-                distance_mm = distance_raw / 4.0 if self.distance_mode == "triangle" else distance_raw
-
-            distance_m = float(distance_mm) / 1000.0
-            angle_deg = fsa_deg if sample_count == 1 else fsa_deg + angle_diff * index / (sample_count - 1)
-            if self.angle_correction and self.distance_mode == "triangle" and distance_mm > 0:
-                angle_deg += math.degrees(math.atan(21.8 * (155.3 - distance_mm) / (155.3 * distance_mm)))
+        # The ROS reference driver models 160 bins across a 90-degree FOV;
+        # angle_max is the upper boundary, not the center of the last bin.
+        angle_step = self.fov_deg / POINT_COUNT
+        for index in range(POINT_COUNT):
+            raw = struct.unpack_from(
+                "<H", payload, FRAME_PAYLOAD_PREFIX_LENGTH + index * POINT_BYTES
+            )[0]
+            distance_mm = raw & DISTANCE_MASK
+            confidence = raw >> 9
+            angle_deg = self.angle_start_deg + angle_step * index + self.angle_offset_deg
             samples.append({
-                "angle_deg": (angle_deg + self.angle_offset_deg) % 360.0,
-                "distance_m": distance_m,
+                "angle_deg": angle_deg,
+                "distance_m": distance_mm / 1000.0,
                 "distance_mm": distance_mm,
-                "intensity": intensity,
+                "confidence": confidence,
+                "raw": raw,
             })
 
         return {
-            "ct": ct,
-            "start_of_scan": bool(ct & 0x01),
-            "scan_frequency_hz": ((ct >> 1) / 10.0) if (ct & 0x01) else 0.0,
-            "sample_count": sample_count,
-            "fsa_deg": fsa_deg,
-            "lsa_deg": lsa_deg,
-            "checksum": checksum,
+            "device": device,
+            "command": command,
+            "offset": offset,
+            "data_length": data_length,
+            "timestamp": timestamp,
+            "sample_count": POINT_COUNT,
             "samples": samples,
+            "checksum": received_checksum,
         }
 
+    def detect_objects(
+        self,
+        *,
+        min_distance_mm: int = 30,
+        max_distance_mm: int = 300,
+        max_angle_gap_deg: float = 2.0,
+        min_points: int = 3,
+    ) -> list[dict]:
+        """Group the latest near-field points into relative target clusters.
+
+        This reports nearby geometry only.  It cannot identify an opponent or
+        recover a full-field position; semantic robot detection remains a
+        vision responsibility.
+        """
+        packet = self.last_packet
+        if not packet:
+            return []
+
+        clusters = []
+        current = []
+        previous_index = None
+        previous_angle = None
+
+        def flush_cluster() -> None:
+            if len(current) < max(1, int(min_points)):
+                current.clear()
+                return
+            points = list(current)
+            forward_m = sum(
+                sample["distance_m"] * math.cos(math.radians(sample["angle_deg"]))
+                for sample in points
+            ) / len(points)
+            lateral_m = sum(
+                sample["distance_m"] * math.sin(math.radians(sample["angle_deg"]))
+                for sample in points
+            ) / len(points)
+            distance_m = math.hypot(forward_m, lateral_m)
+            clusters.append({
+                "x_forward_cm": round(forward_m * 100.0, 2),
+                "y_left_cm": round(lateral_m * 100.0, 2),
+                "distance_cm": round(distance_m * 100.0, 2),
+                "angle_deg": round(math.degrees(math.atan2(lateral_m, forward_m)), 2),
+                "point_count": len(points),
+                "confidence": round(
+                    sum(sample["confidence"] for sample in points) / len(points), 2
+                ),
+                "min_distance_mm": min(sample["distance_mm"] for sample in points),
+                "max_distance_mm": max(sample["distance_mm"] for sample in points),
+            })
+            current.clear()
+
+        for index, sample in enumerate(packet["samples"]):
+            distance_mm = sample["distance_mm"]
+            angle_deg = sample["angle_deg"]
+            valid = min_distance_mm <= distance_mm <= max_distance_mm
+            contiguous = (
+                previous_index is not None
+                and index == previous_index + 1
+                and previous_angle is not None
+                and abs(angle_deg - previous_angle) <= max_angle_gap_deg
+            )
+            if not valid:
+                flush_cluster()
+                previous_index = None
+                previous_angle = None
+                continue
+            if current and not contiguous:
+                flush_cluster()
+            current.append(sample)
+            previous_index = index
+            previous_angle = angle_deg
+
+        flush_cluster()
+        return clusters
+
     @staticmethod
-    def _checksum(header: bytes, samples: bytes, sample_bytes: int) -> int:
-        ct = header[0]
-        sample_count = header[1]
-        fsa = int.from_bytes(header[2:4], "little")
-        lsa = int.from_bytes(header[4:6], "little")
-        checksum = PACKET_HEADER_VALUE ^ fsa
-        for offset in range(0, len(samples), sample_bytes):
-            sample = samples[offset:offset + sample_bytes]
-            if sample_bytes == 3:
-                checksum ^= sample[0]
-                checksum ^= (sample[2] << 8) | sample[1]
-            else:
-                checksum ^= int.from_bytes(sample, "little")
-        checksum ^= (sample_count << 8) | ct
-        checksum ^= lsa
-        return checksum & 0xFFFF
+    def _checksum(header: bytes, payload: bytes) -> int:
+        """LD07 checksum: 8-bit sum excluding the four sync bytes."""
+        return (sum(header) + sum(payload)) & 0xFF
 
     @staticmethod
     def _publish_scan(scan_queue, scan) -> None:
@@ -309,4 +385,5 @@ class YDLidarDriver:
             pass
 
 
+LD07Driver = YDLidarDriver
 YDLidar55AA = YDLidarDriver
