@@ -104,6 +104,11 @@ Proposed config keys under `Vision`:
   "YoloModelSize": "v8n",
   "YoloInputSize": 640,
   "YoloBatch": 4,
+  "AdaptiveFrameDistribution": true,
+  "CameraMinYoloHz": 4,
+  "CameraFocusYoloHz": 20,
+  "CameraFocusHoldMs": 250,
+  "YoloMaxFramesPerTick": 4,
   "TrackerRoiScale": 2.0,
   "TrackerLostMs": 120,
   "TrackerPredictMs": 50
@@ -116,6 +121,12 @@ Profile behavior:
 - `cuda`: PyTorch/CUDA fallback, lower YOLO rate, same API.
 - `rpi5`: Blob-first operation. YOLO is optional, low-rate, and should not block
   the output loop.
+
+When `AdaptiveFrameDistribution` is enabled, every camera keeps the configured
+low-rate YOLO search budget. A camera whose Blob or YOLO result contains a ball
+gets the focus budget for `CameraFocusHoldMs`; other cameras continue low-rate
+search so the target can be reacquired after it moves. `YoloMaxFramesPerTick`
+limits how many new camera frames enter one YOLO call.
 
 ## TODO
 

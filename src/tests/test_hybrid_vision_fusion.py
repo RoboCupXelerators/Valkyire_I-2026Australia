@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from vision_utils.HybridVision import HybridVision  # noqa: E402
 from vision_utils.hybrid.fusion import FusionEngine  # noqa: E402
 from vision_utils.hybrid.profiles import load_hybrid_config  # noqa: E402
+from vision_utils.hybrid.scheduler import AdaptiveFrameDistributor  # noqa: E402
 from vision_utils.hybrid.types import Detection  # noqa: E402
 
 
@@ -56,6 +57,53 @@ def test_hybrid_frame_gate_accepts_only_new_timestamps():
     assert HybridVision._is_new_frame(10.1, 10.0)
     assert not HybridVision._is_new_frame(10.0, 10.0)
     assert not HybridVision._is_new_frame(9.9, 10.0)
+
+
+def test_adaptive_frame_distributor_focuses_camera_after_ball_observation():
+    distributor = AdaptiveFrameDistributor(
+        camera_count=4,
+        pump_hz=20.0,
+        min_hz=4.0,
+        focus_hz=20.0,
+        focus_hold_ms=250.0,
+        preferred_camera_index=2,
+    )
+    frames = [object(), object(), object(), object()]
+    timestamps = [1.0, 1.0, 1.0, 1.0]
+
+    selected, _ = distributor.select(frames, timestamps, now=100.0)
+    assert all(frame is not None for frame in selected)
+
+    distributor.observe(2, 0.9, now=100.01)
+    timestamps = [2.0, 2.0, 2.0, 2.0]
+    selected, _ = distributor.select(frames, timestamps, now=100.06)
+
+    assert selected[2] is frames[2]
+    assert [i for i, frame in enumerate(selected) if frame is not None] == [2]
+
+
+def test_adaptive_frame_distributor_keeps_background_camera_due():
+    distributor = AdaptiveFrameDistributor(
+        camera_count=4,
+        pump_hz=20.0,
+        min_hz=4.0,
+        focus_hz=20.0,
+        focus_hold_ms=100.0,
+        max_frames_per_tick=1,
+    )
+    frames = [object(), object(), object(), object()]
+    timestamps = [1.0, 1.0, 1.0, 1.0]
+    distributor.select(frames, timestamps, now=100.0)
+    distributor.observe(2, 0.9, now=100.01)
+
+    seen = set()
+    for step in range(1, 9):
+        timestamps = [100.0 + step] * 4
+        selected, _ = distributor.select(frames, timestamps, now=100.05 * step + 100.0)
+        seen.update(i for i, frame in enumerate(selected) if frame is not None)
+
+    assert 2 in seen
+    assert len(seen) >= 2
 
 
 def test_fusion_replaces_chassis_snapshot_instead_of_accumulating():

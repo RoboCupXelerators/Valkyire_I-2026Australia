@@ -43,7 +43,7 @@ class Preference:
         "RoboInfo": {
             "number": 1,
             "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
-            "Bit": "SIM",           # SIM / AB / IL / DM(DM-S2325)
+            "Bit": "SIM",           # SIM / AB / IL / DM2325
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
             "LidarBackend": "rplidar", # rplidar / ros2
             "LidarType": "s1",      # s1 / s2
@@ -79,6 +79,13 @@ class Preference:
             "MinBallBBoxArea": 40,
             "BallOffsetXCM": 0.0,
             "BallOffsetYCM": 0.0,
+            # HybridVision: low-rate search on every camera, high-rate focus on
+            # the camera that recently saw the ball.
+            "AdaptiveFrameDistribution": True,
+            "CameraMinYoloHz": 4.0,
+            "CameraFocusYoloHz": 20.0,
+            "CameraFocusHoldMs": 250.0,
+            "YoloMaxFramesPerTick": 4,
             # 录制配置
             "Record": False,
             "RecordDir": "./Records",
@@ -92,12 +99,6 @@ class Preference:
             "WheelRadiusM": 0.029,  # 轮子半径，单位 m
             "RobotRadiusM": 0.09,   # 机器人中心到轮子的半径，单位 m
             "MaxWheelRPM": 500,     # 电机命令单位 RPM，正方向为单轮顺时针
-            "Backend": "DM2325",
-            "LegacyMaxCommand": 500,
-            "LegacyLinearScaleMpsPerUnit": 0.001,
-            "LegacyAngularScaleRadSPerUnit": 0.01,
-            "LegacyScaleStatus": "TEMPORARY",
-            "WheelOrder": ["FL", "FR", "RL", "RR"],
         },
         "Motion": {
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm

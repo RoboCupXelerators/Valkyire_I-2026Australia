@@ -258,10 +258,10 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             _runtime_initialized = True
             return
 
-        if str(cfg.RoboInfo.Bit).upper() in {"DM", "DM2325"}:
+        if str(cfg.RoboInfo.Bit).upper() == "DM2325":
             from utils.DM2325Bits import DM2325Bits
 
-            Bits = DM2325Bits(port=getattr(cfg.Ports, "DM2325Port", "/dev/ttyACM0"))
+            Bits = DM2325Bits(port=cfg.Ports.DM2325Port)
             Bits.HandShake()
             chassis = _make_chassis(
                 None, Bits.GetYaw,
@@ -289,7 +289,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             _runtime_initialized = True
             return
 
-        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL, DM")
+        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL, DM2325")
 
     except Exception as e:
         logger.error(f"Failed to init runtime: {e}")

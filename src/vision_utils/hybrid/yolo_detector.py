@@ -22,6 +22,7 @@ class YoloDetector:
         prefer_engine: bool = True,
         device=None,
         enabled: bool = True,
+        fixed_batch_size: int | None = None,
         pixel_to_cm: PixelToCmFn | None = None,
         to_robot_frame: RobotFrameFn | None = None,
     ):
@@ -31,6 +32,9 @@ class YoloDetector:
         self.prefer_engine = bool(prefer_engine)
         self.device = device
         self.enabled = bool(enabled)
+        self.fixed_batch_size = max(1, int(fixed_batch_size)) if fixed_batch_size else None
+        self._partial_batch_supported: bool | None = None
+        self.partial_batch_padded_count = 0
         self.pixel_to_cm = pixel_to_cm
         self.to_robot_frame = to_robot_frame
         self.backend = "disabled"
@@ -124,23 +128,72 @@ class YoloDetector:
         if not imgs:
             return []
 
+        inference_imgs = imgs
+        result_camera_map = list(cam_map)
+        partial_batch = bool(
+            self.fixed_batch_size
+            and len(imgs) < self.fixed_batch_size
+            and self.backend == "ultralytics-tensorrt"
+        )
+
+        def pad_to_fixed_batch():
+            padded_imgs = list(imgs)
+            padded_map = list(cam_map)
+            while len(padded_imgs) < int(self.fixed_batch_size or 1):
+                padded_imgs.append(imgs[-1])
+                padded_map.append(None)
+            self.partial_batch_padded_count += 1
+            return padded_imgs, padded_map
+
+        if partial_batch and self._partial_batch_supported is False:
+            inference_imgs, result_camera_map = pad_to_fixed_batch()
+
         try:
-            results = self._yolo.predict(
-                imgs,
-                verbose=False,
-                conf=0.25,
-                device=self.device,
-                imgsz=self.input_size,
+            results = list(
+                self._yolo.predict(
+                    inference_imgs,
+                    verbose=False,
+                    conf=0.25,
+                    device=self.device,
+                    imgsz=self.input_size,
+                )
             )
+            if partial_batch and inference_imgs is imgs:
+                self._partial_batch_supported = True
         except Exception:
-            results = []
-            for img in imgs:
-                part = self._yolo.predict(img, verbose=False, conf=0.25, device=self.device, imgsz=self.input_size)
-                results.extend(list(part))
+            if partial_batch and inference_imgs is imgs:
+                self._partial_batch_supported = False
+                inference_imgs, result_camera_map = pad_to_fixed_batch()
+                results = list(
+                    self._yolo.predict(
+                        inference_imgs,
+                        verbose=False,
+                        conf=0.25,
+                        device=self.device,
+                        imgsz=self.input_size,
+                    )
+                )
+            else:
+                results = []
+                result_camera_map = []
+                for img, cam in zip(imgs, cam_map):
+                    part = list(
+                        self._yolo.predict(
+                            img,
+                            verbose=False,
+                            conf=0.25,
+                            device=self.device,
+                            imgsz=self.input_size,
+                        )
+                    )
+                    results.extend(part)
+                    result_camera_map.extend([cam] * len(part))
 
         detections: list[Detection] = []
         for local_index, result in enumerate(results):
-            cam = int(cam_map[local_index])
+            if local_index >= len(result_camera_map) or result_camera_map[local_index] is None:
+                continue
+            cam = int(result_camera_map[local_index])
             ts = float(timestamps[cam]) if cam < len(timestamps) else 0.0
             boxes = getattr(result, "boxes", None)
             if boxes is None or len(boxes) == 0:

@@ -21,6 +21,11 @@ class HybridConfig:
     tracker_predict_ms: float = 50.0
     min_ball_area: float = 80.0
     camera_slots: int = 4
+    adaptive_frame_distribution: bool = True
+    camera_min_yolo_hz: float = 4.0
+    camera_focus_yolo_hz: float = 20.0
+    camera_focus_hold_ms: float = 250.0
+    yolo_max_frames_per_tick: int = 4
 
 
 def _value(section: Any, name: str, default: Any) -> Any:
@@ -37,9 +42,27 @@ def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridCo
     profile = str(_value(vision, "Profile", "orin")).lower()
 
     if profile == "rpi5":
-        defaults = HybridConfig(profile="rpi5", capture_fps=30, output_hz=30.0, yolo_hz=2.0, tracker_hz=30.0, yolo_enabled=False)
+        defaults = HybridConfig(
+            profile="rpi5",
+            capture_fps=30,
+            output_hz=30.0,
+            yolo_hz=2.0,
+            tracker_hz=30.0,
+            yolo_enabled=False,
+            camera_min_yolo_hz=1.0,
+            camera_focus_yolo_hz=2.0,
+        )
     elif profile == "cuda":
-        defaults = HybridConfig(profile="cuda", capture_fps=60, output_hz=60.0, yolo_hz=12.0, tracker_hz=60.0, yolo_enabled=True)
+        defaults = HybridConfig(
+            profile="cuda",
+            capture_fps=60,
+            output_hz=60.0,
+            yolo_hz=12.0,
+            tracker_hz=60.0,
+            yolo_enabled=True,
+            camera_min_yolo_hz=3.0,
+            camera_focus_yolo_hz=12.0,
+        )
     else:
         defaults = HybridConfig(profile="orin")
 
@@ -67,6 +90,13 @@ def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridCo
         tracker_predict_ms=float(_value(vision, "TrackerPredictMs", defaults.tracker_predict_ms)),
         min_ball_area=float(_value(vision, "MinBallBBoxArea", _value(vision_vals, "BlobMinBallArea", defaults.min_ball_area))),
         camera_slots=4,
+        adaptive_frame_distribution=bool(
+            _value(vision, "AdaptiveFrameDistribution", defaults.adaptive_frame_distribution)
+        ),
+        camera_min_yolo_hz=float(_value(vision, "CameraMinYoloHz", defaults.camera_min_yolo_hz)),
+        camera_focus_yolo_hz=float(_value(vision, "CameraFocusYoloHz", defaults.camera_focus_yolo_hz)),
+        camera_focus_hold_ms=float(_value(vision, "CameraFocusHoldMs", defaults.camera_focus_hold_ms)),
+        yolo_max_frames_per_tick=int(_value(vision, "YoloMaxFramesPerTick", defaults.yolo_max_frames_per_tick)),
     )
 
     if overrides:
@@ -78,4 +108,8 @@ def load_hybrid_config(settings: Any, overrides: dict | None = None) -> HybridCo
     cfg.yolo_hz = min(float(cfg.capture_fps), max(0.0, float(cfg.yolo_hz)))
     cfg.tracker_hz = max(float(cfg.capture_fps), float(cfg.tracker_hz), 1.0)
     cfg.yolo_batch = max(1, int(cfg.yolo_batch))
+    cfg.camera_min_yolo_hz = min(cfg.yolo_hz, max(0.0, float(cfg.camera_min_yolo_hz)))
+    cfg.camera_focus_yolo_hz = min(cfg.yolo_hz, max(cfg.camera_min_yolo_hz, float(cfg.camera_focus_yolo_hz)))
+    cfg.camera_focus_hold_ms = max(0.0, float(cfg.camera_focus_hold_ms))
+    cfg.yolo_max_frames_per_tick = max(1, min(cfg.camera_slots, int(cfg.yolo_max_frames_per_tick)))
     return cfg

@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -34,16 +35,16 @@ def test_encoder_speedometer_rejects_bad_motor_data():
         estimate_chassis_velocity((0.0, 0.0, float("nan"), 0.0))
 
 
-def test_legacy_calls_use_twist_backend_without_wheel_formula():
+def test_robot_move_vector_uses_twist_backend_with_si_units():
     calls = []
     car = Car(SetMotorFunc=None, GetYaw=lambda: 0.0, SetChassisTwistFunc=lambda *v: calls.append(v))
-    car.RobotMoveVector(100, 0, 0)
-    car.RobotMoveVector(0, 100, 0)
+    car.RobotMoveVector(0.1, 0, 0)
+    car.RobotMoveVector(0, 0.1, 0)
     car.RobotTurn(50)
     car.stop()
     assert calls[0] == (0.1, 0.0, 0.0)
     assert calls[1] == (0.0, 0.1, 0.0)
-    assert calls[2] == (0.0, 0.0, 0.5)
+    assert calls[2] == (0.0, 0.0, pytest.approx(math.radians(50)))
     assert calls[3] == (0.0, 0.0, 0.0)
 
 

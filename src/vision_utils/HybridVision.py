@@ -9,7 +9,7 @@ from .hybrid.blob_tracker import BlobTracker
 from .hybrid.fusion import FusionEngine
 from .hybrid.perf import HybridPerf
 from .hybrid.profiles import HybridConfig, load_hybrid_config
-from .hybrid.scheduler import RateGate
+from .hybrid.scheduler import AdaptiveFrameDistributor, RateGate
 from .hybrid.yolo_detector import YoloDetector
 
 
@@ -116,6 +116,16 @@ class HybridVision(VisionPreUntil):
 
         super().__init__(init_cams=init_cams)
 
+        self._frame_distributor = AdaptiveFrameDistributor(
+            camera_count=self.cfg_hybrid.camera_slots,
+            pump_hz=self.cfg_hybrid.yolo_hz,
+            min_hz=self.cfg_hybrid.camera_min_yolo_hz,
+            focus_hz=self.cfg_hybrid.camera_focus_yolo_hz,
+            focus_hold_ms=self.cfg_hybrid.camera_focus_hold_ms,
+            max_frames_per_tick=self.cfg_hybrid.yolo_max_frames_per_tick,
+            preferred_camera_index=self._camera_index_for_direction("front"),
+        )
+
         self.blob_tracker = BlobTracker(
             cv2,
             np,
@@ -140,6 +150,7 @@ class HybridVision(VisionPreUntil):
             prefer_engine=prefer_engine,
             device=0 if self.cfg_hybrid.profile in ("orin", "cuda") else None,
             enabled=self.cfg_hybrid.yolo_enabled,
+            fixed_batch_size=self.cfg_hybrid.yolo_batch if prefer_engine else None,
             pixel_to_cm=self.Pixel2CM,
             to_robot_frame=self._to_robot_frame,
         )
@@ -187,6 +198,12 @@ class HybridVision(VisionPreUntil):
             int(getattr(vals, "Right", 6)): "right",
         }
         return direction_by_port.get(port, ("back", "left", "front", "right")[int(cam_index) % 4])
+
+    def _camera_index_for_direction(self, direction: str) -> int | None:
+        for cam in range(min(self.cfg_hybrid.camera_slots, len(getattr(self, "CamPorts", [])))):
+            if self._camera_direction(cam) == direction:
+                return cam
+        return None
 
     def _to_robot_frame(self, plane_x_cm: float, plane_y_cm: float, cam_index: int) -> tuple[float, float]:
         direction = self._camera_direction(cam_index)
@@ -294,6 +311,8 @@ class HybridVision(VisionPreUntil):
                 new_frame_count += 1
                 det = self.blob_tracker.track_frame(cam, frame, ts)
                 if det is not None:
+                    self._frame_distributor.observe(cam, det.confidence)
+                if det is not None:
                     detections.append(det)
             if new_frame_count <= 0:
                 continue
@@ -317,19 +336,19 @@ class HybridVision(VisionPreUntil):
             now = time.time()
             t0 = time.perf_counter()
             frames, timestamps = self._copy_frames()
-            yolo_frames = [None, None, None, None]
-            yolo_timestamps = [0.0, 0.0, 0.0, 0.0]
-            new_frame_count = 0
-            for cam, frame in enumerate(frames[:4]):
-                if frame is None:
-                    continue
-                ts = timestamps[cam] if cam < len(timestamps) and timestamps[cam] > 0 else now
-                if not self._is_new_frame(ts, self._last_yolo_frame_ts[cam]):
-                    continue
-                self._last_yolo_frame_ts[cam] = float(ts)
-                yolo_frames[cam] = frame
-                yolo_timestamps[cam] = float(ts)
-                new_frame_count += 1
+            if self.cfg_hybrid.adaptive_frame_distribution:
+                yolo_frames, yolo_timestamps = self._frame_distributor.select(frames, timestamps)
+            else:
+                yolo_frames = [None, None, None, None]
+                yolo_timestamps = [0.0, 0.0, 0.0, 0.0]
+                for cam, frame in enumerate(frames[:4]):
+                    ts = timestamps[cam] if cam < len(timestamps) and timestamps[cam] > 0 else now
+                    if frame is None or not self._is_new_frame(ts, self._last_yolo_frame_ts[cam]):
+                        continue
+                    self._last_yolo_frame_ts[cam] = float(ts)
+                    yolo_frames[cam] = frame
+                    yolo_timestamps[cam] = float(ts)
+            new_frame_count = sum(frame is not None for frame in yolo_frames)
             if new_frame_count <= 0:
                 continue
             pp_ms = (time.perf_counter() - t0) * 1000.0
@@ -341,6 +360,7 @@ class HybridVision(VisionPreUntil):
                     self.fusion.update_yolo(detections)
                     for det in detections:
                         if det.label == "ball":
+                            self._frame_distributor.observe(det.camera_index, det.confidence)
                             self.blob_tracker.reset_roi(det)
                 self.perf.yolo_error = ""
             except Exception as exc:
@@ -446,7 +466,12 @@ class HybridVision(VisionPreUntil):
             return [self.BlueGoalPos, self.YellowGoalPos]
 
     def GetHybridPerf(self) -> dict:
-        return self.perf.snapshot().to_dict()
+        output = self.perf.snapshot().to_dict()
+        output["adaptive_frame_distribution"] = self.cfg_hybrid.adaptive_frame_distribution
+        output["camera_frame_distribution"] = self._frame_distributor.snapshot()
+        output["yolo_partial_batch_supported"] = self.yolo._partial_batch_supported
+        output["yolo_partial_batch_padded"] = self.yolo.partial_batch_padded_count
+        return output
 
 
 # Keep the conventional class name available for direct backend import tests.

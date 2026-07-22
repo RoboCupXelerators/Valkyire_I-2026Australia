@@ -185,22 +185,17 @@ class Car:
         return False
 
     def RobotMoveVector(self, SpeedX, SpeedY, SpeedZ):
-        """Legacy robot-frame command retained for existing strategies.
+        """Move in the robot frame.
 
         Positive X is forward, positive Y is left, and positive Z is
-        counterclockwise. On the DM backend these historical values are
-        converted with the configured legacy-to-SI scales. New code must use
-        RobotMoveTwist for explicit m/s and rad/s units.
+        counterclockwise. Linear values use m/s and angular values use deg/s.
         """
         if self.SetChassisTwistFunc is not None:
-            linear_scale = self._chassis_float("LegacyLinearScaleMpsPerUnit", 0.001)
-            angular_scale = self._chassis_float("LegacyAngularScaleRadSPerUnit", 0.01)
-            self.RobotMoveTwist(
-                float(SpeedX) * linear_scale,
-                float(SpeedY) * linear_scale,
-                float(SpeedZ) * angular_scale,
+            return self.RobotMoveTwist(
+                float(SpeedX),
+                float(SpeedY),
+                math.radians(float(SpeedZ)),
             )
-            return
         # 缓存速度用于记录
         SpeedX, SpeedY, SpeedZ = self._filter_chassis_command(SpeedX, SpeedY, SpeedZ)
         self._last_vx = SpeedX
@@ -225,7 +220,7 @@ class Car:
         self.SetMotor(output)
 
     def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
-        """SI-unit robot-frame command used by the DM-S2325 production path."""
+        """Move in the robot frame using m/s and rad/s."""
         values = (float(vx_mps), float(vy_mps), float(wz_rad_s))
         if not all(math.isfinite(value) for value in values):
             raise ValueError("chassis twist must be finite")
@@ -235,7 +230,7 @@ class Car:
             self.logger.warning("Permission Denied: chassis twist forced to zero.")
         if self.SetChassisTwistFunc is not None:
             return self.SetChassisTwistFunc(*values)
-        # Preserve old backends by converting SI angular velocity to deg/s.
+        # Wheel-based backends consume the public degree-per-second API.
         return self.RobotMoveVector(values[0], values[1], math.degrees(values[2]))
 
     def RobotMoveAngle(self,Angle,Speed,Kp:float|None = 1):
@@ -260,11 +255,10 @@ class Car:
         self.FieldMoveVector(SpeedX,SpeedY,FacingAngle,Kp)
 
     def FieldMoveVector(self,SpeedX,SpeedY,FacingAngle,Kp:float|None = None,KpW:float|None = None):
-        """Legacy field-frame command with yaw correction.
+        """Field-frame command with yaw correction.
 
-        SpeedX and SpeedY retain their historical strategy scale and are
-        converted at the RobotMoveVector boundary. FacingAngle is degrees.
-        Field motion is rejected while IMU axis mapping is unverified.
+        SpeedX and SpeedY use m/s. FacingAngle is in degrees. Field motion is
+        rejected while IMU axis mapping is unverified.
         """
         if not self._field_imu_ready():
             return self._reject_field_motion()

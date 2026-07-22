@@ -17,12 +17,17 @@ set -euo pipefail
 #     - install_cuda.sh
 # - Some steps (like switching apt sources.list) are intrusive; they are made optional where reasonable.
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "ERROR: run this script with bash: bash scripts/setup_env_auto.sh" >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
 
-REQ_JETSON="$PROJECT_DIR/requirements_jetson.txt"
-REQ_HAILO="$PROJECT_DIR/requirements_hailo.txt"
+REQ_JETSON="$SCRIPT_DIR/requirements_jetson.txt"
+REQ_HAILO="$SCRIPT_DIR/requirements_hailo.txt"
 
 USE_TSINGHUA_MIRROR_PI=1
 USE_SYSTEM_SITE_PACKAGES=1
@@ -32,7 +37,7 @@ INSTALL_HAILO_DEBS_ON_PI=1
 usage() {
   cat <<'USAGE'
 Usage:
-  ./setup_env_auto.sh [options]
+  bash scripts/setup_env_auto.sh [options]
 
 Options:
   --pi-no-mirror            Do NOT change /etc/apt/sources.list on Raspberry Pi path
@@ -51,9 +56,9 @@ Which requirements file is used:
 
 Notes:
   - You still can run the original scripts directly if you want:
-      ./setup_venv.sh
-      ./setup_venv_jetson_orin_nano.sh
-      ./install_cuda.sh
+      bash scripts/setup_venv.sh
+      bash scripts/setup_venv_jetson_orin_nano.sh
+      bash scripts/install_cuda.sh
 USAGE
 }
 
@@ -215,16 +220,18 @@ install_hailo_debs_pi() {
     linux-modules-extra-$(uname -r) \
     dkms
 
-  if [[ ! -f "$PROJECT_DIR/hailort-pcie-driver_4.23.0_all.deb" || ! -f "$PROJECT_DIR/hailort_4.23.0_arm64.deb" ]]; then
-    echo "ERROR: Hailo deb packages not found in project dir: $PROJECT_DIR" >&2
+  local driver_deb="$SCRIPT_DIR/hailort-pcie-driver_4.23.0_all.deb"
+  local runtime_deb="$SCRIPT_DIR/hailort_4.23.0_arm64.deb"
+  if [[ ! -f "$driver_deb" || ! -f "$runtime_deb" ]]; then
+    echo "ERROR: Hailo deb packages not found in scripts dir: $SCRIPT_DIR" >&2
     echo "Expected files:" >&2
     echo "  - hailort-pcie-driver_4.23.0_all.deb" >&2
     echo "  - hailort_4.23.0_arm64.deb" >&2
     exit 1
   fi
 
-  sudo dpkg -i "$PROJECT_DIR/hailort-pcie-driver_4.23.0_all.deb" || true
-  sudo dpkg -i "$PROJECT_DIR/hailort_4.23.0_arm64.deb" || true
+  sudo dpkg -i "$driver_deb" || true
+  sudo dpkg -i "$runtime_deb" || true
   sudo apt-get -f install -y
 }
 

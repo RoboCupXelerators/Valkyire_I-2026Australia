@@ -9,8 +9,13 @@ set -euo pipefail
 # - You stated: Orin Nano will NOT run Hailo parts, so we skip any local hailort wheel line
 #   in requirements.txt by default to avoid install failure.
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "ERROR: run this script with bash: bash scripts/setup_venv_jetson_orin_nano.sh" >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="$PROJECT_DIR/venv"
 REQ_FILE="$PROJECT_DIR/requirements.txt"
 
@@ -21,7 +26,7 @@ SKIP_HAILO=1
 usage() {
   cat <<'USAGE'
 Usage:
-  ./setup_venv_jetson_orin_nano.sh [options]
+  bash scripts/setup_venv_jetson_orin_nano.sh [options]
 
 Options:
   --mirror-tsinghua        Switch ONLY Ubuntu apt sources.list to Tsinghua mirror (backup first)
