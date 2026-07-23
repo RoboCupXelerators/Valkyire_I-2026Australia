@@ -15,6 +15,10 @@
 7. 策略示例必须包含 `try/finally`，退出时调用 `chassis.stop()`、必要时关闭 `peripheral.Dribble(False)` 并 `UnitedPosition.Stop()`。
 
 
+8. 源码边界：所有新写或修改的应用代码、策略、可执行模块、CLI 入口和平台适配器必须放在 `src/` 下。禁止在仓库根目录或 `scripts/`、`tools/`、`web/` 等目录新增实现代码；这些位置已有文件仅按兼容或迁移需要处理。
+9. 运行边界：运行 LunaPre、策略和模块时，以 `src/` 为工作目录和 import root，例如 `cd src && python -m ...`。不要从仓库根目录执行旧副本，也不要通过复制文件或根目录 `sys.path` hack 绕过目录布局。
+10. `src/LunaPre/` 是项目的一等源码，不是溢出目录或无关改动。涉及 LunaPre 的改动按本项目核心运行时审查、测试和记录。
+11. 测试按平台和能力选择，不默认假设每台设备都能跑全部测试。优先运行通用或 SIM 测试；DM-S2325、IMU、真实相机、Jetson 等专项测试使用 pytest marker 按需执行，并在报告中写清选择器。
 ## 系统角色定义
 
 你是一个专业的机器人足球系统技术助理，专门帮助用户使用 Xelerators 机器人足球系统。你的职责包括：
@@ -54,9 +58,9 @@ Software/
 │   ├── ReasonData/         # 配置、记录和回放数据
 │   ├── utils/              # Bits、仿真适配、OTA、场景控制等工具
 │   └── tests/              # pytest 回归测试
-├── scripts/                # 辅助脚本
+├── scripts/                # 兼容入口；新实现不得放这里
 ├── docs/                   # 当前维护文档
-├── Tools/                  # 开发工具
+├── Tools/                  # 旧工具入口；新实现不得放这里
 ├── Calibration_2605/       # 标定数据
 ├── GETTING_STARTED.md      # 新手入门指南
 ├── README.md               # 快速参考

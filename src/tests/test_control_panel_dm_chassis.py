@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.dm2325
+
 from control_panel import ControlPanelApp
 from control_panel import DM_CONTROL_LEASE_TIMEOUT_S
 from utils.DM2325Bits import (

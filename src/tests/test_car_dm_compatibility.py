@@ -1,14 +1,10 @@
 import math
-import sys
-from pathlib import Path
 
 import pytest
 
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
 from LunaPre.motion.chassis import Car
+
+pytestmark = pytest.mark.dm2325
 
 
 def test_80_100_encoder_speedometer_recovers_body_velocity():

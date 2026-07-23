@@ -10,6 +10,10 @@
 6. 写路径和 API 名前先核对真实源码；例如定位方法统一写 `UnitedPosition.FieldRobotPose()`。
 7. 策略示例必须包含 `try/finally`，退出时调用 `chassis.stop()`、必要时关闭 `peripheral.Dribble(False)` 并 `UnitedPosition.Stop()`。
 
+8. 所有新写或修改的应用代码、策略、可执行模块、CLI 入口和平台适配器必须放在 `src/` 下；不得在仓库根目录或 `scripts/`、`tools/`、`web/` 中新增实现代码。
+9. 运行 LunaPre、策略和模块时必须以 `src/` 为工作目录和 import root，例如 `cd src && python -m ...`。不要执行仓库根目录的旧副本，也不要用根目录 `sys.path` hack 绕过布局。
+10. `src/LunaPre/` 是本项目核心源码，不是溢出目录或无关改动；涉及它的修改必须按核心运行时处理。
+11. 测试按平台选择。默认跑通用或 SIM 测试；DM-S2325、IMU、真实相机和 Jetson 专项测试按 pytest marker 单独执行，不要把未运行的专项测试报告成已验证。
 ## 当前入口速记
 
 - 策略常用 facade：`from LunaPre import *`

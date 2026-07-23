@@ -1,10 +1,10 @@
 import importlib
-import sys
+import pytest
 
-
-sys.path.insert(0, "src")
 teleop = importlib.import_module("teleop")
 
+
+pytestmark = pytest.mark.dm2325
 
 class FakeBits:
     def __init__(self): self.calls = []

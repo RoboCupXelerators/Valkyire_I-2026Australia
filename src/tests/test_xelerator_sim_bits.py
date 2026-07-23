@@ -6,6 +6,8 @@ import os
 import sys
 import threading
 
+import pytest
+
 os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -132,6 +134,7 @@ def test_xelerator_vision_exposes_cam_ports_without_frame_thread(monkeypatch):
         vision.close(join_timeout=0.1)
 
 
+@pytest.mark.camera
 def test_united_vision_xv_constructs_without_camera_stream(monkeypatch):
     monkeypatch.setenv("XEL_CAM_DISABLE_FRAMES", "1")
 

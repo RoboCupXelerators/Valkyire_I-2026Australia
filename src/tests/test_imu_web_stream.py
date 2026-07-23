@@ -6,8 +6,12 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from utils import DM2325Bits as bits_module
 
+
+pytestmark = pytest.mark.imu
 
 def imu_state(*, sequence=10, timestamp=100_000, sample_count=80,
               accel=(0.1, -0.2, 9.8), gyro=(0.01, -0.02, 0.03)):

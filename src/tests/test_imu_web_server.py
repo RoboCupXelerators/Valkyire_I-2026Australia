@@ -9,6 +9,8 @@ import pytest
 
 from tools.imu_web import server
 
+pytestmark = pytest.mark.imu
+
 
 def sample(sequence=1, source="hardware"):
     return {
