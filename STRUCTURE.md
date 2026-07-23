@@ -144,7 +144,6 @@ scripts/
 ├── run_lockball_pid.py
 ├── run_sim_lockball_pid_sweep.py
 ├── debug/
-├── strategy_test/
 └── hailort*.whl / hailort*.deb
 ```
 

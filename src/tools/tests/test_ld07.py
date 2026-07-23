@@ -2,7 +2,7 @@
 """Probe an LD07 over a serial adapter.
 
 Run from the Software directory:
-    python3 scripts/test_ld07.py --port /dev/ttyACM0
+    python3 src/tools/tests/test_ld07.py --port /dev/ttyACM0
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 import serial
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 
 from LunaPre.lidar_driver_ydlidar import (  # noqa: E402

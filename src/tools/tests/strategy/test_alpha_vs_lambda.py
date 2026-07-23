@@ -9,9 +9,10 @@ test_alpha_vs_lambda.py - Alpha vs Lambda 对比测试
 
 import sys
 import time
+from pathlib import Path
 
 # 添加 src 目录到路径
-sys.path.insert(0, 'src')
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from loguru import logger
 

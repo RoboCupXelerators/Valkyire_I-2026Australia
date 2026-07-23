@@ -8,8 +8,10 @@ test_alpha_single.py - Alpha 单机器人测试脚本
 import time
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SRC_DIR = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(SRC_DIR))
 
 from loguru import logger
 from LunaPre import UnitedPosition, chassis, peripheral
