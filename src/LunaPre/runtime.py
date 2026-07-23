@@ -31,6 +31,7 @@ import simple_pid
 from pathlib import Path
 
 from ReasonData import logger, Settings
+from .referee import IoRefereeProvider, RefereeSnapshot, SerialRefereeProvider
 
 cfg = Settings
 
@@ -45,7 +46,10 @@ Morse = None
 referee = None
 vision = None
 _field_pose_provider = None
+_velocity_provider = None
 _referee_status_provider = None
+_referee_state_provider = None
+_referee_serial_provider = None
 _runtime_initialized = False
 
 from .sensor import Lidar
@@ -87,9 +91,59 @@ def get_field_pose():
 def get_referee_status() -> bool:
     """Return referee/unlock state without exposing the concrete Bits object."""
 
-    if _referee_status_provider is None:
-        return False
-    return bool(_referee_status_provider())
+    return bool(get_referee_state().control_enabled)
+
+
+def get_referee_state() -> RefereeSnapshot:
+    """Return LunaPre's deployment-safe referee snapshot."""
+
+    if _referee_state_provider is None:
+        return RefereeSnapshot()
+    try:
+        return _referee_state_provider()
+    except Exception:
+        return RefereeSnapshot(source="provider-error")
+
+
+def get_robot_velocity():
+    """Return field velocity [vx_cm_s, vy_cm_s, wz_deg_s, valid]."""
+
+    if _velocity_provider is None:
+        return [0.0, 0.0, 0.0, False]
+    try:
+        vx, vy, wz = _velocity_provider()
+        return [float(vx), float(vy), float(wz), True]
+    except Exception:
+        return [0.0, 0.0, 0.0, False]
+
+
+def _configure_referee_provider() -> None:
+    """Select serial when configured, otherwise retain the existing IO input."""
+
+    global _referee_state_provider, _referee_serial_provider
+
+    serial_port = os.environ.get("ROBOCUPX_REFEREE_PORT", "").strip()
+    source = os.environ.get("ROBOCUPX_REFEREE_SOURCE", "auto").strip().lower()
+    if source not in {"auto", "serial", "io"}:
+        raise ValueError("ROBOCUPX_REFEREE_SOURCE must be auto, serial, or io")
+
+    if source in {"auto", "serial"} and serial_port:
+        _referee_serial_provider = SerialRefereeProvider(
+            serial_port,
+            baudrate=int(os.environ.get("ROBOCUPX_REFEREE_BAUD", "115200")),
+        ).start()
+        _referee_state_provider = _referee_serial_provider.snapshot
+        logger.info(f"Referee input loaded from serial port {serial_port}")
+        return
+
+    if source in {"auto", "io"} and _referee_status_provider is not None:
+        provider = IoRefereeProvider(_referee_status_provider)
+        _referee_state_provider = provider.snapshot
+        logger.info("Referee input loaded from Bits IO")
+        return
+
+    _referee_state_provider = None
+    logger.warning("No referee input configured; control remains STOP")
 
 
 def default_vision_enabled() -> bool:
@@ -171,7 +225,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
     """
 
     global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
-    global _field_pose_provider, _referee_status_provider, _runtime_initialized
+    global _field_pose_provider, _velocity_provider, _referee_status_provider, _runtime_initialized
 
     if _runtime_initialized:
         return
@@ -201,7 +255,9 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             referee = None
             Morse = None
             _field_pose_provider = Bits.GetPose
+            _velocity_provider = Bits.GetVelocity
             _referee_status_provider = None
+            _configure_referee_provider()
             logger.info(
                 f"Simulator Bits loaded: unity={Bits.unity_ip}:{Bits.cmd_port}, "
                 f"status_port={Bits.status_port}, robot_id={Bits.robot_id}"
@@ -227,7 +283,9 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             referee = None
             Morse = None
             _field_pose_provider = getattr(Bits, "GetPose", None)
+            _velocity_provider = getattr(Bits, "GetVelocity", None)
             _referee_status_provider = lambda: bool(getattr(Bits, "referee_key", False))
+            _configure_referee_provider()
             logger.info("Arisu Bit loaded.")
             _runtime_initialized = True
             return
@@ -249,7 +307,9 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             Morse = Bits.MosePrint
             Odometer = None  # TODO add odometer support
             _field_pose_provider = getattr(Bits, "GetPose", None)
+            _velocity_provider = getattr(Bits, "GetVelocity", None)
             _referee_status_provider = Bits.GetRefereeUnlockPin
+            _configure_referee_provider()
             
             # 启动后台线程监控器，确保 IceLoongBits 命令线程崩溃后能自动重启
             _start_bits_thread_monitor(Bits)
@@ -284,7 +344,9 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             referee = None
             Morse = None
             _field_pose_provider = None
+            _velocity_provider = None
             _referee_status_provider = None
+            _configure_referee_provider()
             logger.info("DM2325 chassis backend loaded; explicit Arm is required before motion.")
             _runtime_initialized = True
             return

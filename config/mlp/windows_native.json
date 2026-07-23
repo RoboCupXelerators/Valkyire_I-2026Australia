@@ -1,0 +1,20 @@
+{
+  "platform": "windows_native",
+  "device": "cpu",
+  "model_format": "onnx",
+  "bundle_path": ".runtime/policies/current",
+  "control_period_ms": 30,
+  "observation_timeout_ms": 120,
+  "sim_host": "127.0.0.1",
+  "sim_command_port": 20001,
+  "sim_status_port": 20002,
+  "scene_control_port": 20100,
+  "referee_source": "auto",
+  "referee_port": "COM3",
+  "referee_baudrate": 115200,
+  "robot_id": 1,
+  "role": "attacker",
+  "threads": 4,
+  "training_enabled": false,
+  "latency_budget_ms": 10.0
+}

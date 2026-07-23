@@ -34,6 +34,11 @@ def test_main_module_help_is_hardware_free_from_src():
     assert "--strategy" in result.stdout
 
 
+def test_mlp_strategy_help_is_hardware_free_from_src():
+    result = run_from_src("-m", "MLPStrategy", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--config" in result.stdout
+
 def test_teleop_module_help_is_hardware_free_from_src():
     result = run_from_src("-m", "teleop", "--help")
     assert result.returncode == 0, result.stderr

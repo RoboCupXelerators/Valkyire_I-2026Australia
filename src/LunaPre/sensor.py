@@ -6,6 +6,7 @@ driver modules:
 
 - ``lidar_driver_rplidar``: direct serial RPLidar access via rplidar-roboticia.
 - ``lidar_driver_ros2``: legacy ROS2 /scan access.
+- ``lidar_driver_ydlidar``: direct serial LD07 access via pyserial.
 """
 
 from __future__ import annotations
@@ -96,6 +97,8 @@ def _resolve_backend(backend: str | None) -> str:
         return "rplidar"
     if backend_key in {"ros", "ros2"}:
         return "ros2"
+    if backend_key in {"ydlidar", "ld07", "ldrobot"}:
+        return "ydlidar"
     logger.warning(f"Unknown configured lidar backend={backend_key!r}; using {DEFAULT_LIDAR_BACKEND}.")
     return DEFAULT_LIDAR_BACKEND
 
@@ -104,6 +107,9 @@ def _load_driver_class(backend: str):
     if backend == "ros2":
         module = importlib.import_module(".lidar_driver_ros2", package=__package__)
         return module.ROS2LidarDriver
+    if backend == "ydlidar":
+        module = importlib.import_module(".lidar_driver_ydlidar", package=__package__)
+        return module.LD07Driver
     module = importlib.import_module(".lidar_driver_rplidar", package=__package__)
     return module.RPLidarDriver
 
@@ -326,6 +332,17 @@ class Lidar:
 
     def GetFullData(self):
         return self.dirLidarQueue.get()
+
+    def GetNearbyObjects(self):
+        """Return near-field LD07 clusters in robot coordinates, if supported."""
+        detector = getattr(self.driver, "detect_objects", None)
+        if not callable(detector):
+            return []
+        try:
+            return detector()
+        except Exception as error:
+            logger.warning(f"Nearby lidar object detection failed: {error}")
+            return []
 
     def __exit__(self, exc_type=None, exc=None, tb=None):
         self.stop()

@@ -707,6 +707,12 @@ class DM2325Bits:
             raise RuntimeError(f'cached C-board IMU yaw is stale ({effective_age_ms:.1f} ms)')
         return float(math.degrees(state.yaw_rad) % 360.0)
 
+    def GetCachedIMUState(self):
+        """Return the last typed IMU snapshot without starting a CDC transaction."""
+        if self._last_imu_state is None:
+            raise RuntimeError('no C-board IMU snapshot has been received')
+        return self._last_imu_state
+
     def GetYawRad(self):
         state = self.GetIMUState()
         if not state.healthy:
@@ -934,168 +940,8 @@ class DM2325Bits:
         return True
 
 
-HOST_FLAG_NONFINITE = 1 << 31
 IMU_DIRECTION_FLAGS = (
     'AXIS_MAPPING_UNVERIFIED',
     'ROBOT_DIRECTION_UNDEFINED',
     'DEFERRED_UNTIL_FINAL_ASSEMBLY',
 )
-
-
-@dataclass
-class IMUJsonRateTracker:
-    last_received: Optional[float] = None
-    last_sample_count: Optional[int] = None
-    last_timestamp_us: Optional[int] = None
-
-    def update(self, state):
-        received = float(state.received_monotonic)
-        telemetry_hz = None
-        sample_hz = None
-        if self.last_received is not None and received > self.last_received:
-            telemetry_hz = 1.0 / (received - self.last_received)
-        if self.last_sample_count is not None and self.last_timestamp_us is not None:
-            sample_delta = (int(state.sample_count) - self.last_sample_count) & 0xFFFFFFFF
-            time_delta_us = (
-                int(state.cboard_timestamp) - self.last_timestamp_us
-            ) & 0xFFFFFFFF
-            if time_delta_us:
-                sample_hz = sample_delta * 1_000_000.0 / time_delta_us
-        self.last_received = received
-        self.last_sample_count = int(state.sample_count)
-        self.last_timestamp_us = int(state.cboard_timestamp)
-        return telemetry_hz, sample_hz
-
-
-def _imu_finite_or_none(value):
-    value = float(value)
-    return value if math.isfinite(value) else None
-
-
-def _imu_vector_or_null(values):
-    if len(values) != 3:
-        return [None, None, None]
-    return [_imu_finite_or_none(value) for value in values]
-
-
-def build_imu_web_record(state, tracker=None):
-    telemetry_hz, sample_hz = tracker.update(state) if tracker else (None, None)
-    accel = _imu_vector_or_null(state.accel_mps2)
-    gyro = _imu_vector_or_null(state.gyro_rad_s)
-    scalars = {
-        'age_ms': _imu_finite_or_none(state.age_ms),
-        'roll_rad': _imu_finite_or_none(state.roll_rad),
-        'pitch_rad': _imu_finite_or_none(state.pitch_rad),
-        'yaw_rad': _imu_finite_or_none(state.yaw_rad),
-        'temperature_c': _imu_finite_or_none(state.temperature_c),
-        'received_monotonic': _imu_finite_or_none(state.received_monotonic),
-        'telemetry_hz': (
-            _imu_finite_or_none(telemetry_hz) if telemetry_hz is not None else None
-        ),
-        'sample_hz': _imu_finite_or_none(sample_hz) if sample_hz is not None else None,
-    }
-    finite = all(value is not None for value in accel + gyro) and all(
-        scalars[name] is not None
-        for name in ('age_ms', 'roll_rad', 'pitch_rad', 'yaw_rad', 'temperature_c')
-    )
-    flags = int(state.flags)
-    if not finite:
-        flags |= HOST_FLAG_NONFINITE
-    data_healthy = bool(
-        finite
-        and state.imu_online
-        and state.imu_ready
-        and state.imu_calibrated
-        and not state.imu_stale
-        and not state.imu_fault
-    )
-    return {
-        'sequence': int(state.sequence),
-        'timestamp_us': int(state.cboard_timestamp),
-        'source': 'hardware',
-        'healthy': data_healthy,
-        'motion_healthy': bool(state.healthy),
-        'age_ms': scalars['age_ms'],
-        'flags': flags,
-        'accel_mps2': accel,
-        'gyro_rad_s': gyro,
-        'roll_rad': scalars['roll_rad'],
-        'pitch_rad': scalars['pitch_rad'],
-        'yaw_rad': scalars['yaw_rad'],
-        'temperature_c': scalars['temperature_c'],
-        'calibration_state': int(state.calibration_state),
-        'imu_state': int(state.state),
-        'sample_count': int(state.sample_count),
-        'missed_sample_count': int(state.missed_sample_count),
-        'spi_error_count': int(state.spi_error_count),
-        'telemetry_hz': scalars['telemetry_hz'],
-        'sample_hz': scalars['sample_hz'],
-        'received_monotonic': scalars['received_monotonic'],
-        'direction_flags': list(IMU_DIRECTION_FLAGS),
-        'axis_mapping_verified': False,
-        'robot_direction_defined': False,
-    }
-
-
-def encode_imu_web_record(record):
-    import json
-    return json.dumps(record, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
-
-
-def run_imu_json_stream(bits, stdout, stderr, stop_event, interval_s, *, max_frames=None):
-    tracker = IMUJsonRateTracker()
-    emitted = 0
-    bits.OpenPort()
-    try:
-        while not stop_event.is_set():
-            started = time.monotonic()
-            try:
-                state = bits.GetIMUState()
-                stdout.write(encode_imu_web_record(build_imu_web_record(state, tracker)) + '\n')
-                stdout.flush()
-                emitted += 1
-            except (RuntimeError, ValueError, TypeError, OverflowError) as exc:
-                print(f'[imu-json] discarded frame: {exc}', file=stderr, flush=True)
-            if max_frames is not None and emitted >= max_frames:
-                break
-            remaining = interval_s - (time.monotonic() - started)
-            if remaining > 0.0:
-                stop_event.wait(remaining)
-    finally:
-        bits.ClosePort()
-    return emitted
-
-
-def _imu_json_main():
-    import argparse
-    import signal
-    import sys
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', default='/dev/ttyACM0')
-    parser.add_argument('--json-lines', action='store_true')
-    parser.add_argument('--interval', type=float, default=0.02)
-    args = parser.parse_args()
-    if not args.json_lines:
-        parser.error('--json-lines is required')
-    if not math.isfinite(args.interval) or args.interval <= 0.0:
-        parser.error('--interval must be positive and finite')
-
-    stop_event = threading.Event()
-
-    def request_stop(_signum, _frame):
-        stop_event.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
-    bits = DM2325Bits(args.port, exclusive=True)
-    try:
-        run_imu_json_stream(bits, sys.stdout, sys.stderr, stop_event, args.interval)
-    except Exception as exc:
-        print(f'[imu-json] fatal: {exc}', file=sys.stderr, flush=True)
-        return 1
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(_imu_json_main())

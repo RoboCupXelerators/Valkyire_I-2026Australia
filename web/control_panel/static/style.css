@@ -1581,6 +1581,81 @@ body {
     flex: 1;
 }
 
+@media (max-width: 768px) {
+    body {
+        overflow-x: hidden;
+    }
+
+    .main-content {
+        width: calc(100% - 60px);
+        min-width: 0;
+        padding: 12px;
+    }
+
+    #page-control .page-header {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    #page-control .control-container {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 16px;
+        padding: 0;
+    }
+
+    #page-control .control-container > * {
+        min-width: 0;
+    }
+
+    #page-control .control-panel,
+    #page-control .control-state,
+    #page-control .keyboard-layout {
+        padding: 16px;
+    }
+
+    #page-control .control-settings .setting-row {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    #page-control .key-row {
+        gap: 8px;
+    }
+
+    #page-control .key {
+        width: 56px;
+        height: 56px;
+        font-size: 1rem;
+    }
+
+    #page-control .key.key-wide,
+    #page-control .key.key-info {
+        width: 88px;
+    }
+
+    #page-control .control-state .state-item {
+        align-items: flex-start;
+    }
+
+    #page-control .control-state .state-item .label {
+        flex: 0 0 42%;
+    }
+
+    #page-control .control-state .state-item .value {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        text-align: right;
+    }
+
+    #page-control .control-state .state-table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+}
+
 .mouse-capture-area {
     margin-top: 16px;
     min-height: 140px;

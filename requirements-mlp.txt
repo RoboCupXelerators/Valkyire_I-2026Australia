@@ -1,0 +1,6 @@
+# Install on PyTorch inference targets (macOS, Linux, WSL2).
+torch>=2.4
+
+# Install on ONNX inference targets (Windows native, Raspberry Pi 5).
+numpy>=1.26
+onnxruntime>=1.20
