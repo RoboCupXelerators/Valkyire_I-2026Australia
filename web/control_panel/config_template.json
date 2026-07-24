@@ -56,23 +56,26 @@
         "LidarBackend": {
           "type": "select",
           "label": "雷达后端",
-          "options": ["rplidar", "ros2"],
+          "options": ["rplidar", "ros2", "ldlidar"],
           "option_labels": {
             "rplidar": "rplidar (原生驱动)",
-            "ros2": "ros2 (ROS2 节点)"
+            "ros2": "ros2 (ROS2 节点)",
+            "ldlidar": "ldlidar (LDROBOT LD06/LD07)"
           },
-          "default": "rplidar",
+          "default": "ldlidar",
           "order": 5
         },
         "LidarType": {
           "type": "select",
           "label": "雷达型号",
-          "options": ["s1", "s2"],
+          "options": ["s1", "s2", "ld06", "ld07"],
           "option_labels": {
             "s1": "s1 ( Slamtec RPLIDAR S1)",
-            "s2": "s2 ( Slamtec RPLIDAR S2)"
+            "s2": "s2 ( Slamtec RPLIDAR S2)",
+            "ld06": "ld06 ( LDROBOT LD06)",
+            "ld07": "ld07 ( LDROBOT LD07)"
           },
-          "default": "s1",
+          "default": "ld06",
           "order": 6
         }
       }
@@ -93,8 +96,8 @@
         "LidarPort": {
           "type": "string",
           "label": "雷达端口",
-          "default": "/dev/sllidar",
-          "placeholder": "/dev/ttyUSB0",
+          "default": "/dev/ttyCH343USB3",
+          "placeholder": "/dev/ttyCH343USB3 or /dev/ttyACM0",
           "order": 2
         },
         "IceLoongPort": {

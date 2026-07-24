@@ -716,7 +716,7 @@ class Positions:
             return list(LIDAR_DISABLED_DISTS)
 
     def NearbyLidarObjects(self):
-        """Return near-field LD07 point clusters in robot coordinates."""
+        """Return near-field LDROBOT point clusters in robot coordinates."""
         try:
             return runtime.lidar.GetNearbyObjects()
         except Exception:

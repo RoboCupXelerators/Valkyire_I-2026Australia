@@ -6,7 +6,7 @@ driver modules:
 
 - ``lidar_driver_rplidar``: direct serial RPLidar access via rplidar-roboticia.
 - ``lidar_driver_ros2``: legacy ROS2 /scan access.
-- ``lidar_driver_ydlidar``: direct serial LD07 access via pyserial.
+- ``lidar_driver_ldlidar``: direct serial LDROBOT LD06 access via pyserial.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from .strategy_tools import BALL_NOT_FOUND
 LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
 LIDAR_ZERO_DISTS = [0, 0, 0, 0]
 DEFAULT_SCAN_QUEUE_SIZE = 3
-DEFAULT_LIDAR_BACKEND = "rplidar"
+DEFAULT_LIDAR_BACKEND = "ldlidar"
 
 
 def GetLineStandardEquation(Line):
@@ -97,8 +97,10 @@ def _resolve_backend(backend: str | None) -> str:
         return "rplidar"
     if backend_key in {"ros", "ros2"}:
         return "ros2"
-    if backend_key in {"ydlidar", "ld07", "ldrobot"}:
-        return "ydlidar"
+    if backend_key in {"ldlidar", "ld06", "ldrobot", "ydlidar", "ld07"}:
+        # ``ydlidar`` was the historical misspelling; keep it readable for
+        # old config files while the canonical backend name is ``ldlidar``.
+        return "ldlidar"
     logger.warning(f"Unknown configured lidar backend={backend_key!r}; using {DEFAULT_LIDAR_BACKEND}.")
     return DEFAULT_LIDAR_BACKEND
 
@@ -107,9 +109,19 @@ def _load_driver_class(backend: str):
     if backend == "ros2":
         module = importlib.import_module(".lidar_driver_ros2", package=__package__)
         return module.ROS2LidarDriver
-    if backend == "ydlidar":
-        module = importlib.import_module(".lidar_driver_ydlidar", package=__package__)
-        return module.LD07Driver
+    if backend == "ldlidar":
+        module = importlib.import_module(".lidar_driver_ldlidar", package=__package__)
+        lidar_type = str(
+            getattr(getattr(Settings, "RoboInfo", object()), "LidarType", "ld06")
+        ).strip().lower()
+        configured_backend = str(
+            getattr(getattr(Settings, "RoboInfo", object()), "LidarBackend", "")
+        ).strip().lower()
+        if lidar_type == "ld07" or (
+            configured_backend == "ydlidar" and lidar_type not in {"ld06", "ld07"}
+        ):
+            return module.LD07Driver
+        return module.LDLidarDriver
     module = importlib.import_module(".lidar_driver_rplidar", package=__package__)
     return module.RPLidarDriver
 
@@ -334,7 +346,7 @@ class Lidar:
         return self.dirLidarQueue.get()
 
     def GetNearbyObjects(self):
-        """Return near-field LD07 clusters in robot coordinates, if supported."""
+        """Return near-field LDROBOT clusters in robot coordinates, if supported."""
         detector = getattr(self.driver, "detect_objects", None)
         if not callable(detector):
             return []

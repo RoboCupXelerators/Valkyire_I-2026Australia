@@ -62,7 +62,9 @@ python src/tools/tests/strategy/test_alpha_single.py
 
 ### 测试与平台检查
 运行通用测试：src/tools/tests/run_tests.sh
+运行 LD06 探测：python src/tools/tests/test_ld06.py --port /dev/ttyCH343USB3
 运行 LD07 探测：python src/tools/tests/test_ld07.py --port /dev/ttyACM0
+安装 CH344 驱动：bash scripts/install_ch344_driver.sh
 运行 JetPack 检查：src/tools/tests/jetpack_test.sh
 ### 虚拟裁判串口
 

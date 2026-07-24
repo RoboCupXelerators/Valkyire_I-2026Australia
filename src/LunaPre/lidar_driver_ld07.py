@@ -1,10 +1,4 @@
-"""Serial driver for the LDROBOT LD07 solid-state lidar.
-
-The LD07 is sometimes confused with YDLIDAR's rotating lidar protocol.  It
-uses a command protocol at 921600 baud and returns one 160-point frame per
-measurement request.  The public class name is kept for compatibility with
-the first driver draft.
-"""
+"""Direct serial driver for the LDROBOT LD07 55AA protocol."""
 
 from __future__ import annotations
 
@@ -16,13 +10,15 @@ import threading
 
 import serial
 
+from ReasonData import Preference, Settings
+
 
 LOGGER = logging.getLogger(__name__)
 
 SYNC = b"\xaa\xaa\xaa\xaa"
 SYNC_VALUE = 0xAAAAAAAA
-FRAME_HEADER_LENGTH = 10  # sync + device + command + offset + data length
-FRAME_PAYLOAD_PREFIX_LENGTH = 4  # timestamp
+FRAME_HEADER_LENGTH = 10
+FRAME_PAYLOAD_PREFIX_LENGTH = 4
 POINT_COUNT = 160
 POINT_BYTES = 2
 EXPECTED_DATA_LENGTH = FRAME_PAYLOAD_PREFIX_LENGTH + POINT_COUNT * POINT_BYTES
@@ -68,7 +64,23 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-class YDLidarDriver:
+def _setting_value(section: str, key: str, default=None):
+    try:
+        value = Preference().read(section, key)
+        if value not in (None, "", "None"):
+            return value
+    except Exception:
+        pass
+    try:
+        value = getattr(getattr(Settings, section), key)
+        if value not in (None, "", "None"):
+            return value
+    except Exception:
+        pass
+    return default
+
+
+class LD07Driver:
     """Read LD07 frames and publish ``(angle_deg, distance_m)`` scans."""
 
     def __init__(
@@ -84,49 +96,55 @@ class YDLidarDriver:
         scan_min_points: int | None = None,
         verify_checksum: bool | None = None,
     ):
-        self.port = port or os.environ.get("YDLIDAR_PORT", DEFAULT_PORT)
+        configured_port = str(_setting_value("Ports", "LidarPort", DEFAULT_PORT))
+        self.port = port or os.environ.get("LDLIDAR_PORT") or os.environ.get(
+            "LD07_PORT", configured_port
+        )
         self.baudrate = int(
             baudrate
             if baudrate is not None
-            else _env_int("YDLIDAR_BAUDRATE", DEFAULT_BAUDRATE)
+            else _env_int("LDLIDAR_BAUDRATE", DEFAULT_BAUDRATE)
         )
         self.timeout = float(
-            timeout if timeout is not None else _env_float("YDLIDAR_TIMEOUT", DEFAULT_SERIAL_TIMEOUT)
+            timeout
+            if timeout is not None
+            else _env_float("LDLIDAR_TIMEOUT", DEFAULT_SERIAL_TIMEOUT)
         )
         self.angle_start_deg = float(
             angle_start_deg
             if angle_start_deg is not None
-            else _env_float("YDLIDAR_ANGLE_START_DEG", DEFAULT_ANGLE_START_DEG)
+            else _env_float("LD07_ANGLE_START_DEG", DEFAULT_ANGLE_START_DEG)
         )
         self.fov_deg = float(
-            fov_deg if fov_deg is not None else _env_float("YDLIDAR_FOV_DEG", DEFAULT_FOV_DEG)
+            fov_deg
+            if fov_deg is not None
+            else _env_float("LD07_FOV_DEG", DEFAULT_FOV_DEG)
         )
         if self.fov_deg <= 0 or self.fov_deg > 360:
             raise ValueError("fov_deg must be in the range (0, 360]")
         self.angle_offset_deg = float(
             angle_offset_deg
             if angle_offset_deg is not None
-            else _env_float("YDLIDAR_ANGLE_OFFSET_DEG", 0.0)
+            else _env_float("LD07_ANGLE_OFFSET_DEG", 0.0)
         )
         self.reconnect_delay = float(
             reconnect_delay
             if reconnect_delay is not None
-            else _env_float("YDLIDAR_RECONNECT_DELAY", DEFAULT_RECONNECT_DELAY)
+            else _env_float("LDLIDAR_RECONNECT_DELAY", DEFAULT_RECONNECT_DELAY)
         )
         self.scan_min_points = max(
             1,
             int(
                 scan_min_points
                 if scan_min_points is not None
-                else _env_int("YDLIDAR_SCAN_MIN_POINTS", DEFAULT_SCAN_MIN_POINTS)
+                else _env_int("LDLIDAR_SCAN_MIN_POINTS", DEFAULT_SCAN_MIN_POINTS)
             ),
         )
         self.verify_checksum = bool(
             verify_checksum
             if verify_checksum is not None
-            else _env_bool("YDLIDAR_VERIFY_CHECKSUM", True)
+            else _env_bool("LDLIDAR_VERIFY_CHECKSUM", True)
         )
-
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._serial: serial.Serial | None = None
@@ -135,16 +153,19 @@ class YDLidarDriver:
         self.last_frame_timestamp = 0
 
     def start(self, scan_queue) -> bool:
-        """Start the background serial reader."""
         if self._thread and self._thread.is_alive():
             return True
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self.run_forever, args=(scan_queue,), daemon=True)
+        self._thread = threading.Thread(
+            target=self.run_forever,
+            args=(scan_queue,),
+            daemon=True,
+            name="LD07Reader",
+        )
         self._thread.start()
         return True
 
     def stop(self) -> None:
-        """Stop measurement and close the serial port."""
         self._stop_event.set()
         lidar_serial = self._serial
         if lidar_serial is not None:
@@ -160,7 +181,6 @@ class YDLidarDriver:
         self._serial = None
 
     def run_forever(self, scan_queue) -> None:
-        """Reconnect as needed and publish one complete LD07 frame at a time."""
         while not self._stop_event.is_set():
             lidar_serial = None
             try:
@@ -177,7 +197,6 @@ class YDLidarDriver:
                 lidar_serial.reset_input_buffer()
                 lidar_serial.write(START_MEASUREMENT_COMMAND)
                 lidar_serial.flush()
-
                 buffer = bytearray()
                 while not self._stop_event.is_set():
                     chunk = lidar_serial.read(4096)
@@ -215,12 +234,10 @@ class YDLidarDriver:
                         pass
                 if self._serial is lidar_serial:
                     self._serial = None
-
             self._stop_event.wait(self.reconnect_delay)
 
     @staticmethod
     def _take_frames(buffer: bytearray):
-        """Yield complete variable-length frames and retain an incomplete tail."""
         while True:
             header_index = buffer.find(SYNC)
             if header_index < 0:
@@ -231,12 +248,10 @@ class YDLidarDriver:
                 del buffer[:header_index]
             if len(buffer) < FRAME_HEADER_LENGTH:
                 return
-
             data_length = int.from_bytes(buffer[8:10], "little")
             if data_length < FRAME_PAYLOAD_PREFIX_LENGTH or data_length > 800:
                 del buffer[:len(SYNC)]
                 continue
-
             frame_length = FRAME_HEADER_LENGTH + data_length + 1
             if len(buffer) < frame_length:
                 return
@@ -245,27 +260,21 @@ class YDLidarDriver:
             yield frame
 
     def decode_packet(self, packet: bytes | bytearray) -> dict | None:
-        """Decode one complete LD07 frame, returning ``None`` on bad input."""
         packet = bytes(packet)
         if len(packet) < FRAME_HEADER_LENGTH + 1 or packet[:4] != SYNC:
             return None
-
         device, command, offset, data_length = struct.unpack_from("<BBHH", packet, 4)
         frame_length = FRAME_HEADER_LENGTH + data_length + 1
         if len(packet) != frame_length or data_length != EXPECTED_DATA_LENGTH:
             return None
         if device != DEVICE_ADDRESS or command != GET_DISTANCE_COMMAND:
             return None
-
         payload = packet[FRAME_HEADER_LENGTH:FRAME_HEADER_LENGTH + data_length]
         received_checksum = packet[-1]
         if self.verify_checksum and received_checksum != self._checksum(packet[4:10], payload):
             return None
-
         timestamp = int.from_bytes(payload[:FRAME_PAYLOAD_PREFIX_LENGTH], "little")
         samples = []
-        # The ROS reference driver models 160 bins across a 90-degree FOV;
-        # angle_max is the upper boundary, not the center of the last bin.
         angle_step = self.fov_deg / POINT_COUNT
         for index in range(POINT_COUNT):
             raw = struct.unpack_from(
@@ -273,15 +282,13 @@ class YDLidarDriver:
             )[0]
             distance_mm = raw & DISTANCE_MASK
             confidence = raw >> 9
-            angle_deg = self.angle_start_deg + angle_step * index + self.angle_offset_deg
             samples.append({
-                "angle_deg": angle_deg,
+                "angle_deg": self.angle_start_deg + angle_step * index + self.angle_offset_deg,
                 "distance_m": distance_mm / 1000.0,
                 "distance_mm": distance_mm,
                 "confidence": confidence,
                 "raw": raw,
             })
-
         return {
             "device": device,
             "command": command,
@@ -301,16 +308,9 @@ class YDLidarDriver:
         max_angle_gap_deg: float = 2.0,
         min_points: int = 3,
     ) -> list[dict]:
-        """Group the latest near-field points into relative target clusters.
-
-        This reports nearby geometry only.  It cannot identify an opponent or
-        recover a full-field position; semantic robot detection remains a
-        vision responsibility.
-        """
         packet = self.last_packet
         if not packet:
             return []
-
         clusters = []
         current = []
         previous_index = None
@@ -364,13 +364,11 @@ class YDLidarDriver:
             current.append(sample)
             previous_index = index
             previous_angle = angle_deg
-
         flush_cluster()
         return clusters
 
     @staticmethod
     def _checksum(header: bytes, payload: bytes) -> int:
-        """LD07 checksum: 8-bit sum excluding the four sync bytes."""
         return (sum(header) + sum(payload)) & 0xFF
 
     @staticmethod
@@ -383,7 +381,3 @@ class YDLidarDriver:
             scan_queue.put_nowait(tuple(scan))
         except Exception:
             pass
-
-
-LD07Driver = YDLidarDriver
-YDLidar55AA = YDLidarDriver

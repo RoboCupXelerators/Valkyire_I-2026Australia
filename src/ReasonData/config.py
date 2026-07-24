@@ -45,8 +45,8 @@ class Preference:
             "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
             "Bit": "SIM",           # SIM / AB / IL / DM2325
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
-            "LidarBackend": "rplidar", # rplidar / ros2 / ydlidar (LD07)
-            "LidarType": "s1",      # s1 / s2
+            "LidarBackend": "ros2", # rplidar / ros2 / ldlidar (LD06)
+            "LidarType": "s1",    # s1 / s2 / ld06 / ld07
         },
         "Ports": {
             "LidarID": random.randrange(1, 99),

@@ -515,6 +515,8 @@ class ControlPanelApp:
             "dist_mm": list(LIDAR_DISABLED_DISTS),
             "point_count": 0,
             "raw_point_count": 0,
+            "scan_point_count": 0,
+            "packet_point_count": 0,
             "line_count": 0,
             "message": "LunaPre runtime not initialized",
         }
@@ -538,6 +540,15 @@ class ControlPanelApp:
         status["disabled"] = bool(getattr(lidar, "disabled", False))
         status["point_count"] = int(getattr(lidar, "last_scan_point_count", 0) or 0)
         status["raw_point_count"] = int(getattr(lidar, "last_raw_scan_count", 0) or 0)
+        driver = getattr(lidar, "driver", None)
+        status["scan_point_count"] = int(
+            getattr(driver, "last_scan_point_count", 0)
+            or status["raw_point_count"]
+            or 0
+        )
+        status["packet_point_count"] = int(
+            getattr(driver, "last_packet_point_count", 0) or 0
+        )
         status["line_count"] = int(getattr(lidar, "last_line_count", 0) or 0)
 
         try:
@@ -857,6 +868,8 @@ class ControlPanelApp:
 
         candidates = []
         patterns = [
+            "/dev/ldlidar",
+            "/dev/ttyCH343USB*",
             "/dev/sllidar",
             "/dev/rplidar",
             "/dev/ttyUSB*",
@@ -885,8 +898,8 @@ class ControlPanelApp:
 
         likely = [
             item for item in candidates
-            if any(token in item["path"].lower() for token in ("sllidar", "rplidar", "silicon", "cp210", "ttyusb", "ttyacm"))
-            or any(token in str(item.get("resolved", "")).lower() for token in ("ttyusb", "ttyacm"))
+            if any(token in item["path"].lower() for token in ("sllidar", "rplidar", "silicon", "cp210", "ttych343", "ttyusb", "ttyacm"))
+            or any(token in str(item.get("resolved", "")).lower() for token in ("ttych343", "ttyusb", "ttyacm"))
         ]
 
         return {
@@ -1163,8 +1176,8 @@ class ControlPanelApp:
             ("RoboInfo", "type"): {"type": "select", "label": "机器人类型", "options": ["OP", "DP"], "option_labels": {"OP": "OP (进攻)", "DP": "DP (防守)"}, "tab": "robot"},
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "AB", "IL", "3Q"], "option_labels": {"SIM": "SIM (模拟器)", "AB": "AB (Arisu Bits)", "IL": "IL (IceLoong Bits)", "3Q": "3Q (Bits)"}, "tab": "robot"},
             ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
-            ("RoboInfo", "LidarBackend"): {"type": "select", "label": "雷达后端", "options": ["rplidar", "ros2", "ydlidar"], "option_labels": {"rplidar": "rplidar (原生驱动)", "ros2": "ros2 (ROS2 节点)", "ydlidar": "ydlidar (LD07)"}, "tab": "robot"},
-            ("RoboInfo", "LidarType"): {"type": "select", "label": "雷达型号", "options": ["s1", "s2"], "option_labels": {"s1": "s1 (Slamtec S1)", "s2": "s2 (Slamtec S2)"}, "tab": "robot"},
+            ("RoboInfo", "LidarBackend"): {"type": "select", "label": "雷达后端", "options": ["rplidar", "ros2", "ldlidar"], "option_labels": {"rplidar": "rplidar (原生驱动)", "ros2": "ros2 (ROS2 节点)", "ldlidar": "ldlidar (LDROBOT)"}, "tab": "robot"},
+            ("RoboInfo", "LidarType"): {"type": "select", "label": "雷达型号", "options": ["s1", "s2", "ld06", "ld07"], "option_labels": {"s1": "s1 (Slamtec S1)", "s2": "s2 (Slamtec S2)", "ld06": "ld06 (LDROBOT LD06)", "ld07": "ld07 (LDROBOT LD07)"}, "tab": "robot"},
             # Ports
             ("Ports", "LidarID"): {"type": "int", "label": "雷达 ID", "min": 1, "max": 255, "tab": "robot"},
             ("Ports", "LidarPort"): {"type": "string", "label": "雷达端口", "tab": "robot"},

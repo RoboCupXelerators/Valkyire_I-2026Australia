@@ -439,7 +439,10 @@ function updateVisionState() {
 function updateLidarPanel(lidarStatus) {
   const stateEl = document.getElementById("lidar-state");
   const distsEl = document.getElementById("lidar-dists");
-  if (!stateEl && !distsEl) return;
+  const scanPointCountEl = document.getElementById("lidar-scan-point-count");
+  const packetPointCountEl = document.getElementById("lidar-packet-point-count");
+  const normalizedPointCountEl = document.getElementById("lidar-normalized-point-count");
+  if (!stateEl && !distsEl && !scanPointCountEl) return;
 
   const status = lidarStatus || {};
   const stateText = status.state || "unknown";
@@ -461,6 +464,21 @@ function updateLidarPanel(lidarStatus) {
     distsEl.textContent =
       dists.length === 4 ? dists.map((v) => `${v}mm`).join(" / ") : "--";
     distsEl.title = `backend=${status.backend || "--"}, driver=${status.driver || "--"}, running=${!!status.running}`;
+  }
+
+  const scanPointCount = Number(status.scan_point_count || 0);
+  const packetPointCount = Number(status.packet_point_count || 0);
+  const normalizedPointCount = Number(status.point_count || 0);
+  if (scanPointCountEl) {
+    scanPointCountEl.textContent = scanPointCount > 0 ? `${scanPointCount} 点` : "--";
+  }
+  if (packetPointCountEl) {
+    packetPointCountEl.textContent = packetPointCount > 0 ? `${packetPointCount} 点` : "--";
+  }
+  if (normalizedPointCountEl) {
+    normalizedPointCountEl.textContent = normalizedPointCount > 0
+      ? `${normalizedPointCount} 点`
+      : "--";
   }
 }
 
@@ -1252,14 +1270,14 @@ async function updateOverview() {
     if (elements.lidarPointCount) {
       const lidarStatus = visionData.lidar_status || {};
       const pointCount = toFiniteNumber(
-        lidarStatus.point_count ?? lidarStatus.scan_point_count ?? 0,
+        lidarStatus.scan_point_count ?? lidarStatus.raw_point_count ?? 0,
       );
       elements.lidarPointCount.textContent = Number.isFinite(pointCount)
-        ? `${pointCount} 点`
-        : "-- 点";
+        ? `${pointCount} 点/圈`
+        : "-- 点/圈";
       elements.lidarPointCount.style.color =
         lidarStatus.state === "ok" ? "#22c55e" : "var(--text-muted)";
-      elements.lidarPointCount.title = `raw=${lidarStatus.raw_point_count ?? "--"}, lines=${lidarStatus.line_count ?? "--"}, state=${lidarStatus.state || "--"}`;
+      elements.lidarPointCount.title = `packet=${lidarStatus.packet_point_count ?? "--"}, near=${lidarStatus.point_count ?? "--"}, state=${lidarStatus.state || "--"}`;
     }
 
     // Update has_ball status
