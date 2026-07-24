@@ -182,6 +182,8 @@ class RPLidarDriver:
         self._stop_event = threading.Event()
         self._thread = None
         self._lidar = None
+        self.last_scan: tuple[tuple[float, float], ...] = ()
+        self.last_scan_point_count = 0
 
     def _resolve_lidar_type(self, lidar_type: str | None = None) -> str:
         lidar_type_key = str(lidar_type or _configured_lidar_type()).strip().lower()
@@ -376,6 +378,8 @@ class RPLidarDriver:
         if not scan:
             return
         data = tuple(scan)
+        self.last_scan = data
+        self.last_scan_point_count = len(data)
         try:
             while scan_queue.full():
                 scan_queue.get_nowait()

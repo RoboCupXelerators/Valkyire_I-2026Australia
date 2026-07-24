@@ -135,6 +135,15 @@ def _scan_frame_is_empty(frame) -> bool:
         return False
 
 
+def _is_valid_scan_distance(distance) -> bool:
+    """Return True for finite positive ranges used as one-revolution samples."""
+    try:
+        value = float(distance)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(value) and value > 0.0
+
+
 class Lidar:
     """Legacy LunaPre lidar API backed by a pluggable scan driver."""
 
@@ -230,12 +239,13 @@ class Lidar:
                     continue
                 lines = []
                 points = []
-                try:
-                    raw_point_count = len(Ranges)
-                except TypeError:
-                    raw_point_count = 0
+                raw_point_count = 0
                 for Element in Ranges:
-                    if 0 < Element[1] < 2.5:
+                    distance = Element[1]
+                    if not _is_valid_scan_distance(distance):
+                        continue
+                    raw_point_count += 1
+                    if distance < 2.5:
                         X = Element[1] * math.sin(math.radians(Element[0]))
                         Y = Element[1] * math.cos(math.radians(Element[0]))
                         points.append((X, Y, Element[0]))

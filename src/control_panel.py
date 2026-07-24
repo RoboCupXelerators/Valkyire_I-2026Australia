@@ -541,11 +541,14 @@ class ControlPanelApp:
         status["point_count"] = int(getattr(lidar, "last_scan_point_count", 0) or 0)
         status["raw_point_count"] = int(getattr(lidar, "last_raw_scan_count", 0) or 0)
         driver = getattr(lidar, "driver", None)
-        status["scan_point_count"] = int(
-            getattr(driver, "last_scan_point_count", 0)
-            or status["raw_point_count"]
-            or 0
-        )
+        driver_scan_count = getattr(driver, "last_scan_point_count", None)
+        try:
+            driver_scan_count = int(driver_scan_count) if driver_scan_count is not None else 0
+        except (TypeError, ValueError):
+            driver_scan_count = 0
+        # Prefer the driver's one-revolution valid-point counter when present.
+        # Fall back to the sensor facade's valid raw count for older drivers.
+        status["scan_point_count"] = driver_scan_count or status["raw_point_count"] or 0
         status["packet_point_count"] = int(
             getattr(driver, "last_packet_point_count", 0) or 0
         )

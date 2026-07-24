@@ -149,8 +149,24 @@ class _ROSLidarParser(Node):
         AngleIncrement = msg.angle_increment
         Ranges = np.array(msg.ranges, dtype=np.float32)
 
-        angles = (np.degrees(AngleMin + np.arange(len(Ranges)) * AngleIncrement) + 180) % 360
-        self.dirDistance = np.column_stack((angles.astype(np.float32, copy=False), Ranges))
+        # Only keep finite positive ranges. ROS LaserScan arrays are dense and
+        # usually fixed-length (e.g. S1 ~1080 samples), so counting the raw
+        # array length would look like a hard-coded point budget.
+        valid = np.isfinite(Ranges) & (Ranges > 0.0)
+        if not np.any(valid):
+            self.dirDistance = np.empty((0, 2), dtype=np.float32)
+            self._publish(self.dirDistance)
+            return
+
+        angles = (
+            np.degrees(AngleMin + np.arange(len(Ranges), dtype=np.float32) * AngleIncrement) + 180.0
+        ) % 360.0
+        self.dirDistance = np.column_stack(
+            (
+                angles[valid].astype(np.float32, copy=False),
+                Ranges[valid].astype(np.float32, copy=False),
+            )
+        )
         self._publish(self.dirDistance)
 
     def scanCallback(self, msg):
@@ -165,8 +181,14 @@ class _ROSLidarParser(Node):
         AngleIncrement = msg.angle_increment
         Ranges = msg.ranges
         for i in range(len(Ranges)):
+            try:
+                distance = float(Ranges[i])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(distance) or distance <= 0.0:
+                continue
             Angle = AngleMin + i * AngleIncrement
-            self.dirDistance.append(((math.degrees(Angle) + 180) % 360, Ranges[i]))
+            self.dirDistance.append(((math.degrees(Angle) + 180) % 360, distance))
         self._publish(tuple(self.dirDistance))
 
     def _record_callback_error(self, error: Exception):
@@ -204,7 +226,9 @@ class _ROSLidarParser(Node):
         if owner.last_publish_ts > 0:
             owner.last_publish_interval_s = now - owner.last_publish_ts
         owner.last_publish_ts = now
-        owner.last_scan_point_count = point_count
+        # Published scans only contain finite positive ranges, so this is the
+        # valid point count for one revolution, not the dense LaserScan size.
+        owner.last_scan_point_count = int(point_count)
         owner.published_scan_count += 1
         owner.dropped_scan_count += dropped
 
