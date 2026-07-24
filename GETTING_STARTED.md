@@ -36,7 +36,7 @@
 ### 你需要准备
 
 - ✅ 一台电脑（Windows/Mac/Linux 都可以）
-- ✅ 已安装 Python 3.8 或更高版本
+- ✅ 已安装 Python 3.12 或更高版本
 - ✅ 一个代码编辑器（推荐 VS Code）
 - ✅ 基础的 Python 知识（会写 if/else、循环、函数就行）
 
