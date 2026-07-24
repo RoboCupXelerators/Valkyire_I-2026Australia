@@ -30,6 +30,7 @@ from .motion.chassis import Car, Key, Peripherals
 from .motion.recording_chassis import RecordingCar
 from .position_recorder import RecordingPositions
 from .positions import Positions
+from .referee import RefereeSnapshot
 from .sensor import Lidar
 
 cfg = _runtime.cfg
@@ -146,6 +147,7 @@ __all__ = [
     "PeerstatusThreadFuncStarted",
     "Positions",
     "RecordingPositions",
+    "RefereeSnapshot",
     "Communication",
     "Bits",
     "lidar",
@@ -158,6 +160,7 @@ __all__ = [
     "referee",
     "vision",
     "UnitedPosition",
+    "ensure_runtime",
 ]
 
 
@@ -181,6 +184,14 @@ def _init_runtime(*, auto_start_lidar: bool = True):
     result = _runtime._init_runtime(auto_start_lidar=auto_start_lidar)
     _sync_runtime_globals()
     return result
+
+
+def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
+    """Initialize LunaPre providers before reading semantic observations."""
+
+    if not getattr(_runtime, "_runtime_initialized", False):
+        _runtime._init_runtime(auto_start_lidar=auto_start_lidar)
+    _sync_runtime_globals()
 
 
 def __getattr__(name: str):

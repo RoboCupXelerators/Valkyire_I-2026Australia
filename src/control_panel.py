@@ -361,7 +361,14 @@ class CameraResourceManager:
 class ControlPanelApp:
     """控制面板应用状态"""
 
-    def __init__(self, vision=None, web_dir: Path = None, jpeg_quality: int = 75, bits=None):
+    def __init__(
+        self,
+        vision=None,
+        web_dir: Path = None,
+        jpeg_quality: int = 75,
+        bits=None,
+        allow_runtime_init: bool = True,
+    ):
         self.vision = vision
         self.web_dir = web_dir or _repo_root() / "web" / "control_panel"
         self.jpeg_quality = int(jpeg_quality)
@@ -369,6 +376,7 @@ class ControlPanelApp:
 
         # Bits 对象（用于模拟器环境下获取位姿和球位置）
         self.bits = bits
+        self._allow_runtime_init = bool(allow_runtime_init)
         self._last_lidar_status = None
 
         # 检测是否为模拟器环境
@@ -1155,7 +1163,7 @@ class ControlPanelApp:
             ("RoboInfo", "type"): {"type": "select", "label": "机器人类型", "options": ["OP", "DP"], "option_labels": {"OP": "OP (进攻)", "DP": "DP (防守)"}, "tab": "robot"},
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "AB", "IL", "3Q"], "option_labels": {"SIM": "SIM (模拟器)", "AB": "AB (Arisu Bits)", "IL": "IL (IceLoong Bits)", "3Q": "3Q (Bits)"}, "tab": "robot"},
             ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
-            ("RoboInfo", "LidarBackend"): {"type": "select", "label": "雷达后端", "options": ["rplidar", "ros2"], "option_labels": {"rplidar": "rplidar (原生驱动)", "ros2": "ros2 (ROS2 节点)"}, "tab": "robot"},
+            ("RoboInfo", "LidarBackend"): {"type": "select", "label": "雷达后端", "options": ["rplidar", "ros2", "ydlidar"], "option_labels": {"rplidar": "rplidar (原生驱动)", "ros2": "ros2 (ROS2 节点)", "ydlidar": "ydlidar (LD07)"}, "tab": "robot"},
             ("RoboInfo", "LidarType"): {"type": "select", "label": "雷达型号", "options": ["s1", "s2"], "option_labels": {"s1": "s1 (Slamtec S1)", "s2": "s2 (Slamtec S2)"}, "tab": "robot"},
             # Ports
             ("Ports", "LidarID"): {"type": "int", "label": "雷达 ID", "min": 1, "max": 255, "tab": "robot"},
@@ -2038,14 +2046,18 @@ class ControlPanelApp:
             return {"success": True, "profile": value}
 
     def control_get_telemetry(self) -> dict:
-        """Return real C-board targets and DM2325 feedback for the control page."""
-        # Do not hold the control lock across two CDC exchanges. The 30 ms
+        """Return C-board motor and optional IMU feedback for the control page."""
+        # Do not hold the control lock across CDC exchanges. The 30 ms
         # command worker must be able to refresh the C-board watchdog between
         # telemetry transactions while the chassis is moving.
         with self._control_lock:
             self._ensure_control_runtime()
             get_diagnostics = getattr(self.bits, "GetChassisDiagnostics", None)
             get_status = getattr(self.bits, "GetChassisTelemetry", None)
+            # A moving chassis has a 100 ms board watchdog. Do not add another
+            # CDC exchange to the telemetry poll while control is enabled.
+            imu_method = "GetCachedIMUState" if self._control_enabled else "GetIMUState"
+            get_imu_state = getattr(self.bits, imu_method, None)
             if not callable(get_diagnostics) or not callable(get_status):
                 return {"success": False, "error": "DM2325 telemetry unavailable"}
         try:
@@ -2054,6 +2066,12 @@ class ControlPanelApp:
         except Exception as e:
             self._control_runtime_error = str(e)
             return {"success": False, "error": str(e)}
+        imu = {"available": False, "error": "IMU telemetry unavailable"}
+        if callable(get_imu_state):
+            try:
+                imu = self._control_imu_telemetry(get_imu_state())
+            except Exception as e:
+                imu = {"available": False, "error": str(e)}
         with self._control_lock:
             status_by_wheel = {motor.wheel: motor for motor in status.motors}
             for wheel in diagnostics["wheels"]:
@@ -2074,8 +2092,50 @@ class ControlPanelApp:
                 "runtime_fault": status.runtime_fault,
                 "can_esr": status.can_esr,
                 "watchdog_state": "healthy" if status.runtime_fault == 0 else "fault",
+                "imu": imu,
             })
             return diagnostics
+
+    @staticmethod
+    def _control_imu_telemetry(state) -> dict:
+        """Convert the typed driver state into JSON-safe panel telemetry."""
+        def finite(value):
+            value = float(value)
+            return value if math.isfinite(value) else None
+
+        def vector(values):
+            return [finite(value) for value in values] if len(values) == 3 else [None] * 3
+
+        snapshot_age_ms = finite(state.age_ms)
+        received = finite(getattr(state, "received_monotonic", time.monotonic()))
+        if snapshot_age_ms is not None and received is not None:
+            snapshot_age_ms += max(0.0, time.monotonic() - received) * 1000.0
+        roll = finite(state.roll_rad)
+        pitch = finite(state.pitch_rad)
+        yaw = finite(state.yaw_rad)
+        return {
+            "available": True,
+            "healthy": bool(
+                state.healthy
+                and snapshot_age_ms is not None
+                and snapshot_age_ms <= 50.0
+            ),
+            "source": str(state.source),
+            "age_ms": snapshot_age_ms,
+            "flags": int(state.flags),
+            "accel_mps2": vector(state.accel_mps2),
+            "gyro_rad_s": vector(state.gyro_rad_s),
+            "attitude_deg": {
+                "roll": math.degrees(roll) if roll is not None else None,
+                "pitch": math.degrees(pitch) if pitch is not None else None,
+                "yaw": math.degrees(yaw) % 360.0 if yaw is not None else None,
+            },
+            "temperature_c": finite(state.temperature_c),
+            "calibration_state": int(state.calibration_state),
+            "sample_count": int(state.sample_count),
+            "missed_sample_count": int(state.missed_sample_count),
+            "spi_error_count": int(state.spi_error_count),
+        }
 
     def _is_control_runtime_initialized(self) -> bool:
         runtime = sys.modules.get("LunaPre.runtime")
@@ -2083,6 +2143,9 @@ class ControlPanelApp:
 
     def _ensure_control_runtime(self):
         """Initialize LunaPre runtime on demand for manual control."""
+        if not getattr(self, "_allow_runtime_init", True):
+            self._control_runtime_error = "Runtime initialization disabled"
+            return None
         try:
             import importlib
 
@@ -3107,6 +3170,7 @@ def main():
         jpeg_quality=args.jpeg_quality,
         bits=bits,
         vision=vision,
+        allow_runtime_init=not args.no_runtime,
     )
 
     def attach_vision_module():

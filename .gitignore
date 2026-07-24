@@ -275,3 +275,6 @@ docs/four_motor_single_wheel_*.json
 docs/four_motor_post_single_wheel_*.json
 docs/nonorthogonal_kinematics_mock_*.*
 docs/nonorthogonal_kinematics_simulation.*
+.runtime/
+logs/mlp/
+Records/

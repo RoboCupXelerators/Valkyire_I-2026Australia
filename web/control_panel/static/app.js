@@ -3411,6 +3411,32 @@ function displayMetric(value, suffix = " ms") {
   return value === null || value === undefined ? "not_measured" : `${value}${suffix}`;
 }
 
+function displayImuVector(values) {
+  if (!Array.isArray(values) || values.length !== 3) return "--";
+  return values.map((value) => value === null ? "--" : Number(value).toFixed(3)).join(" / ");
+}
+
+function updateControlImu(imu) {
+  const fields = {
+    "control-imu-status": !imu?.available ? `不可用${imu?.error ? `: ${imu.error}` : ""}` : (imu.healthy ? "健康" : "异常"),
+    "control-imu-source": imu?.available ? imu.source : "--",
+    "control-imu-age": imu?.available && imu.age_ms !== null ? `${Number(imu.age_ms).toFixed(1)} ms` : "--",
+    "control-imu-attitude": imu?.available ? displayImuVector([
+      imu.attitude_deg?.roll,
+      imu.attitude_deg?.pitch,
+      imu.attitude_deg?.yaw,
+    ]) : "--",
+    "control-imu-accel": imu?.available ? displayImuVector(imu.accel_mps2) : "--",
+    "control-imu-gyro": imu?.available ? displayImuVector(imu.gyro_rad_s) : "--",
+    "control-imu-temperature": imu?.available && imu.temperature_c !== null ? `${Number(imu.temperature_c).toFixed(1)} °C` : "--",
+    "control-imu-flags": imu?.available ? `0x${Number(imu.flags).toString(16)}` : "--",
+  };
+  for (const [id, value] of Object.entries(fields)) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+  }
+}
+
 async function updateControlTelemetry() {
   if (state.currentPage !== "control" || controlState.telemetryPending) return;
   controlState.telemetryPending = true;
@@ -3448,6 +3474,7 @@ async function updateControlTelemetry() {
     document.getElementById("reverse-response-time").textContent = event ? displayMetric(event.zero_cross_to_reverse_response_ms) : "--";
     document.getElementById("reverse-peak-torque").textContent = event ? displayMetric(event.peak_measured_torque_nm, " Nm") : "--";
     document.getElementById("reverse-fault").textContent = data.runtime_fault ? `0x${data.runtime_fault.toString(16)}` : "无";
+    updateControlImu(data.imu);
   } catch (error) {
     const tbody = document.getElementById("control-motor-telemetry");
     if (tbody) {
@@ -3458,6 +3485,7 @@ async function updateControlTelemetry() {
       row.appendChild(cell);
       tbody.replaceChildren(row);
     }
+    updateControlImu({ available: false, error: error.message });
   } finally {
     controlState.telemetryPending = false;
   }

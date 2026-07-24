@@ -1,1 +1,1 @@
-"""Shared pytest hooks for the small Software test suite."""
+"""Shared pytest configuration for the Software test suite."""

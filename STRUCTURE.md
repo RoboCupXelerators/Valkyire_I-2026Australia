@@ -11,7 +11,7 @@ Software/
 ├── docs/                   # 当前维护文档与 codegraph
 ├── scripts/                # 可重复运行的部署、调试、模型和图生成脚本
 ├── web/control_panel/      # control_panel.py 使用的前端资源
-├── Tools/                  # 旧工具归档说明和许可
+├── Tools/                  # 历史标定数据、归档说明和许可
 ├── Calibration_2605/       # 标定数据
 ├── Records/                # 本地运行/采样记录，默认不作为代码入口
 ├── logs/                   # 本地训练/运行日志
@@ -50,7 +50,6 @@ src/
 ├── LunaPre/                # 运行时 facade、定位、传感器、底盘抽象
 ├── ReasonData/             # 配置、记录、回放数据
 ├── mlp/                    # MLP 策略接口、推理和状态编码
-├── teacher/                # rule teacher 与训练数据生成逻辑
 ├── tests/                  # 当前保留的 pytest 测试
 ├── utils/                  # Bits、仿真适配、OTA、场景控制等工具
 └── vision_utils/           # 视觉后端、检测、融合和模拟器视觉适配
@@ -78,6 +77,7 @@ src/LunaPre/
 边界约定：
 
 - `runtime.py` 负责选择 `ArisuBits` / `IceLoongBits` / `XeleratorSimBits`。
+- `runtime.py` 也负责装配 `DM2325Bits`；具体串口驱动不进入策略层。
 - `chassis.py` 不直接导入具体 Bits，只接收 runtime 注入的 callable。
 - `positions.py` 消费 runtime 提供的语义接口，不直接碰具体 Bits。
 - `sensor.py` 只负责 lidar facade 和 lidar driver 选择，不消费 vision。
@@ -118,13 +118,12 @@ src/tests/
 ```text
 docs/
 ├── codegraph_view.html     # 代码关系可视化
+├── DM2325_ARCHITECTURE.md  # DM2325 历史、仓库职责和迁移边界
 ├── interface_semantics.md  # 坐标、哨兵值、语义接口约定
-├── MLP_POLICY_ROADMAP.md
 ├── MULTI_ROBOT_SCRIMMAGE.md
 ├── OTA_GUIDE.md
 ├── PACKAGES_AND_OTA.md
-├── SIMULATOR_ACCEPTANCE.md
-└── TEACHER_DEBUG_LOOP.md
+└── SIMULATOR_ACCEPTANCE.md
 ```
 
 已过期的流水账、草稿报告、一次性提示词和临时脚本不再放在 `docs/`。
@@ -145,7 +144,6 @@ scripts/
 ├── run_lockball_pid.py
 ├── run_sim_lockball_pid_sweep.py
 ├── debug/
-├── strategy_test/
 └── hailort*.whl / hailort*.deb
 ```
 

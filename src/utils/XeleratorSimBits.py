@@ -153,6 +153,8 @@ class SimStatus:
     seq: int = 0
     robot_id: int = 1
     has_ball: bool = False
+    control_enabled: bool = True
+    penalty_active: bool = False
     # pose in Unity field frame (meters & degrees) before scaling
     x_m: float = 0.0
     y_m: float = 0.0
@@ -711,6 +713,16 @@ class XeleratorSimBits:
         y_cm = (y_cm - float(self._origin_y_cm)) * self._pose_scale
         return (x_cm, y_cm, float(self.GetYaw()))
 
+    def GetVelocity(self):
+        """Return field-frame (vx_cm_s, vy_cm_s, wz_deg_s)."""
+
+        with self._status_lock:
+            return (
+                float(self._status.vx_mps) * 100.0,
+                float(self._status.vy_mps) * 100.0,
+                math.degrees(float(self._status.wz_rps)),
+            )
+
     def HasBall(self) -> bool:
         with self._status_lock:
             if bool(self._status.has_ball):
@@ -722,6 +734,26 @@ class XeleratorSimBits:
         if self._ball_status_fallback:
             return self._infer_has_ball_from_relative(self._get_scene_ball_pos_fallback())
         return False
+
+    def GetControlEnabled(self) -> bool:
+        with self._status_lock:
+            return bool(self._status.control_enabled)
+
+    def GetPenaltyState(self) -> dict:
+        with self._status_lock:
+            active = bool(self._status.penalty_active)
+        result = {"active": active, "reason": "UNKNOWN", "remaining_s": 0.0}
+        status = self._scene_status_snapshot()
+        if not isinstance(status, dict):
+            return result
+        for robot in status.get("robots") or []:
+            if int(robot.get("id", -1)) == int(self.robot_id):
+                result["active"] = bool(robot.get("penalty_active", active))
+                result["reason"] = str(robot.get("penalty_reason", "UNKNOWN"))
+                result["remaining_s"] = float(robot.get("penalty_remaining_s", 0.0))
+                result["control_enabled"] = bool(robot.get("control_enabled", not result["active"]))
+                break
+        return result
 
     def GetBallPos(self):
         """Return relative ball position [x, y] in cm for RobotBallPos().
@@ -1129,6 +1161,12 @@ class XeleratorSimBits:
                 self._status.seq = int(seq)
                 self._status.robot_id = int(rid)
                 self._status.has_ball = (flags & 0x01) != 0
+                if int(_reserved) == 0x5845:
+                    self._status.control_enabled = (flags & 0x02) != 0
+                    self._status.penalty_active = (flags & 0x04) != 0
+                else:
+                    self._status.control_enabled = True
+                    self._status.penalty_active = False
                 self._status.x_m = float(x)
                 self._status.y_m = float(y)
                 self._status.yaw_deg = float(yaw)

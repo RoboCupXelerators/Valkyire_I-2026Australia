@@ -715,6 +715,13 @@ class Positions:
         except Exception:
             return list(LIDAR_DISABLED_DISTS)
 
+    def NearbyLidarObjects(self):
+        """Return near-field LD07 point clusters in robot coordinates."""
+        try:
+            return runtime.lidar.GetNearbyObjects()
+        except Exception:
+            return []
+
     def FieldRobotPose(self, lower: bool | None = False, distance: list | None = None):
         '''
         `非阻塞函数`
@@ -1769,6 +1776,16 @@ class Positions:
             RefereeStatus: bool | `True` for unlocked, `False` for locked
         '''
         return runtime.get_referee_status()
+
+    def RefereeState(self):
+        """Return the structured referee state from LunaPre's input provider."""
+
+        return runtime.get_referee_state()
+
+    def RobotVelocity(self):
+        """Return [vx_cm_s, vy_cm_s, wz_deg_s, valid]."""
+
+        return runtime.get_robot_velocity()
 
     def _restricted_area_params(self) -> dict:
         """Return coordinate-space safety limits in field centimeters."""
