@@ -3,12 +3,15 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 from mlp.config import RuntimeConfig
+from mlp.adapters import deployable_referee_state, observation_from_lunapre
 from mlp.bundle import create_manifest, load_manifest
 from mlp.contracts import FEATURE_DIM, FeatureSpec, PolicyObservation, RefereeState
 from mlp.features import FeatureEncoder
@@ -29,6 +32,56 @@ class MlpV2ContractTests(unittest.TestCase):
             config = RuntimeConfig.load(path)
             self.assertFalse(Path(config.bundle_path).is_absolute(), path.name)
             self.assertEqual(config.control_period_ms, 30)
+            self.assertFalse(config.training_enabled, path.name)
+
+    def test_referee_adapter_never_exposes_privileged_detail(self):
+        detailed = SimpleNamespace(
+            phase="PENALIZED", control_enabled=False, penalty_active=True,
+            penalty_reason="PUSHING", penalty_remaining_s=42.0,
+        )
+        self.assertEqual(
+            deployable_referee_state(detailed),
+            (int(RefereeState.STOP), False),
+        )
+        play = SimpleNamespace(phase="PLAY", control_enabled=True)
+        self.assertEqual(
+            deployable_referee_state(play),
+            (int(RefereeState.PLAY), True),
+        )
+
+    def test_lunapre_observation_freezes_unavailable_match_fields(self):
+        referee = SimpleNamespace(
+            phase="PENALIZED", control_enabled=False, penalty_active=True,
+            penalty_reason="PUSHING", penalty_remaining_s=42.0,
+        )
+        position = SimpleNamespace(
+            FieldRobotPose=lambda: [0.0, 0.0, 0.0],
+            RobotBallPos=lambda: [-1, -1],
+            RobotChassisPos=lambda: [],
+            DirectDistance=lambda: [100.0] * 4,
+            RobotVelocity=lambda: [0.0, 0.0, 0.0, True],
+            RefereeState=lambda: referee,
+        )
+        lunapre = ModuleType("LunaPre")
+        lunapre.UnitedPosition = position
+        lunapre.ensure_runtime = lambda: None
+        strategy_tools = ModuleType("LunaPre.strategy_tools")
+        strategy_tools.BALL_HELD = [0, 0]
+        strategy_tools.BALL_NOT_FOUND = [-1, -1]
+        with patch.dict(sys.modules, {"LunaPre": lunapre, "LunaPre.strategy_tools": strategy_tools}):
+            observation = observation_from_lunapre()
+
+        self.assertEqual(observation.referee_state, int(RefereeState.STOP))
+        self.assertFalse(observation.control_enabled)
+        self.assertFalse(observation.penalty_active)
+        self.assertEqual(observation.penalty_remaining_s, 0.0)
+        self.assertEqual(observation.score_diff, 0)
+        self.assertEqual(observation.match_remaining_s, 300.0)
+        encoded = dict(zip(FeatureSpec().names, FeatureEncoder().encode(observation)))
+        self.assertEqual(encoded["penalty_active"], 0.0)
+        self.assertEqual(encoded["penalty_remaining"], 0.0)
+        self.assertEqual(encoded["score_diff"], 0.0)
+        self.assertEqual(encoded["match_remaining"], 1.0)
 
     def test_referee_gate_precedes_inference(self):
         gate = ControlGate(120)

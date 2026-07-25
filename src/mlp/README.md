@@ -19,3 +19,8 @@ bundle is a hard error; runtime exceptions lead to a safe stop.
 
 Training code belongs in `TreeDiagramDataset`. Only promoted inference bundles
 may be placed under `.runtime/policies`, which is not source-controlled.
+
+The actor contract deliberately exposes only the official referee wire semantics:
+`PLAY` or `STOP`. Penalty detail, score, and match time remain fixed deployment
+defaults in policy observations; Unity may use them only for rewards, masks,
+resets, and evaluation.

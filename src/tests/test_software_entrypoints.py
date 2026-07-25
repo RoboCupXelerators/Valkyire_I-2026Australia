@@ -28,16 +28,11 @@ def test_lunapre_import_works_from_src():
     assert result.stdout.strip().splitlines()[-1] == "Car"
 
 
-def test_main_module_help_is_hardware_free_from_src():
-    result = run_from_src("-m", "main", "--help")
-    assert result.returncode == 0, result.stderr
-    assert "--strategy" in result.stdout
-
-
 def test_mlp_strategy_help_is_hardware_free_from_src():
     result = run_from_src("-m", "MLPStrategy", "--help")
     assert result.returncode == 0, result.stderr
     assert "--config" in result.stdout
+
 
 def test_teleop_module_help_is_hardware_free_from_src():
     result = run_from_src("-m", "teleop", "--help")

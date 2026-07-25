@@ -7,6 +7,15 @@ import time
 from .contracts import EntityObservation, PolicyObservation, RefereeState, RoleId
 
 
+def deployable_referee_state(snapshot) -> tuple[int, bool]:
+    """Reduce every referee provider to the official PLAY/STOP wire contract."""
+
+    enabled = bool(getattr(snapshot, "control_enabled", False))
+    phase = str(getattr(snapshot, "phase", "STOP")).strip().upper()
+    is_play = enabled and phase == "PLAY"
+    return int(RefereeState.PLAY if is_play else RefereeState.STOP), is_play
+
+
 def observation_from_lunapre(role: int = int(RoleId.ATTACKER)) -> PolicyObservation:
     from LunaPre import UnitedPosition, ensure_runtime
     from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND
@@ -37,24 +46,10 @@ def observation_from_lunapre(role: int = int(RoleId.ATTACKER)) -> PolicyObservat
     except Exception:
         pass
     control_enabled = False
-    penalty_active = False
-    penalty_reason = "UNKNOWN"
-    penalty_remaining_s = 0.0
     referee_state = int(RefereeState.STOP)
     try:
         referee = UnitedPosition.RefereeState()
-        control_enabled = bool(referee.control_enabled)
-        penalty_active = bool(referee.penalty_active)
-        penalty_reason = str(referee.penalty_reason)
-        penalty_remaining_s = float(referee.penalty_remaining_s)
-        phase_map = {
-            "STOP": RefereeState.STOP,
-            "PLAY": RefereeState.PLAY,
-            "PENALIZED": RefereeState.PENALIZED,
-            "HALF_TIME": RefereeState.HALF_TIME,
-            "GAME_OVER": RefereeState.GAME_OVER,
-        }
-        referee_state = int(phase_map.get(str(referee.phase).upper(), RefereeState.STOP))
+        referee_state, control_enabled = deployable_referee_state(referee)
     except Exception:
         pass
     return PolicyObservation(
@@ -68,7 +63,10 @@ def observation_from_lunapre(role: int = int(RoleId.ATTACKER)) -> PolicyObservat
         enemies=enemies, wall_front=walls[0], wall_left=walls[1],
         wall_back=walls[2], wall_right=walls[3], wall_valid=wall_valid,
         referee_state=referee_state,
-        control_enabled=control_enabled, penalty_active=penalty_active,
-        penalty_reason=penalty_reason, penalty_remaining_s=penalty_remaining_s, role=role,
+        control_enabled=control_enabled,
+        # These fields are intentionally fixed to deployment defaults. Detailed
+        # simulator state is privileged and belongs to rewards and train masks.
+        penalty_active=False, penalty_reason="UNKNOWN", penalty_remaining_s=0.0,
+        score_diff=0, match_remaining_s=300.0, role=role,
         observed_at_ms=int(time.monotonic() * 1000),
     )

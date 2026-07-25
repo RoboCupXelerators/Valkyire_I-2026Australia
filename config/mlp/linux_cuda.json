@@ -15,6 +15,6 @@
   "robot_id": 1,
   "role": "attacker",
   "threads": 8,
-  "training_enabled": true,
+  "training_enabled": false,
   "latency_budget_ms": 10.0
 }

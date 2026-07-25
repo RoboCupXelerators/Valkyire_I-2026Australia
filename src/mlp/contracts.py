@@ -9,7 +9,7 @@ import json
 from typing import Any, Dict, List, Sequence, Tuple
 
 
-CONTRACT_VERSION = "2.0.0"
+CONTRACT_VERSION = "2.0.1"
 CONTROL_PERIOD_MS = 30
 FEATURE_DIM = 49
 MAX_ENEMIES = 4

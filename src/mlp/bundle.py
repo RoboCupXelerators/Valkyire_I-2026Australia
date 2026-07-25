@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Sequence
 
-from .contracts import ActionSpec, FeatureSpec, combined_contract_hash
+from .contracts import ActionSpec, CONTRACT_VERSION, FeatureSpec, combined_contract_hash
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ def create_manifest(model_format: str = "pytorch", model_file: str = "policy.pt"
     feature_spec = FeatureSpec()
     action_spec = ActionSpec()
     return BundleManifest(
-        bundle_version="2.0.0",
+        bundle_version=CONTRACT_VERSION,
         model_format=model_format,
         model_file=model_file,
         contract_hash=combined_contract_hash(feature_spec, action_spec),
