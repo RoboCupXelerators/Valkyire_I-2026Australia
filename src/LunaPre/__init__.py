@@ -161,6 +161,7 @@ __all__ = [
     "vision",
     "UnitedPosition",
     "ensure_runtime",
+    "shutdown_runtime",
 ]
 
 
@@ -191,6 +192,13 @@ def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
 
     if not getattr(_runtime, "_runtime_initialized", False):
         _runtime._init_runtime(auto_start_lidar=auto_start_lidar)
+    _sync_runtime_globals()
+
+
+def shutdown_runtime() -> None:
+    """Close the active runtime and release simulator or hardware resources."""
+
+    _runtime.shutdown_runtime()
     _sync_runtime_globals()
 
 

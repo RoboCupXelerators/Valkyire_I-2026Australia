@@ -215,6 +215,38 @@ def _stop_bits_thread_monitor():
     logger.info("Bits thread monitor stopped")
 
 
+def shutdown_runtime() -> None:
+    """Release runtime-owned resources so a simulator worker can restart cleanly."""
+
+    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
+    global _field_pose_provider, _velocity_provider, _referee_status_provider
+    global _referee_state_provider, _referee_serial_provider, _runtime_initialized
+
+    _stop_bits_thread_monitor()
+    for resource in (vision, lidar):
+        for method_name in ("Close", "close", "stop"):
+            method = getattr(resource, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+                break
+    for method_name in ("Close", "close", "shutdown", "stop"):
+        method = getattr(Bits, method_name, None)
+        if callable(method):
+            try:
+                method()
+            except Exception:
+                pass
+            break
+
+    Bits = lidar = chassis = compass = peripheral = key = Odometer = Morse = referee = vision = None
+    _field_pose_provider = _velocity_provider = _referee_status_provider = None
+    _referee_state_provider = _referee_serial_provider = None
+    _runtime_initialized = False
+
+
 def _init_runtime(*, auto_start_lidar: bool = True):
     """初始化 Bits / chassis / peripheral / lidar 等全局对象。
 

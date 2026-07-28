@@ -13,7 +13,17 @@ sys.path.insert(0, str(ROOT / "src"))
 from mlp.config import RuntimeConfig
 from mlp.adapters import deployable_referee_state, observation_from_lunapre
 from mlp.bundle import create_manifest, load_manifest
-from mlp.contracts import FEATURE_DIM, FeatureSpec, PolicyObservation, RefereeState
+from mlp.contracts import (
+    CONTROL_INTERFACE_DTYPE,
+    CONTROL_INTERFACE_VERSION,
+    CONTROL_INTERFACE_WIDTH,
+    FEATURE_DIM,
+    POLICY_ARCHITECTURE_ID,
+    POLICY_MODULE_NAMES,
+    FeatureSpec,
+    PolicyObservation,
+    RefereeState,
+)
 from mlp.features import FeatureEncoder
 from mlp.runtime import ControlGate
 
@@ -110,6 +120,14 @@ class MlpV2ContractTests(unittest.TestCase):
             path.write_text(json.dumps(values), encoding="utf-8")
             with self.assertRaises(ValueError):
                 load_manifest(directory)
+
+    def test_bundle_declares_control_interface_contract(self):
+        manifest = create_manifest()
+        self.assertEqual(manifest.architecture_id, POLICY_ARCHITECTURE_ID)
+        self.assertEqual(manifest.control_interface_version, CONTROL_INTERFACE_VERSION)
+        self.assertEqual(manifest.control_interface_width, CONTROL_INTERFACE_WIDTH)
+        self.assertEqual(manifest.control_interface_dtype, CONTROL_INTERFACE_DTYPE)
+        self.assertEqual(tuple(manifest.module_names), POLICY_MODULE_NAMES)
 
 
 if __name__ == "__main__":

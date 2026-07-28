@@ -14,6 +14,21 @@ CONTROL_PERIOD_MS = 30
 FEATURE_DIM = 49
 MAX_ENEMIES = 4
 
+# This boundary is the warm-start contract between the V2 vector encoder and
+# future observation encoders.  It is intentionally independent of ActionSpec.
+POLICY_ARCHITECTURE_ID = "mlp-v2-control-interface-v1"
+LEGACY_POLICY_ARCHITECTURE_ID = "mlp-v2-monolithic-legacy"
+CONTROL_INTERFACE_VERSION = "v1"
+CONTROL_INTERFACE_WIDTH = 256
+CONTROL_INTERFACE_DTYPE = "float32"
+POLICY_MODULE_NAMES: Tuple[str, ...] = (
+    "vector_observation_encoder",
+    "control_core",
+    "action_heads",
+    "value_head",
+    "log_std",
+)
+
 
 class IntentId(IntEnum):
     SEARCH_BALL = 0
