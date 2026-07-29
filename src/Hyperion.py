@@ -1,3 +1,4 @@
+#策略程序
 from BasicFuc import *
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
 from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
@@ -15,7 +16,7 @@ def activate_func(input_score):
     y33 = np.where(x < 0, 0, 1)  # ReLU函数导数
     return y33
 
-def UplaneScore(pose):
+def UplaneScore(pose):#上平面射门评分，基于位置坐标和朝向角度
     x, y, w = pose
     x = x + 120
     w =  (math.sin(math.radians(w)))
@@ -24,19 +25,19 @@ def UplaneScore(pose):
     print(w)
     return round((abs(x/240)*0.2 - abs(y/90)*0.5 + w),2)
 
-def BowScore(pose):
+def BowScore(pose):#弧线射门评分
     x, y, w = pose
     aim = (UnitedPosition.Pos2Angle([x,y],[100,0])+180)%360
     error_aUw = abs(w - aim)
     return round((activate_func((360-error_aUw)/360-0.5)*0.8 - abs(x/120)*0.1 + abs(y/90)*0.1),2)
 
-def HuckScore(pose):
+def HuckScore(pose):#大脚射门评分，考虑面向对方球门程度
     x, y, w = pose
     aim = UnitedPosition.Pos2Angle([x,y],[100,0])%360
     error_aUw = abs(w - aim)
     return round((activate_func((360-error_aUw)/360-0.5)*0.8 + abs(x/120)*0.1 - abs(y/90)*0.1),2)
 
-def JumpScore(pose):
+def JumpScore(pose):#跳射评分，适合边路位置
     x, y, w = pose
     if y > 0:
         aim_pose = [100,180]
@@ -47,17 +48,17 @@ def JumpScore(pose):
     return round((activate_func((360-error_aUw)/360-0.95) - (x/240)*0.5),2)
 
 
-def logic_step():
-    logger.success("UplaneScore: "+str(UplaneScore(UnitedPosition.FieldRobotPose())))
-    logger.success("HuckScore: "+str(HuckScore(UnitedPosition.FieldRobotPose())))
-    logger.success("JumpScore: "+str(JumpScore(UnitedPosition.FieldRobotPose())))
-    logger.warning("BowScore: "+str(BowScore(UnitedPosition.FieldRobotPose())))
+def logic_step():#射门策略选择
+    logger.success("UplaneScore: "+str(UplaneScore(UnitedPosition.FieldRobotPose())))#上平面射门评分，基于位置坐标和朝向角度
+    logger.success("HuckScore: "+str(HuckScore(UnitedPosition.FieldRobotPose())))#大脚射门评分，考虑面向对方球门程度
+    logger.success("JumpScore: "+str(JumpScore(UnitedPosition.FieldRobotPose())))#跳射评分，适合边路位置
+    logger.warning("BowScore: "+str(BowScore(UnitedPosition.FieldRobotPose())))#弧线射门评分
     # time.sleep(0.3)
     # return
     logger.info(UnitedPosition.RobotBallPos())
-    if UnitedPosition.RestrictedArea():
-        if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
-            if lockball.LockBallSlip():
+    if UnitedPosition.RestrictedArea():#检查机器人石否在禁区内
+        if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:#球未丢失
+            if lockball.LockBallSlip():#成功持球
                 pose = UnitedPosition.FieldRobotPose()
                 uplane_score = UplaneScore(pose)
                 huck_score = HuckScore(pose)
@@ -67,7 +68,7 @@ def logic_step():
                     huck_score,
                     jump_score]
                 logger.info("LockBallSlip executed successfully.")
-                if max(scores) == huck_score:
+                if max(scores) == huck_score:#大脚射门评分最高
                     logger.info("Exe huck")
                     if UnitedPosition.CanShoot():
                         peripheral.ShootBall()
@@ -76,10 +77,10 @@ def logic_step():
                             TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
                         except:
                             TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[100,0])%360)
-                elif max(scores) == uplane_score:
+                elif max(scores) == uplane_score:#上平面射门评分最高
                     if lockball.slip():
                         UplaneStep()
-                elif max(scores) == jump_score:
+                elif max(scores) == jump_score:#跳射评分最高
                     peripheral.ShootBall()
         else:
             peripheral.Dribble(False)
@@ -88,7 +89,7 @@ def logic_step():
                 UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
 
 def UplaneStep(thershold = [[50,30],[100,90]]):
-    pose = UnitedPosition.FieldRobotPose()
+    pose = UnitedPosition.FieldRobotPose()#方向获取与Y方向处理
     x, y, _ = pose
     if y < 0:
         angle_k = -1
@@ -100,23 +101,21 @@ def UplaneStep(thershold = [[50,30],[100,90]]):
                 pass
     else:
         angle_k = 1
-    if UnitedPosition.PointInShape(pose,thershold):
-        if UnitedPosition.CanShoot():
+    if UnitedPosition.PointInShape(pose,thershold):#判断是否在射门区域内
+        if UnitedPosition.CanShoot():#在就直接射门
             peripheral.ShootBall()
-        else:
+        else:#不在就转向射门角度
             try:
-                TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
+                TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))#计算射门角度并转向
             except:
-                TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x,y],[100,0])%360)
-    elif not abs(y) > 50:
+                TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x,y],[100,0])%360)#算不出来直接转向特定角度球门
+    elif not abs(y) > 50:#不在射门区域内但在中线附近
         if TurnTo_with_ball(90*angle_k):
             chassis.FieldMoveVector(0,1,90*angle_k)
     else:
         if TurnTo_with_ball(90*angle_k):
             chassis.FieldMoveVector(0.91,0,90*angle_k)
-        
-
-if __name__ == "__main__":
+if __name__ == "__main__":#主程序
     try:
         while True:
             logic_step()
