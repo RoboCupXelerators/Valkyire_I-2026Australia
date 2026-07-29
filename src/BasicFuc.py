@@ -12,6 +12,7 @@ from __future__ import annotations
 # TODO: Replace this legacy wildcard import with explicit LunaPre facade names
 # used by this module: Settings, UnitedPosition, chassis, peripheral, logger.
 from LunaPre import *
+from LunaPre import runtime
 from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
 import math
 import simple_pid
@@ -75,6 +76,7 @@ class LockSeries:
         self.lost_hold_seconds = 0.12
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
+        self._pose_revision = None
         self.pan_x = simple_pid.PID(0.023, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-1.0, 0), auto_mode=True)
         self.pan_y = simple_pid.PID(0.018, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-0.8, 0.8), auto_mode=True)
         self.pan_w = simple_pid.PID(1.5, 0.2, 0.3, setpoint=0, output_limits=(-200, 200), auto_mode=True)
@@ -83,6 +85,18 @@ class LockSeries:
         self.pan_x.reset()
         self.pan_y.reset()
         self.pan_w.reset()
+
+    def _reset_on_pose_change(self):
+        bits = getattr(runtime, "Bits", None)
+        getter = getattr(bits, "GetPoseRevision", None)
+        if not callable(getter):
+            return
+        revision = int(getter())
+        if self._pose_revision is not None and revision != self._pose_revision:
+            self._reset_lockball_pid()
+            self._lockball_last_seen = None
+            self._lockball_last_seen_ts = 0.0
+        self._pose_revision = revision
 
     def _current_or_recent_ball(self):
         """返回当前球坐标；如果刚丢球很短时间，就临时沿用上一帧坐标。
@@ -109,6 +123,7 @@ class LockSeries:
 
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
+        self._reset_on_pose_change()
         ball, caught = self._current_or_recent_ball()
         if caught:
             peripheral.Dribble(True)

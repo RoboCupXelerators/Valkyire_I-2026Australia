@@ -267,6 +267,7 @@ class Positions:
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
+        self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
 
@@ -284,6 +285,16 @@ class Positions:
     def _reset_pos2pos_pid(self):
         self.Position_X_PID.reset()
         self.Position_Y_PID.reset()
+
+    def _reset_pos2pos_on_pose_change(self):
+        bits = getattr(runtime, "Bits", None)
+        getter = getattr(bits, "GetPoseRevision", None)
+        if not callable(getter):
+            return
+        revision = int(getter())
+        if self._pose_revision is not None and revision != self._pose_revision:
+            self._reset_pos2pos_pid()
+        self._pose_revision = revision
 
     def _resolve_speed_gain(self, speed_gain: int | float | None) -> float:
         if speed_gain is None:
@@ -736,6 +747,7 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
+        self._reset_pos2pos_on_pose_change()
         pose = runtime.get_field_pose()
         if pose is not None:
             self.LidarPos = pose
