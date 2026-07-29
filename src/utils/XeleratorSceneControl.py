@@ -137,6 +137,10 @@ class XeleratorSceneControl:
         linear_brake_accel: float | None = None,
         angular_accel: float | None = None,
         angular_brake_accel: float | None = None,
+        motor_torque_nm: float | None = None,
+        dribbler_surface_speed_m_s: float | None = None,
+        dribbler_friction: float | None = None,
+        visual_model_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"robot_id": int(robot_id)}
         for key, value in (
@@ -147,10 +151,30 @@ class XeleratorSceneControl:
             ("linear_brake_accel", linear_brake_accel),
             ("angular_accel", angular_accel),
             ("angular_brake_accel", angular_brake_accel),
+            ("motor_torque_nm", motor_torque_nm),
+            ("dribbler_surface_speed_m_s", dribbler_surface_speed_m_s),
+            ("dribbler_friction", dribbler_friction),
         ):
             if value is not None:
                 payload[key] = float(value)
+        if visual_model_id is not None:
+            payload["visual_model_id"] = str(visual_model_id)
         return self.request("set_robot_tuning", **payload)
+
+    def save_robot_config(self, robot_id: int, **values: Any) -> dict[str, Any]:
+        return self.request("save_robot_config", robot_id=int(robot_id), **values)
+
+    def reload_config(self) -> dict[str, Any]:
+        return self.request("reload_config")
+
+    def refresh_models(self) -> dict[str, Any]:
+        return self.request("refresh_models")
+
+    def set_sim_mode(self, mode: str) -> dict[str, Any]:
+        return self.request("set_sim_mode", mode=str(mode))
+
+    def configure_match(self, *, timed: bool, duration_s: float = 300.0) -> dict[str, Any]:
+        return self.request("configure_match", timed=bool(timed), duration_s=float(duration_s))
 
     def set_dribble(self, robot_id: int, enabled: bool, *, strength: float = 0.7) -> dict[str, Any]:
         return self.request(

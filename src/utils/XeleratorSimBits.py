@@ -739,6 +739,16 @@ class XeleratorSimBits:
         with self._status_lock:
             return bool(self._status.control_enabled)
 
+    def GetPoseRevision(self) -> int:
+        """Return Unity's monotonic placement revision for this robot."""
+        status = self._scene_status_snapshot()
+        if not isinstance(status, dict):
+            return 0
+        for robot in status.get("robots") or []:
+            if int(robot.get("id", -1)) == int(self.robot_id):
+                return int(robot.get("pose_revision", 0))
+        return 0
+
     def GetPenaltyState(self) -> dict:
         with self._status_lock:
             active = bool(self._status.penalty_active)
