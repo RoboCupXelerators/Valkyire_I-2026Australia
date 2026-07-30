@@ -1,4 +1,5 @@
 import math
+import os
 from ReasonData.config import Settings
 from ReasonData import logger
 import time, threading
@@ -369,7 +370,10 @@ class Peripherals:
             self.SetIO(self.cfg.Ports.ElecMagnet,0)
             self.logger.info("ShootBall Activated")
             # TODO 用更优雅的实现技能冷却
-            time.sleep(0.3)
+            # Physical kickers need the electromagnet pulse width. The SIM port
+            # is an edge-triggered UDP event, so sleeping only hides its peak.
+            if os.environ.get("ROBOCUPX_BITS", "").strip().upper() != "SIM":
+                time.sleep(0.3)
         else:
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
