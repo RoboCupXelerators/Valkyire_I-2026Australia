@@ -606,8 +606,10 @@ class XeleratorSimBits:
         return {name: raw[idx] for idx, name in enumerate(order)}
 
     def _held_ball_observation(self, ball: list[float] | None) -> list[float]:
-        if ball is not None:
-            return ball
+        # Unity's possession flag is the authoritative semantic state. Contact
+        # physics can place the center slightly outside LunaPre's visual catch
+        # tolerance, so returning the raw coordinate here would turn a held ball
+        # back into a free-ball observation.
         held = getattr(self, "_held_ball_pos_cm", [8.5, 0.0])
         return [float(held[0]), float(held[1])]
 

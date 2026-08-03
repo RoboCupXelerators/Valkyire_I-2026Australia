@@ -84,6 +84,16 @@ def test_sim_bits_synthesizes_catch_window_coords_when_status_has_ball_without_e
     assert ball_state == "held"
 
 
+def test_sim_bits_canonicalizes_shifted_contact_coords_when_status_has_ball():
+    bits = _make_bits_for_possession(0.0987, 0.004, dribble=0.7, has_ball=True)
+
+    observation = bits.GetBallPos()
+    assert observation == _catch_val()
+    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(observation)
+    assert robot_ball_pos == BALL_HELD
+    assert ball_state == "held"
+
+
 def test_robot_ball_pos_classifies_catch_val_coords_as_held():
     robot_ball_pos, ball_state = _robot_ball_pos_for_observation(_catch_val())
 
