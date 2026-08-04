@@ -318,6 +318,16 @@ class XeleratorVision:
                 return list(NO_BALL_OBSERVATION)
         return list(NO_BALL_OBSERVATION)
 
+    def has_ball(self) -> bool:
+        """Return the simulator's explicit possession state when available."""
+
+        if self.bits is None or not hasattr(self.bits, "HasBall"):
+            return False
+        try:
+            return bool(self.bits.HasBall())
+        except Exception:
+            return False
+
     def get_chassis_pos(self):
         if self.bits is None or not hasattr(self.bits, "GetEnemyPos"):
             return []

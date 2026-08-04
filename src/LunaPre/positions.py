@@ -617,12 +617,19 @@ class Positions:
         # Ball semantics belong to the active vision provider. Runtime only wires
         # providers together; it should not bypass vision with a second Bits path.
         self.ballPos = self._get_ball_pos()
-        if self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
+        authoritative_possession = self._authoritative_ball_possession()
+        if authoritative_possession is True:
+            self.ballPosOut = BALL_HELD
+        elif self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
             self.ballPosOut = self.ballPos
         elif self.ballPos == [0, 0]:
             self.ballPosOut = BALL_NOT_FOUND
         elif self._robot_ball_out_of_bounds(self.ballPos):
             self.ballPosOut = BALL_NOT_FOUND
+        elif authoritative_possession is False:
+            # Simulator status already distinguishes physical possession from a
+            # nearby free ball. Do not widen that state through camera tolerance.
+            self.ballPosOut = self.ballPos
         else:
             catch_x, catch_y = cfg.Motion.CatchVal
             # Near-field vision noise / dribbler occlusion is often ~1cm.
@@ -641,6 +648,17 @@ class Positions:
             if Settings.Debug.FullLog:
                 logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
+
+    @staticmethod
+    def _authoritative_ball_possession():
+        provider = getattr(runtime, "vision", None)
+        getter = getattr(provider, "has_ball", None)
+        if not callable(getter):
+            return None
+        try:
+            return bool(getter())
+        except Exception:
+            return None
 
     def BallState(self, ball_pos: list | None = None) -> str:
         """Return the semantic ball state: ``lost``, ``held``, or ``free``.

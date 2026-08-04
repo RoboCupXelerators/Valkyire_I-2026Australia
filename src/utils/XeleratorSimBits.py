@@ -153,6 +153,7 @@ class SimStatus:
     seq: int = 0
     robot_id: int = 1
     has_ball: bool = False
+    possession_authoritative: bool = False
     control_enabled: bool = True
     penalty_active: bool = False
     # pose in Unity field frame (meters & degrees) before scaling
@@ -727,6 +728,8 @@ class XeleratorSimBits:
 
     def HasBall(self) -> bool:
         with self._status_lock:
+            if self._status.possession_authoritative:
+                return bool(self._status.has_ball)
             if bool(self._status.has_ball):
                 return True
             ball = self._status_ball_relative_cm_locked()
@@ -780,9 +783,10 @@ class XeleratorSimBits:
             ball = self._status_ball_relative_cm_locked()
             if self._status.has_ball:
                 return self._held_ball_observation(ball)
-            if ball is not None:
+            if ball is not None and not self._status.possession_authoritative:
                 if self._infer_has_ball_from_relative(ball):
                     return self._held_ball_observation(ball)
+            if ball is not None:
                 return self._apply_noisy_ball_observation(ball, speed_mps)
 
         if self._ball_status_fallback:
@@ -1173,6 +1177,7 @@ class XeleratorSimBits:
                 self._status.seq = int(seq)
                 self._status.robot_id = int(rid)
                 self._status.has_ball = (flags & 0x01) != 0
+                self._status.possession_authoritative = True
                 if int(_reserved) == 0x5845:
                     self._status.control_enabled = (flags & 0x02) != 0
                     self._status.penalty_active = (flags & 0x04) != 0
