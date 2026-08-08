@@ -73,13 +73,27 @@ class LockSeries:
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
-        self.lost_hold_seconds = 0.12
+        tuning = getattr(Settings.Motion, "LockBallSlip", None)
+        self.forward_kp = float(getattr(tuning, "ForwardKp", 0.023))
+        self.lateral_kp = float(getattr(tuning, "LateralKp", 0.018))
+        self.angular_kp = float(getattr(tuning, "AngularKp", 1.5))
+        self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 1.0)))
+        self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.8)))
+        self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 200.0)))
+        self.rear_forward_kp = float(getattr(tuning, "RearForwardKp", 0.012))
+        self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.65)))
+        self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.02))
+        self.rear_lateral_max = max(0.0, float(getattr(tuning, "RearLateralMaxMps", 0.85)))
+        self.rear_angular_kp = float(getattr(tuning, "RearAngularKp", 2.2))
+        self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 260.0)))
+        self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
+        self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.14)))
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
         self._pose_revision = None
-        self.pan_x = simple_pid.PID(0.023, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-1.0, 0), auto_mode=True)
-        self.pan_y = simple_pid.PID(0.018, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-0.8, 0.8), auto_mode=True)
-        self.pan_w = simple_pid.PID(1.5, 0.2, 0.3, setpoint=0, output_limits=(-200, 200), auto_mode=True)
+        self.pan_x = simple_pid.PID(self.forward_kp, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-self.forward_max, 0), auto_mode=True)
+        self.pan_y = simple_pid.PID(self.lateral_kp, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-self.lateral_max, self.lateral_max), auto_mode=True)
+        self.pan_w = simple_pid.PID(self.angular_kp, 0.2, 0.3, setpoint=0, output_limits=(-self.angular_max, self.angular_max), auto_mode=True)
 
     def _reset_lockball_pid(self):
         self.pan_x.reset()
@@ -141,6 +155,19 @@ class LockSeries:
             ball_angle = 0
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
+
+        # A rear ball cannot be reached by forward PID. Turn toward it quickly
+        # while using a small lateral correction, then hand control back to the
+        # normal capture loop once the ball is in front of the robot.
+        if ball_x <= 0:
+            self._reset_lockball_pid()
+            speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
+            speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
+            speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
+            peripheral.Dribble(True)
+            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+            return False
+
         speed_x = -self.pan_x(ball_x)
         speed_y = -self.pan_y(ball_y)
         speed_w = -self.pan_w(ball_angle)
@@ -149,10 +176,8 @@ class LockSeries:
         # small forward creep so a ~1cm shortfall still gets eaten into the
         # dribbler instead of freezing with speed_x=0.
         if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2.5:
-            creep = min(0.12, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
+            creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
             speed_x = max(float(speed_x), creep)
-        if ball_x <= 0:
-            speed_x = 0
 
         peripheral.Dribble(True)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)

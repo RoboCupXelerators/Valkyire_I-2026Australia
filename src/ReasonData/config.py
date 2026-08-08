@@ -103,6 +103,22 @@ class Preference:
         "Motion": {
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
+            "LockBallSlip": {
+                "ForwardKp": 0.025,
+                "LateralKp": 0.020,
+                "AngularKp": 1.7,
+                "ForwardMaxMps": 1.15,
+                "LateralMaxMps": 0.85,
+                "AngularMaxDegS": 230.0,
+                "RearForwardKp": 0.015,
+                "RearForwardMaxMps": 0.80,
+                "RearLateralKp": 0.020,
+                "RearLateralMaxMps": 0.85,
+                "RearAngularKp": 2.35,
+                "RearAngularMaxDegS": 280.0,
+                "LostHoldSeconds": 0.18,
+                "NearCreepMaxMps": 0.14
+            },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
                 "XLimit": 90.0,
