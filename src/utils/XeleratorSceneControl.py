@@ -13,6 +13,8 @@ import socket
 import time
 from typing import Any
 
+from utils.XeleratorSimPorts import SIM_DEFAULT_SCENE_CONTROL_PORT, resolve_port
+
 
 class XeleratorSceneControl:
     def __init__(
@@ -23,7 +25,13 @@ class XeleratorSceneControl:
         timeout_s: float = 1.0,
     ) -> None:
         self.host = host or os.environ.get("XEL_SCENE_CONTROL_HOST", "127.0.0.1")
-        self.port = int(port if port is not None else os.environ.get("XEL_SCENE_CONTROL_PORT", "20100"))
+        if port is not None:
+            self.port = int(port)
+        elif "XEL_SCENE_CONTROL_PORT" in os.environ:
+            # An explicit endpoint is already a resolved/final port.
+            self.port = int(os.environ["XEL_SCENE_CONTROL_PORT"])
+        else:
+            self.port = resolve_port(SIM_DEFAULT_SCENE_CONTROL_PORT)
         self.timeout_s = float(timeout_s)
 
     def request(self, cmd: str, **payload: Any) -> dict[str, Any]:

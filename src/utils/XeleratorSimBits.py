@@ -40,6 +40,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from utils.XeleratorSimPorts import resolve_port
+
 
 SIM_DEFAULT_UNITY_IP = "127.0.0.1"
 SIM_DEFAULT_ROBOT_ID = 1
@@ -77,11 +79,11 @@ def create_bits_and_lidar(cfg):
         cmd_base = int(getattr(sim_cfg, "CmdPortBase", SIM_DEFAULT_CMD_PORT_BASE))
         st_base = int(getattr(sim_cfg, "StatusPortBase", SIM_DEFAULT_STATUS_PORT_BASE))
         stride = int(getattr(sim_cfg, "PortStride", SIM_DEFAULT_PORT_STRIDE))
-        default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
-        default_status_port = st_base + (max(robot_id, 1) - 1) * stride
+        default_cmd_port = resolve_port(cmd_base + (max(robot_id, 1) - 1) * stride)
+        default_status_port = resolve_port(st_base + (max(robot_id, 1) - 1) * stride)
     else:
-        default_cmd_port = int(getattr(sim_cfg, "CmdPort", SIM_DEFAULT_CMD_PORT_BASE))
-        default_status_port = int(getattr(sim_cfg, "StatusPort", SIM_DEFAULT_STATUS_PORT_BASE))
+        default_cmd_port = resolve_port(int(getattr(sim_cfg, "CmdPort", SIM_DEFAULT_CMD_PORT_BASE)))
+        default_status_port = resolve_port(int(getattr(sim_cfg, "StatusPort", SIM_DEFAULT_STATUS_PORT_BASE)))
 
     cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
     status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
