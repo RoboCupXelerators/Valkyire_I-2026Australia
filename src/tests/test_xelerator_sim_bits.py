@@ -59,7 +59,12 @@ def _robot_ball_pos_for_observation(observation):
     position._robot_ball_out_of_bounds = lambda ball_pos: False
     position.ballPos = None
     position.ballPosOut = None
-    return Positions.RobotBallPos(position), Positions.BallState(position)
+    vision = runtime.vision
+    try:
+        runtime.vision = None
+        return Positions.RobotBallPos(position), Positions.BallState(position)
+    finally:
+        runtime.vision = vision
 
 
 def test_sim_bits_returns_catch_window_coords_when_dribbler_covers_ball():
@@ -174,6 +179,15 @@ def test_sim_bits_trusts_fresh_explicit_free_possession():
 
     assert bits.HasBall() is False
     assert bits.GetBallPos() == [9.5, 0.0]
+
+
+def test_sim_bits_uninitialized_fallback_flags_default_to_disabled():
+    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.0)
+    del bits._ball_status_fallback
+    bits._get_scene_ball_pos_fallback = lambda: pytest.fail("scene fallback must remain disabled")
+
+    assert not hasattr(bits, "_prefer_scene_ball_fallback")
+    assert bits.GetBallPos() == [12.0, 1.0]
 
 
 def test_xelerator_vision_exposes_cam_ports_without_frame_thread(monkeypatch):

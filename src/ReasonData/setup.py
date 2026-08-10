@@ -14,8 +14,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / f"{Date}.log"
 
 def AutoSetup():
-    if not DATA_DIR.exists():
-        DATA_DIR.mkdir()
+    DATA_DIR.resolve().mkdir(parents=True, exist_ok=True)
     if not LOG_FILE.exists():
         logger.add(LOG_FILE)
         logger.info('models.log is created successfully')

@@ -279,6 +279,9 @@ class XeleratorSimBits:
             "true",
             "yes",
         }
+        self._prefer_scene_ball_fallback = str(
+            os.environ.get("XEL_SIM_PREFER_SCENE_BALL", "0")
+        ).lower() in {"1", "true", "yes"}
         self._ball_observation_max_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MAX_CM", "350"))
         self._ball_observation_min_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MIN_CM", "0.25"))
         self._infer_dribbler_possession = str(os.environ.get("XEL_SIM_INFER_DRIBBLER_POSSESSION", "1")).lower() not in {
@@ -780,8 +783,14 @@ class XeleratorSimBits:
         coordinates (or synthesize cfg.Motion.CatchVal if the extension is
         missing) and let RobotBallPos() classify BALL_HELD.
         """
+        ball_status_fallback = bool(getattr(self, "_ball_status_fallback", False))
+        prefer_scene_ball_fallback = bool(getattr(self, "_prefer_scene_ball_fallback", False))
         with self._status_lock:
             speed_mps = self._status_planar_speed_mps_locked()
+            if prefer_scene_ball_fallback and ball_status_fallback:
+                fallback = self._get_scene_ball_pos_fallback()
+                if fallback is not None:
+                    return self._apply_noisy_ball_observation(fallback, speed_mps)
             ball = self._status_ball_relative_cm_locked()
             if self._status.has_ball:
                 return self._held_ball_observation(ball)
@@ -791,7 +800,7 @@ class XeleratorSimBits:
             if ball is not None:
                 return self._apply_noisy_ball_observation(ball, speed_mps)
 
-        if self._ball_status_fallback:
+        if ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
             if fallback is not None:
                 if self._infer_has_ball_from_relative(fallback):

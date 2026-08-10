@@ -80,6 +80,9 @@ class LockSeries:
         self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 1.0)))
         self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.8)))
         self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 200.0)))
+        self.turn_only_angle = max(10.0, float(getattr(tuning, "TurnOnlyAngleDeg", 70.0)))
+        self.turn_only_kp = float(getattr(tuning, "TurnOnlyKp", 1.0))
+        self.turn_only_max = max(0.0, float(getattr(tuning, "TurnOnlyMaxDegS", 75.0)))
         self.rear_forward_kp = float(getattr(tuning, "RearForwardKp", 0.012))
         self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.65)))
         self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.02))
@@ -88,6 +91,7 @@ class LockSeries:
         self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 260.0)))
         self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
         self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.14)))
+        self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
         self._pose_revision = None
@@ -131,7 +135,20 @@ class LockSeries:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             return ball, True
-        self._lockball_last_seen = list(ball)
+
+        # A scene reset or delayed simulator packet can briefly report a stale
+        # ball position hundreds of centimetres away from the previous frame.
+        # Reject only that impossible jump; normal vision noise remains usable.
+        candidate = list(ball)
+        if self._lockball_last_seen is not None:
+            jump_cm = math.hypot(
+                float(candidate[0]) - float(self._lockball_last_seen[0]),
+                float(candidate[1]) - float(self._lockball_last_seen[1]),
+            )
+            if jump_cm > self.ball_jump_reject_cm:
+                return self._lockball_last_seen, False
+
+        self._lockball_last_seen = candidate
         self._lockball_last_seen_ts = now
         return ball, False
 
@@ -155,6 +172,19 @@ class LockSeries:
             ball_angle = 0
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
+
+        # Large heading errors and translation create an orbit: the ball moves
+        # across the camera while the robot keeps turning, then the controller
+        # reverses direction on the next frame. Align in place first.
+        if abs(ball_angle) >= self.turn_only_angle:
+            self._reset_lockball_pid()
+            speed_w = max(
+                -self.turn_only_max,
+                min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
+            )
+            peripheral.Dribble(True)
+            chassis.RobotMoveVector(0.0, 0.0, speed_w)
+            return False
 
         # A rear ball cannot be reached by forward PID. Turn toward it quickly
         # while using a small lateral correction, then hand control back to the

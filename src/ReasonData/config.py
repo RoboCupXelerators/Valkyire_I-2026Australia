@@ -109,15 +109,19 @@ class Preference:
                 "AngularKp": 1.7,
                 "ForwardMaxMps": 1.15,
                 "LateralMaxMps": 0.85,
-                "AngularMaxDegS": 230.0,
+                "AngularMaxDegS": 120.0,
+                "TurnOnlyAngleDeg": 70.0,
+                "TurnOnlyKp": 1.0,
+                "TurnOnlyMaxDegS": 75.0,
                 "RearForwardKp": 0.015,
                 "RearForwardMaxMps": 0.80,
                 "RearLateralKp": 0.020,
                 "RearLateralMaxMps": 0.85,
                 "RearAngularKp": 2.35,
-                "RearAngularMaxDegS": 280.0,
+                "RearAngularMaxDegS": 120.0,
                 "LostHoldSeconds": 0.18,
-                "NearCreepMaxMps": 0.14
+                "NearCreepMaxMps": 0.14,
+                "BallJumpRejectCm": 45.0
             },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
