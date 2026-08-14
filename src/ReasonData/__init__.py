@@ -26,7 +26,7 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).parent
 PROJECT_DIR = APP_DIR.parent.parent
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
 _runtime_log_dir = os.environ.get("XEL_RUNTIME_LOG_DIR")
 LOG_DIR = Path(_runtime_log_dir) if _runtime_log_dir else PROJECT_DIR / "log"
 try:

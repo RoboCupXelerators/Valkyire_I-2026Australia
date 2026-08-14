@@ -158,7 +158,7 @@ class LockSeries:
         ball, caught = self._current_or_recent_ball()
         if caught:
             peripheral.Dribble(True)
-            chassis.stop()
+            # chassis.stop()
             self._reset_lockball_pid()
             return True
         if ball == BALL_NOT_FOUND:
@@ -173,18 +173,19 @@ class LockSeries:
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
 
-        # Large heading errors and translation create an orbit: the ball moves
-        # across the camera while the robot keeps turning, then the controller
-        # reverses direction on the next frame. Align in place first.
-        if abs(ball_angle) >= self.turn_only_angle:
-            self._reset_lockball_pid()
-            speed_w = max(
-                -self.turn_only_max,
-                min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
-            )
-            peripheral.Dribble(True)
-            chassis.RobotMoveVector(0.0, 0.0, speed_w)
-            return False
+        # # Large heading errors and translation create an orbit: the ball moves
+        # # across the camera while the robot keeps turning, then the controller
+        # # reverses direction on the next frame. Align in place first.
+        # if abs(ball_angle) >= self.turn_only_angle:
+        #     self._reset_lockball_pid()
+        #     speed_w = max(
+        #         -self.turn_only_max,
+        #         min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
+        #     )
+        #     peripheral.Dribble(True)
+        #     print(speed_w)
+        #     # chassis.RobotMoveVector(0.0, 0.0, speed_w)
+        #     return False
 
         # A rear ball cannot be reached by forward PID. Turn toward it quickly
         # while using a small lateral correction, then hand control back to the
@@ -354,6 +355,9 @@ def CircleAround(iAimAngle, max_ticks: int | None = None):
     print('stopped')
     return True
 
+def Circle(r, k = 1,d = 1):
+    chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
+
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     """带球绕球转向到目标角度。
 
@@ -366,8 +370,8 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
     ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
-    logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
+        peripheral.Dribble(True)
         # Robot-frame ball angle (0=forward)
         iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
         Error = angle_error_deg(Aim_Angle, yaw)
@@ -375,15 +379,10 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error >= 180:
             iDirectionFactor = 1
-        if abs(Aim_Angle-yaw) >= 10:
-            logger.error(Error)
+        Error = LinearMap(Error,[-180,180],[-1,1])
+        if abs(Aim_Angle-yaw) >= 15:
             # Intentional raw wheel mix: orbit around the held ball while turning.
-            chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK *Error/75,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75,
-                -iDirectionFactor * 15 * SpeedK *Error/75,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75
-                ])
+            Circle(0.6,Error,iDirectionFactor)
             return False
         else:
             return True
@@ -477,7 +476,8 @@ def TurnTo_with_ball_orbit(
         speed_y *= scale
 
     peripheral.Dribble(dribble_power)
-    chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
+    # chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
+    print(speed_x*20, speed_y*20, wz_deg_s)
     return False
 
 def TurnTo_With_ball_Strong(angle):

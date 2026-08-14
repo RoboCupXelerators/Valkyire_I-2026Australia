@@ -15,7 +15,7 @@ from pathlib import Path
 import random
 
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 CACHE_FILE = DATA_DIR / "cfg.cache.json"
 

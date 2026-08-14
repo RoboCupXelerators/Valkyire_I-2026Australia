@@ -317,6 +317,7 @@ class Car:
                 self.stop()
                 break
             time.sleep(0.03)
+        return True
 
     def stop(self):
         self._motion_backend.reset_command_filter()

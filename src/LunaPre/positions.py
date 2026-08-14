@@ -526,7 +526,7 @@ class Positions:
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
-        return round(iDeltaAngle,2)
+        return round(iDeltaAngle%360,2)
 
     def PointInShape(self, point, polygon: list[list,list]):
         try:
