@@ -30,6 +30,16 @@ const state = {
   lastOnlineTime: 0, // 最后在线时间
 };
 
+const RADAR_MIN_RANGE_CM = 25;
+const RADAR_MAX_RANGE_CM = 1000;
+const RADAR_RANGE_STEP_CM = 25;
+const radarZoomState = {
+  manualRangeCm: null,
+  autoRangeCm: 100,
+  lastData: null,
+  pointCloud: [],
+};
+
 // DOM Elements
 const elements = {};
 
@@ -42,6 +52,7 @@ function init() {
   setupRecordingControls();
   setupReplayControls();
   setupVisionControls();
+  setupRadarControls();
   setupSettingsTabs();
   setupConfigPanel();
   setupOTAControls();
@@ -161,6 +172,59 @@ function setupVisionControls() {
   // Initialize camera feeds - will be started when navigating to vision page
 }
 
+function setupRadarControls() {
+  document
+    .getElementById("radar-zoom-out")
+    ?.addEventListener("click", () => changeRadarZoom(1.25));
+  document
+    .getElementById("radar-zoom-in")
+    ?.addEventListener("click", () => changeRadarZoom(0.8));
+  document
+    .getElementById("radar-zoom-auto")
+    ?.addEventListener("click", resetRadarZoom);
+  updateRadarZoomControls();
+}
+
+function changeRadarZoom(factor) {
+  const currentRange = radarZoomState.manualRangeCm ?? radarZoomState.autoRangeCm;
+  const nextRange = Math.round(
+    (currentRange * factor) / RADAR_RANGE_STEP_CM,
+  ) * RADAR_RANGE_STEP_CM;
+  radarZoomState.manualRangeCm = Math.max(
+    RADAR_MIN_RANGE_CM,
+    Math.min(RADAR_MAX_RANGE_CM, nextRange),
+  );
+  updateRadarZoomControls();
+  if (radarZoomState.lastData) {
+    drawRadar(radarZoomState.lastData);
+  }
+}
+
+function resetRadarZoom() {
+  radarZoomState.manualRangeCm = null;
+  updateRadarZoomControls();
+  if (radarZoomState.lastData) {
+    drawRadar(radarZoomState.lastData);
+  }
+}
+
+function updateRadarZoomControls() {
+  const label = document.getElementById("radar-zoom-label");
+  const zoomOut = document.getElementById("radar-zoom-out");
+  const zoomIn = document.getElementById("radar-zoom-in");
+  const autoButton = document.getElementById("radar-zoom-auto");
+  const manualRange = radarZoomState.manualRangeCm;
+
+  if (label) {
+    label.textContent = manualRange === null
+      ? `自动 ±${radarZoomState.autoRangeCm}cm`
+      : `手动 ±${manualRange}cm`;
+  }
+  if (zoomOut) zoomOut.disabled = manualRange >= RADAR_MAX_RANGE_CM;
+  if (zoomIn) zoomIn.disabled = manualRange !== null && manualRange <= RADAR_MIN_RANGE_CM;
+  if (autoButton) autoButton.disabled = manualRange === null;
+}
+
 // Camera indices will be loaded from config
 // CAM_INDICES: 显示位置对应的摄像头端口号 [Back, Left, Front, Right]
 // CAM_PORTS: Vision 模块的 CamPorts 顺序 [Back, Left, Front, Right]（默认）
@@ -200,6 +264,11 @@ function initCameraIndices() {
 // Vision feed intervals
 let visionFeedInterval = null;
 let visionStateInterval = null;
+let lidarPointCloudInterval = null;
+let visionStateRequestInFlight = false;
+let lidarPointCloudRequestInFlight = false;
+let overviewRequestInFlight = false;
+const cameraRequestsInFlight = new Set();
 
 function startVisionFeeds() {
   // 如果已经在运行，先停止
@@ -211,7 +280,8 @@ function startVisionFeeds() {
     for (let i = 0; i < 4; i++) {
       const camIdx = CAM_INDICES[i];
       const img = document.getElementById("cam" + i);
-      if (img) {
+      if (img && !cameraRequestsInFlight.has(camIdx)) {
+        cameraRequestsInFlight.add(camIdx);
         // Use fetch to get response headers with processing time
         fetch(`/api/cam/${camIdx}.jpg?size=640&t=${t}`)
           .then((response) => {
@@ -246,6 +316,9 @@ function startVisionFeeds() {
             // Clear latency on error
             camLatencies[camIdx] = [];
             updateLatencyDisplay();
+          })
+          .finally(() => {
+            cameraRequestsInFlight.delete(camIdx);
           });
       }
     }
@@ -255,6 +328,8 @@ function startVisionFeeds() {
 
   // Start state polling for radar and info
   visionStateInterval = setInterval(updateVisionState, 100);
+  updateLidarPointCloud();
+  lidarPointCloudInterval = setInterval(updateLidarPointCloud, 200);
 }
 
 // 停止视觉页面的摄像头流
@@ -267,6 +342,11 @@ function stopVisionFeeds() {
     clearInterval(visionStateInterval);
     visionStateInterval = null;
   }
+  if (lidarPointCloudInterval) {
+    clearInterval(lidarPointCloudInterval);
+    lidarPointCloudInterval = null;
+  }
+  radarZoomState.pointCloud = [];
   console.log("[Vision] Stopped vision feeds");
 }
 
@@ -377,8 +457,13 @@ let perfState = {
 };
 
 function updateVisionState() {
+  if (visionStateRequestInFlight) return;
+  visionStateRequestInFlight = true;
   fetch("/api/state")
-    .then((r) => r.json())
+    .then((r) => {
+      if (!r.ok) throw new Error(`State request failed: ${r.status}`);
+      return r.json();
+    })
     .then((data) => {
       // Store bboxes for drawing
       visionState.ball_bboxes_640 = data.ball_bboxes_640 || [
@@ -433,6 +518,33 @@ function updateVisionState() {
       if (statusEl) {
         statusEl.textContent = "状态: 离线";
       }
+    })
+    .finally(() => {
+      visionStateRequestInFlight = false;
+    });
+}
+
+function updateLidarPointCloud() {
+  if (lidarPointCloudRequestInFlight) return;
+  lidarPointCloudRequestInFlight = true;
+  fetch("/api/lidar/point-cloud")
+    .then((response) => {
+      if (!response.ok) throw new Error(`Point cloud request failed: ${response.status}`);
+      return response.json();
+    })
+    .then((data) => {
+      radarZoomState.pointCloud = Array.isArray(data.point_cloud_cm)
+        ? data.point_cloud_cm
+        : [];
+      if (radarZoomState.lastData) {
+        drawRadar(radarZoomState.lastData);
+      }
+    })
+    .catch(() => {
+      radarZoomState.pointCloud = [];
+    })
+    .finally(() => {
+      lidarPointCloudRequestInFlight = false;
     });
 }
 
@@ -482,12 +594,8 @@ function updateLidarPanel(lidarStatus) {
   }
 }
 
-// Map bbox from 640x640 detector space to display image space
-// NOTE: The detector outputs bbox in 640x640 letterboxed space.
-// The display image is a scaled version of the original camera frame (e.g., 480x480).
-// Since we don't know the original camera frame size, we assume the detector's
-// 640x640 letterbox and the display image both preserve the original aspect ratio.
-// Therefore, we can directly scale from 640x640 to display size.
+// Map bbox from the 640x640 detector letterbox back to the displayed image.
+// The camera frame is usually 4:3, so detector coordinates include vertical padding.
 function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH) {
   if (!bbox || bbox.length < 6) return null;
 
@@ -499,19 +607,35 @@ function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH) {
     const y2 = bbox.length >= 7 ? bbox[5] : bbox[4];
     const conf = bbox.length >= 7 ? bbox[6] : bbox[5];
 
+    srcW = Math.max(1, srcW);
+    srcH = Math.max(1, srcH);
     dstW = Math.max(1, dstW);
     dstH = Math.max(1, dstH);
 
-    // Direct scale from 640x640 detector space to display size.
-    // Both spaces maintain the same aspect ratio relative to original frame,
-    // so direct scaling works.
-    const scaleX = dstW / 640;
-    const scaleY = dstH / 640;
+    // Invert the same letterbox transform used before inference.
+    const detectorSize = 640;
+    const letterboxScale = Math.min(
+      detectorSize / srcW,
+      detectorSize / srcH,
+    );
+    const padX = (detectorSize - srcW * letterboxScale) / 2;
+    const padY = (detectorSize - srcH * letterboxScale) / 2;
+    const toSourceX = (value) => (value - padX) / letterboxScale;
+    const toSourceY = (value) => (value - padY) / letterboxScale;
+    const clampX = (value) => Math.max(0, Math.min(srcW, value));
+    const clampY = (value) => Math.max(0, Math.min(srcH, value));
 
-    const dx1 = Math.round(x1 * scaleX);
-    const dy1 = Math.round(y1 * scaleY);
-    const dx2 = Math.round(x2 * scaleX);
-    const dy2 = Math.round(y2 * scaleY);
+    const sourceX1 = clampX(toSourceX(x1));
+    const sourceY1 = clampY(toSourceY(y1));
+    const sourceX2 = clampX(toSourceX(x2));
+    const sourceY2 = clampY(toSourceY(y2));
+    const displayScaleX = dstW / srcW;
+    const displayScaleY = dstH / srcH;
+
+    const dx1 = Math.round(sourceX1 * displayScaleX);
+    const dy1 = Math.round(sourceY1 * displayScaleY);
+    const dx2 = Math.round(sourceX2 * displayScaleX);
+    const dy2 = Math.round(sourceY2 * displayScaleY);
 
     if (bbox.length >= 7) {
       return [prefix[0], prefix[1], dx1, dy1, dx2, dy2, conf];
@@ -529,7 +653,8 @@ function drawAllOverlays() {
     const canvas = document.getElementById("ov" + i);
     if (!img || !canvas) continue;
 
-    // Get the wrapper container size (CSS sets it to 640x640)
+    // The canvas covers the wrapper; the image itself may occupy only part of it
+    // because object-fit: contain adds letterbox space around the image.
     const wrapper = img.parentElement;
     const wrapperW = wrapper ? wrapper.clientWidth : 640;
     const wrapperH = wrapper ? wrapper.clientHeight : 640;
@@ -541,9 +666,8 @@ function drawAllOverlays() {
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // The image is displayed with object-fit: contain, so it's centered and scaled
-    // to fit within the wrapper. We need to compute the actual displayed image size.
-    const imgNaturalW = img.naturalWidth || 480;
+    // Match the browser's object-fit: contain layout exactly.
+    const imgNaturalW = img.naturalWidth || 640;
     const imgNaturalH = img.naturalHeight || 480;
 
     // object-fit: contain means: scale = min(wrapperW/imgW, wrapperH/imgH)
@@ -556,11 +680,6 @@ function drawAllOverlays() {
     const displayedH = imgNaturalH * displayScale;
     const offsetX = (wrapperW - displayedW) / 2;
     const offsetY = (wrapperH - displayedH) / 2;
-
-    // bbox coordinates are in 640x640 detector space
-    // We need to scale from 640 to displayed size, then add offset
-    // Scale factor: displayedW / 640 (since both maintain aspect ratio relative to original frame)
-    const bboxScale = displayedW / 640;
 
     const dstW = displayedW;
     const dstH = displayedH;
@@ -575,21 +694,30 @@ function drawAllOverlays() {
       continue;
     }
 
-    // NOTE: bbox coordinates from ArisuIntelligence are already in correct 640x640 space.
-    // The -80 offset in ArisuIntelligence is for position calculation only, not for bbox display.
-    // So we don't need to apply additional offset here.
-
-    // Draw ball bbox - 使用 frameIdx 访问 bbox，应用 object-fit offset
+    // Bboxes are in detector space. Map them to the image area, then apply the
+    // image's object-fit offset inside the wrapper.
     const ballBbox = visionState.ball_bboxes_640[frameIdx];
     if (ballBbox) {
-      const mapped = mapBbox640ToImage(ballBbox, 640, 640, dstW, dstH);
+      const mapped = mapBbox640ToImage(
+        ballBbox,
+        imgNaturalW,
+        imgNaturalH,
+        dstW,
+        dstH,
+      );
       drawBboxOnCanvas(canvas, mapped, "#f72585", "ball", offsetX, offsetY);
     }
 
     // Draw chassis bbox
     const chassisBbox = visionState.chassis_bboxes_640[frameIdx];
     if (chassisBbox) {
-      const mapped = mapBbox640ToImage(chassisBbox, 640, 640, dstW, dstH);
+      const mapped = mapBbox640ToImage(
+        chassisBbox,
+        imgNaturalW,
+        imgNaturalH,
+        dstW,
+        dstH,
+      );
       drawBboxOnCanvas(canvas, mapped, "#4cc9f0", "chassis", offsetX, offsetY);
     }
 
@@ -608,7 +736,13 @@ function drawAllOverlays() {
         color = "#a78bfa";
         label = "goal";
       }
-      const mapped = mapBbox640ToImage(goalBbox, 640, 640, dstW, dstH);
+      const mapped = mapBbox640ToImage(
+        goalBbox,
+        imgNaturalW,
+        imgNaturalH,
+        dstW,
+        dstH,
+      );
       drawBboxOnCanvas(canvas, mapped, color, label, offsetX, offsetY);
     }
   }
@@ -657,6 +791,8 @@ function drawRadar(data) {
   const canvas = document.getElementById("radar");
   if (!canvas) return;
 
+  radarZoomState.lastData = data;
+
   const ctx = canvas.getContext("2d");
   const w = canvas.width,
     h = canvas.height;
@@ -681,6 +817,10 @@ function drawRadar(data) {
   }
   maxDist = expandRadarRange(maxDist, data.blue_goal_pos_cm, 1.25);
   maxDist = expandRadarRange(maxDist, data.yellow_goal_pos_cm, 1.25);
+  const lidarPoints = getLidarPointCloud(data);
+  for (const point of lidarPoints) {
+    maxDist = expandRadarRange(maxDist, point, 1.0);
+  }
 
   // 机器人视角里目标可能在整场任意位置，不能只按半场尺寸裁剪
   const fieldMax = Math.hypot(
@@ -689,12 +829,14 @@ function drawRadar(data) {
   );
   maxDist = Math.min(maxDist, fieldMax);
 
-  // 确保范围是合理的整数（50cm 的倍数）
+  // 确保动态范围是合理的整数（50cm 的倍数）
   maxDist = Math.ceil(maxDist / 50) * 50;
   maxDist = Math.max(100, Math.min(300, maxDist)); // 限制在 100-300cm
+  radarZoomState.autoRangeCm = maxDist;
+  updateRadarZoomControls();
 
-  const scale = (Math.min(w, h) * 0.4) / maxDist;
-  const rangeCm = maxDist;
+  const rangeCm = radarZoomState.manualRangeCm ?? maxDist;
+  const scale = (Math.min(w, h) * 0.4) / rangeCm;
 
   // Grid circles
   ctx.strokeStyle = "rgba(76,201,240,0.18)";
@@ -727,6 +869,9 @@ function drawRadar(data) {
   ctx.fillText("后", cx + 4, h - 10);
   ctx.fillText("左", 10, cy + 4);
   ctx.fillText("右", w - 20, cy + 4);
+
+  // Lidar points share the radar's coordinate system and scale.
+  drawLidarPoints(ctx, lidarPoints, cx, cy, scale, w, h);
 
   // Ego robot at center
   ctx.fillStyle = "rgba(58,238,159,0.85)";
@@ -812,6 +957,37 @@ function drawRadar(data) {
       }
     }
   }
+
+}
+
+function getLidarPointCloud(data) {
+  const rawPoints = radarZoomState.pointCloud.length > 0
+    ? radarZoomState.pointCloud
+    : data?.lidar_status?.point_cloud_cm;
+  if (!Array.isArray(rawPoints)) return [];
+  return rawPoints.map(normalizeRadarPoint).filter(Boolean);
+}
+
+function drawLidarPoints(ctx, points, cx, cy, scale, width, height) {
+  if (!points.length) return;
+
+  ctx.fillStyle = "rgba(76,201,240,0.75)";
+  ctx.beginPath();
+  for (const point of points) {
+    const { x, y } = point;
+    const canvasPoint = robotPointToRadarCanvas(x, y, cx, cy, scale);
+    if (
+      canvasPoint.x < 0 ||
+      canvasPoint.x > width ||
+      canvasPoint.y < 0 ||
+      canvasPoint.y > height
+    ) {
+      continue;
+    }
+    ctx.moveTo(canvasPoint.x + 2, canvasPoint.y);
+    ctx.arc(canvasPoint.x, canvasPoint.y, 2, 0, Math.PI * 2);
+  }
+  ctx.fill();
 }
 
 // Recording Controls
@@ -1227,6 +1403,12 @@ function updateOnlineStatus(isOnline) {
 }
 
 async function updateOverview() {
+  // The vision page owns the live state poll while its camera/radar streams run.
+  // Avoid a second /api/state request competing with those camera requests.
+  if (state.currentPage === "vision") return;
+  if (overviewRequestInFlight) return;
+  overviewRequestInFlight = true;
+
   try {
     // Fetch vision state
     const visionResponse = await fetch("/api/state");
@@ -1457,6 +1639,8 @@ async function updateOverview() {
     console.error("Polling error:", e);
     // 更新系统在线状态为离线
     updateOnlineStatus(false);
+  } finally {
+    overviewRequestInFlight = false;
   }
 }
 
@@ -4243,11 +4427,14 @@ async function saveConfigLegacy() {
     type: getFieldValue("robot-type"),
     Bit: getFieldValue("robot-bit"),
     Rec: getFieldValue("robot-rec"),
-    LidarType: config.RoboInfo?.LidarType || "s1",
+    LidarBackend: config.RoboInfo?.LidarBackend || "ros2",
+    LidarType: config.RoboInfo?.LidarType || "s3",
+    LidarInverted: config.RoboInfo?.LidarInverted ?? false,
   };
 
   config.Ports = {
     LidarID: getFieldValue("lidar-id"),
+    LidarPort: config.Ports?.LidarPort || "/dev/sllidar",
     IceLoongPort: getFieldValue("iceloong-port"),
     LowTigger: config.Ports?.LowTigger || 0,
     ReferPort: config.Ports?.ReferPort || 1,

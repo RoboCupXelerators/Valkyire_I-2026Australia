@@ -250,6 +250,31 @@ def _json_safe(obj):
     return str(obj)
 
 
+def _serialize_lidar_point_cloud_cm(lidar) -> list[list[float]]:
+    """Serialize the bounded lidar snapshot without touching distance state."""
+    if lidar is None or not getattr(lidar, "running", False) or getattr(lidar, "disabled", False):
+        return []
+
+    result = []
+    try:
+        point_cloud = getattr(lidar, "last_point_cloud", ()) or ()
+        for point in point_cloud:
+            if len(result) >= 360:
+                break
+            try:
+                if len(point) < 2:
+                    continue
+                x = float(point[0])
+                y = float(point[1])
+                if math.isfinite(x) and math.isfinite(y):
+                    result.append([round(x * 100.0, 1), round(y * 100.0, 1)])
+            except (TypeError, ValueError, IndexError):
+                continue
+    except TypeError:
+        return []
+    return result
+
+
 class CalibrationSession:
     """摄像头标定会话状态"""
 
@@ -502,7 +527,7 @@ class ControlPanelApp:
                 pass
         return status
 
-    def get_lidar_status(self) -> dict:
+    def get_lidar_status(self, include_point_cloud: bool = False) -> dict:
         """Return lidar diagnostics without initializing the LunaPre runtime."""
         status = {
             "available": False,
@@ -518,6 +543,8 @@ class ControlPanelApp:
             "scan_point_count": 0,
             "packet_point_count": 0,
             "line_count": 0,
+            "point_cloud_cm": [],
+            "last_error": None,
             "message": "LunaPre runtime not initialized",
         }
 
@@ -552,7 +579,10 @@ class ControlPanelApp:
         status["packet_point_count"] = int(
             getattr(driver, "last_packet_point_count", 0) or 0
         )
+        status["last_error"] = getattr(driver, "last_error", None)
         status["line_count"] = int(getattr(lidar, "last_line_count", 0) or 0)
+        if include_point_cloud:
+            status["point_cloud_cm"] = _serialize_lidar_point_cloud_cm(lidar)
 
         try:
             positions = self._get_positions_facade()
@@ -575,13 +605,23 @@ class ControlPanelApp:
             status["message"] = "Lidar driver is disabled"
         elif status["dist_mm"] == [0, 0, 0, 0]:
             status["state"] = "no_data"
-            status["message"] = "Lidar object exists but no scan has been normalized yet"
+            status["message"] = (
+                status["last_error"]
+                or "Lidar object exists but no scan has been normalized yet"
+            )
         else:
             status["state"] = "ok"
             status["message"] = "Receiving lidar distance data"
 
         self._last_lidar_status = status
         return status
+
+    def get_lidar_point_cloud(self) -> dict:
+        """Return only the latest bounded point cloud for the radar overlay."""
+        runtime = sys.modules.get("LunaPre.runtime")
+        lidar = getattr(runtime, "lidar", None) if runtime is not None else None
+        points = _serialize_lidar_point_cloud_cm(lidar)
+        return {"point_cloud_cm": points}
 
     def _get_runtime_module(self):
         runtime = sys.modules.get("LunaPre.runtime")
@@ -1180,7 +1220,8 @@ class ControlPanelApp:
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "AB", "IL", "3Q"], "option_labels": {"SIM": "SIM (模拟器)", "AB": "AB (Arisu Bits)", "IL": "IL (IceLoong Bits)", "3Q": "3Q (Bits)"}, "tab": "robot"},
             ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
             ("RoboInfo", "LidarBackend"): {"type": "select", "label": "雷达后端", "options": ["rplidar", "ros2", "ldlidar"], "option_labels": {"rplidar": "rplidar (原生驱动)", "ros2": "ros2 (ROS2 节点)", "ldlidar": "ldlidar (LDROBOT)"}, "tab": "robot"},
-            ("RoboInfo", "LidarType"): {"type": "select", "label": "雷达型号", "options": ["s1", "s2", "ld06", "ld07"], "option_labels": {"s1": "s1 (Slamtec S1)", "s2": "s2 (Slamtec S2)", "ld06": "ld06 (LDROBOT LD06)", "ld07": "ld07 (LDROBOT LD07)"}, "tab": "robot"},
+            ("RoboInfo", "LidarType"): {"type": "select", "label": "雷达型号", "options": ["s1", "s2", "s3", "ld06", "ld07"], "option_labels": {"s1": "s1 (Slamtec S1)", "s2": "s2 (Slamtec S2)", "s3": "s3 (Slamtec S3)", "ld06": "ld06 (LDROBOT LD06)", "ld07": "ld07 (LDROBOT LD07)"}, "tab": "robot"},
+            ("RoboInfo", "LidarInverted"): {"type": "bool", "label": "雷达倒置安装", "tab": "robot"},
             # Ports
             ("Ports", "LidarID"): {"type": "int", "label": "雷达 ID", "min": 1, "max": 255, "tab": "robot"},
             ("Ports", "LidarPort"): {"type": "string", "label": "雷达端口", "tab": "robot"},
@@ -2717,6 +2758,13 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         # Suppress default logging
         pass
 
+    def handle_one_request(self):
+        """Ignore clients that close a polling request before the response ends."""
+        try:
+            super().handle_one_request()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
     def _send_json(self, data, status=200):
         body = json.dumps(_json_safe(data), ensure_ascii=False).encode('utf-8')
         self.send_response(status)
@@ -2819,6 +2867,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/lidar/status':
             self._send_json(app.get_lidar_status())
+            return
+
+        if path == '/api/lidar/point-cloud':
+            self._send_json(app.get_lidar_point_cloud())
             return
 
         if path == '/api/lidar/usb':

@@ -261,7 +261,32 @@
             </div>
             <!-- 雷达图 -->
             <div class="radar-panel">
-              <div class="panel-header">雷达视图</div>
+              <div class="radar-header">
+                <div class="panel-header">雷达视图</div>
+                <div class="radar-controls" aria-label="雷达缩放控制">
+                  <button
+                    class="btn btn-icon"
+                    id="radar-zoom-out"
+                    type="button"
+                    title="缩小"
+                    aria-label="缩小"
+                  >−</button>
+                  <span id="radar-zoom-label" class="radar-zoom-label">自动</span>
+                  <button
+                    class="btn btn-icon"
+                    id="radar-zoom-in"
+                    type="button"
+                    title="放大"
+                    aria-label="放大"
+                  >+</button>
+                  <button
+                    class="btn btn-small btn-secondary"
+                    id="radar-zoom-auto"
+                    type="button"
+                    title="恢复动态缩放"
+                  >自动</button>
+                </div>
+              </div>
               <canvas id="radar" width="600" height="600"></canvas>
             </div>
             <!-- 延时面板 -->

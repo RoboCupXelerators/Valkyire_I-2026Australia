@@ -25,7 +25,8 @@ from .strategy_tools import BALL_NOT_FOUND
 LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0]]
 LIDAR_ZERO_DISTS = [0, 0, 0, 0]
 DEFAULT_SCAN_QUEUE_SIZE = 3
-DEFAULT_LIDAR_BACKEND = "ldlidar"
+DEFAULT_LIDAR_BACKEND = "ros2"
+MAX_POINT_CLOUD_POINTS = 360
 
 
 def GetLineStandardEquation(Line):
@@ -94,6 +95,15 @@ def _resolve_backend(backend: str | None) -> str:
 
     backend_key = str(backend_value).strip().lower()
     if backend_key in {"rplidar", "direct"}:
+        lidar_type = str(
+            getattr(getattr(Settings, "RoboInfo", object()), "LidarType", "")
+        ).strip().lower()
+        if lidar_type == "s3":
+            # The bundled rplidar-roboticia package only understands the
+            # legacy scan response. S3 requires Slamtec's newer scan-mode
+            # negotiation, which is provided by the official ROS2 package.
+            logger.warning("RPLIDAR S3 selected with the legacy backend; using the official ROS2 driver.")
+            return "ros2"
         return "rplidar"
     if backend_key in {"ros", "ros2"}:
         return "ros2"
@@ -168,6 +178,8 @@ class Lidar:
         self.dirNormalizedDistance = list(LIDAR_DISABLED_DISTS if self.disabled else LIDAR_ZERO_DISTS)
         self.last_raw_scan_count = 0
         self.last_scan_point_count = 0
+        # Latest valid scan points in robot coordinates, in metres.
+        self.last_point_cloud = ()
         self.last_line_count = 0
 
         if self.driver is None and auto_start:
@@ -236,24 +248,44 @@ class Lidar:
             try:
                 Ranges = self.dirLidarQueue.get(timeout=0.2)
                 if _scan_frame_is_empty(Ranges):
+                    self.last_point_cloud = ()
                     continue
                 lines = []
                 points = []
+                point_cloud = []
+                point_cloud_stride = max(
+                    1,
+                    math.ceil(len(Ranges) / MAX_POINT_CLOUD_POINTS),
+                )
                 raw_point_count = 0
-                for Element in Ranges:
+                for scan_index, Element in enumerate(Ranges):
                     distance = Element[1]
                     if not _is_valid_scan_distance(distance):
                         continue
                     raw_point_count += 1
-                    if distance < 2.5:
-                        X = Element[1] * math.sin(math.radians(Element[0]))
-                        Y = Element[1] * math.cos(math.radians(Element[0]))
+                    keep_for_cloud = scan_index % point_cloud_stride == 0
+                    keep_for_near_field = distance < 2.5
+                    if not (keep_for_cloud or keep_for_near_field):
+                        continue
+                    # Lidar angles use 0 degrees for the robot forward axis
+                    # and increase toward the robot's left side. Keep the
+                    # normalized scan in the same forward/left frame used by
+                    # the radar view and the yaw-based wall classification.
+                    angle_rad = math.radians(Element[0])
+                    X = distance * math.cos(angle_rad)
+                    Y = distance * math.sin(angle_rad)
+                    if keep_for_cloud:
+                        point_cloud.append((X, Y))
+                    if keep_for_near_field:
                         points.append((X, Y, Element[0]))
 
                 point_count = len(points)
                 line_pair_count = 0
                 self.last_raw_scan_count = raw_point_count
                 self.last_scan_point_count = point_count
+                self.last_point_cloud = tuple(
+                    (float(x), float(y)) for x, y in point_cloud
+                )
 
                 if points:
                     for i in range(0, len(points), step):

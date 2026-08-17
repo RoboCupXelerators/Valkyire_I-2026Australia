@@ -46,7 +46,8 @@ class Preference:
             "Bit": "SIM",           # SIM / AB / IL / DM2325
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
             "LidarBackend": "ros2", # rplidar / ros2 / ldlidar (LD06)
-            "LidarType": "s1",    # s1 / s2 / ld06 / ld07
+            "LidarType": "s3",    # s1 / s2 / s3 / ld06 / ld07
+            "LidarInverted": False, # 雷达倒置安装时启用
         },
         "Ports": {
             "LidarID": random.randrange(1, 99),
