@@ -40,6 +40,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from utils.XeleratorSimPorts import resolve_port
+
 
 SIM_DEFAULT_UNITY_IP = "127.0.0.1"
 SIM_DEFAULT_ROBOT_ID = 1
@@ -77,11 +79,11 @@ def create_bits_and_lidar(cfg):
         cmd_base = int(getattr(sim_cfg, "CmdPortBase", SIM_DEFAULT_CMD_PORT_BASE))
         st_base = int(getattr(sim_cfg, "StatusPortBase", SIM_DEFAULT_STATUS_PORT_BASE))
         stride = int(getattr(sim_cfg, "PortStride", SIM_DEFAULT_PORT_STRIDE))
-        default_cmd_port = cmd_base + (max(robot_id, 1) - 1) * stride
-        default_status_port = st_base + (max(robot_id, 1) - 1) * stride
+        default_cmd_port = resolve_port(cmd_base + (max(robot_id, 1) - 1) * stride)
+        default_status_port = resolve_port(st_base + (max(robot_id, 1) - 1) * stride)
     else:
-        default_cmd_port = int(getattr(sim_cfg, "CmdPort", SIM_DEFAULT_CMD_PORT_BASE))
-        default_status_port = int(getattr(sim_cfg, "StatusPort", SIM_DEFAULT_STATUS_PORT_BASE))
+        default_cmd_port = resolve_port(int(getattr(sim_cfg, "CmdPort", SIM_DEFAULT_CMD_PORT_BASE)))
+        default_status_port = resolve_port(int(getattr(sim_cfg, "StatusPort", SIM_DEFAULT_STATUS_PORT_BASE)))
 
     cmd_port = int(os.environ.get("XEL_CMD_PORT", str(default_cmd_port)))
     status_port = int(os.environ.get("XEL_STATUS_PORT", str(default_status_port)))
@@ -153,6 +155,7 @@ class SimStatus:
     seq: int = 0
     robot_id: int = 1
     has_ball: bool = False
+    possession_authoritative: bool = False
     control_enabled: bool = True
     penalty_active: bool = False
     # pose in Unity field frame (meters & degrees) before scaling
@@ -276,6 +279,9 @@ class XeleratorSimBits:
             "true",
             "yes",
         }
+        self._prefer_scene_ball_fallback = str(
+            os.environ.get("XEL_SIM_PREFER_SCENE_BALL", "0")
+        ).lower() in {"1", "true", "yes"}
         self._ball_observation_max_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MAX_CM", "350"))
         self._ball_observation_min_cm = float(os.environ.get("XEL_SIM_BALL_OBSERVATION_MIN_CM", "0.25"))
         self._infer_dribbler_possession = str(os.environ.get("XEL_SIM_INFER_DRIBBLER_POSSESSION", "1")).lower() not in {
@@ -606,8 +612,10 @@ class XeleratorSimBits:
         return {name: raw[idx] for idx, name in enumerate(order)}
 
     def _held_ball_observation(self, ball: list[float] | None) -> list[float]:
-        if ball is not None:
-            return ball
+        # Unity's possession flag is the authoritative semantic state. Contact
+        # physics can place the center slightly outside LunaPre's visual catch
+        # tolerance, so returning the raw coordinate here would turn a held ball
+        # back into a free-ball observation.
         held = getattr(self, "_held_ball_pos_cm", [8.5, 0.0])
         return [float(held[0]), float(held[1])]
 
@@ -725,6 +733,8 @@ class XeleratorSimBits:
 
     def HasBall(self) -> bool:
         with self._status_lock:
+            if self._status.possession_authoritative:
+                return bool(self._status.has_ball)
             if bool(self._status.has_ball):
                 return True
             ball = self._status_ball_relative_cm_locked()
@@ -738,6 +748,16 @@ class XeleratorSimBits:
     def GetControlEnabled(self) -> bool:
         with self._status_lock:
             return bool(self._status.control_enabled)
+
+    def GetPoseRevision(self) -> int:
+        """Return Unity's monotonic placement revision for this robot."""
+        status = self._scene_status_snapshot()
+        if not isinstance(status, dict):
+            return 0
+        for robot in status.get("robots") or []:
+            if int(robot.get("id", -1)) == int(self.robot_id):
+                return int(robot.get("pose_revision", 0))
+        return 0
 
     def GetPenaltyState(self) -> dict:
         with self._status_lock:
@@ -763,17 +783,24 @@ class XeleratorSimBits:
         coordinates (or synthesize cfg.Motion.CatchVal if the extension is
         missing) and let RobotBallPos() classify BALL_HELD.
         """
+        ball_status_fallback = bool(getattr(self, "_ball_status_fallback", False))
+        prefer_scene_ball_fallback = bool(getattr(self, "_prefer_scene_ball_fallback", False))
         with self._status_lock:
             speed_mps = self._status_planar_speed_mps_locked()
+            if prefer_scene_ball_fallback and ball_status_fallback:
+                fallback = self._get_scene_ball_pos_fallback()
+                if fallback is not None:
+                    return self._apply_noisy_ball_observation(fallback, speed_mps)
             ball = self._status_ball_relative_cm_locked()
             if self._status.has_ball:
                 return self._held_ball_observation(ball)
-            if ball is not None:
+            if ball is not None and not self._status.possession_authoritative:
                 if self._infer_has_ball_from_relative(ball):
                     return self._held_ball_observation(ball)
+            if ball is not None:
                 return self._apply_noisy_ball_observation(ball, speed_mps)
 
-        if self._ball_status_fallback:
+        if ball_status_fallback:
             fallback = self._get_scene_ball_pos_fallback()
             if fallback is not None:
                 if self._infer_has_ball_from_relative(fallback):
@@ -1161,6 +1188,7 @@ class XeleratorSimBits:
                 self._status.seq = int(seq)
                 self._status.robot_id = int(rid)
                 self._status.has_ball = (flags & 0x01) != 0
+                self._status.possession_authoritative = True
                 if int(_reserved) == 0x5845:
                     self._status.control_enabled = (flags & 0x02) != 0
                     self._status.penalty_active = (flags & 0x04) != 0

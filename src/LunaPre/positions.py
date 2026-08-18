@@ -267,6 +267,7 @@ class Positions:
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
+        self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
 
@@ -284,6 +285,16 @@ class Positions:
     def _reset_pos2pos_pid(self):
         self.Position_X_PID.reset()
         self.Position_Y_PID.reset()
+
+    def _reset_pos2pos_on_pose_change(self):
+        bits = getattr(runtime, "Bits", None)
+        getter = getattr(bits, "GetPoseRevision", None)
+        if not callable(getter):
+            return
+        revision = int(getter())
+        if self._pose_revision is not None and revision != self._pose_revision:
+            self._reset_pos2pos_pid()
+        self._pose_revision = revision
 
     def _resolve_speed_gain(self, speed_gain: int | float | None) -> float:
         if speed_gain is None:
@@ -515,7 +526,7 @@ class Positions:
         iDeltaX = iAimX - iLocX
         iDeltaY = iAimY - iLocY
         iDeltaAngle = math.degrees(math.atan2(iDeltaY,iDeltaX))
-        return round(iDeltaAngle,2)
+        return round(iDeltaAngle%360,2)
 
     def PointInShape(self, point, polygon: list[list,list]):
         try:
@@ -606,12 +617,19 @@ class Positions:
         # Ball semantics belong to the active vision provider. Runtime only wires
         # providers together; it should not bypass vision with a second Bits path.
         self.ballPos = self._get_ball_pos()
-        if self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
+        authoritative_possession = self._authoritative_ball_possession()
+        if authoritative_possession is True:
+            self.ballPosOut = BALL_HELD
+        elif self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
             self.ballPosOut = self.ballPos
         elif self.ballPos == [0, 0]:
             self.ballPosOut = BALL_NOT_FOUND
         elif self._robot_ball_out_of_bounds(self.ballPos):
             self.ballPosOut = BALL_NOT_FOUND
+        elif authoritative_possession is False:
+            # Simulator status already distinguishes physical possession from a
+            # nearby free ball. Do not widen that state through camera tolerance.
+            self.ballPosOut = self.ballPos
         else:
             catch_x, catch_y = cfg.Motion.CatchVal
             # Near-field vision noise / dribbler occlusion is often ~1cm.
@@ -630,6 +648,17 @@ class Positions:
             if Settings.Debug.FullLog:
                 logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
         return self.ballPosOut
+
+    @staticmethod
+    def _authoritative_ball_possession():
+        provider = getattr(runtime, "vision", None)
+        getter = getattr(provider, "has_ball", None)
+        if not callable(getter):
+            return None
+        try:
+            return bool(getter())
+        except Exception:
+            return None
 
     def BallState(self, ball_pos: list | None = None) -> str:
         """Return the semantic ball state: ``lost``, ``held``, or ``free``.
@@ -736,6 +765,7 @@ class Positions:
         #### Note:
             `0xfff` stand for `No Position`
         '''
+        self._reset_pos2pos_on_pose_change()
         pose = runtime.get_field_pose()
         if pose is not None:
             self.LidarPos = pose

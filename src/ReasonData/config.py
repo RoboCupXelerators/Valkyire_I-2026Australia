@@ -15,7 +15,7 @@ from pathlib import Path
 import random
 
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 CACHE_FILE = DATA_DIR / "cfg.cache.json"
 
@@ -46,7 +46,8 @@ class Preference:
             "Bit": "SIM",           # SIM / AB / IL / DM2325
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
             "LidarBackend": "ros2", # rplidar / ros2 / ldlidar (LD06)
-            "LidarType": "s1",    # s1 / s2 / ld06 / ld07
+            "LidarType": "s3",    # s1 / s2 / s3 / ld06 / ld07
+            "LidarInverted": False, # 雷达倒置安装时启用
         },
         "Ports": {
             "LidarID": random.randrange(1, 99),
@@ -103,6 +104,26 @@ class Preference:
         "Motion": {
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
+            "LockBallSlip": {
+                "ForwardKp": 0.025,
+                "LateralKp": 0.020,
+                "AngularKp": 1.7,
+                "ForwardMaxMps": 1.15,
+                "LateralMaxMps": 0.85,
+                "AngularMaxDegS": 120.0,
+                "TurnOnlyAngleDeg": 70.0,
+                "TurnOnlyKp": 1.0,
+                "TurnOnlyMaxDegS": 75.0,
+                "RearForwardKp": 0.015,
+                "RearForwardMaxMps": 0.80,
+                "RearLateralKp": 0.020,
+                "RearLateralMaxMps": 0.85,
+                "RearAngularKp": 2.35,
+                "RearAngularMaxDegS": 120.0,
+                "LostHoldSeconds": 0.18,
+                "NearCreepMaxMps": 0.14,
+                "BallJumpRejectCm": 45.0
+            },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
                 "XLimit": 90.0,

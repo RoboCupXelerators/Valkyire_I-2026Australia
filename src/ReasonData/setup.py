@@ -9,13 +9,12 @@ from loguru import logger
 
 Date = time.strftime("%Y%m", time.localtime())
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 LOG_FILE = DATA_DIR / f"{Date}.log"
 
 def AutoSetup():
-    if not DATA_DIR.exists():
-        DATA_DIR.mkdir()
+    DATA_DIR.resolve().mkdir(parents=True, exist_ok=True)
     if not LOG_FILE.exists():
         logger.add(LOG_FILE)
         logger.info('models.log is created successfully')

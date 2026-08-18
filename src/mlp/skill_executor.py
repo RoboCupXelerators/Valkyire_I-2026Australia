@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
+from typing import Callable
 
 from .contracts import DecisionPacket, DribbleMode, FaceMode, IntentId, ShootIntent
 
@@ -14,6 +16,16 @@ class SkillExecutionResult:
 
 
 class SkillExecutor:
+    def __init__(
+        self,
+        *,
+        shoot_cooldown_s: float = 0.25,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.shoot_cooldown_s = max(0.0, float(shoot_cooldown_s))
+        self.clock = clock
+        self._last_shot_at = float("-inf")
+
     def safe_stop(self) -> SkillExecutionResult:
         try:
             from LunaPre import UnitedPosition, chassis, peripheral
@@ -41,6 +53,16 @@ class SkillExecutor:
             lockball.LockBallSlip()
             return SkillExecutionResult(True, "lock_ball")
         if intent == IntentId.SHOOT or packet.shoot_intent == int(ShootIntent.TRY_SHOOT):
+            from LunaPre.strategy_tools import BALL_HELD
+
+            if UnitedPosition.RobotBallPos() != BALL_HELD:
+                chassis.stop()
+                return SkillExecutionResult(True, "shoot_blocked_no_possession")
+            now = self.clock()
+            if now - self._last_shot_at < self.shoot_cooldown_s:
+                chassis.stop()
+                return SkillExecutionResult(True, "shoot_cooldown")
+            self._last_shot_at = now
             peripheral.ShootBall()
             return SkillExecutionResult(True, "shoot")
         if intent == IntentId.AVOID_WALL and abs(packet.target_x) + abs(packet.target_y) < 1e-6:

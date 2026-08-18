@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import importlib
 import os
 import threading
@@ -22,16 +23,19 @@ RPLIDAR_MODEL_CONFIGS = {
         "baudrate": 256000,
         "scan_type": "normal",
         "max_buf_meas": 65536,
+        "legacy_supported": True,
     },
     "s2": {
         "baudrate": 1000000,
         "scan_type": "normal",
         "max_buf_meas": 131072,
+        "legacy_supported": True,
     },
     "s3": {
         "baudrate": 1000000,
         "scan_type": "normal",
         "max_buf_meas": 131072,
+        "legacy_supported": False,
     },
 }
 
@@ -85,6 +89,18 @@ def _env_max_buf_meas(name: str, default: int) -> int:
         return default
 
 
+def _setting_bool(section: str, key: str, default: bool = False) -> bool:
+    value = _setting_value(section, key, default)
+    if isinstance(value, bool):
+        return value
+    value_key = str(value).strip().lower()
+    if value_key in {"1", "true", "yes", "on"}:
+        return True
+    if value_key in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _setting_value(section: str, key: str, default=None):
     try:
         value = Preference().read(section, key)
@@ -102,6 +118,39 @@ def _setting_value(section: str, key: str, default=None):
     return default
 
 
+def _resolve_serial_port(configured_port: str) -> str:
+    """Use a stable serial alias, falling back only when exactly one device exists."""
+    port = str(configured_port or DEFAULT_RPLIDAR_PORT).strip()
+    if os.path.exists(port):
+        return port
+
+    candidates = []
+    seen_devices = set()
+    for pattern in (
+        "/dev/serial/by-id/*",
+        "/dev/serial/by-path/*",
+        "/dev/ttyCH343USB*",
+        "/dev/ttyUSB*",
+        "/dev/ttyACM*",
+    ):
+        for candidate in sorted(glob.glob(pattern)):
+            if not os.path.exists(candidate):
+                continue
+            real_device = os.path.realpath(candidate)
+            if real_device in seen_devices:
+                continue
+            seen_devices.add(real_device)
+            candidates.append(candidate)
+
+    if len(candidates) == 1:
+        resolved = candidates[0]
+        logger.warning(
+            f"Configured lidar port {port} is missing; using the only serial device {resolved}"
+        )
+        return resolved
+    return port
+
+
 def _configured_lidar_type() -> str:
     lidar_type = str(_setting_value("RoboInfo", "LidarType", "s2")).strip().lower()
     if lidar_type not in RPLIDAR_MODEL_CONFIGS:
@@ -113,7 +162,8 @@ def _configured_lidar_type() -> str:
 def _load_rplidar_module():
     try:
         return importlib.import_module("rplidar")
-    except Exception:
+    except Exception as error:
+        logger.error(f"Unable to import rplidar package: {error}")
         return None
 
 
@@ -133,29 +183,42 @@ class RPLidarDriver:
         scan_min_points: int | None = None,
         max_buf_meas: int | None = None,
         use_scan_iterator: bool | None = None,
+        inverted: bool | None = None,
     ):
         self.lidar_type = self._resolve_lidar_type(lidar_type)
         model_config = RPLIDAR_MODEL_CONFIGS[self.lidar_type]
 
-        self.port = port or os.environ.get("LIDAR_PORT") or str(
+        self.configured_port = port or os.environ.get("LIDAR_PORT") or str(
             _setting_value("Ports", "LidarPort", DEFAULT_RPLIDAR_PORT)
         )
+        self.port = _resolve_serial_port(self.configured_port)
         self.baudrate = int(
             baudrate
             if baudrate is not None
             else _env_int("LIDAR_BAUDRATE", int(model_config["baudrate"]))
         )
-        self.timeout = float(timeout if timeout is not None else _env_float("LIDAR_TIMEOUT", DEFAULT_RPLIDAR_TIMEOUT))
+        self.timeout = max(
+            0.1,
+            float(timeout if timeout is not None else _env_float("LIDAR_TIMEOUT", DEFAULT_RPLIDAR_TIMEOUT)),
+        )
         self.angle_offset_deg = float(
             angle_offset_deg
             if angle_offset_deg is not None
             else _env_float("LIDAR_ANGLE_OFFSET_DEG", DEFAULT_RPLIDAR_ANGLE_OFFSET_DEG)
         )
-        self.scan_type = scan_type or os.environ.get("LIDAR_SCAN_TYPE", str(model_config.get("scan_type", "normal")))
-        self.reconnect_delay = float(
-            reconnect_delay
-            if reconnect_delay is not None
-            else _env_float("LIDAR_RECONNECT_DELAY", DEFAULT_RPLIDAR_RECONNECT_DELAY)
+        self.scan_type = scan_type or os.environ.get(
+            "LIDAR_SCAN_TYPE", str(model_config.get("scan_type", "normal"))
+        )
+        if self.scan_type not in {"normal", "force", "express"}:
+            logger.warning(f"Unknown LIDAR_SCAN_TYPE={self.scan_type!r}; using normal.")
+            self.scan_type = "normal"
+        self.reconnect_delay = max(
+            0.05,
+            float(
+                reconnect_delay
+                if reconnect_delay is not None
+                else _env_float("LIDAR_RECONNECT_DELAY", DEFAULT_RPLIDAR_RECONNECT_DELAY)
+            ),
         )
         self.scan_min_points = max(
             1,
@@ -178,12 +241,22 @@ class RPLidarDriver:
             if use_scan_iterator is not None
             else _env_bool("LIDAR_USE_SCAN_ITERATOR", DEFAULT_RPLIDAR_USE_SCAN_ITERATOR)
         )
+        self.inverted = bool(
+            inverted
+            if inverted is not None
+            else _env_bool(
+                "LIDAR_INVERTED",
+                _setting_bool("RoboInfo", "LidarInverted", False),
+            )
+        )
 
         self._stop_event = threading.Event()
-        self._thread = None
+        self._thread: threading.Thread | None = None
+        self._state_lock = threading.RLock()
         self._lidar = None
         self.last_scan: tuple[tuple[float, float], ...] = ()
         self.last_scan_point_count = 0
+        self.last_error = None
 
     def _resolve_lidar_type(self, lidar_type: str | None = None) -> str:
         lidar_type_key = str(lidar_type or _configured_lidar_type()).strip().lower()
@@ -193,23 +266,47 @@ class RPLidarDriver:
         return lidar_type_key
 
     def start(self, scan_queue):
+        if not RPLIDAR_MODEL_CONFIGS[self.lidar_type].get("legacy_supported", True):
+            self.last_error = (
+                f"RPLIDAR {self.lidar_type.upper()} is not supported by the legacy Python driver; "
+                "use the official ROS2 backend"
+            )
+            logger.error(self.last_error)
+            return False
+
         rplidar_module = _load_rplidar_module()
         if rplidar_module is None:
+            self.last_error = "rplidar package is not installed"
             logger.error("rplidar module is not installed. Run: pip install rplidar-roboticia")
             return False
 
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self.run_forever, args=(scan_queue,))
-        self._thread.daemon = True
-        self._thread.start()
+        with self._state_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return True
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self.run_forever,
+                args=(scan_queue,),
+                daemon=True,
+                name="RPLidarReader",
+            )
+            self._thread.start()
         return True
 
     def stop(self):
         self._stop_event.set()
-        lidar = self._lidar
+        with self._state_lock:
+            lidar = self._lidar
+            thread = self._thread
         if lidar is not None:
             self._close_lidar(lidar)
-            self._lidar = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self.timeout + 0.5))
+        with self._state_lock:
+            if self._lidar is lidar:
+                self._lidar = None
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
 
     def _is_running(self) -> bool:
         return not self._stop_event.is_set()
@@ -227,8 +324,12 @@ class RPLidarDriver:
             lidar = None
             current_scan = []
             try:
+                resolved_port = _resolve_serial_port(self.configured_port)
+                if resolved_port != self.port:
+                    logger.info(f"RPLidar serial path changed: {self.port} -> {resolved_port}")
+                    self.port = resolved_port
                 logger.info(
-                    "Starting rplidar driver: type=%s port=%s baudrate=%s timeout=%s max_buf=%s scan_iterator=%s"
+                    "Starting rplidar driver: type=%s port=%s baudrate=%s timeout=%s max_buf=%s scan_iterator=%s inverted=%s"
                     % (
                         self.lidar_type,
                         self.port,
@@ -236,11 +337,16 @@ class RPLidarDriver:
                         self.timeout,
                         self.max_buf_meas or "unlimited",
                         self.use_scan_iterator,
+                        self.inverted,
                     )
                 )
                 lidar = RPLidar(self.port, baudrate=self.baudrate, timeout=self.timeout)
-                self._lidar = lidar
+                with self._state_lock:
+                    self._lidar = lidar
+                self._install_read_timeout(lidar, RPLidarException)
                 self._prepare_lidar(lidar)
+                if not self._is_running():
+                    break
                 iterator = self._iter_measurements(lidar)
 
                 for measurement in self._normalize_measurements(iterator):
@@ -255,7 +361,7 @@ class RPLidarDriver:
 
                     try:
                         distance = float(distance)
-                        angle = (float(angle) + self.angle_offset_deg) % 360.0
+                        angle = self._normalize_angle(angle)
                     except (TypeError, ValueError):
                         continue
 
@@ -265,22 +371,27 @@ class RPLidarDriver:
                 if current_scan and self._is_running() and len(current_scan) >= self.scan_min_points:
                     self._publish_scan(scan_queue, current_scan)
 
-                break
+                if self._is_running():
+                    self.last_error = "RPLidar measurement iterator stopped"
+                    logger.warning(f"{self.last_error}; reconnecting...")
             except RPLidarException as e:
                 if not self._is_running():
                     break
+                self.last_error = str(e)
                 logger.warning(f"rplidar read error: {e}; reconnecting...")
                 if lidar is not None:
                     self._clear_input(lidar)
             except Exception as e:
                 if not self._is_running():
                     break
+                self.last_error = str(e)
                 logger.error(f"rplidar driver exception: {e}; reconnecting...")
             finally:
                 if lidar is not None:
                     self._close_lidar(lidar)
-                if self._lidar is lidar:
-                    self._lidar = None
+                with self._state_lock:
+                    if self._lidar is lidar:
+                        self._lidar = None
 
             if self._is_running():
                 self._stop_event.wait(self.reconnect_delay)
@@ -351,6 +462,12 @@ class RPLidarDriver:
                 if measurement is not None:
                     yield measurement
 
+    def _normalize_angle(self, angle) -> float:
+        angle = float(angle)
+        if self.inverted:
+            angle = -angle
+        return (angle + self.angle_offset_deg) % 360.0
+
     def _normalize_measurement(self, item, default_new_scan=True):
         try:
             values = tuple(item)
@@ -380,6 +497,7 @@ class RPLidarDriver:
         data = tuple(scan)
         self.last_scan = data
         self.last_scan_point_count = len(data)
+        self.last_error = None
         try:
             while scan_queue.full():
                 scan_queue.get_nowait()
@@ -387,8 +505,42 @@ class RPLidarDriver:
         except Exception:
             pass
 
+    def _install_read_timeout(self, lidar, exception_type):
+        """Bound the old package's busy-wait when a sensor emits no scan data."""
+        timeout = max(0.1, float(self.timeout))
+
+        def read_response(dsize):
+            serial_port = getattr(lidar, "_serial", None)
+            if serial_port is None:
+                raise exception_type(f"Serial port for {self.port} is closed")
+
+            def bytes_waiting():
+                waiting = getattr(serial_port, "in_waiting", None)
+                if waiting is not None:
+                    return int(waiting)
+                waiting_method = getattr(serial_port, "inWaiting", None)
+                if callable(waiting_method):
+                    return int(waiting_method())
+                raise exception_type("Serial object has no input-buffer query method")
+
+            deadline = time.monotonic() + timeout
+            while bytes_waiting() < dsize:
+                if time.monotonic() >= deadline:
+                    raise exception_type(
+                        f"Timed out waiting for {dsize} bytes from {self.port}"
+                    )
+                time.sleep(0.001)
+            data = serial_port.read(dsize)
+            if len(data) != dsize:
+                raise exception_type(
+                    f"Short response from {self.port}: {len(data)}/{dsize} bytes"
+                )
+            return data
+
+        lidar._read_response = read_response
+
     def _clear_input(self, lidar):
-        for name in ("clear_input", "clean_input"):
+        for name in ("clear_input", "clean_input", "reset_input_buffer"):
             clearer = getattr(lidar, name, None)
             if callable(clearer):
                 try:

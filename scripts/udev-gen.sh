@@ -82,7 +82,7 @@ echo "     - 硬件特征: $ID_V:$ID_P"
 
 # 5. 生成规则文件
 RULE_FILE="/etc/udev/rules.d/99-$ALIAS_NAME.rules"
-echo "SUBSYSTEM==\"tty\", ENV{ID_PATH}==\"$ID_PATH\", ATTRS{idVendor}==\"$ID_V\", ATTRS{idProduct}==\"$ID_P\", SYMLINK+=\"$ALIAS_NAME\", MODE=\"0666\"" > "$RULE_FILE"
+echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"$ID_V\", ATTRS{idProduct}==\"$ID_P\", SYMLINK+=\"$ALIAS_NAME\", MODE=\"0666\"" > "$RULE_FILE"
 
 # 6. 重新加载
 echo "[4/4] 正在注入规则并刷新系统..."

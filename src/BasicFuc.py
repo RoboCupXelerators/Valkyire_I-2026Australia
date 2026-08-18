@@ -12,6 +12,7 @@ from __future__ import annotations
 # TODO: Replace this legacy wildcard import with explicit LunaPre facade names
 # used by this module: Settings, UnitedPosition, chassis, peripheral, logger.
 from LunaPre import *
+from LunaPre import runtime
 from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
 import math
 import simple_pid
@@ -72,17 +73,48 @@ class LockSeries:
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
-        self.lost_hold_seconds = 0.12
+        tuning = getattr(Settings.Motion, "LockBallSlip", None)
+        self.forward_kp = float(getattr(tuning, "ForwardKp", 0.023))
+        self.lateral_kp = float(getattr(tuning, "LateralKp", 0.018))
+        self.angular_kp = float(getattr(tuning, "AngularKp", 1.5))
+        self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 1.0)))
+        self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.8)))
+        self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 200.0)))
+        self.turn_only_angle = max(10.0, float(getattr(tuning, "TurnOnlyAngleDeg", 70.0)))
+        self.turn_only_kp = float(getattr(tuning, "TurnOnlyKp", 1.0))
+        self.turn_only_max = max(0.0, float(getattr(tuning, "TurnOnlyMaxDegS", 75.0)))
+        self.rear_forward_kp = float(getattr(tuning, "RearForwardKp", 0.012))
+        self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.65)))
+        self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.02))
+        self.rear_lateral_max = max(0.0, float(getattr(tuning, "RearLateralMaxMps", 0.85)))
+        self.rear_angular_kp = float(getattr(tuning, "RearAngularKp", 2.2))
+        self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 260.0)))
+        self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
+        self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.14)))
+        self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
-        self.pan_x = simple_pid.PID(0.023, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-1.0, 0), auto_mode=True)
-        self.pan_y = simple_pid.PID(0.018, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-0.8, 0.8), auto_mode=True)
-        self.pan_w = simple_pid.PID(1.5, 0.2, 0.3, setpoint=0, output_limits=(-200, 200), auto_mode=True)
+        self._pose_revision = None
+        self.pan_x = simple_pid.PID(self.forward_kp, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-self.forward_max, 0), auto_mode=True)
+        self.pan_y = simple_pid.PID(self.lateral_kp, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-self.lateral_max, self.lateral_max), auto_mode=True)
+        self.pan_w = simple_pid.PID(self.angular_kp, 0.2, 0.3, setpoint=0, output_limits=(-self.angular_max, self.angular_max), auto_mode=True)
 
     def _reset_lockball_pid(self):
         self.pan_x.reset()
         self.pan_y.reset()
         self.pan_w.reset()
+
+    def _reset_on_pose_change(self):
+        bits = getattr(runtime, "Bits", None)
+        getter = getattr(bits, "GetPoseRevision", None)
+        if not callable(getter):
+            return
+        revision = int(getter())
+        if self._pose_revision is not None and revision != self._pose_revision:
+            self._reset_lockball_pid()
+            self._lockball_last_seen = None
+            self._lockball_last_seen_ts = 0.0
+        self._pose_revision = revision
 
     def _current_or_recent_ball(self):
         """返回当前球坐标；如果刚丢球很短时间，就临时沿用上一帧坐标。
@@ -103,16 +135,30 @@ class LockSeries:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             return ball, True
-        self._lockball_last_seen = list(ball)
+
+        # A scene reset or delayed simulator packet can briefly report a stale
+        # ball position hundreds of centimetres away from the previous frame.
+        # Reject only that impossible jump; normal vision noise remains usable.
+        candidate = list(ball)
+        if self._lockball_last_seen is not None:
+            jump_cm = math.hypot(
+                float(candidate[0]) - float(self._lockball_last_seen[0]),
+                float(candidate[1]) - float(self._lockball_last_seen[1]),
+            )
+            if jump_cm > self.ball_jump_reject_cm:
+                return self._lockball_last_seen, False
+
+        self._lockball_last_seen = candidate
         self._lockball_last_seen_ts = now
         return ball, False
 
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
+        self._reset_on_pose_change()
         ball, caught = self._current_or_recent_ball()
         if caught:
             peripheral.Dribble(True)
-            chassis.stop()
+            # chassis.stop()
             self._reset_lockball_pid()
             return True
         if ball == BALL_NOT_FOUND:
@@ -126,6 +172,33 @@ class LockSeries:
             ball_angle = 0
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
+
+        # # Large heading errors and translation create an orbit: the ball moves
+        # # across the camera while the robot keeps turning, then the controller
+        # # reverses direction on the next frame. Align in place first.
+        # if abs(ball_angle) >= self.turn_only_angle:
+        #     self._reset_lockball_pid()
+        #     speed_w = max(
+        #         -self.turn_only_max,
+        #         min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
+        #     )
+        #     peripheral.Dribble(True)
+        #     print(speed_w)
+        #     # chassis.RobotMoveVector(0.0, 0.0, speed_w)
+        #     return False
+
+        # A rear ball cannot be reached by forward PID. Turn toward it quickly
+        # while using a small lateral correction, then hand control back to the
+        # normal capture loop once the ball is in front of the robot.
+        if ball_x <= 0:
+            self._reset_lockball_pid()
+            speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
+            speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
+            speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
+            peripheral.Dribble(True)
+            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+            return False
+
         speed_x = -self.pan_x(ball_x)
         speed_y = -self.pan_y(ball_y)
         speed_w = -self.pan_w(ball_angle)
@@ -134,10 +207,8 @@ class LockSeries:
         # small forward creep so a ~1cm shortfall still gets eaten into the
         # dribbler instead of freezing with speed_x=0.
         if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2.5:
-            creep = min(0.12, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
+            creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
             speed_x = max(float(speed_x), creep)
-        if ball_x <= 0:
-            speed_x = 0
 
         peripheral.Dribble(True)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
@@ -284,6 +355,9 @@ def CircleAround(iAimAngle, max_ticks: int | None = None):
     print('stopped')
     return True
 
+def Circle(r, k = 1,d = 1):
+    chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
+
 def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     """带球绕球转向到目标角度。
 
@@ -296,8 +370,8 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     yaw = chassis.GetYaw()
     ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
-    logger.success(Aim_Angle)
     if lockball.LockBallSlip() == True:
+        peripheral.Dribble(True)
         # Robot-frame ball angle (0=forward)
         iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
         Error = angle_error_deg(Aim_Angle, yaw)
@@ -305,15 +379,10 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
             iDirectionFactor = -1
         elif Error >= 180:
             iDirectionFactor = 1
-        if abs(Aim_Angle-yaw) >= 10:
-            logger.error(Error)
+        Error = LinearMap(Error,[-180,180],[-1,1])
+        if abs(Aim_Angle-yaw) >= 15:
             # Intentional raw wheel mix: orbit around the held ball while turning.
-            chassis.SetMotor([
-                iDirectionFactor * 15 * SpeedK *Error/75,
-                -iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75,
-                -iDirectionFactor * 15 * SpeedK *Error/75,
-                iDirectionFactor * (150 - iDeltaAngle) * SpeedK *Error/75
-                ])
+            Circle(0.6,Error,iDirectionFactor)
             return False
         else:
             return True
@@ -407,7 +476,8 @@ def TurnTo_with_ball_orbit(
         speed_y *= scale
 
     peripheral.Dribble(dribble_power)
-    chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
+    # chassis.RobotMoveVector(speed_x, speed_y, wz_deg_s)
+    print(speed_x*20, speed_y*20, wz_deg_s)
     return False
 
 def TurnTo_With_ball_Strong(angle):

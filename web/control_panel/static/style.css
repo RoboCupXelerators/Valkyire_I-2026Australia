@@ -432,7 +432,6 @@ body {
     width: 100%;
     height: 100%;
     pointer-events: none;
-    margin-top: -80px;
 }
 
 .radar-panel {
@@ -446,7 +445,35 @@ body {
 .radar-panel .panel-header {
     font-size: 0.9rem;
     color: var(--text-secondary);
+    margin-bottom: 0;
+}
+
+.radar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     margin-bottom: 12px;
+}
+
+.radar-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.radar-controls .btn-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+}
+
+.radar-zoom-label {
+    min-width: 76px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    text-align: center;
+    white-space: nowrap;
 }
 
 .radar-panel canvas {

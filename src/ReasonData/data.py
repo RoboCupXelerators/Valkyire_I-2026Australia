@@ -9,7 +9,7 @@ from . import config
 Date = time.strftime("%Y%m", time.localtime())
 RoBotName = config.Preference().read("model","number")
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
 DATABASE_FILE = DATA_DIR / f"Xel-{RoBotName}.{Date}.sqlite"
 
 db = SqliteDatabase(DATABASE_FILE)
@@ -216,4 +216,3 @@ def SaveConfig(config: dict) -> None:
     except Exception as e:
         print(f"[data] Error saving config: {e}")
         raise
-

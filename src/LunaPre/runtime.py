@@ -288,7 +288,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             Morse = None
             _field_pose_provider = Bits.GetPose
             _velocity_provider = Bits.GetVelocity
-            _referee_status_provider = None
+            _referee_status_provider = Bits.GetControlEnabled
             _configure_referee_provider()
             logger.info(
                 f"Simulator Bits loaded: unity={Bits.unity_ip}:{Bits.cmd_port}, "

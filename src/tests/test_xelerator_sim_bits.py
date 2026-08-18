@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.XeleratorSimBits import SimStatus, XeleratorSimBits  # noqa: E402
 from vision_utils.XeleratorVision import XeleratorVision  # noqa: E402
 from LunaPre.positions import Positions, cfg as positions_cfg  # noqa: E402
+from LunaPre import runtime  # noqa: E402
 from LunaPre.strategy_tools import BALL_HELD  # noqa: E402
 
 
@@ -58,7 +59,12 @@ def _robot_ball_pos_for_observation(observation):
     position._robot_ball_out_of_bounds = lambda ball_pos: False
     position.ballPos = None
     position.ballPosOut = None
-    return Positions.RobotBallPos(position), Positions.BallState(position)
+    vision = runtime.vision
+    try:
+        runtime.vision = None
+        return Positions.RobotBallPos(position), Positions.BallState(position)
+    finally:
+        runtime.vision = vision
 
 
 def test_sim_bits_returns_catch_window_coords_when_dribbler_covers_ball():
@@ -84,11 +90,57 @@ def test_sim_bits_synthesizes_catch_window_coords_when_status_has_ball_without_e
     assert ball_state == "held"
 
 
+def test_sim_bits_canonicalizes_shifted_contact_coords_when_status_has_ball():
+    bits = _make_bits_for_possession(0.0987, 0.004, dribble=0.7, has_ball=True)
+
+    observation = bits.GetBallPos()
+    assert observation == _catch_val()
+    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(observation)
+    assert robot_ball_pos == BALL_HELD
+    assert ball_state == "held"
+
+
 def test_robot_ball_pos_classifies_catch_val_coords_as_held():
     robot_ball_pos, ball_state = _robot_ball_pos_for_observation(_catch_val())
 
     assert robot_ball_pos == BALL_HELD
     assert ball_state == "held"
+
+
+def test_sim_provider_keeps_nearby_free_ball_out_of_held_state(monkeypatch):
+    class FakeVision:
+        def get_ball_pos(self):
+            return [9.5, 0.0]
+
+        def has_ball(self):
+            return False
+
+    position = object.__new__(Positions)
+    position._robot_ball_out_of_bounds = lambda ball_pos: False
+    position.ballPos = None
+    position.ballPosOut = None
+    monkeypatch.setattr(runtime, "vision", FakeVision())
+
+    assert Positions.RobotBallPos(position) == [9.5, 0.0]
+    assert Positions.BallState(position) == "free"
+
+
+def test_sim_provider_explicit_possession_is_held(monkeypatch):
+    class FakeVision:
+        def get_ball_pos(self):
+            return [12.0, 1.0]
+
+        def has_ball(self):
+            return True
+
+    position = object.__new__(Positions)
+    position._robot_ball_out_of_bounds = lambda ball_pos: False
+    position.ballPos = None
+    position.ballPosOut = None
+    monkeypatch.setattr(runtime, "vision", FakeVision())
+
+    assert Positions.RobotBallPos(position) == BALL_HELD
+    assert Positions.BallState(position) == "held"
 
 
 def test_sim_bits_reconstructs_pure_strafe_from_default_wheel_order():
@@ -118,6 +170,23 @@ def test_sim_bits_keeps_free_ball_when_dribbler_is_off():
     bits = _make_bits_for_possession(0.12, 0.01, dribble=0.0)
 
     assert bits.HasBall() is False
+    assert bits.GetBallPos() == [12.0, 1.0]
+
+
+def test_sim_bits_trusts_fresh_explicit_free_possession():
+    bits = _make_bits_for_possession(0.095, 0.0, dribble=0.7)
+    bits._status.possession_authoritative = True
+
+    assert bits.HasBall() is False
+    assert bits.GetBallPos() == [9.5, 0.0]
+
+
+def test_sim_bits_uninitialized_fallback_flags_default_to_disabled():
+    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.0)
+    del bits._ball_status_fallback
+    bits._get_scene_ball_pos_fallback = lambda: pytest.fail("scene fallback must remain disabled")
+
+    assert not hasattr(bits, "_prefer_scene_ball_fallback")
     assert bits.GetBallPos() == [12.0, 1.0]
 
 
