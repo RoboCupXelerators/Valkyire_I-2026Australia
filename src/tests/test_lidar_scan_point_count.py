@@ -4,7 +4,7 @@ import queue
 from ReasonData import Settings
 from LunaPre.lidar_driver_ros2 import _ROSLidarParser
 from LunaPre.lidar_driver_rplidar import RPLidarDriver, _resolve_serial_port
-from LunaPre.sensor import _is_valid_scan_distance, _resolve_backend
+from LunaPre.sensor import GetLineDistance, _is_valid_scan_distance, _resolve_backend
 
 
 class _FakeLaserScan:
@@ -30,6 +30,11 @@ def test_valid_scan_distance_rejects_nan_inf_and_zero():
     assert not _is_valid_scan_distance(float("nan"))
     assert not _is_valid_scan_distance(float("inf"))
     assert not _is_valid_scan_distance("bad")
+
+
+def test_lidar_line_distance_is_non_negative_regardless_of_point_order():
+    assert math.isclose(GetLineDistance((0.4, 1.2, 0.6, 1.2)), 1.2)
+    assert math.isclose(GetLineDistance((0.6, 1.2, 0.4, 1.2)), 1.2)
 
 
 def test_ros2_scan_count_uses_valid_ranges_not_dense_laser_array():

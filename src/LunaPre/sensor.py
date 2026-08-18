@@ -40,10 +40,11 @@ def GetLineStandardEquation(Line):
 
 
 def GetLineDistance(Line, Point=(0, 0)):
+    """Return the non-negative perpendicular distance from ``Point`` to ``Line``."""
     A, B, C = GetLineStandardEquation(Line)
     Distance = (A * Point[0] + B * Point[1] + C) / math.sqrt(A**2 + B**2)
 
-    return Distance
+    return abs(Distance)
 
 
 def GetLineTheta(Line):
