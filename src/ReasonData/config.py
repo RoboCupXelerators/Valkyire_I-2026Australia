@@ -126,10 +126,10 @@ class Preference:
             },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
-                "XLimit": 90.0,
+                "XLimit": 100.0,
                 "YLimit": 70.0,
                 "GoalBoxWidth": 25.0,
-                "GoalBoxYHalf": 50.0,
+                "GoalBoxYHalf": 40.0,
                 "Clearance": 5.0,
                 "RecoveryClearance": 16.0,
                 "RecoveryExtra": 3.0
