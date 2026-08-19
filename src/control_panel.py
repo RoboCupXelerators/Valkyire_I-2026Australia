@@ -1263,6 +1263,8 @@ class ControlPanelApp:
             ("Motion.RestrictedArea", "YLimit"): {"type": "float", "label": "Y 限制 (CM)", "tab": "data"},
             ("Motion.RestrictedArea", "GoalBoxWidth"): {"type": "float", "label": "球门区宽度 (CM)", "tab": "data"},
             ("Motion.RestrictedArea", "GoalBoxYHalf"): {"type": "float", "label": "球门区 Y 半宽 (CM)", "tab": "data"},
+            ("Motion.RestrictedArea", "GoalBoxCornerRadius"): {"type": "float", "label": "球门区圆角半径 (CM)", "tab": "data"},
+            ("Motion.RestrictedArea", "ProtectionLevel"): {"type": "int", "label": "禁区防护档位", "description": "1=严格整车不越线；2=澳洲赛规，允许局部越线但禁止整车进入", "min": 1, "max": 2, "tab": "data"},
             ("Motion.RestrictedArea", "Clearance"): {"type": "float", "label": "安全间隙 (CM)", "tab": "data"},
             ("Motion.RestrictedArea", "RecoveryClearance"): {"type": "float", "label": "恢复间隙 (CM)", "tab": "data"},
             ("Motion.RestrictedArea", "RecoveryExtra"): {"type": "float", "label": "恢复额外间隙 (CM)", "tab": "data"},

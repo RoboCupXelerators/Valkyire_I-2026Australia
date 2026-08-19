@@ -130,6 +130,9 @@ class Preference:
                 "YLimit": 70.0,
                 "GoalBoxWidth": 25.0,
                 "GoalBoxYHalf": 40.0,
+                "GoalBoxCornerRadius": 20.0,
+                # 1=严格整车不越线，2=澳洲赛规：允许局部越线但禁止整车进入
+                "ProtectionLevel": 1,
                 "Clearance": 5.0,
                 "RecoveryClearance": 16.0,
                 "RecoveryExtra": 3.0

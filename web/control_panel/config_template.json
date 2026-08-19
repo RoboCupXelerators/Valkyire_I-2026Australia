@@ -376,23 +376,38 @@
               "default": 50.0,
               "order": 4
             },
+            "GoalBoxCornerRadius": {
+              "type": "float",
+              "label": "球门区圆角半径 (CM)",
+              "default": 20.0,
+              "order": 5
+            },
+            "ProtectionLevel": {
+              "type": "int",
+              "label": "禁区防护档位",
+              "description": "1=严格整车不越线；2=澳洲赛规，允许局部越线但禁止整车进入",
+              "min": 1,
+              "max": 2,
+              "default": 1,
+              "order": 6
+            },
             "Clearance": {
               "type": "float",
               "label": "安全间隙 (CM)",
               "default": 5.0,
-              "order": 5
+              "order": 7
             },
             "RecoveryClearance": {
               "type": "float",
               "label": "恢复间隙 (CM)",
               "default": 16.0,
-              "order": 6
+              "order": 8
             },
             "RecoveryExtra": {
               "type": "float",
               "label": "恢复额外间隙 (CM)",
               "default": 3.0,
-              "order": 7
+              "order": 9
             }
           },
           "order": 3
