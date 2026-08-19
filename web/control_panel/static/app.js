@@ -431,6 +431,7 @@ let visionState = {
   ball_bboxes_640: [null, null, null, null],
   chassis_bboxes_640: [null, null, null, null],
   goal_bboxes_640: [null, null, null, null],
+  bbox_coordinate_spaces: [null, null, null, null],
   perf: {
     preprocess_tf: 0,
     inference_tf: 0,
@@ -484,6 +485,12 @@ function updateVisionState() {
         null,
         null,
       ];
+      visionState.bbox_coordinate_spaces = data.bbox_coordinate_spaces || [
+        null,
+        null,
+        null,
+        null,
+      ];
 
       // Store performance metrics
       if (data.perf) {
@@ -497,6 +504,7 @@ function updateVisionState() {
         ballPosEl.title = `Raw: ${formatBallPositionText(data.ball_pos_raw_cm)}`;
       }
       updateVisionDetails(data);
+      drawAllOverlays();
 
       // Update vision status
       const statusEl = document.getElementById("vision-status");
@@ -594,9 +602,9 @@ function updateLidarPanel(lidarStatus) {
   }
 }
 
-// Map bbox from the 640x640 detector letterbox back to the displayed image.
-// The camera frame is usually 4:3, so detector coordinates include vertical padding.
-function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH) {
+// Map a detector-space bbox back to the displayed image.  Hailo publishes the
+// exact transform from its inference batch; Jetson keeps the 640x640 fallback.
+function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH, coordinateSpace = null) {
   if (!bbox || bbox.length < 6) return null;
 
   try {
@@ -612,25 +620,46 @@ function mapBbox640ToImage(bbox, srcW, srcH, dstW, dstH) {
     dstW = Math.max(1, dstW);
     dstH = Math.max(1, dstH);
 
-    // Invert the same letterbox transform used before inference.
-    const detectorSize = 640;
-    const letterboxScale = Math.min(
-      detectorSize / srcW,
-      detectorSize / srcH,
-    );
-    const padX = (detectorSize - srcW * letterboxScale) / 2;
-    const padY = (detectorSize - srcH * letterboxScale) / 2;
-    const toSourceX = (value) => (value - padX) / letterboxScale;
-    const toSourceY = (value) => (value - padY) / letterboxScale;
-    const clampX = (value) => Math.max(0, Math.min(srcW, value));
-    const clampY = (value) => Math.max(0, Math.min(srcH, value));
+    const isFinitePositive = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+    const space = coordinateSpace && typeof coordinateSpace === "object"
+      ? coordinateSpace
+      : {};
+    const detectorW = isFinitePositive(space.input_width)
+      ? Number(space.input_width)
+      : 640;
+    const detectorH = isFinitePositive(space.input_height)
+      ? Number(space.input_height)
+      : 640;
+    const sourceW = isFinitePositive(space.source_width)
+      ? Number(space.source_width)
+      : srcW;
+    const sourceH = isFinitePositive(space.source_height)
+      ? Number(space.source_height)
+      : srcH;
+    const letterboxScale = Math.min(detectorW / sourceW, detectorH / sourceH);
+    const resizedW = isFinitePositive(space.resized_width)
+      ? Number(space.resized_width)
+      : Math.floor(sourceW * letterboxScale);
+    const resizedH = isFinitePositive(space.resized_height)
+      ? Number(space.resized_height)
+      : Math.floor(sourceH * letterboxScale);
+    const padX = Number.isFinite(Number(space.pad_x))
+      ? Number(space.pad_x)
+      : Math.floor((detectorW - resizedW) / 2);
+    const padY = Number.isFinite(Number(space.pad_y))
+      ? Number(space.pad_y)
+      : Math.floor((detectorH - resizedH) / 2);
+    const toSourceX = (value) => (value - padX) * sourceW / resizedW;
+    const toSourceY = (value) => (value - padY) * sourceH / resizedH;
+    const clampX = (value) => Math.max(0, Math.min(sourceW, value));
+    const clampY = (value) => Math.max(0, Math.min(sourceH, value));
 
     const sourceX1 = clampX(toSourceX(x1));
     const sourceY1 = clampY(toSourceY(y1));
     const sourceX2 = clampX(toSourceX(x2));
     const sourceY2 = clampY(toSourceY(y2));
-    const displayScaleX = dstW / srcW;
-    const displayScaleY = dstH / srcH;
+    const displayScaleX = dstW / sourceW;
+    const displayScaleY = dstH / sourceH;
 
     const dx1 = Math.round(sourceX1 * displayScaleX);
     const dy1 = Math.round(sourceY1 * displayScaleY);
@@ -704,6 +733,7 @@ function drawAllOverlays() {
         imgNaturalH,
         dstW,
         dstH,
+        visionState.bbox_coordinate_spaces[frameIdx],
       );
       drawBboxOnCanvas(canvas, mapped, "#f72585", "ball", offsetX, offsetY);
     }
@@ -717,6 +747,7 @@ function drawAllOverlays() {
         imgNaturalH,
         dstW,
         dstH,
+        visionState.bbox_coordinate_spaces[frameIdx],
       );
       drawBboxOnCanvas(canvas, mapped, "#4cc9f0", "chassis", offsetX, offsetY);
     }
@@ -742,6 +773,7 @@ function drawAllOverlays() {
         imgNaturalH,
         dstW,
         dstH,
+        visionState.bbox_coordinate_spaces[frameIdx],
       );
       drawBboxOnCanvas(canvas, mapped, color, label, offsetX, offsetY);
     }

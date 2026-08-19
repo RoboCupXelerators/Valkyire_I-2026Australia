@@ -861,6 +861,17 @@ class ControlPanelApp:
                 pass
 
         try:
+            coordinate_spaces = self._call_provider(
+                self.vision,
+                "GetBBoxCoordinateSpaces",
+                "get_bbox_coordinate_spaces",
+            )
+            if isinstance(coordinate_spaces, (list, tuple)):
+                result["bbox_coordinate_spaces"] = _json_safe(coordinate_spaces)
+        except Exception:
+            pass
+
+        try:
             result["perf"]["preprocess_tf"] = int(getattr(self.vision, 'PreProcessTF', 0))
             result["perf"]["inference_tf"] = int(getattr(self.vision, 'InferTF', 0))
             result["perf"]["postprocess_tf"] = int(getattr(self.vision, 'PostProcessTF', 0))
@@ -979,6 +990,7 @@ class ControlPanelApp:
             "ball_bboxes_640": [None, None, None, None],
             "chassis_bboxes_640": [None, None, None, None],
             "goal_bboxes_640": [None, None, None, None],
+            "bbox_coordinate_spaces": [None, None, None, None],
             "is_simulator": self._is_simulator,
             "vision_status": self.get_vision_status(),
             "lidar_status": self.get_lidar_status(),
@@ -1038,7 +1050,19 @@ class ControlPanelApp:
             if frame_idx < 0 or frame_idx >= len(frames):
                 return None, None
 
-            fr = frames[frame_idx]
+            fr = None
+            # Hailo inference runs asynchronously.  When it provides an
+            # inference snapshot, use it so the rendered JPEG and its bboxes
+            # originate from the same camera frame.  Other backends retain the
+            # existing live-frame behaviour.
+            overlay_frame_getter = getattr(self.vision, "GetOverlayFrame", None)
+            if callable(overlay_frame_getter):
+                try:
+                    fr = overlay_frame_getter(frame_idx)
+                except Exception:
+                    fr = None
+            if fr is None:
+                fr = frames[frame_idx]
             if fr is None:
                 return None, None
             img = fr

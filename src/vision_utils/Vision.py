@@ -191,6 +191,14 @@ class UnitedVision(Detect_Method):
         self.BallOffsetYCM = float(_vision_cfg("BallOffsetYCM", 0.0) or 0.0)
         self.ChassisWidthCM = float(_vision_val("ChassisWidthCM", 18.0, vision_name="ChassisWidth"))
         self.ChassisHeightCM = float(_vision_val("ChassisHeightCM", 3.5, vision_name="ChassisHeight"))
+        self.ChassisMergeDistanceCM = max(
+            5.0,
+            float(_vision_cfg("ChassisMergeDistanceCM", 14.0) or 14.0),
+        )
+        self.MaxVisibleChassis = max(
+            1,
+            min(3, int(_vision_cfg("MaxVisibleChassis", 3) or 3)),
+        )
         self.BBoxFusionStrength = float(_vision_val("BBoxFusionStrength", 0.5))
         self.BBoxLegacyReferenceAreaPx = float(_vision_val("BBoxLegacyReferenceAreaPx", 12000.0))
         self.BlueGoalWidthCM = float(_vision_val("BlueGoalWidthCM", 90.0, vision_name="GoalWidth"))
@@ -674,22 +682,91 @@ class UnitedVision(Detect_Method):
         return PaddedImage
 
 
+    def _merge_chassis_observations(self, observations):
+        """Fuse spatially coincident multi-camera chassis observations.
+
+        The field can contain up to three opponent chassis. Observations are
+        grouped by robot-frame distance, never by an assumption of uniqueness.
+        """
+        candidates = []
+        for observation in observations:
+            try:
+                x_cm, y_cm, width_px, height_px, confidence, camera_index = observation
+                values = (x_cm, y_cm, width_px, height_px, confidence)
+                if not all(math.isfinite(float(value)) for value in values):
+                    continue
+                if float(confidence) <= 0:
+                    continue
+                candidates.append((
+                    float(x_cm), float(y_cm), float(width_px),
+                    float(height_px), float(confidence), int(camera_index),
+                ))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not candidates:
+            return []
+
+        radius_cm = max(5.0, float(getattr(self, "ChassisMergeDistanceCM", 14.0)))
+        parent = list(range(len(candidates)))
+
+        def find(index):
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(left, right):
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        for left, first in enumerate(candidates):
+            for right in range(left + 1, len(candidates)):
+                second = candidates[right]
+                if math.hypot(first[0] - second[0], first[1] - second[1]) <= radius_cm:
+                    union(left, right)
+
+        clusters = {}
+        for index, candidate in enumerate(candidates):
+            clusters.setdefault(find(index), []).append((index, candidate))
+        groups = sorted(
+            clusters.values(),
+            key=lambda group: (
+                -len(group),
+                -max(candidate[4] for _index, candidate in group),
+                min(index for index, _candidate in group),
+            ),
+        )
+
+        max_chassis = max(1, min(3, int(getattr(self, "MaxVisibleChassis", 3))))
+        merged = []
+        for group in groups[:max_chassis]:
+            total_weight = sum(max(0.05, candidate[4]) for _index, candidate in group)
+            weight = lambda candidate: max(0.05, candidate[4])
+            x_cm = sum(candidate[0] * weight(candidate) for _index, candidate in group) / total_weight
+            y_cm = sum(candidate[1] * weight(candidate) for _index, candidate in group) / total_weight
+            width_px = sum(candidate[2] * weight(candidate) for _index, candidate in group) / total_weight
+            height_px = sum(candidate[3] * weight(candidate) for _index, candidate in group) / total_weight
+            confidence = max(candidate[4] for _index, candidate in group)
+            merged.append((x_cm, y_cm, width_px, height_px, confidence))
+        return merged
+
     def ChassisDetection(self):
         while not getattr(self, "_stop_event", threading.Event()).is_set():
             try:
                 OutputBuffer = self.ChassisQueue.get(timeout=0.1)
             except Exception:
                 continue
-            # print(OutputBuffer)
+
             post_start = time.perf_counter()
             self.PostProcessTF = self.PostProcessTF + 1
-            self.MergedChassisList = []
             ChassisList = []
-            # Process ChassisList
-            for i in range(4):
+            # Hailo can publish several candidates per camera, so process every
+            # queue entry before clustering cross-camera observations.
+            for item in OutputBuffer or []:
                 try:
-                    CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
-                    # Ignore padded/dummy outputs and clipped edge boxes.
+                    CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = item
                     if Confidence is None or Confidence <= 0 or ChassisWidth <= 0 or ChassisHeight <= 0:
                         continue
                     plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
@@ -703,43 +780,13 @@ class UnitedVision(Detect_Method):
                         self.ChassisHeightCM,
                         strength=0.45,
                     )
-                    ChassisTuple = (CX, CY, ChassisWidth, ChassisHeight, Confidence)
-                    # 20251118 already changed X forward,Y left dimension
-
-                    self.MergedChassisList.append(ChassisTuple)
-                            # ChassisList.append(ChassisTuple)
-                # if ChassisList:
-                #     ChassisList = sorted(ChassisList, key=lambda x: x[0], reverse=False)
-                #     LastMerged = False
-                #     for i in range(len(ChassisList)):
-                #         if not i == len(ChassisList) - 1:
-                #             ChassisX = ChassisList[i][0]
-                #             ChassisY = ChassisList[i][1]
-                #             NextChassisX = ChassisList[i+1][0]
-                #             NextChassisY = ChassisList[i+1][1]
-
-                #         if LastMerged:
-                #             Chassis = ChassisList[len(ChassisList) - 1]
-                #             self.MergedChassisList.append(Chassis)
-
-                #         elif abs(ChassisX - NextChassisX) < 20 and abs(ChassisY - NextChassisY) < 20:
-                #             CX = (ChassisX + NextChassisX) / 2
-                #             CY = (ChassisY + NextChassisY) / 2
-                #             CW = (ChassisList[i][2] + ChassisList[i+1][2]) / 2
-                #             CH = (ChassisList[i][3] + ChassisList[i+1][2]) / 2
-                #             Confidence = (ChassisList[i][4] + ChassisList[i+1][4]) / 2
-                #             Chassis = (CX, CY, CW, CH, Confidence)
-                #             self.MergedChassisList.append(Chassis)
-                #             if i == len(ChassisList) - 2:
-                #                 LastMerged = True
-                #         else:
-                #             Chassis = ChassisList[i]
-                #             self.MergedChassisList.append(Chassis)
-
-
-                # print(self.MergedChassisList)
-                except:
+                    ChassisList.append((
+                        CX, CY, ChassisWidth, ChassisHeight, Confidence, CameraIndex))
+                except (TypeError, ValueError, IndexError):
                     continue
+
+            self.ChassisPosRaw = ChassisList
+            self.MergedChassisList = self._merge_chassis_observations(ChassisList)
             self._record_postprocess_ms(post_start)
             time.sleep(0.01)
 
