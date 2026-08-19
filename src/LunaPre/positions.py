@@ -1647,6 +1647,10 @@ class Positions:
 
         AimPos 为 [x_cm, y_cm, yaw_deg]。每次调用只发一帧速度：
         距离没到就平移并朝向目标 yaw；位置到了但角度没到就原地转向。
+
+        目标路径穿过禁区时，先走一个有限的中继点。中继点只在当前
+        ``Pos2Pos`` 调用内被替换，不会把“到达中继点”误报成到达最终目标；
+        下一帧会重新检查从中继点到最终目标的路径。
         """
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
@@ -1654,6 +1658,8 @@ class Positions:
             runtime.Morse("No Position Data!")
             return False
 
+        start = [loc_x, loc_y, loc_yaw]
+        AimPos = self._navigate_waypoint(start, AimPos)
         aim_x, aim_y, aim_yaw = AimPos
         aim_yaw = float(aim_yaw) % 360.0
         err_x = float(aim_x) - float(loc_x)
@@ -1679,17 +1685,41 @@ class Positions:
         runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
         return False
 
-    def _path_hits_restricted_area(self, start, target, samples: int = 12) -> bool:
+    def _path_hits_restricted_area(self, start, target, samples: int = 32) -> bool:
         if not start or not target or len(start) < 3 or len(target) < 3:
             return False
-        for idx in range(1, max(2, samples)):
-            t = idx / float(max(2, samples))
+        sample_count = max(2, int(samples))
+        # If localization reports that the robot is already outside the legal
+        # envelope, allow the initial escape segment. Without this exception
+        # every recovery command would be rejected because its first samples
+        # necessarily still lie in the current illegal state.
+        escaped = not self.IsPoseInRestrictedArea(start)
+        for idx in range(1, sample_count + 1):
+            t = idx / float(sample_count)
             pose = [
                 float(start[0]) + (float(target[0]) - float(start[0])) * t,
                 float(start[1]) + (float(target[1]) - float(start[1])) * t,
                 float(start[2]) + angle_error_deg(start[2], target[2]) * t,
             ]
             if self.IsPoseInRestrictedArea(pose):
+                if escaped:
+                    return True
+            else:
+                escaped = True
+        return False
+
+    def _path_has_intermediate_safe_pose(self, start, target, samples: int = 32) -> bool:
+        """Return whether an already-illegal recovery path reaches safety early."""
+
+        sample_count = max(2, int(samples))
+        for idx in range(1, sample_count):
+            t = idx / float(sample_count)
+            pose = [
+                float(start[0]) + (float(target[0]) - float(start[0])) * t,
+                float(start[1]) + (float(target[1]) - float(start[1])) * t,
+                float(start[2]) + angle_error_deg(start[2], target[2]) * t,
+            ]
+            if not self.IsPoseInRestrictedArea(pose):
                 return True
         return False
 
@@ -1697,7 +1727,12 @@ class Positions:
         safe_target = self.ProjectSafePose(target)
         if safe_target is not None:
             target = safe_target
-        if not self._path_hits_restricted_area(start, target):
+        path_hits = self._path_hits_restricted_area(start, target)
+        start_is_restricted = self.IsPoseInRestrictedArea(start)
+        if not path_hits and (
+            not start_is_restricted
+            or self._path_has_intermediate_safe_pose(start, target)
+        ):
             return target
 
         params = self._restricted_area_params()
@@ -1706,20 +1741,62 @@ class Positions:
         if y_detour <= params["goal_box_y_half"]:
             return target
 
+        arrival_cm = max(1.0, float(Settings.Motion.ErrorRange) * POS2POS_ARRIVAL_SCALE)
+
+        # Follow the near side of the forbidden box one leg at a time. A
+        # single point that can see the final target creates a large triangle
+        # (and is especially bad for Move2Path). The edge route instead is:
+        #   current -> outside-x at current-y
+        #   outside-x at current-y -> outside-x at target-y
+        #   outside-x at target-y -> target
+        # The current/target y values are already clamped when they are close
+        # to the field boundary, so even an out-of-range requested point gets
+        # a stable route.
+        route_sign = 1.0
+        route_threshold = max(1.0, params["goal_box_route_x"])
+        if abs(float(start[0])) >= route_threshold:
+            route_sign = 1.0 if float(start[0]) >= 0.0 else -1.0
+        elif abs(float(target[0])) >= route_threshold:
+            route_sign = 1.0 if float(target[0]) >= 0.0 else -1.0
+
+        route_x = route_sign * params["goal_box_route_x"]
+        boundary_recover_y = max(
+            0.0,
+            params["y_limit"] - params["boundary_recovery_margin"],
+        )
+        route_y_limit = max(y_detour, boundary_recover_y)
+        route_start_y = clamp(float(start[1]), -route_y_limit, route_y_limit)
+        route_target_y = clamp(float(target[1]), -route_y_limit, route_y_limit)
+
+        edge_candidates = [
+            [route_x, route_start_y, float(target[2])],
+            [route_x, route_target_y, float(target[2])],
+        ]
+        for waypoint in edge_candidates:
+            if math.hypot(float(waypoint[0]) - float(start[0]), float(waypoint[1]) - float(start[1])) <= arrival_cm:
+                continue
+            if self.ProjectSafePose(waypoint) is None and not self._path_hits_restricted_area(start, waypoint):
+                return waypoint
+
         side = 1.0
         if abs(float(start[1])) > 1.0:
             side = 1.0 if float(start[1]) > 0 else -1.0
         elif abs(float(target[1])) > 1.0:
             side = 1.0 if float(target[1]) > 0 else -1.0
 
+        # Keep the old outer-corridor candidates as a fallback for unusual
+        # layouts where the direct edge route is unavailable. The centre
+        # corridor is deliberately last because it produces a long triangle.
         candidates = [
             [float(start[0]), side * y_detour, float(target[2])],
             [float(target[0]), side * y_detour, float(target[2])],
-            [0.0, side * y_detour, float(target[2])],
             [float(start[0]), -side * y_detour, float(target[2])],
             [float(target[0]), -side * y_detour, float(target[2])],
+            [0.0, side * y_detour, float(target[2])],
         ]
         for waypoint in candidates:
+            if math.hypot(float(waypoint[0]) - float(start[0]), float(waypoint[1]) - float(start[1])) <= arrival_cm:
+                continue
             if self.ProjectSafePose(waypoint) is None and not self._path_hits_restricted_area(start, waypoint):
                 return waypoint
         return target
@@ -1727,8 +1804,8 @@ class Positions:
     def Navigate2(self, AimPos: list, speed_gain: int | float | None = None) -> bool:
         """非阻塞简单导航。
 
-        和 Pos2Pos 的区别：Navigate2 会先检查直线路径是否穿过限制区；
-        如果会穿过，就先给一个绕到限制区上下方的中间点。
+        保留这个接口是为了兼容已有策略；``Pos2Pos`` 现在也会执行同样的
+        路径检查，避免直接调用 ``Pos2Pos`` 时绕过禁区保护。
         """
         start = self.FieldRobotPose()
         if start == POSE_NOT_FOUND:
@@ -1828,6 +1905,7 @@ class Positions:
         y_limit = float(getattr(safety_cfg, "YLimit", min(70.0, field_short / 2.0 - 30.0)))
         goal_box_width = float(getattr(safety_cfg, "GoalBoxWidth", 25.0))
         goal_box_y_half = float(getattr(safety_cfg, "GoalBoxYHalf", 50.0))
+        goal_box_corner_radius = float(getattr(safety_cfg, "GoalBoxCornerRadius", 20.0))
         clearance = float(getattr(safety_cfg, "Clearance", max(3.0, cfg.Motion.ErrorRange / 2.0)))
         recovery_clearance = float(getattr(safety_cfg, "RecoveryClearance", 0.0))
         if recovery_clearance <= 0.0:
@@ -1835,14 +1913,144 @@ class Positions:
             recovery_extra = float(getattr(safety_cfg, "RecoveryExtra", 3.0))
             recovery_clearance = clearance + arrival_range + recovery_extra
 
+        try:
+            protection_level = int(getattr(safety_cfg, "ProtectionLevel", 1))
+        except (TypeError, ValueError):
+            protection_level = 1
+        protection_level = 2 if protection_level == 2 else 1
+
+        chassis_cfg = getattr(cfg, "Chassis", None)
+        try:
+            robot_radius_cm = max(0.0, float(getattr(chassis_cfg, "RobotRadiusM", 0.0)) * 100.0)
+        except (TypeError, ValueError):
+            robot_radius_cm = 0.0
+
+        clearance = max(0.0, clearance)
+        recovery_clearance = max(clearance, recovery_clearance)
+        if protection_level == 2:
+            # RCJA's out-of-bounds wording judges the *whole* robot. Erode the
+            # forbidden shape by the chassis radius so a partial line crossing
+            # is possible, while the complete robot cannot fit inside it.
+            boundary_margin = clearance - robot_radius_cm
+            goal_box_margin = clearance - robot_radius_cm
+            boundary_recovery_margin = boundary_margin
+            goal_box_escape_margin = clearance
+            goal_box_route_x = max(0.0, x_limit - goal_box_width - goal_box_margin)
+            goal_box_safe_y = max(0.0, goal_box_y_half + goal_box_margin)
+            goal_box_sidestep_y = goal_box_safe_y
+        else:
+            # Strict mode keeps the robot body outside the marked boundary.
+            boundary_margin = clearance + robot_radius_cm
+            goal_box_margin = clearance + robot_radius_cm
+            boundary_recovery_margin = recovery_clearance
+            goal_box_escape_margin = recovery_clearance
+            goal_box_route_x = max(0.0, x_limit - goal_box_width - recovery_clearance)
+            goal_box_safe_y = max(0.0, goal_box_y_half + goal_box_margin)
+            goal_box_sidestep_y = min(
+                max(0.0, y_limit - recovery_clearance),
+                max(0.0, goal_box_y_half + recovery_clearance),
+            )
+
+        goal_box_x_min = max(0.0, x_limit - goal_box_width)
+
         return {
             "x_limit": max(1.0, x_limit),
             "y_limit": max(1.0, y_limit),
-            "goal_box_x_min": max(0.0, x_limit - goal_box_width),
+            "protection_level": protection_level,
+            "robot_radius_cm": robot_radius_cm,
+            "goal_box_x_min": goal_box_x_min,
             "goal_box_y_half": max(0.0, min(goal_box_y_half, y_limit)),
-            "clearance": max(0.0, clearance),
-            "recovery_clearance": max(clearance, recovery_clearance),
+            "goal_box_corner_radius": max(
+                0.0,
+                min(goal_box_corner_radius, goal_box_width, goal_box_y_half),
+            ),
+            "clearance": clearance,
+            "recovery_clearance": recovery_clearance,
+            "boundary_margin": boundary_margin,
+            "boundary_recovery_margin": boundary_recovery_margin,
+            "goal_box_margin": goal_box_margin,
+            "goal_box_escape_margin": goal_box_escape_margin,
+            "goal_box_route_x": goal_box_route_x,
+            "goal_box_safe_y": goal_box_safe_y,
+            "goal_box_sidestep_y": goal_box_sidestep_y,
         }
+
+    @staticmethod
+    def _rounded_goal_box_contains(x, y, params: dict, margin: float = 0.0) -> bool:
+        """Return whether a point is inside the safety-offset rounded goal box.
+
+        The front two corners of the goal box are quarter circles. A positive
+        ``margin`` expands the forbidden shape; a negative margin erodes it.
+        The latter is used by the competition mode because the Australian
+        rule judges whether the whole robot has entered the area.
+        """
+
+        x_abs = abs(float(x))
+        y_abs = abs(float(y))
+        offset = float(margin)
+        x_min = max(0.0, float(params["goal_box_x_min"]) - offset)
+        y_half = max(0.0, float(params["goal_box_y_half"]) + offset)
+        radius = max(0.0, float(params["goal_box_corner_radius"]) + offset)
+
+        if x_abs <= x_min or y_abs >= y_half:
+            return False
+        if radius <= 0.0:
+            return True
+
+        corner_x = float(params["goal_box_x_min"]) + float(params["goal_box_corner_radius"])
+        corner_y = float(params["goal_box_y_half"]) - float(params["goal_box_corner_radius"])
+        if x_abs >= corner_x or y_abs <= corner_y:
+            return True
+
+        dx = x_abs - corner_x
+        dy = y_abs - corner_y
+        return dx * dx + dy * dy < radius * radius
+
+    def _rounded_corner_escape(self, x, y, params: dict):
+        """Return a short, clearance-aware exit from a rounded goal corner."""
+
+        radius = float(params["goal_box_corner_radius"])
+        if radius <= 0.0:
+            return None
+
+        x_abs = abs(float(x))
+        y_abs = abs(float(y))
+        x_min = float(params["goal_box_x_min"])
+        y_half = float(params["goal_box_y_half"])
+        effective_radius = max(0.0, radius + float(params["goal_box_margin"]))
+        sign_x = 1.0 if float(x) >= 0.0 else -1.0
+        sign_y = 1.0 if float(y) >= 0.0 else -1.0
+        corner_x = sign_x * (x_min + radius)
+        corner_y = sign_y * (y_half - radius)
+        if x_abs >= abs(corner_x) or y_abs <= abs(corner_y):
+            return None
+
+        dx = float(x) - corner_x
+        dy = float(y) - corner_y
+        distance = math.hypot(dx, dy)
+        if distance >= effective_radius:
+            return None
+
+        # Use an exit margin so the robot does not stop on the arc and
+        # immediately re-enter it on the next PID tick.
+        exit_radius = effective_radius + float(params["goal_box_escape_margin"])
+        if distance <= 1e-6:
+            dx, dy, distance = -sign_x, sign_y, math.sqrt(2.0)
+        scale = exit_radius / distance
+        target_x = corner_x + dx * scale
+        target_y = corner_y + dy * scale
+
+        recover_x = max(
+            0.0,
+            float(params["x_limit"]) - float(params["boundary_recovery_margin"]),
+        )
+        recover_y = max(
+            0.0,
+            float(params["y_limit"]) - float(params["boundary_recovery_margin"]),
+        )
+        target_x = sign_x * min(abs(target_x), recover_x)
+        target_y = sign_y * min(abs(target_y), recover_y)
+        return [target_x, target_y]
 
     def ProjectSafePose(self, pose: list | tuple | None):
         """Project an unsafe field pose to the nearest legal coordinate.
@@ -1859,15 +2067,12 @@ class Positions:
         params = self._restricted_area_params()
         x_limit = params["x_limit"]
         y_limit = params["y_limit"]
-        goal_box_x_min = params["goal_box_x_min"]
-        goal_box_y_half = params["goal_box_y_half"]
-        clearance = params["clearance"]
-        recovery_clearance = params["recovery_clearance"]
+        goal_box_margin = params["goal_box_margin"]
 
-        guard_x = max(0.0, x_limit - clearance)
-        guard_y = max(0.0, y_limit - clearance)
-        recover_x = max(0.0, x_limit - recovery_clearance)
-        recover_y = max(0.0, y_limit - recovery_clearance)
+        guard_x = max(0.0, x_limit - params["boundary_margin"])
+        guard_y = max(0.0, y_limit - params["boundary_margin"])
+        recover_x = max(0.0, x_limit - params["boundary_recovery_margin"])
+        recover_y = max(0.0, y_limit - params["boundary_recovery_margin"])
 
         target_x = x
         target_y = y
@@ -1887,19 +2092,48 @@ class Positions:
             target_y = -recover_y
             corrected = True
 
-        in_goal_box = abs(target_x) > goal_box_x_min and abs(target_y) < goal_box_y_half
+        in_goal_box = self._rounded_goal_box_contains(
+            target_x,
+            target_y,
+            params,
+            margin=goal_box_margin,
+        )
         if in_goal_box:
             sign_x = 1.0 if target_x >= 0 else -1.0
             sign_y = 1.0 if target_y >= 0 else -1.0
 
-            retreat_x = sign_x * max(0.0, goal_box_x_min - recovery_clearance)
-            sidestep_limit = max(0.0, y_limit - recovery_clearance)
-            sidestep_y = sign_y * min(sidestep_limit, goal_box_y_half + recovery_clearance)
+            retreat_x = sign_x * params["goal_box_route_x"]
+            sidestep_limit = recover_y
+            sidestep_y = sign_y * min(sidestep_limit, params["goal_box_sidestep_y"])
 
             retreat_cost = abs(target_x - retreat_x)
             sidestep_cost = abs(target_y - sidestep_y)
-            sidestep_has_room = sidestep_limit > goal_box_y_half
-            if retreat_cost <= sidestep_cost or not sidestep_has_room:
+            sidestep_has_room = sidestep_limit > params["goal_box_safe_y"]
+            candidates = []
+            if sidestep_has_room:
+                candidates.append([target_x, sidestep_y])
+            candidates.append([retreat_x, target_y])
+
+            corner_escape = self._rounded_corner_escape(target_x, target_y, params)
+            if corner_escape is not None:
+                candidates.append(corner_escape)
+
+            safe_candidates = [
+                candidate
+                for candidate in candidates
+                if not self._rounded_goal_box_contains(
+                    candidate[0], candidate[1], params, margin=goal_box_margin
+                )
+            ]
+            if safe_candidates:
+                target_x, target_y = min(
+                    safe_candidates,
+                    key=lambda candidate: math.hypot(
+                        candidate[0] - target_x,
+                        candidate[1] - target_y,
+                    ),
+                )
+            elif retreat_cost <= sidestep_cost or not sidestep_has_room:
                 target_x = retreat_x
             else:
                 target_y = sidestep_y
