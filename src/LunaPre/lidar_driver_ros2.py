@@ -18,6 +18,21 @@ from pathlib import Path
 from ReasonData import DATA_DIR, ROS_ENV, Preference, Settings, logger
 
 DEFAULT_STALE_PROCESS_GRACE_S = 2.0
+SLLIDAR_MODEL_CONFIGS = {
+    "s1": {
+        "launch_file": "sllidar_s1_launch.py",
+        "serial_baudrate": 256000,
+    },
+    "s2": {
+        "launch_file": "sllidar_s2_launch.py",
+        "serial_baudrate": 1000000,
+    },
+    "s3": {
+        "launch_file": "sllidar_s3_launch.py",
+        "serial_baudrate": 1000000,
+    },
+}
+DEFAULT_SLLIDAR_TYPE = "s2"
 
 
 def _local_sllidar_setup() -> Path | None:
@@ -158,16 +173,22 @@ def _lidar_serial_port_from_settings(default: str = "/dev/sllidar") -> str:
     return str(_setting_value("Ports", "LidarPort", default))
 
 
-def _launch_file_for_type(lidar_type: str) -> str:
+def _sllidar_model_config(lidar_type: str) -> dict[str, int | str]:
     lidar_type_key = str(lidar_type).lower()
-    if lidar_type_key == "s1":
-        return "sllidar_s1_launch.py"
-    if lidar_type_key == "s2":
-        return "sllidar_s2_launch.py"
-    if lidar_type_key == "s3":
-        return "sllidar_s3_launch.py"
+    config = SLLIDAR_MODEL_CONFIGS.get(lidar_type_key)
+    if config is not None:
+        return config
     logger.warning("Unknown ROS2 lidar type=%r; using S2 launch file", lidar_type)
-    return "sllidar_s2_launch.py"
+    return SLLIDAR_MODEL_CONFIGS[DEFAULT_SLLIDAR_TYPE]
+
+
+def _launch_file_for_type(lidar_type: str) -> str:
+    return str(_sllidar_model_config(lidar_type)["launch_file"])
+
+
+def _serial_baudrate_for_type(lidar_type: str) -> int:
+    """Return the serial speed required by the selected Slamtec model."""
+    return int(_sllidar_model_config(lidar_type)["serial_baudrate"])
 
 
 class _ROSLidarParser(Node):
@@ -302,6 +323,7 @@ class ROS2LidarDriver:
     ):
         self.domain_id = domain_id
         self.bashrc = bashrc
+        self._serial_port_override = serial_port
         self.serial_port = serial_port or _lidar_serial_port_from_settings()
         self.cleanup_stale = cleanup_stale
         self.lidar_process = None
@@ -309,6 +331,8 @@ class ROS2LidarDriver:
         self.current_launch = None
         self.current_domain = None
         self.current_inverted = None
+        self.current_port = None
+        self.current_baudrate = None
         self._thread = None
         self._watcher_thread = None
         self._stop_event = threading.Event()
@@ -409,6 +433,11 @@ class ROS2LidarDriver:
         except Exception:
             return int(Settings.Ports.LidarID)
 
+    def _desired_serial_port(self) -> str:
+        if self._serial_port_override is not None:
+            return str(self._serial_port_override)
+        return _lidar_serial_port_from_settings()
+
     def start_sllidar_driver(self, enforce_settings: bool = True, bashrc: str | None = ROS_ENV):
         if not ROS_AVAILABLE:
             logger.warning("ROS2/rclpy not available, skip starting lidar driver.")
@@ -422,13 +451,19 @@ class ROS2LidarDriver:
         bashrc = os.path.expanduser(str(bashrc))
         if enforce_settings:
             domain = self._desired_domain()
-            launch_file = _launch_file_for_type(_lidar_type_from_settings())
+            lidar_type = _lidar_type_from_settings()
+            launch_file = _launch_file_for_type(lidar_type)
+            serial_baudrate = _serial_baudrate_for_type(lidar_type)
             inverted = _lidar_inverted_from_settings()
+            serial_port = self._desired_serial_port()
         else:
             domain = self.domain_id or Settings.Ports.LidarID
             launch_file = self.current_launch or "sllidar_s2_launch.py"
+            serial_baudrate = self.current_baudrate or _serial_baudrate_for_type(DEFAULT_SLLIDAR_TYPE)
             inverted = bool(self.current_inverted)
+            serial_port = self.current_port or self._desired_serial_port()
         self.current_inverted = inverted
+        self.serial_port = serial_port
 
         setup_commands = [f"source {shlex.quote(bashrc)}"]
         local_setup = _local_sllidar_setup()
@@ -438,7 +473,8 @@ class ROS2LidarDriver:
         cmd = (
             " && ".join(setup_commands)
             + f" && export ROS_DOMAIN_ID={int(domain)} && exec ros2 launch "
-            f"sllidar_ros2 {launch_file} serial_port:={shlex.quote(self.serial_port)} "
+            f"sllidar_ros2 {launch_file} serial_port:={shlex.quote(serial_port)} "
+            f"serial_baudrate:={int(serial_baudrate)} "
             f"inverted:={'true' if inverted else 'false'}"
         )
 
@@ -447,7 +483,10 @@ class ROS2LidarDriver:
         out_path = str(log_dir / f'{launch_file.replace(".py", "")}_d{domain}.out')
         err_path = str(log_dir / f'{launch_file.replace(".py", "")}_d{domain}.err')
 
-        logger.info(f"Starting ROS2 launch (domain={domain}, launch={launch_file}): {cmd}")
+        logger.info(
+            "Starting ROS2 launch (domain=%s, launch=%s, port=%s, baudrate=%s): %s"
+            % (domain, launch_file, serial_port, serial_baudrate, cmd)
+        )
 
         try:
             out = open(out_path, "ab")
@@ -463,6 +502,8 @@ class ROS2LidarDriver:
             self.lidar_process = process
             self.current_launch = launch_file
             self.current_domain = domain
+            self.current_port = serial_port
+            self.current_baudrate = serial_baudrate
             return process
         except FileNotFoundError:
             logger.error("Error: /bin/bash not found. Check your system path.")
@@ -572,8 +613,11 @@ class ROS2LidarDriver:
     def _settings_watcher(self):
         while not self._stop_event.wait(5):
             desired_domain = self._desired_domain()
-            desired_launch = _launch_file_for_type(_lidar_type_from_settings())
+            desired_type = _lidar_type_from_settings()
+            desired_launch = _launch_file_for_type(desired_type)
+            desired_baudrate = _serial_baudrate_for_type(desired_type)
             desired_inverted = _lidar_inverted_from_settings()
+            desired_port = self._desired_serial_port()
             process_died = self.lidar_process is not None and self.lidar_process.poll() is not None
 
             if (
@@ -581,10 +625,13 @@ class ROS2LidarDriver:
                 or (self.current_domain != desired_domain)
                 or (self.current_launch != desired_launch)
                 or (self.current_inverted != desired_inverted)
+                or (self.current_port != desired_port)
+                or (self.current_baudrate != desired_baudrate)
             ):
                 logger.info(
                     f"Lidar restart requested: process_died={process_died}, "
                     f"domain {self.current_domain}->{desired_domain}, launch {self.current_launch}->{desired_launch}, "
+                    f"port {self.current_port}->{desired_port}, baudrate {self.current_baudrate}->{desired_baudrate}, "
                     f"inverted {self.current_inverted}->{desired_inverted}"
                 )
                 try:

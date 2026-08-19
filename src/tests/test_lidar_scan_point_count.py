@@ -2,7 +2,8 @@ import math
 import queue
 
 from ReasonData import Settings
-from LunaPre.lidar_driver_ros2 import _ROSLidarParser
+from LunaPre import lidar_driver_ros2
+from LunaPre.lidar_driver_ros2 import ROS2LidarDriver, _ROSLidarParser, _serial_baudrate_for_type
 from LunaPre.lidar_driver_rplidar import RPLidarDriver, _resolve_serial_port
 from LunaPre.sensor import GetLineDistance, _is_valid_scan_distance, _resolve_backend
 
@@ -55,6 +56,45 @@ def test_ros2_scan_count_uses_valid_ranges_not_dense_laser_array():
     assert len(published) == 5
     assert owner.last_scan_point_count == 5
     assert all(0 < distance < float("inf") for _, distance in published)
+
+
+def test_ros2_s1_uses_its_required_serial_baudrate():
+    assert _serial_baudrate_for_type("s1") == 256000
+
+
+def test_ros2_s1_launch_passes_baudrate_explicitly(monkeypatch, tmp_path):
+    commands = []
+
+    class _FakeProcess:
+        pid = 1234
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(lidar_driver_ros2, "ROS_AVAILABLE", True)
+    monkeypatch.setattr(lidar_driver_ros2, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(lidar_driver_ros2, "_local_sllidar_setup", lambda: None)
+    monkeypatch.setattr(lidar_driver_ros2, "_lidar_type_from_settings", lambda: "s1")
+    monkeypatch.setattr(
+        lidar_driver_ros2.subprocess,
+        "Popen",
+        lambda command, **kwargs: commands.append(command) or _FakeProcess(),
+    )
+
+    driver = ROS2LidarDriver(
+        domain_id=9,
+        bashrc="/opt/ros/jazzy/setup.bash",
+        serial_port="/dev/sllidar",
+        cleanup_stale=False,
+    )
+    process = driver.start_sllidar_driver()
+
+    assert process is not None
+    assert "sllidar_s1_launch.py" in commands[0][2]
+    assert "serial_port:=/dev/sllidar" in commands[0][2]
+    assert "serial_baudrate:=256000" in commands[0][2]
+    driver.stop()
 
 
 def test_rplidar_driver_records_valid_points_per_rotation():
