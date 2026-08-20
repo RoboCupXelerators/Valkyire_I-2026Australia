@@ -478,6 +478,17 @@ class IceLoongBits:
                 self.logger.debug("Refresh yaw failed: %s", e)
         return self.yaw
 
+    def GetPose(self):
+        """Return fused field pose when the lower-controller parser is available.
+
+        IceLoong's active serial protocol currently only publishes IMU yaw, so
+        it intentionally reports no field pose instead of manufacturing one
+        from wall ranges.  A future protocol parser will replace this stub with
+        ``(x_forward_cm, y_left_cm, yaw_deg)``.
+        """
+
+        return None
+
     def _RefreshYaw(self):
         response = self.ExecuteCommands([(Commands.GET_BMI088_DATA,)])
         self._ApplyResponses(response)

@@ -59,6 +59,7 @@ SIM_DEFAULT_DRIBBLE_SCALE = 3.0
 SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
 SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
 SIM_DEFAULT_VISION_NOISE_SEED = 0
+SIM_DEFAULT_POSE_MAX_AGE_S = 1.0
 
 
 def create_bits_and_lidar(cfg):
@@ -261,6 +262,10 @@ class XeleratorSimBits:
         self._running = True
         self._status = SimStatus(robot_id=self.robot_id)
         self._status_lock = threading.Lock()
+        self._pose_max_age_s = max(
+            0.05,
+            float(os.environ.get("XEL_SIM_POSE_MAX_AGE_S", str(SIM_DEFAULT_POSE_MAX_AGE_S))),
+        )
 
         # current command cache
         self._flags = 0
@@ -711,15 +716,34 @@ class XeleratorSimBits:
         return noisy
 
     def GetPose(self):
-        """Return (x_forward_cm, y_left_cm, yaw_deg)."""
+        """Return a fresh finite ``(x_forward_cm, y_left_cm, yaw_deg)``, or ``None``.
+
+        Before Unity has published a status packet, ``SimStatus`` contains
+        default zeroes.  Those are transport defaults rather than a real field
+        pose and must not be exposed as a valid robot origin.
+        """
+
         with self._status_lock:
+            status_ts = float(self._status.ts)
             x_cm = float(self._status.x_m) * self._unity_to_cm
             y_cm = float(self._status.y_m) * self._unity_to_cm
+            raw_yaw_deg = float(self._status.yaw_deg)
+
+        if (
+            not math.isfinite(status_ts)
+            or status_ts <= 0.0
+            or time.time() - status_ts > getattr(self, "_pose_max_age_s", SIM_DEFAULT_POSE_MAX_AGE_S)
+            or not all(math.isfinite(value) for value in (x_cm, y_cm, raw_yaw_deg))
+        ):
+            return None
 
         # apply origin shift + scale outside the lock
         x_cm = (x_cm - float(self._origin_x_cm)) * self._pose_scale
         y_cm = (y_cm - float(self._origin_y_cm)) * self._pose_scale
-        return (x_cm, y_cm, float(self.GetYaw()))
+        yaw_deg = float(self.GetYaw())
+        if not all(math.isfinite(value) for value in (x_cm, y_cm, yaw_deg)):
+            return None
+        return (x_cm, y_cm, yaw_deg)
 
     def GetVelocity(self):
         """Return field-frame (vx_cm_s, vy_cm_s, wz_deg_s)."""
@@ -1105,10 +1129,15 @@ class XeleratorSimBits:
                 now = time.time()
                 if (now - self._last_debug_t) > 1.0:
                     self._last_debug_t = now
-                    x, y, yaw = self.GetPose()
+                    pose = self.GetPose()
+                    pose_text = (
+                        "unavailable"
+                        if pose is None
+                        else f"({pose[0]:.1f},{pose[1]:.1f},{pose[2]:.1f})"
+                    )
                     print(
                         f"[XEL_DEBUG] tx={self._tx_count} rx={self._rx_count} seq={self._seq} "
-                        f"to={self.unity_ip}:{self.cmd_port} pose_cm=({x:.1f},{y:.1f},{yaw:.1f}) hasBall={self.HasBall()}"
+                        f"to={self.unity_ip}:{self.cmd_port} pose_cm={pose_text} hasBall={self.HasBall()}"
                     )
 
             # kick is one-shot

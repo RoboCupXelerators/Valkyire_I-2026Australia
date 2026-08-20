@@ -503,9 +503,7 @@
                   <div class="setting-item">
                     <label>Bit 类型</label>
                     <select id="robot-bit">
-                      <option value="AB">AB (Arisu Bits)</option>
                       <option value="IL">IL (IceLoong Bits)</option>
-                      <option value="3Q">3Q (3Q Bits)</option>
                       <option value="SIM">SIM (Simulator)</option>
                     </select>
                   </div>
@@ -513,10 +511,35 @@
                     <label>Rec 类型</label>
                     <select id="robot-rec">
                       <option value="AI">AI (Arisu Intelligence)</option>
-                      <option value="TV">TV (Tuna Vision)</option>
+                      <option value="TI">TI (Tuna Intelligence)</option>
                       <option value="BB">BB (Blob Based)</option>
                       <option value="XV">XV (Xelerator Vision)</option>
                     </select>
+                  </div>
+                </div>
+              </div>
+              <div class="settings-section">
+                <h3>传感器</h3>
+                <div class="setting-row">
+                  <div class="setting-item">
+                    <label>定位来源</label>
+                    <select id="sensor-source">
+                      <option value="auto">auto (Bits -&gt; ROS2 -&gt; LD07)</option>
+                      <option value="bits">Bits 坐标</option>
+                      <option value="ros2">ROS2 /scan</option>
+                      <option value="ld07">LD07</option>
+                    </select>
+                  </div>
+                  <div class="setting-item">
+                    <label>ROS2 雷达型号</label>
+                    <select id="sensor-ros2-model">
+                      <option value="s1">SLLidar S1</option>
+                      <option value="s2">SLLidar S2</option>
+                      <option value="s3">SLLidar S3</option>
+                    </select>
+                  </div>
+                  <div class="setting-item checkbox-item">
+                    <label><input type="checkbox" id="sensor-inverted" /> 雷达倒置安装</label>
                   </div>
                 </div>
               </div>
@@ -1391,14 +1414,6 @@
                 <h3>速度设置</h3>
                 <div class="setting-row">
                   <div class="setting-item">
-                    <label for="control-profile">响应模式</label>
-                    <select id="control-profile">
-                      <option value="safe">安全</option>
-                      <option value="normal" selected>标准</option>
-                      <option value="competition_candidate">比赛候选</option>
-                    </select>
-                  </div>
-                  <div class="setting-item">
                     <label>移动速度</label>
                     <input
                       type="range"
@@ -1422,14 +1437,6 @@
                     <span id="control-turn-speed-value">50</span>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <div class="control-state">
-              <h3>换向测试</h3>
-              <div class="setting-row">
-                <button class="btn btn-primary btn-large" id="reverse-forward-btn" aria-label="按住前进">↑ 前进</button>
-                <button class="btn btn-primary btn-large" id="reverse-backward-btn" aria-label="按住后退">↓ 后退</button>
               </div>
             </div>
 
@@ -1504,40 +1511,6 @@
                     >不可用</span
                   >
                 </div>
-              </div>
-            </div>
-
-            <div class="control-state">
-              <h3>DM2325 实时反馈</h3>
-              <table class="state-table">
-                <thead>
-                  <tr>
-                    <th>轮位</th><th>目标 rad/s</th><th>实测 rad/s</th><th>误差</th>
-                    <th>扭矩 Nm</th><th>温度 °C</th><th>换向</th><th>限幅</th>
-                  </tr>
-                </thead>
-                <tbody id="control-motor-telemetry">
-                  <tr><td colspan="8">--</td></tr>
-                </tbody>
-              </table>
-              <div class="state-grid">
-                <div class="state-item"><span class="label">控制周期</span><span class="value" id="reverse-control-period">--</span></div>
-                <div class="state-item"><span class="label">指令到制动</span><span class="value" id="reverse-brake-latency">--</span></div>
-                <div class="state-item"><span class="label">制动到过零</span><span class="value" id="reverse-zero-time">--</span></div>
-                <div class="state-item"><span class="label">过零到反向</span><span class="value" id="reverse-response-time">--</span></div>
-                <div class="state-item"><span class="label">峰值扭矩</span><span class="value" id="reverse-peak-torque">--</span></div>
-                <div class="state-item"><span class="label">故障</span><span class="value" id="reverse-fault">--</span></div>
-              </div>
-              <h3>C 型板 IMU</h3>
-              <div class="state-grid">
-                <div class="state-item"><span class="label">状态</span><span class="value" id="control-imu-status">--</span></div>
-                <div class="state-item"><span class="label">来源</span><span class="value" id="control-imu-source">--</span></div>
-                <div class="state-item"><span class="label">数据年龄</span><span class="value" id="control-imu-age">--</span></div>
-                <div class="state-item"><span class="label">姿态 R / P / Y</span><span class="value" id="control-imu-attitude">--</span></div>
-                <div class="state-item"><span class="label">加速度 m/s²</span><span class="value" id="control-imu-accel">--</span></div>
-                <div class="state-item"><span class="label">角速度 rad/s</span><span class="value" id="control-imu-gyro">--</span></div>
-                <div class="state-item"><span class="label">温度</span><span class="value" id="control-imu-temperature">--</span></div>
-                <div class="state-item"><span class="label">标志</span><span class="value" id="control-imu-flags">--</span></div>
               </div>
             </div>
 

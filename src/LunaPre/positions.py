@@ -21,7 +21,6 @@ import simple_pid
 from ReasonData import logger, Settings
 
 from . import runtime
-from .sensor import LIDAR_DISABLED_DISTS
 from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_error_deg, clamp
 
 cfg = runtime.cfg
@@ -700,99 +699,50 @@ class Positions:
         self._ball_predictor().observe(ball_field, timestamp_s=timestamp_s)
 
     def DirectDistance(self):
-        '''
-        `非阻塞函数`
-        Get the [Direct] Distance From the bound to the Bound, unit mm [Forward,Left,Backward,Right]
+        """Return semantic wall ranges [front, left, back, right] in millimetres."""
 
-        获取四面墙的距离 单位 mm [Forward,Left,Backward,Right]
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "DirectDistance", None)
+        if not callable(getter):
+            from .sensor import LIDAR_DISABLED_DISTS
 
-        #### Args:
-
-        #### Returns:
-            RobotPosition: [0,0]
-        #### Note:
-            `0xfff` stand for `NoPosition`
-        '''
-        self.BoundsDistance = runtime.lidar.GetDists()
-        # disabled runtime.lidar returns [0xfff,...]
-        if self.BoundsDistance == LIDAR_DISABLED_DISTS:
             return list(LIDAR_DISABLED_DISTS)
-        if self.BoundsDistance == [0, 0, 0, 0]:
-            self.WarnedLidarCount +=1
-            logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
-            time.sleep(self.WaitTime) # wait 1 second for starting runtime.lidar
-            if self.WarnedLidarCount >= cfg.Motion.ErrorRange/3:
-                a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
-                logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping runtime.chassis to prevent damage.")
-                runtime.lidar.stop()
-                raise RuntimeError("No Lidar Data Recieved! Please Check Lidar Modules!")
-            return list(LIDAR_DISABLED_DISTS)
-        else:
-            if self.WarnedLidarCount:
-                self.WarnedLidarCount = 0
-                if Settings.Debug.FullLog:
-                    logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
-            else:
-                pass
+        self.BoundsDistance = list(getter())
         return self.BoundsDistance
 
     def DirectDistanceSnapshot(self):
-        """Return the latest direct lidar distances without retry/sleep side effects."""
-        try:
-            self.BoundsDistance = runtime.lidar.GetDists()
-            return list(self.BoundsDistance)
-        except Exception:
-            return list(LIDAR_DISABLED_DISTS)
+        """Return the latest semantic wall ranges without movement side effects."""
+
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "DirectDistanceSnapshot", None)
+        if callable(getter):
+            self.BoundsDistance = list(getter())
+            return self.BoundsDistance
+        return self.DirectDistance()
 
     def NearbyLidarObjects(self):
-        """Return near-field LDROBOT point clusters in robot coordinates."""
+        """Return native near-field clusters in robot coordinates."""
+
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "GetNearbyObjects", None)
+        if not callable(getter):
+            return []
         try:
-            return runtime.lidar.GetNearbyObjects()
+            return getter()
         except Exception:
             return []
 
-    def FieldRobotPose(self, lower: bool | None = False, distance: list | None = None):
-        '''
-        `非阻塞函数`
+    def FieldRobotPose(self):
+        """Return the configured runtime pose, or ``POSE_NOT_FOUND`` when unavailable.
 
-        获取[机器人几何中心]相对于[场地几何中心]的姿态 [x_forward,y_left,yaw]
+        The selected Sensor source owns localization. This query has no retry,
+        motion, process, or sensor recovery side effects.
+        """
 
-        #### Args:
-            lower: `bool`, choose to using lower data
-
-        #### Returns:
-            RobotPose: [x, y, yaw]
-        #### Note:
-            `0xfff` stand for `No Position`
-        '''
-        self._reset_pos2pos_on_pose_change()
         pose = runtime.get_field_pose()
-        if pose is not None:
-            self.LidarPos = pose
-            return self.LidarPos
-
-        _distance = list(distance) if distance is not None else self.DirectDistance()
-        if _distance == LIDAR_DISABLED_DISTS:
-            if distance is None:
-                runtime.chassis.stop()
+        if pose is None:
             return list(POSE_NOT_FOUND)
-        if (_distance[0]+_distance[2]) < (cfg.Bounds.Long)*self.LidarScale*self.BoundsScale:
-            if _distance[0] > _distance[2]:
-                Y = cfg.Bounds.Long*self.LidarScale/2 - _distance[0]
-            else:
-                Y = _distance[2] - cfg.Bounds.Long*self.LidarScale/2
-        else:
-            Y = ((cfg.Bounds.Long*self.LidarScale/2 - _distance[0]) + (_distance[2] - cfg.Bounds.Long*self.LidarScale/2))/2
-        if _distance[1]+_distance[3] < (cfg.Bounds.Short - 50)*self.LidarScale*self.BoundsScale:
-            if _distance[1] > _distance[3]:
-                X = -(cfg.Bounds.Short*self.LidarScale/2 - _distance[1])
-            else:
-                X = -(_distance[3] - cfg.Bounds.Short*self.LidarScale/2)
-        else:
-            X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
-        self.LidarPos = [Y/10,X/10,runtime.compass()]
-        # logger.info("[Field] Robot Pose: %s"%self.LidarPos)
-        # 20251216 already changed X_forward,Y_left dimension  [tested]
+        self.LidarPos = list(pose)
         return self.LidarPos
 
     # Documented API: Robot_Chassis_Pos (robot frame)
@@ -1868,7 +1818,7 @@ class Positions:
 
         '''
         while 1:
-            if 100 < runtime.lidar.GetDists()[0] <= 500:
+            if 100 < self.DirectDistance()[0] <= 500:
                 return True
             else:
                 pass
