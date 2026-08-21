@@ -23,7 +23,12 @@ def run_from_src(*args):
 
 
 def test_lunapre_import_works_from_src():
-    result = run_from_src("-c", "from LunaPre import *; print(Car.__name__)")
+    result = run_from_src(
+        "-c",
+        "import LunaPre; assert not LunaPre._runtime._runtime_initialized; "
+        "from LunaPre import *; "
+        "assert not LunaPre._runtime._runtime_initialized; print(Car.__name__)",
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "Car"
 

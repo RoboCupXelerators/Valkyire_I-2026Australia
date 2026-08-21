@@ -1,69 +1,123 @@
-"""vision_utils package entry.
-
-Detect_Method selection is controlled by Settings.RoboInfo.Rec.
-
-Compatibility note:
-- Prefer the *system* settings from `ReasonData` (src/ReasonData/data/config.json).
-- Fall back to the legacy vision-only config `vision_utils/VisionDatas/data/vision.json`.
-"""
+"""vision_utils package entry and explicit backend registry."""
 
 from .merged_settings import Settings
 
-# logger is optional: prefer ReasonData logger if present, otherwise fallback to vision_utils logger
+# Logger ownership remains in ReasonData; legacy VisionDatas is intentionally
+# not imported here because loading it must not change configuration state.
 try:
     from ReasonData import logger as logger  # type: ignore
 except Exception:  # pragma: no cover
-    try:
-        from .VisionDatas import logger as logger
-    except Exception:  # pragma: no cover
-        import logging
+    import logging
 
-        logger = logging.getLogger(__name__)
-        if not logger.handlers:
-            logger.addHandler(logging.NullHandler())
+    logger = logging.getLogger(__name__)
+    if not logger.handlers:
+        logger.addHandler(logging.NullHandler())
 
 
-def _safe_import(path: str, name: str):
-    """Import helper to avoid hard-crash when optional accelerators are absent."""
+class VisionBackendImportError(RuntimeError):
+    """The configured vision backend could not be imported safely."""
+
+
+class _OptionalBackendDependencyMissing(VisionBackendImportError):
+    """A configured accelerator is absent and may use the Blob fallback."""
+
+
+_BACKENDS = {
+    "AI": ("ArisuIntelligence", "ArisuIntelligence"),
+    "TI": ("TunaIntelligence", "TunaIntelligence"),
+    "HV": ("HybridVision", "HybridVision"),
+    "HYBRID": ("HybridVision", "HybridVision"),
+    "XV": ("XeleratorVision", "XeleratorVision"),
+    "SY": ("LunaIntelligence", "SimYoloVision"),
+    "SIMYOLO": ("LunaIntelligence", "SimYoloVision"),
+}
+_OPTIONAL_ACCELERATOR_MODULES = {"AI": frozenset({"hailo_platform"})}
+_BLOB_REQUESTS = {"", "BB", "BLOB", "BLOBBASED"}
+
+
+def _safe_import(path: str, name: str, *, backend: str):
+    """Load a backend without hiding source or configuration errors."""
     try:
         mod = __import__(path, fromlist=[name])
         return getattr(mod, name)
-    except Exception as e:
-        logger.warning(f"vision_utils: failed to import {path}.{name}: {e}")
-        return None
+    except ModuleNotFoundError as exc:
+        optional_modules = _OPTIONAL_ACCELERATOR_MODULES.get(backend, frozenset())
+        if exc.name in optional_modules:
+            raise _OptionalBackendDependencyMissing(
+                f"{backend} requires optional module {exc.name!r}"
+            ) from exc
+        raise VisionBackendImportError(
+            f"configured backend {backend} could not import {path}.{name}: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise VisionBackendImportError(
+            f"configured backend {backend} could not import {path}.{name}: {exc}"
+        ) from exc
 
 
-# Select backend by config, but tolerate missing optional dependencies.
-Detect_Method = None
+def _load_blob_backend():
+    try:
+        from .Blob import BlobBased
+    except Exception as exc:
+        raise VisionBackendImportError(f"Blob fallback is unavailable: {exc}") from exc
+    return BlobBased
+
+
+def _select_backend(requested: str, *, loader=None, blob_loader=None):
+    """Return the selected backend and a status object suitable for diagnostics."""
+
+    requested = str(requested or "").upper()
+    loader = loader or _safe_import
+    blob_loader = blob_loader or _load_blob_backend
+
+    if requested in _BLOB_REQUESTS:
+        backend = blob_loader()
+        return backend, {
+            "requested": requested or "BB",
+            "active": backend.__name__,
+            "degraded": False,
+            "reason": None,
+        }
+
+    spec = _BACKENDS.get(requested)
+    if spec is None:
+        raise ValueError(
+            f"Unsupported RoboInfo.Rec={requested!r}; use AI, TI, HV, XV, SY, or BB."
+        )
+
+    module_name, class_name = spec
+    try:
+        backend = loader(f"{_PKG}.{module_name}", class_name, backend=requested)
+    except _OptionalBackendDependencyMissing as exc:
+        backend = blob_loader()
+        reason = str(exc)
+        logger.warning("vision_utils: %s; using BlobBased fallback", reason)
+        return backend, {
+            "requested": requested,
+            "active": backend.__name__,
+            "degraded": True,
+            "reason": reason,
+        }
+
+    return backend, {
+        "requested": requested,
+        "active": backend.__name__,
+        "degraded": False,
+        "reason": None,
+    }
+
+
 # Prefer package name over module name so direct imports like
 # `import src.vision_utils.__init__` still resolve sibling modules correctly.
 _PKG = __package__ or __name__.rpartition('.')[0] or __name__
 _REC = str(getattr(Settings.RoboInfo, "Rec", "")).upper()
+Detect_Method, BACKEND_STATUS = _select_backend(_REC)
 
-if _REC == 'AI':
-    Detect_Method = _safe_import(f'{_PKG}.ArisuIntelligence', 'ArisuIntelligence')
-elif _REC == 'TI':
-    Detect_Method = _safe_import(f'{_PKG}.TunaIntelligence', 'TunaIntelligence')
-elif _REC in ('HV', 'HYBRID'):
-    Detect_Method = _safe_import(f'{_PKG}.HybridVision', 'HybridVision')
-elif _REC == 'XV':
-    Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
-elif _REC in ('SY', 'SIMYOLO'):
-    Detect_Method = _safe_import(f'{_PKG}.LunaIntelligence', 'SimYoloVision')
-elif _REC == 'TV':
-    logger.warning("vision_utils: Rec='TV' has been removed. Use 'TI', 'XV', or 'SY'.")
 
-if Detect_Method is None:
-    # Raspberry Pi / missing-accelerator fallback: use the pure OpenCV blob detector.
-    try:
-        from .Blob import BlobBased as Detect_Method
-    except Exception as e:
-        logger.warning(f"vision_utils: BlobBased unavailable (likely missing cv2): {e}")
-        Detect_Method = None
+def get_backend_status() -> dict:
+    """Return a copy so callers can expose backend degradation safely."""
 
-if Detect_Method is None and _REC == 'XV':
-    # Simulator fallback when the requested backend is unavailable.
-    Detect_Method = _safe_import(f'{_PKG}.XeleratorVision', 'XeleratorVision')
+    return dict(BACKEND_STATUS)
 
 # PreProcess depends on cv2; make it optional so SIM/dev machines can import vision_utils.
 try:
@@ -76,4 +130,7 @@ __version__ = '0.2.0'
 # ReasonData 0.2.0(20250722A) Updated Preference instead QKjson
 
 
-__all__ = ['ArisuIntelligence', 'TunaIntelligence', 'HybridVision', 'XeleratorVision', 'SimYoloVision', 'BlobBased', 'Detect_Method', 'DATA_DIR']
+__all__ = [
+    'Settings', 'Detect_Method', 'BACKEND_STATUS', 'get_backend_status', 'DATA_DIR',
+    'VisionBackendImportError',
+]

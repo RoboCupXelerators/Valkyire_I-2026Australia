@@ -1,5 +1,5 @@
-# TODO: Import only the BasicFuc helpers and LunaPre facades this strategy uses.
-from BasicFuc import *
+from BasicFuc import Slipsideshot, lockball
+from LunaPre import Settings, UnitedPosition, chassis, peripheral
 import math
 import time
 

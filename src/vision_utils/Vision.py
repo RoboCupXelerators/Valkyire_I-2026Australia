@@ -24,16 +24,12 @@ if __package__ in (None, ""):
         if _path not in sys.path:
             sys.path.insert(0, _path)
 
-# Import order is made robust so that this module can be executed either:
-# - from an installed package layout (ReasonData/vision_utils are top-level)
-# - directly from this repo (modules live under ./src)
+# Vision configuration is shared with the selected backend and preprocessing
+# stack. Runtime data/log ownership remains in ReasonData.
 try:
-    from ReasonData import Settings  # type: ignore
+    from vision_utils.merged_settings import Settings  # type: ignore
 except Exception:  # pragma: no cover
-    try:
-        from src.ReasonData import Settings  # type: ignore
-    except Exception:  # pragma: no cover
-        from .merged_settings import Settings  # type: ignore
+    from src.vision_utils.merged_settings import Settings  # type: ignore
 
 try:
     from vision_utils import Detect_Method, DATA_DIR  # type: ignore

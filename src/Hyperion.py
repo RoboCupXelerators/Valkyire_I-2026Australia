@@ -1,4 +1,4 @@
-from BasicFuc import *
+from BasicFuc import TurnTo_with_ball, lockball
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
 from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 
@@ -75,12 +75,12 @@ def UplaneStep(thershold = [[60,40],[100,80]]):
 
     if lockball.slip():
         if UnitedPosition.PointInShape(pose,thershold):
-            if abs( _ - UnitedPosition.Pos2Angle([x,y],[110,0])) < cfg.ExpectedVals.ErrorRange:
+            if abs( _ - UnitedPosition.Pos2Angle([x,y],[110,0])) < Settings.ExpectedVals.ErrorRange:
                 peripheral.ShootBall()
                 return True
             else:
                 chassis.FieldTurn(UnitedPosition.Pos2Angle([x,y],[110,0]))
-                return abs( _ - UnitedPosition.Pos2Angle([x,y],[110,0])) < cfg.ExpectedVals.ErrorRange
+                return abs( _ - UnitedPosition.Pos2Angle([x,y],[110,0])) < Settings.ExpectedVals.ErrorRange
         elif TurnTo_with_ball(90*angle_k) == True:
             if abs(y) > 50:
                 UnitedPosition.Pos2Pos([80,60*angle_k,(90*angle_k)%360])
@@ -101,7 +101,7 @@ def logic_step():
     # logger.warning("BowScore: "+str(BowScore(UnitedPosition.FieldRobotPose())))
     # logger.info(UnitedPosition.RobotBallPos())
 
-    # if UnitedPosition.RestrictedArea():
+    if UnitedPosition.RestrictedArea():
         if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
             if lockball.LockBallSlip():
                 pose = UnitedPosition.FieldRobotPose()

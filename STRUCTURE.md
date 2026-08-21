@@ -1,15 +1,14 @@
 # Software 目录结构
 
-这份文件只记录当前仍然推荐阅读和维护的结构。更细的调用关系请看
-`docs/codegraph_view.html`。
+这份文件只记录当前仍然推荐阅读和维护的结构。
 
 ## 顶层目录
 
 ```text
 Software/
 ├── src/                    # 机器人运行代码、策略、视觉、数据和测试
-├── docs/                   # 当前维护文档与 codegraph
-├── scripts/                # 可重复运行的部署、调试、模型和图生成脚本
+├── docs/                   # 当前维护文档
+├── scripts/                # 可重复运行的部署、调试、模型脚本
 ├── legacy/                 # 已归档的硬件实现、现场脚本和历史证据
 ├── web/control_panel/      # control_panel.py 使用的前端资源
 ├── Tools/                  # 历史标定数据、归档说明和许可
@@ -29,9 +28,6 @@ Software/
 # 跑当前保留的自动化测试
 ../venv/bin/python3 -m pytest
 
-# 生成代码关系图
-python3 scripts/build_codegraph_view.py
-
 # 启动控制面板
 python3 src/control_panel.py
 ```
@@ -44,8 +40,6 @@ src/
 ├── Hyperion.py             # Hyperion 策略入口
 ├── offence.py              # 进攻策略
 ├── defence.py              # 防守策略
-├── alpha.py                # Alpha 策略
-├── lambda_strategy.py      # Lambda 策略
 ├── control_panel.py        # Web 控制面板后端
 ├── STRATEGY_CODE_STYLE.md  # 当前策略代码风格说明
 ├── LunaPre/                # 运行时 facade、定位、传感器、底盘抽象
@@ -116,7 +110,6 @@ src/tests/
 
 ```text
 docs/
-├── codegraph_view.html     # 代码关系可视化
 ├── interface_semantics.md  # 坐标、哨兵值、语义接口约定
 ├── MULTI_ROBOT_SCRIMMAGE.md
 ├── OTA_GUIDE.md
@@ -136,7 +129,6 @@ ArisuBits、DM2325 和直连 RPLidar 实现、现场脚本、测试及硬件记�
 
 ```text
 scripts/
-├── build_codegraph_view.py
 ├── fetch_packages.py
 ├── setup_env_auto.sh
 ├── setup_venv_jetson_orin_nano.sh

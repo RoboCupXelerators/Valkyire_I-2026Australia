@@ -2,48 +2,32 @@
 
 This module is used by multiple vision backends (Hailo / BPU / Blob).
 
-Compatibility note:
-- The main system config is `src/ReasonData/data/config.json`.
-- `vision_utils` historically also shipped its own config `vision_utils/VisionDatas/data/vision.json`.
-
-To reduce "config split" issues, we prefer importing `ReasonData.Settings/logger`
-when available, and fallback to `vision_utils.VisionDatas`.
+Configuration comes from ``merged_settings`` so backend selection, camera
+preprocessing, and projection all see the same system config plus optional
+vision overlay. Runtime logging and data-directory ownership remain in
+``ReasonData``.
 """
 
 from pathlib import Path
 
 _REASON_DATA_DIR_FALLBACK = Path(__file__).resolve().parents[1] / "ReasonData" / "data"
 
-# Settings/logger import order:
-#  1) ReasonData (installed package usage)
-#  2) src.ReasonData (running from repo root, imports as "src.*")
-#  3) merged_settings (vision-only merged config; always provides VisionVals defaults)
-#  4) legacy VisionDatas (vision-only config)
+# All active vision modules import this singleton rather than constructing a
+# second Settings object from ReasonData or VisionDatas.
+from .merged_settings import Settings
+
 try:
-    from ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+    from ReasonData import logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
 except Exception:  # pragma: no cover
     try:
-        from src.ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+        from src.ReasonData import logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
     except Exception:  # pragma: no cover
-        try:
-            # merged_settings does not expose logger; keep legacy logger
-            from .merged_settings import Settings  # type: ignore
-            try:
-                from .VisionDatas import logger
-            except Exception:
-                import logging
+        import logging
 
-                logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
-        except Exception:  # pragma: no cover
-            try:
-                from .VisionDatas import Settings, logger
-            except Exception:
-                from .merged_settings import Settings  # type: ignore
-                import logging
-
-                logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            logger.addHandler(logging.NullHandler())
+        REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK
 import threading
 import queue
 import time

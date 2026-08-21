@@ -28,10 +28,10 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 try:
-    from ReasonData import Settings  # type: ignore
+    from vision_utils.merged_settings import Settings  # type: ignore
 except Exception:  # pragma: no cover
     try:
-        from src.ReasonData import Settings  # type: ignore
+        from src.vision_utils.merged_settings import Settings  # type: ignore
     except Exception:  # pragma: no cover
         Settings = None  # type: ignore
 
