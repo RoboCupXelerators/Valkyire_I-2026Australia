@@ -13,6 +13,7 @@ from LunaPre.positions import Positions
 from LunaPre.lidar_driver_ld07 import LD07Driver
 from LunaPre.sensor import LIDAR_DISABLED_DISTS, Lidar, Sensor, _load_driver_class
 from LunaPre.strategy_tools import POSE_NOT_FOUND
+import utils.IceLoongBits as iceloong_bits_module
 from utils.IceLoongBits import IceLoongBits
 from utils.XeleratorSimBits import SimStatus, XeleratorSimBits
 
@@ -180,3 +181,45 @@ def test_iceloong_pose_contract_uses_motion_controller_pose():
     ]
 
     assert bits.GetPose() == (12.0, -34.0, 45.0)
+
+
+def test_iceloong_runtime_wires_bits_pose_to_field_robot_pose(monkeypatch):
+    class FakeIceLoongBits:
+        def __init__(self, port):
+            self.port = port
+            self.io_calls = []
+
+        def GetPose(self):
+            return (12.5, -34.0, 270.0)
+
+        def GetYaw(self):
+            return 270.0
+
+        def SetWheelSpeed(self, *_speeds):
+            pass
+
+        def VirtualPorts(self, port, value):
+            self.io_calls.append((port, value))
+
+        def GetRefereeUnlockPin(self):
+            return True
+
+        def MorsePlay(self, _message):
+            pass
+
+    monkeypatch.setattr(iceloong_bits_module, "IceLoongBits", FakeIceLoongBits)
+    assembly = runtime._build_iceloong_backend(auto_start_lidar=False)
+    sensor = Sensor(
+        pose_provider=assembly["field_pose_provider"],
+        yaw_provider=assembly["compass"],
+        lidar=assembly["raw_lidar"],
+        source="auto",
+    )
+    monkeypatch.setattr(runtime, "_field_pose_provider", sensor.GetPose)
+
+    assert sensor.GetPose() == (12.5, -34.0, 270.0)
+    assert runtime.get_field_pose() == [12.5, -34.0, 270.0]
+
+    positions = object.__new__(Positions)
+    positions.LidarPos = list(POSE_NOT_FOUND)
+    assert positions.FieldRobotPose() == [12.5, -34.0, 270.0]
