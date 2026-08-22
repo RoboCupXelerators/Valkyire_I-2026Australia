@@ -173,7 +173,10 @@ def test_sim_bits_pose_is_none_until_a_fresh_finite_status_arrives():
     assert bits.GetPose() is None
 
 
-def test_iceloong_pose_contract_is_explicitly_unavailable_until_protocol_supports_it():
+def test_iceloong_pose_contract_uses_motion_controller_pose():
     bits = IceLoongBits(testing=True)
+    bits.ExecuteCommands = lambda commands: [
+        (0x82, 45.0, 1.0, -2.0, 120.0, -340.0, 0.0)
+    ]
 
-    assert bits.GetPose() is None
+    assert bits.GetPose() == (12.0, -34.0, 45.0)

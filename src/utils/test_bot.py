@@ -16,13 +16,13 @@ def main():
         print("\n=== 测试1: 单命令 (HAND_SHAKE) ===")
         resp1 = bot.ExecuteCommands([(Commands.HAND_SHAKE,)])
         print("响应:", resp1)
-        time.sleep(4)
+        time.sleep(1)
 
-        # 测试2：复合命令 - 握手 + 获取传感器数据 + 弹射
-        print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_BMI088_DATA) ===")
+        # 测试2：复合命令 - 握手 + 获取位姿 + 弹射
+        print("\n=== 测试2: 复合命令 (HAND_SHAKE + GET_POSE) ===")
         resp2 = bot.ExecuteCommands([
             (Commands.HAND_SHAKE,),
-            (Commands.GET_BMI088_DATA,), 
+            (Commands.GET_POSE,),
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
             # (Commands.SET_WHEELS_SPEED, 100, 100, 100, 100), 
             (Commands.KICK,), 
