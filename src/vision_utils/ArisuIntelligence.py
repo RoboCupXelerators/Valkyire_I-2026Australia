@@ -1,4 +1,5 @@
 from .PreProcess import Settings, logger, MODEL_DIR, VisionPreUntil, threading, queue, time, cv2, np
+from .modern_calibration import model_bbox_to_raw
 from hailo_platform import VDevice, HailoSchedulingAlgorithm
 
 class ArisuIntelligence(VisionPreUntil):
@@ -143,6 +144,7 @@ class ArisuIntelligence(VisionPreUntil):
                 continue
 
             BindingsList = []
+            BindingMeta = []
             for i in range(4):
                 try:
                     configured = getattr(self, "ConfiguredInferModel", None)
@@ -158,6 +160,7 @@ class ArisuIntelligence(VisionPreUntil):
                 OutputBuffer = np.empty(self.OutputShape, dtype=np.float32)
                 Frame = self.Frames[i]
                 if Frame is not None:
+                    source_size = (int(Frame.shape[1]), int(Frame.shape[0]))
                     Frame = self.Resize(Frame, (640, 640))
                     # TODO 大块内存偶尔分配
                     Frame = cv2.cvtColor(Frame, cv2.COLOR_BGR2RGB)
@@ -168,6 +171,7 @@ class ArisuIntelligence(VisionPreUntil):
                     Bindings.input().set_buffer(Frame)
                     Bindings.output().set_buffer(OutputBuffer)
                     BindingsList.append(Bindings)
+                    BindingMeta.append((i, source_size))
 
             # No valid camera frame yet: keep waiting instead of sending an empty
             # batch to Hailo. This avoids spurious run() timeouts during startup
@@ -183,7 +187,7 @@ class ArisuIntelligence(VisionPreUntil):
             else:
                 self.PreProcessTF = self.PreProcessTF + 1
                 self.PreProcessMs = (time.time() - preprocess_t0) * 1000.0
-                self.YOLOQueue.put(BindingsList)
+                self.YOLOQueue.put((BindingsList, BindingMeta))
             time.sleep(0.01)
                 
     def ModelInfer(self):
@@ -201,7 +205,12 @@ class ArisuIntelligence(VisionPreUntil):
                     self.logger.debug(f"Hailo Process FPS: {FrameCount}")
                     FrameCount = 0
                     LastTime = CurrentTime
-            BindingsList = self.YOLOQueue.get()
+            queued = self.YOLOQueue.get()
+            if isinstance(queued, tuple) and len(queued) == 2:
+                BindingsList, BindingMeta = queued
+            else:
+                BindingsList = queued
+                BindingMeta = [(index, None) for index in range(len(BindingsList))]
             self.InferTF = self.InferTF + 1
             # 确保在传递给 BindingsList 之前执行此操作
             try:
@@ -221,16 +230,15 @@ class ArisuIntelligence(VisionPreUntil):
                 self._model_ready.clear()
                 time.sleep(0.2)
                 continue
-            BallOutputs = []
-            ChassisOutputs = []
-            GoalOutputs = []
+            BallOutputs = [[i, 0, 0, 0, 0, 0.0, 0, 0] for i in range(4)]
+            ChassisOutputs = [[i, 0, 0, 0, 0, 0.0, 0, 0] for i in range(4)]
+            GoalOutputs = [[i, -1, 0, 0, 0, 0, 0.0, 0, 0] for i in range(4)]
             # BBox outputs for dashboard overlay (in 640x640 space)
             BallBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam, x1, y1, x2, y2, conf]
             ChassisBBoxOutputs = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]
             # Goal BBox: [cam, cls, x1, y1, x2, y2, conf], cls: 1=BlueGoal, 2=YellowGoal
             GoalBBoxOutputs = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
-            CameraIndex = 0
-            for Bindings in BindingsList:
+            for Bindings, (CameraIndex, source_size) in zip(BindingsList, BindingMeta):
                 OutputBuffer = Bindings.output().get_buffer()
                 if OutputBuffer[0].shape[0] > 0:
                     for _ball in OutputBuffer[0]:
@@ -246,21 +254,18 @@ class ArisuIntelligence(VisionPreUntil):
                         # Store bbox in 640x640 space for dashboard
                         BallBBoxOutputs[CameraIndex] = [CameraIndex, raw_x1, raw_y1, raw_x2, raw_y2, Ball_Confidence]
                         
-                        Ball_Y_Min = raw_y1 - 80
-                        Ball_X_Min = raw_x1
-                        Ball_Y_Max = raw_y2 - 80
-                        Ball_X_Max = raw_x2
-                        Ball_Bottom_Y = Ball_Y_Max
-                        Ball_Width = Ball_X_Max - Ball_X_Min
-                        Ball_Height = Ball_Y_Max - Ball_Y_Min
-                        Ball_Center_X = int((Ball_X_Min + Ball_X_Max) / 2)
-                        BallOutputs.append([
-                            CameraIndex,
-                            Ball_Center_X, 
-                            Ball_Bottom_Y, 
-                            Ball_Width, 
-                            Ball_Height, 
-                            Ball_Confidence])
+                        if source_size is not None:
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            BallOutputs[CameraIndex] = [
+                                CameraIndex,
+                                int(round((x1 + x2) / 2.0)),
+                                int(round(y2)),
+                                max(0, int(round(x2 - x1))),
+                                max(0, int(round(y2 - y1))),
+                                Ball_Confidence,
+                                int(source_size[0]),
+                                int(source_size[1]),
+                            ]
                 if OutputBuffer[3].shape[0] > 0:
                     for chassis in OutputBuffer[3]:
                         if chassis[4] < 0.5:
@@ -274,21 +279,18 @@ class ArisuIntelligence(VisionPreUntil):
                         # Store bbox in 640x640 space for dashboard
                         ChassisBBoxOutputs[CameraIndex] = [CameraIndex, raw_x1, raw_y1, raw_x2, raw_y2, Chassis_Confidence]
                         
-                        Chassis_Y_Min = int(chassis[0] * 640) - 80 
-                        Chassis_X_Min = int(chassis[1] * 640)
-                        Chassis_Y_Max = int(chassis[2] * 640) - 80 
-                        Chassis_X_Max = int(chassis[3] * 640)
-                        Chassis_Bottom_Y = Chassis_Y_Max
-                        Chassis_Width = Chassis_X_Max - Chassis_X_Min
-                        Chassis_Height = Chassis_Y_Max - Chassis_Y_Min
-                        Chassis_Center_X = int((Chassis_X_Min + Chassis_X_Max) / 2)
-                        ChassisOutputs.append([
-                            CameraIndex,
-                            Chassis_Center_X,
-                            Chassis_Bottom_Y, 
-                            Chassis_Width, 
-                            Chassis_Height, 
-                            Chassis_Confidence])
+                        if source_size is not None and Chassis_Confidence > ChassisOutputs[CameraIndex][5]:
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            ChassisOutputs[CameraIndex] = [
+                                CameraIndex,
+                                int(round((x1 + x2) / 2.0)),
+                                int(round(y2)),
+                                max(0, int(round(x2 - x1))),
+                                max(0, int(round(y2 - y1))),
+                                Chassis_Confidence,
+                                int(source_size[0]),
+                                int(source_size[1]),
+                            ]
 
                 # Goals: OutputBuffer[1] -> BlueGoal, OutputBuffer[2] -> YellowGoal
                 # Keep top-1 (by conf) for each cam; if both exist, pick higher.
@@ -314,16 +316,8 @@ class ArisuIntelligence(VisionPreUntil):
                             raw_y2 = int(g[2] * 640)
                             raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
-                            # Position calculation (with -80 offset)
-                            y1 = raw_y1 - 80
-                            x1 = raw_x1
-                            y2 = raw_y2 - 80
-                            x2 = raw_x2
-                            cx = int((x1 + x2) / 2)
-                            bottom_y = int(y2)
-                            w = int(x2 - x1)
-                            h = int(y2 - y1)
-                            cand = [CameraIndex, 1, cx, bottom_y, w, h, conf]
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            cand = [CameraIndex, 1, int(round((x1 + x2) / 2.0)), int(round(y2)), max(0, int(round(x2 - x1))), max(0, int(round(y2 - y1))), conf, int(source_size[0]), int(source_size[1])]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
                                 best_goal_cls = 1
@@ -341,16 +335,8 @@ class ArisuIntelligence(VisionPreUntil):
                             raw_y2 = int(g[2] * 640)
                             raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
-                            # Position calculation (with -80 offset)
-                            y1 = raw_y1 - 80
-                            x1 = raw_x1
-                            y2 = raw_y2 - 80
-                            x2 = raw_x2
-                            cx = int((x1 + x2) / 2)
-                            bottom_y = int(y2)
-                            w = int(x2 - x1)
-                            h = int(y2 - y1)
-                            cand = [CameraIndex, 2, cx, bottom_y, w, h, conf]
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            cand = [CameraIndex, 2, int(round((x1 + x2) / 2.0)), int(round(y2)), max(0, int(round(x2 - x1))), max(0, int(round(y2 - y1))), conf, int(source_size[0]), int(source_size[1])]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
                                 best_goal_cls = 2
@@ -358,15 +344,13 @@ class ArisuIntelligence(VisionPreUntil):
                 except Exception:
                     pass
                 if best_goal is not None:
-                    GoalOutputs.append(best_goal)
+                    GoalOutputs[CameraIndex] = best_goal
                     # Store goal bbox for dashboard overlay
                     if best_goal_bbox is not None:
                         GoalBBoxOutputs[CameraIndex] = [CameraIndex, best_goal_cls, 
                                                         best_goal_bbox[0], best_goal_bbox[1],
                                                         best_goal_bbox[2], best_goal_bbox[3],
                                                         best_goal_bbox[4]]
-                CameraIndex += 1
-
             # Put outputs into queues AFTER processing all cameras
             # Keep latest in size=1 queues
             if self.ChassisQueue.full():

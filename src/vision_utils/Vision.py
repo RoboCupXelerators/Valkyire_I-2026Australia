@@ -36,6 +36,11 @@ try:
 except Exception:  # pragma: no cover
     from src.vision_utils import Detect_Method, DATA_DIR  # type: ignore
 
+try:
+    from vision_utils.modern_calibration import ModernCalibration, ModernCalibrationError  # type: ignore
+except Exception:  # pragma: no cover
+    from .modern_calibration import ModernCalibration, ModernCalibrationError  # type: ignore
+
 
 def _norm_rel_folder(folder: str | None, default: str) -> str:
     """Normalize a folder configured like '/Calibration/' to a relative name."""
@@ -73,62 +78,6 @@ def _vision_port(slot_name: str, slot_index: int, default: int):
         return list(ports)[slot_index]
     except Exception:
         return default
-
-
-def _npz_text(data, key: str, default: str = "") -> str:
-    if key not in data.files:
-        return default
-    try:
-        return str(np.atleast_1d(data[key])[0])
-    except Exception:
-        return default
-
-
-def _npz_bool(data, key: str, default: bool = False) -> bool:
-    if key not in data.files:
-        return default
-    try:
-        value = np.atleast_1d(data[key])[0]
-        if isinstance(value, str):
-            return value.strip().lower() in ("1", "true", "yes", "on")
-        return bool(value)
-    except Exception:
-        return default
-
-
-def _modern_pose_from_npz(data):
-    H = np.asarray(data["H"], dtype=np.float64) if "H" in data.files else None
-    rvec = np.asarray(data["rvec"], dtype=np.float64) if "rvec" in data.files else None
-    tvec = np.asarray(data["tvec"], dtype=np.float64) if "tvec" in data.files else None
-    if rvec is not None and rvec.size == 0:
-        rvec = None
-    if tvec is not None and tvec.size == 0:
-        tvec = None
-
-    if (
-        H is not None
-        and _npz_text(data, "origin") == "robot_center"
-        and _npz_text(data, "coordinate_convention") != "robot_center_v2"
-        and "origin_offset_cm" in data.files
-    ):
-        offset = np.asarray(data["origin_offset_cm"], dtype=np.float64).reshape(-1)
-        if offset.size >= 2:
-            dy_mm = 2.0 * float(offset[1]) * 10.0
-            new_to_old = np.array(
-                [
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, -dy_mm],
-                    [0.0, 0.0, 1.0],
-                ],
-                dtype=np.float64,
-            )
-            H = H @ new_to_old
-            if rvec is not None and tvec is not None:
-                R, _ = cv2.Rodrigues(rvec)
-                d = np.array([[0.0], [-dy_mm], [0.0]], dtype=np.float64)
-                tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1) + R @ d
-
-    return H, rvec, tvec
 
 
 class UnitedVision(Detect_Method):
@@ -181,14 +130,12 @@ class UnitedVision(Detect_Method):
         # Calibration for Pixel2CM/CM2Pixel. BlobBased already loads calibration
         # via VisionPreUntil, but AI/TI pipelines historically relied on this class.
         self.reload_calibration()
-        self.EnableBBoxDistanceEstimate = bool(_vision_val("EnableBBoxDistanceEstimate", True))
+        self.EnableBBoxDistanceEstimate = False
         self.BallDiameterCM = float(_vision_val("BallDiameterCM", 4.2, vision_name="BallDiameter"))
         self.BallOffsetXCM = float(_vision_cfg("BallOffsetXCM", 0.0) or 0.0)
         self.BallOffsetYCM = float(_vision_cfg("BallOffsetYCM", 0.0) or 0.0)
         self.ChassisWidthCM = float(_vision_val("ChassisWidthCM", 18.0, vision_name="ChassisWidth"))
         self.ChassisHeightCM = float(_vision_val("ChassisHeightCM", 3.5, vision_name="ChassisHeight"))
-        self.BBoxFusionStrength = float(_vision_val("BBoxFusionStrength", 0.5))
-        self.BBoxLegacyReferenceAreaPx = float(_vision_val("BBoxLegacyReferenceAreaPx", 12000.0))
         self.BlueGoalWidthCM = float(_vision_val("BlueGoalWidthCM", 90.0, vision_name="GoalWidth"))
         self.BlueGoalHeightCM = float(_vision_val("BlueGoalHeightCM", 18.0, vision_name="GoalHeight"))
         self.YellowGoalWidthCM = float(_vision_val("YellowGoalWidthCM", 90.0, vision_name="GoalWidth"))
@@ -224,20 +171,9 @@ class UnitedVision(Detect_Method):
         #     self.GoalDetectionThread.start()
 
     def reload_calibration(self):
-        perspective_matrices = []
-        p2ck = []
-        p2chb = []
-        p2cvb = []
-        calibration_ks = []
-        calibration_dists = []
-        calibration_hs = []
-        calibration_rvecs = []
-        calibration_tvecs = []
-        calibration_modes = []
-        calibration_undistort_points = []
+        projectors = []
+        calibration_errors = []
 
-        # Use config folder name if provided; strip leading '/' to avoid
-        # accidentally turning it into an absolute path.
         calib_sub = _norm_rel_folder(_vision_val("CalibrationFolder", None, vision_name="CalibrationFolder"), "Calibration")
         calib_dir = None
         try:
@@ -249,66 +185,22 @@ class UnitedVision(Detect_Method):
             calib_dir = None
 
         for i in range(4):
-            # Backward compatible path build.
             if calib_dir is not None:
                 npz = str(calib_dir / f"CalibrationData{self.CamPorts[i]}.npz")
             else:
                 npz = str(DATA_DIR) + "/" + calib_sub + "/CalibrationData" + str(self.CamPorts[i]) + ".npz"
             try:
-                NumpyData = np.load(npz, allow_pickle=True)
-                PerspectiveMatrix = NumpyData['matrix']
-                perspective_matrices.append(PerspectiveMatrix)
-                p2ck.append(float(NumpyData['p2c'][0]))
-                p2chb.append(float(NumpyData['p2c'][1]))
-                p2cvb.append(float(NumpyData['p2c'][2]))
-
-                # New calibration metadata (optional, modern web calibrator)
-                if 'K' in NumpyData.files:
-                    H, rvec, tvec = _modern_pose_from_npz(NumpyData)
-                    calibration_ks.append(np.asarray(NumpyData['K'], dtype=np.float64))
-                    calibration_dists.append(np.asarray(NumpyData['dist'], dtype=np.float64) if 'dist' in NumpyData.files else None)
-                    calibration_hs.append(H)
-                    calibration_rvecs.append(rvec)
-                    calibration_tvecs.append(tvec)
-                    calibration_modes.append('modern')
-                    calibration_undistort_points.append(_npz_bool(NumpyData, "undistort_points", True))
-                else:
-                    calibration_ks.append(None)
-                    calibration_dists.append(None)
-                    calibration_hs.append(None)
-                    calibration_rvecs.append(None)
-                    calibration_tvecs.append(None)
-                    calibration_modes.append('legacy')
-                    calibration_undistort_points.append(False)
+                projectors.append(ModernCalibration.load(npz))
             except Exception as e:
-                # Don't crash vision server if calibration is missing.
-                # Pixel2CM will fall back (or behave as identity).
-                self.logger.warning(f"UnitedVision: calibration load failed: {npz}: {e}")
-                perspective_matrices.append(np.eye(3, dtype=np.float64))
-                p2ck.append(1.0)
-                p2chb.append(0.0)
-                p2cvb.append(0.0)
-                calibration_ks.append(None)
-                calibration_dists.append(None)
-                calibration_hs.append(None)
-                calibration_rvecs.append(None)
-                calibration_tvecs.append(None)
-                calibration_modes.append('missing')
-                calibration_undistort_points.append(False)
+                self.logger.error(f"UnitedVision: modern calibration required for camera {self.CamPorts[i]}: {e}")
+                projectors.append(None)
+                calibration_errors.append(str(e))
 
-        self.PerspectiveMatrices = perspective_matrices
-        self.P2CK = p2ck
-        self.P2CHB = p2chb
-        self.P2CVB = p2cvb
-        self.CalibrationKs = calibration_ks
-        self.CalibrationDists = calibration_dists
-        self.CalibrationHs = calibration_hs
-        self.CalibrationRvecs = calibration_rvecs
-        self.CalibrationTvecs = calibration_tvecs
-        self.CalibrationModes = calibration_modes
-        self.CalibrationUndistortPoints = calibration_undistort_points
-
-        return {"modes": list(calibration_modes)}
+        self.CalibrationProjectors = projectors
+        self.CalibrationModes = ["modern" if projector is not None else "missing" for projector in projectors]
+        self.CalibrationImageSizes = [None if projector is None else projector.image_size for projector in projectors]
+        self.CalibrationErrors = calibration_errors
+        return {"modes": list(self.CalibrationModes), "errors": list(calibration_errors)}
 
     def close(self, join_timeout: float = 1.0):
         """Stop all background threads and release resources."""
@@ -344,124 +236,25 @@ class UnitedVision(Detect_Method):
             else:
                 self.PostProcessMs = previous * 0.8 + elapsed_ms * 0.2
 
-    def ApplyPerspectiveTransform(self, px_x, px_y, Matrix):
-        # OpenCV image plane: origin is top-left, +x right, +y down.
-        # This only applies the homography saved by the legacy calibrator.
-        Point = np.array([px_x, px_y, 1], dtype=np.float64)
-        Transformed = Matrix @ Point
-        Transformed /= Transformed[2]
-        return float(Transformed[0]), float(Transformed[1])
-
-    @staticmethod
-    def _undistort_point(px_x, px_y, K, dist):
-        pt = np.array([[[float(px_x), float(px_y)]]], dtype=np.float64)
-        und = cv2.undistortPoints(pt, K, dist, P=K)
-        return float(und[0, 0, 0]), float(und[0, 0, 1])
-
-    def Pixel2CM(self, px_x, px_y, CamIndex):
+    def Pixel2CM(self, px_x, px_y, CamIndex, frame_size: tuple[int, int] | None = None):
         cam_i = int(CamIndex)
         try:
-            if (
-                0 <= cam_i < len(self.CalibrationModes)
-                and self.CalibrationModes[cam_i] == "modern"
-                and self.CalibrationHs[cam_i] is not None
-            ):
-                u, v = float(px_x), float(px_y)
-                undistort = (
-                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
-                    and self.CalibrationUndistortPoints[cam_i]
-                    and self.CalibrationKs[cam_i] is not None
-                    and self.CalibrationDists[cam_i] is not None
-                )
-                if undistort:
-                    u, v = self._undistort_point(
-                        px_x,
-                        px_y,
-                        self.CalibrationKs[cam_i],
-                        self.CalibrationDists[cam_i],
-                    )
-                wx_mm, wy_mm = self.ApplyPerspectiveTransform(u, v, np.linalg.inv(self.CalibrationHs[cam_i]))
-                return round(wx_mm / 10.0, 2), round(wy_mm / 10.0, 2)
+            projector = self.CalibrationProjectors[cam_i]
+            if projector is None:
+                raise ModernCalibrationError(f"camera {CamIndex} has no modern calibration")
+            return projector.pixel_to_cm(px_x, px_y, frame_size=frame_size)
         except Exception as e:
-            self.logger.warning(f"Modern Pixel2CM failed; falling back to legacy path (CamIndex={CamIndex}): {e}")
-
-        # Legacy Jetson/Pixel2CM convention:
-        # image pixel -> calibrated plane pixel -> calibrated plane cm.
-        plane_x_px, plane_y_px = self.ApplyPerspectiveTransform(px_x, px_y, self.PerspectiveMatrices[cam_i])
-        plane_x_cm = round(self.P2CK[cam_i] * plane_x_px + self.P2CHB[cam_i], 2)
-        plane_y_cm = round(-self.P2CK[cam_i] * plane_y_px + self.P2CVB[cam_i], 2)
-        return plane_x_cm, plane_y_cm
+            raise ModernCalibrationError(f"Pixel2CM failed for camera {CamIndex}: {e}") from e
 
     def CM2Pixel(self, plane_x_cm, plane_y_cm, CamIndex):
         cam_i = int(CamIndex)
         try:
-            if (
-                0 <= cam_i < len(self.CalibrationModes)
-                and self.CalibrationModes[cam_i] == "modern"
-            ):
-                undistort = (
-                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
-                    and self.CalibrationUndistortPoints[cam_i]
-                    and self.CalibrationKs[cam_i] is not None
-                    and self.CalibrationDists[cam_i] is not None
-                )
-                obj = np.array([[[float(plane_x_cm) * 10.0, float(plane_y_cm) * 10.0, 0.0]]], dtype=np.float64)
-                rvec = self.CalibrationRvecs[cam_i] if cam_i < len(self.CalibrationRvecs) else None
-                tvec = self.CalibrationTvecs[cam_i] if cam_i < len(self.CalibrationTvecs) else None
-                if undistort and rvec is not None and tvec is not None:
-                    img, _ = cv2.projectPoints(obj, rvec, tvec, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
-                    return int(round(float(img[0, 0, 0]))), int(round(float(img[0, 0, 1])))
-
-                H = self.CalibrationHs[cam_i] if cam_i < len(self.CalibrationHs) else None
-                if H is not None:
-                    raw_px_x, raw_px_y = self.ApplyPerspectiveTransform(
-                        float(plane_x_cm) * 10.0,
-                        float(plane_y_cm) * 10.0,
-                        H,
-                    )
-                    return int(round(raw_px_x)), int(round(raw_px_y))
+            projector = self.CalibrationProjectors[cam_i]
+            if projector is None:
+                raise ModernCalibrationError(f"camera {CamIndex} has no modern calibration")
+            return projector.cm_to_pixel(plane_x_cm, plane_y_cm)
         except Exception as e:
-            self.logger.warning(f"Modern CM2Pixel failed; falling back to legacy path (CamIndex={CamIndex}): {e}")
-
-        # Inverse of Pixel2CM: board-plane cm -> board-plane pixels -> raw image pixels.
-        plane_x_px = (plane_x_cm - self.P2CHB[cam_i]) / self.P2CK[cam_i]
-        plane_y_px = -(plane_y_cm - self.P2CVB[cam_i]) / self.P2CK[cam_i]
-
-        raw_px_x, raw_px_y = self.ApplyPerspectiveTransform(
-            plane_x_px,
-            plane_y_px,
-            np.linalg.inv(self.PerspectiveMatrices[cam_i]),
-        )
-
-        return int(raw_px_x), int(raw_px_y)
-
-    @staticmethod
-    def _bbox_distance_from_sizes(real_w_cm: float | None, real_h_cm: float | None, bbox_w_px: float, bbox_h_px: float, K: np.ndarray | None):
-        """Estimate target distance from bbox size using pinhole model.
-
-        Returns distance in cm, or None if inputs are insufficient.
-        """
-        if K is None:
-            return None
-        try:
-            fx = float(K[0, 0])
-            fy = float(K[1, 1])
-        except Exception:
-            return None
-        if fx < 50.0 or fy < 50.0:
-            return None
-        ratio = max(fx, fy) / max(1e-6, min(fx, fy))
-        if ratio > 3.0:
-            return None
-
-        candidates = []
-        if real_w_cm is not None and real_w_cm > 0 and bbox_w_px and bbox_w_px > 1:
-            candidates.append(float(real_w_cm) * fx / float(bbox_w_px))
-        if real_h_cm is not None and real_h_cm > 0 and bbox_h_px and bbox_h_px > 1:
-            candidates.append(float(real_h_cm) * fy / float(bbox_h_px))
-        if not candidates:
-            return None
-        return float(sum(candidates) / len(candidates))
+            raise ModernCalibrationError(f"CM2Pixel failed for camera {CamIndex}: {e}") from e
 
     def _camera_direction(self, cam_index: int) -> str:
         try:
@@ -506,47 +299,6 @@ class UnitedVision(Detect_Method):
             return -plane_x_cm, -plane_y_cm
         return plane_x_cm, -plane_y_cm
 
-    def _bbox_distance_legacy(self, bbox_w_px: float, bbox_h_px: float, real_scale_cm: float | None):
-        """Fallback distance estimate when intrinsics are unavailable.
-
-        This uses bbox area as a monotonic proxy for range. It is not metrically
-        exact, but it guarantees the fusion layer still has a visible effect on
-        legacy calibration files (matrix/p2c only).
-        """
-        try:
-            area = float(max(1.0, bbox_w_px * bbox_h_px))
-            ref = float(max(1.0, self.BBoxLegacyReferenceAreaPx))
-            # farther -> smaller bbox -> larger distance
-            scale = float(np.sqrt(ref / area))
-            if real_scale_cm is not None and real_scale_cm > 0:
-                return float(real_scale_cm * scale)
-            return float(100.0 * scale)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _blend_planar_with_range(planar_xy: tuple[float, float], range_cm: float | None, confidence: float, strength: float = 0.35):
-        """Fuse pixel2cm planar estimate with bbox-derived range.
-
-        The direction comes from the plane estimate, while the magnitude is softly
-        pulled toward the bbox-based range. This helps reduce long-distance drift
-        without destroying the existing coordinate semantics.
-        """
-        if range_cm is None or range_cm <= 0:
-            return planar_xy
-
-        x_cm, y_cm = float(planar_xy[0]), float(planar_xy[1])
-        r_plane = float(np.hypot(x_cm, y_cm))
-        if r_plane <= 1e-6:
-            return planar_xy
-
-        conf = float(np.clip(confidence, 0.0, 1.0))
-        strength = float(np.clip(strength, 0.0, 1.0))
-        alpha = float(np.clip(0.15 + 0.55 * conf + 0.30 * strength, 0.20, 0.85))
-        r_fused = alpha * r_plane + (1.0 - alpha) * float(range_cm)
-        scale = r_fused / r_plane
-        return x_cm * scale, y_cm * scale
-
     def _fuse_detection_position(
         self,
         planar_xy: tuple[float, float],
@@ -558,97 +310,20 @@ class UnitedVision(Detect_Method):
         real_h_cm: float | None,
         strength: float = 0.35,
     ):
-        """Fuse pixel2cm planar result with bbox-size range estimate."""
-        if not self.EnableBBoxDistanceEstimate:
-            return planar_xy, None
-        rng = None
-        modern = 0 <= cam_index < len(self.CalibrationModes) and self.CalibrationModes[cam_index] == "modern"
-        raw_homography = (
-            modern
-            and cam_index < len(getattr(self, "CalibrationUndistortPoints", []))
-            and not self.CalibrationUndistortPoints[cam_index]
-        )
-        if raw_homography:
-            return planar_xy, None
-        if 0 <= cam_index < len(self.CalibrationKs):
-            rng = self._bbox_distance_from_sizes(real_w_cm, real_h_cm, bbox_w_px, bbox_h_px, self.CalibrationKs[cam_index])
-        if modern and rng is None:
-            return planar_xy, None
-        if rng is None:
-            # Legacy fallback: still produce a usable correction from bbox area.
-            real_scale = None
-            if real_w_cm is not None and real_h_cm is not None and real_w_cm > 0 and real_h_cm > 0:
-                real_scale = float(np.sqrt(float(real_w_cm) * float(real_h_cm)))
-            rng = self._bbox_distance_legacy(bbox_w_px, bbox_h_px, real_scale)
-        fused = self._blend_planar_with_range(planar_xy, rng, conf, strength=strength)
-        return fused, rng
+        """Use the calibrated ground anchor without a bbox-size range heuristic."""
+        return planar_xy, None
 
     def _update_bbox_distance_caches(self):
-        """Compute per-camera and best bbox-based distance estimates from latest bboxes."""
-        ball_bboxes = getattr(self, "_ball_bboxes", None)
-        chassis_bboxes = getattr(self, "_chassis_bboxes", None)
-        goal_bboxes = getattr(self, "_goal_bboxes", None)
-
-        ball_dist = [None, None, None, None]
-        chassis_dist = [None, None, None, None]
-        goal_dist = [None, None, None, None]
-
-        def _pick_best(current, candidate):
-            if candidate is None:
-                return current
-            if current is None:
-                return candidate
-            return candidate if candidate[1] > current[1] else current
-
-        best_ball = None
-        best_chassis = None
-        best_goal = None
-
-        for i in range(4):
-            try:
-                if ball_bboxes is not None and ball_bboxes[i] is not None:
-                    cam, x1, y1, x2, y2, conf = ball_bboxes[i]
-                    d = self._bbox_distance_from_sizes(self.BallDiameterCM, self.BallDiameterCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, self.BallDiameterCM)
-                    ball_dist[i] = d
-                    if d is not None:
-                        best_ball = _pick_best(best_ball, (d, conf, i))
-                if chassis_bboxes is not None and chassis_bboxes[i] is not None:
-                    cam, x1, y1, x2, y2, conf = chassis_bboxes[i]
-                    d = self._bbox_distance_from_sizes(self.ChassisWidthCM, self.ChassisHeightCM, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(self.ChassisWidthCM * self.ChassisHeightCM)))
-                    chassis_dist[i] = d
-                    if d is not None:
-                        best_chassis = _pick_best(best_chassis, (d, conf, i))
-                if goal_bboxes is not None and goal_bboxes[i] is not None:
-                    cam, cls_id, x1, y1, x2, y2, conf = goal_bboxes[i]
-                    if int(cls_id) == 1:
-                        rw, rh = self.BlueGoalWidthCM, self.BlueGoalHeightCM
-                    elif int(cls_id) == 2:
-                        rw, rh = self.YellowGoalWidthCM, self.YellowGoalHeightCM
-                    else:
-                        rw, rh = self.BlueGoalWidthCM, self.BlueGoalHeightCM
-                    d = self._bbox_distance_from_sizes(rw, rh, x2 - x1, y2 - y1, self.CalibrationKs[i])
-                    if d is None:
-                        d = self._bbox_distance_legacy(x2 - x1, y2 - y1, float(np.sqrt(rw * rh)))
-                    goal_dist[i] = d
-                    if d is not None:
-                        best_goal = _pick_best(best_goal, (d, conf, i))
-            except Exception:
-                continue
-
-        self._ball_distance_bboxes = ball_dist
-        self._chassis_distance_bboxes = chassis_dist
-        self._goal_distance_bboxes = goal_dist
-        self._ball_distance_bbox = None if best_ball is None else (best_ball[2], float(best_ball[0]), float(best_ball[1]))
-        self._chassis_distance_bbox = None if best_chassis is None else (best_chassis[2], float(best_chassis[0]), float(best_chassis[1]))
-        self._goal_distance_bbox = None if best_goal is None else (best_goal[2], float(best_goal[0]), float(best_goal[1]))
+        """Disable bbox-size distance estimates for heterogeneous field objects."""
+        self._ball_distance_bboxes = [None, None, None, None]
+        self._chassis_distance_bboxes = [None, None, None, None]
+        self._goal_distance_bboxes = [None, None, None, None]
+        self._ball_distance_bbox = None
+        self._chassis_distance_bbox = None
+        self._goal_distance_bbox = None
         self._ball_distance_ts = time.time()
         self._chassis_distance_ts = time.time()
         self._goal_distance_ts = time.time()
-
     def Resize(self,Frame, TargetSize=(640, 640)):
         Height, Width = Frame.shape[:2]
         TargetHeight, TargetWidth = TargetSize
@@ -684,11 +359,13 @@ class UnitedVision(Detect_Method):
             # Process ChassisList
             for i in range(4):
                 try:
-                    CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = OutputBuffer[i]
+                    item = OutputBuffer[i]
+                    CameraIndex, CenterX, BottomY, ChassisWidth, ChassisHeight, Confidence = item[:6]
+                    frame_size = (int(item[6]), int(item[7])) if len(item) >= 8 else None
                     # Ignore padded/dummy outputs and clipped edge boxes.
                     if Confidence is None or Confidence <= 0 or ChassisWidth <= 0 or ChassisHeight <= 0:
                         continue
-                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex)
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, CameraIndex, frame_size=frame_size)
                     (CX, CY), _ = self._fuse_detection_position(
                         self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex),
                         int(CameraIndex),
@@ -770,7 +447,8 @@ class UnitedVision(Detect_Method):
                 try:
                     if item is None:
                         continue
-                    CameraIndex, cls_id, CenterX, BottomY, W, H, Confidence = item
+                    CameraIndex, cls_id, CenterX, BottomY, W, H, Confidence = item[:7]
+                    frame_size = (int(item[7]), int(item[8])) if len(item) >= 9 else None
                     if Confidence is None or Confidence <= 0:
                         continue
                     if cls_id is None or int(cls_id) < 0:
@@ -790,7 +468,7 @@ class UnitedVision(Detect_Method):
                     if best_goal is None or bbox[6] > best_goal[6]:
                         best_goal = bbox
 
-                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, int(CameraIndex))
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(CenterX, BottomY, int(CameraIndex), frame_size=frame_size)
                     # Match BallDetection axis conventions: output must be robot-frame (x_forward, y_left).
                     robot_xy = self._to_robot_frame(plane_x_cm, plane_y_cm, cam_i)
                     fused, _ = self._fuse_detection_position(
@@ -889,7 +567,9 @@ class UnitedVision(Detect_Method):
             Balls = []
             for i in range(4):
                 try:
-                    CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = OutputBuffer[i]
+                    item = OutputBuffer[i]
+                    CameraIndex, CenterX, BottomY, BallWidth, BallHeight, Confidence = item[:6]
+                    frame_size = (int(item[6]), int(item[7])) if len(item) >= 8 else None
                     # Ignore padded/dummy outputs and clipped edge boxes.
                     min_ball_bbox_area = _vision_cfg("MinBallBBoxArea", 40)
                     if (
@@ -906,7 +586,7 @@ class UnitedVision(Detect_Method):
                         BallWidth,
                         BallHeight,
                     )
-                    plane_x_cm, plane_y_cm = self.Pixel2CM(contact_x, contact_y, CameraIndex)
+                    plane_x_cm, plane_y_cm = self.Pixel2CM(contact_x, contact_y, CameraIndex, frame_size=frame_size)
                     # print(f"BallDetection raw plane_x_cm={plane_x_cm:.2f}, plane_y_cm={plane_y_cm:.2f} from pixel ({CenterX}, {BottomY}) on cam {CameraIndex}")
                     robot_x_cm, robot_y_cm = self._to_robot_frame(plane_x_cm, plane_y_cm, CameraIndex)
                     conf = float(Confidence)

@@ -74,10 +74,10 @@ class Preference:
             "ModelName": "ArisuModel_v1.2s",
             # 标定文件夹
             "CalibrationFolder": "Calibration",
-            # 目标物理尺寸 (cm) - 用于bbox距离估计
+            # Target dimensions (cm) for operator-facing object semantics.
             "BallDiameter": 4.2,
             "ChassisWidth": 18.0,
-            "ChassisHeight": 18.0,
+            "ChassisHeight": 5.0,
             "GoalWidth": 90.0,
             "GoalHeight": 18.0,
             "MinBallBBoxArea": 40,
@@ -408,7 +408,7 @@ class _CompatVisionVals:
     @property
     def YellowGoalHeightCM(self): return self._s.Vision.GoalHeight
     @property
-    def EnableBBoxDistanceEstimate(self): return True
+    def EnableBBoxDistanceEstimate(self): return False
     @property
     def Record(self): return self._s.Vision.Record
     @property

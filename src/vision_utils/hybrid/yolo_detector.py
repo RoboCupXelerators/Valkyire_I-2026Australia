@@ -221,18 +221,25 @@ class YoloDetector:
                 if raw_frame is not None:
                     raw_bbox = self._bbox_640_to_raw(bbox, raw_frame.shape, self.input_size)
                     raw_size = (int(raw_frame.shape[1]), int(raw_frame.shape[0]))
-                bottom_y = float(y2)
-                center_x = (float(x1) + float(x2)) * 0.5
+                anchor_bbox = raw_bbox if raw_bbox is not None else bbox
+                anchor_x1, anchor_y1, anchor_x2, anchor_y2 = anchor_bbox
+                bottom_y = float(anchor_y2)
+                center_x = (float(anchor_x1) + float(anchor_x2)) * 0.5
                 contact_x, contact_y = center_x, bottom_y
                 det_conf = float(conf)
                 if label == "ball":
-                    contact_x, contact_y, geom = contact_point_from_bbox_xyxy(x1, y1, x2, y2)
+                    contact_x, contact_y, geom = contact_point_from_bbox_xyxy(
+                        anchor_x1,
+                        anchor_y1,
+                        anchor_x2,
+                        anchor_y2,
+                    )
                     if geom.get("reconstructed"):
                         det_conf = max(0.05, det_conf * 0.92)
                 pos = None
                 if self.pixel_to_cm is not None and self.to_robot_frame is not None:
                     try:
-                        plane_x, plane_y = self.pixel_to_cm(contact_x, contact_y, cam)
+                        plane_x, plane_y = self.pixel_to_cm(contact_x, contact_y, cam, frame_size=raw_size)
                         pos = self.to_robot_frame(float(plane_x), float(plane_y), cam)
                     except Exception:
                         pos = None

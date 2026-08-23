@@ -1908,11 +1908,6 @@ class ControlPanelApp:
 
         result = self.calib_session.result
 
-        # Legacy compatibility
-        flip = np.diag([1.0, -1.0, 1.0])
-        legacy_matrix = flip @ np.linalg.inv(result["H"])
-        legacy_p2c = np.array([0.1, 0.0, 0.0], dtype=np.float64)
-
         out_path = self.calib_dir / f"CalibrationData{int(cam_index)}.npz"
 
         try:
@@ -1961,8 +1956,6 @@ class ControlPanelApp:
                 ),
                 frame_world_warning=np.array([result.get("diagnostic", {}).get("warning", "")]),
                 samples_used=np.array([len(self.calib_session.samples)], dtype=np.int32),
-                matrix=legacy_matrix,
-                p2c=legacy_p2c,
             )
 
             reload_result = self._reload_vision_calibration()
@@ -2314,14 +2307,6 @@ class ControlPanelApp:
                         if "origin_offset_cm" in data.files
                         else None
                     ),
-                }
-
-            if {"matrix", "p2c"}.issubset(keys):
-                return {
-                    "mode": "legacy",
-                    "path": str(path),
-                    "matrix": np.asarray(data["matrix"], dtype=np.float64),
-                    "p2c": np.asarray(data["p2c"], dtype=np.float64),
                 }
 
             return {"mode": "unknown", "path": str(path)}
