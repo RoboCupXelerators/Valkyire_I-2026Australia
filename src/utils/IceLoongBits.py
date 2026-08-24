@@ -16,16 +16,18 @@ except Exception:  # pragma: no cover - import error handled at runtime
 
 class Commands(IntEnum):
     HAND_SHAKE             = 0x01
-    GET_POSE               = 0x02
-    SET_WHEELS_SPEED       = 0x03
-    KICK                   = 0x04
-    SET_DRIBBLE_SPEED      = 0x05
-    GET_REFEREE_UNLOCK_PIN = 0x06
-    MORSE_PLAY             = 0x07
+    SET_ROOM_SIZE          = 0x02
+    GET_POSE               = 0x03
+    SET_WHEELS_SPEED       = 0x04
+    KICK                   = 0x05
+    SET_DRIBBLE_SPEED      = 0x06
+    GET_REFEREE_UNLOCK_PIN = 0x07
+    MORSE_PLAY             = 0x08
 
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:             1,
+    Commands.SET_ROOM_SIZE:          1,
     Commands.GET_POSE:               1 + 6 * 4,
     Commands.SET_WHEELS_SPEED:       1,
     Commands.KICK:                   1,
@@ -39,6 +41,9 @@ MIN_KICK_POWER_LEVEL = 1
 MAX_KICK_POWER_LEVEL = 4
 DEFAULT_KICK_POWER_LEVEL = 4
 KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
+ROOM_SIZE_ERROR = (
+    "room size must be positive finite millimetres in horizontal, vertical order"
+)
 MM_PER_CM = 10.0
 
 
@@ -243,6 +248,8 @@ class IceLoongBits:
                     continue
                 case Commands.HAND_SHAKE:
                     pass
+                case Commands.SET_ROOM_SIZE:
+                    pass
                 case Commands.GET_POSE:
                     _, yaw, pitch, roll, x_mm, y_mm, z_mm = i
                     self.yaw = yaw % 360
@@ -387,6 +394,15 @@ class IceLoongBits:
             match cmd[0]:
                 case Commands.HAND_SHAKE:
                     tx_bytes += bytes([cmd[0]])
+                case Commands.SET_ROOM_SIZE:
+                    if len(cmd) != 3:
+                        raise ValueError(ROOM_SIZE_ERROR)
+                    horizontal_mm = self._ValidateRoomDimensionMm(cmd[1])
+                    vertical_mm = self._ValidateRoomDimensionMm(cmd[2])
+                    # Wire order is fixed: horizontal first, vertical second.
+                    tx_bytes += bytes([cmd[0]]) + struct.pack(
+                        '<ff', horizontal_mm, vertical_mm
+                    )
                 case Commands.GET_POSE:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_WHEELS_SPEED:
@@ -436,6 +452,8 @@ class IceLoongBits:
                         i += 1
                         continue
                     case Commands.HAND_SHAKE:
+                        rx_data.append((resp[i],))
+                    case Commands.SET_ROOM_SIZE:
                         rx_data.append((resp[i],))
                     case Commands.GET_POSE:
                         rx_data.append((resp[i], *struct.unpack('<ffffff', resp[i+1:i+25])))
@@ -528,6 +546,32 @@ class IceLoongBits:
         if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
             raise ValueError(KICK_POWER_LEVEL_ERROR)
         return level
+
+    @staticmethod
+    def _ValidateRoomDimensionMm(value):
+        if isinstance(value, bool):
+            raise ValueError(ROOM_SIZE_ERROR)
+        try:
+            dimension_mm = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(ROOM_SIZE_ERROR) from exc
+        if not math.isfinite(dimension_mm) or dimension_mm <= 0:
+            raise ValueError(ROOM_SIZE_ERROR)
+        return dimension_mm
+
+    def SetRoomSize(self, horizontal_mm, vertical_mm):
+        """设置场地尺寸。
+
+        重要：协议顺序固定为 ``horizontal_mm, vertical_mm``，即水平在前、
+        竖直在后。两者传反会导致下位机定位算法无法正常工作。
+        """
+        horizontal_mm = self._ValidateRoomDimensionMm(horizontal_mm)
+        vertical_mm = self._ValidateRoomDimensionMm(vertical_mm)
+        response = self.ExecuteCommands([
+            (Commands.SET_ROOM_SIZE, horizontal_mm, vertical_mm),
+        ])
+        self._ApplyResponses(response)
+        return response
 
     def SetKickPowerLevel(self, power_level):
         """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
