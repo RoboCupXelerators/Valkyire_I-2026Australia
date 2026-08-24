@@ -24,8 +24,8 @@ def main():
             (Commands.HAND_SHAKE,),
             (Commands.GET_POSE,),
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
+            (Commands.KICK, 3),
             # (Commands.SET_WHEELS_SPEED, 100, 100, 100, 100), 
-            (Commands.KICK,), 
             # (Commands.MORSE_PLAY, "Hello")
         ])
         print("响应:", resp2)

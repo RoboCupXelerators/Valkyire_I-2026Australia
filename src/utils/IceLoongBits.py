@@ -35,6 +35,10 @@ COMMAND_RESPONSE_LENGTHS = {
 }
 
 MAX_DRIBBLE_INPUT = 1.0
+MIN_KICK_POWER_LEVEL = 1
+MAX_KICK_POWER_LEVEL = 4
+DEFAULT_KICK_POWER_LEVEL = 4
+KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
 MM_PER_CM = 10.0
 
 
@@ -65,8 +69,7 @@ class IceLoongBits:
             'HAND_SHAKE': True,
             'GET_POSE': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_SPEED': [0,0],
-            'KICK': False,
+            'SET_DRIBBLE_SPEED': 0.0,
             'GET_REFEREE_UNLOCK_PIN': True,
             'MORSE_PLAY': None
         }
@@ -77,6 +80,7 @@ class IceLoongBits:
         self.position_mm = None
         self.pose = None
         self.referee_key = False
+        self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例）
         self.ser = None
@@ -203,11 +207,9 @@ class IceLoongBits:
                 "GET_POSE": self.CommandLine["GET_POSE"],
                 "GET_REFEREE_UNLOCK_PIN": self.CommandLine["GET_REFEREE_UNLOCK_PIN"],
                 "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
-                "SET_DRIBBLE_SPEED": tuple(self.CommandLine["SET_DRIBBLE_SPEED"]),
-                "KICK": self.CommandLine["KICK"],
+                "SET_DRIBBLE_SPEED": self.CommandLine["SET_DRIBBLE_SPEED"],
                 "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
             }
-            self.CommandLine["KICK"] = False
             self.CommandLine["MORSE_PLAY"] = None
         return snapshot
 
@@ -217,8 +219,8 @@ class IceLoongBits:
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
 
-        Dribble1, Dribble2 = snapshot["SET_DRIBBLE_SPEED"]
-        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        Dribble = snapshot["SET_DRIBBLE_SPEED"]
+        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble)])
 
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
@@ -228,8 +230,6 @@ class IceLoongBits:
             _CommandList.append((Commands.HAND_SHAKE,))
         if snapshot["GET_POSE"]:
             _CommandList.append((Commands.GET_POSE,))
-        if snapshot["KICK"]:
-            _CommandList.append((Commands.KICK,))
         if snapshot["GET_REFEREE_UNLOCK_PIN"]:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
 
@@ -392,12 +392,12 @@ class IceLoongBits:
                 case Commands.SET_WHEELS_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
-                    tx_bytes += bytes([cmd[0]])
+                    if len(cmd) != 2:
+                        raise ValueError(KICK_POWER_LEVEL_ERROR)
+                    tx_bytes += bytes([cmd[0], self._ValidateKickPowerLevel(cmd[1])])
                 case Commands.SET_DRIBBLE_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack(
-                        '<ff',
-                        self._NormalizeDribbleInput(cmd[1]),
-                        self._NormalizeDribbleInput(cmd[2]),
+                        '<f', self._NormalizeDribbleInput(cmd[1])
                     )
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
@@ -493,11 +493,9 @@ class IceLoongBits:
             match port:
                 case 3:
                     if not status:
-                        self._KickNow()
+                        self.Kick()
                 case 4:
-                    self._SetDribbleSpeedNow(left=status)
-                case 5:
-                    self._SetDribbleSpeedNow(right=status)
+                    self._SetDribbleSpeedNow(status)
         except SerialException as e:
             self.logger.warning("VirtualPorts operation failed due to serial error: %s", e)
             self._HandleSerialError(e)
@@ -516,26 +514,52 @@ class IceLoongBits:
             return MAX_DRIBBLE_INPUT
         return speed
 
-    def _KickNow(self):
+    @staticmethod
+    def _ValidateKickPowerLevel(value):
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_LEVEL_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        level = int(numeric_level)
+        if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        return level
+
+    def SetKickPowerLevel(self, power_level):
+        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        level = self._ValidateKickPowerLevel(power_level)
         with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
+            self.kick_power_level = level
+        return level
+
+    def Kick(self, power_level=None):
+        """立即按 1 到 4 档力度弹射；省略参数时使用已设置的默认档位。"""
+        if power_level is None:
+            with self._command_lock:
+                power_level = self.kick_power_level
+        return self._KickNow(power_level)
+
+    def _KickNow(self, power_level):
+        level = self._ValidateKickPowerLevel(power_level)
+        with self._command_lock:
+            Dribble = self.CommandLine["SET_DRIBBLE_SPEED"]
         response = self.ExecuteCommands([
-            (Commands.KICK,),
-            (Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2),
+            (Commands.KICK, level),
+            (Commands.SET_DRIBBLE_SPEED, Dribble),
         ])
         self._ApplyResponses(response)
         return response
 
-    def _SetDribbleSpeedNow(self, left=None, right=None):
+    def _SetDribbleSpeedNow(self, value):
+        speed = self._NormalizeDribbleInput(value)
         with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
-            if left is not None:
-                Dribble1 = self._NormalizeDribbleInput(left)
-            if right is not None:
-                Dribble2 = self._NormalizeDribbleInput(right)
-            self.CommandLine["SET_DRIBBLE_SPEED"] = [Dribble1, Dribble2]
+            self.CommandLine["SET_DRIBBLE_SPEED"] = speed
 
-        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, speed)])
         self._ApplyResponses(response)
         return response
 
