@@ -125,7 +125,8 @@ class Preference:
                 "RearAngularMaxDegS": 120.0,
                 "LostHoldSeconds": 0.18,
                 "NearCreepMaxMps": 0.14,
-                "BallJumpRejectCm": 45.0
+                "BallJumpRejectCm": 45.0,
+                "BallJumpConfirmFrames": 2
             },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。

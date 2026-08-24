@@ -72,8 +72,13 @@ class LockSeries:
         self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
         self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.14)))
         self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
+        self.ball_jump_confirm_frames = max(
+            1, int(getattr(tuning, "BallJumpConfirmFrames", 2))
+        )
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
+        self._lockball_jump_candidate = None
+        self._lockball_jump_candidate_frames = 0
         self._pose_revision = None
         self.pan_x = simple_pid.PID(self.forward_kp, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-self.forward_max, 0), auto_mode=True)
         self.pan_y = simple_pid.PID(self.lateral_kp, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-self.lateral_max, self.lateral_max), auto_mode=True)
@@ -94,7 +99,12 @@ class LockSeries:
             self._reset_lockball_pid()
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
+            self._clear_ball_jump_candidate()
         self._pose_revision = revision
+
+    def _clear_ball_jump_candidate(self):
+        self._lockball_jump_candidate = None
+        self._lockball_jump_candidate_frames = 0
 
     def _current_or_recent_ball(self):
         """返回当前球坐标；如果刚丢球很短时间，就临时沿用上一帧坐标。
@@ -105,6 +115,7 @@ class LockSeries:
         ball = UnitedPosition.RobotBallPos()
         now = time.time()
         if ball == BALL_NOT_FOUND:
+            self._clear_ball_jump_candidate()
             if (
                 self._lockball_last_seen is not None
                 and now - self._lockball_last_seen_ts <= self.lost_hold_seconds
@@ -114,11 +125,14 @@ class LockSeries:
         if ball == BALL_HELD:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
+            self._clear_ball_jump_candidate()
             return ball, True
 
         # A scene reset or delayed simulator packet can briefly report a stale
         # ball position hundreds of centimetres away from the previous frame.
-        # Reject only that impossible jump; normal vision noise remains usable.
+        # Reject a single impossible jump, but do not keep rejecting forever:
+        # a genuine target change must be accepted after a few consecutive
+        # observations and the PID state must be restarted for the new target.
         candidate = list(ball)
         if self._lockball_last_seen is not None:
             jump_cm = math.hypot(
@@ -126,7 +140,23 @@ class LockSeries:
                 float(candidate[1]) - float(self._lockball_last_seen[1]),
             )
             if jump_cm > self.ball_jump_reject_cm:
-                return self._lockball_last_seen, False
+                # Count consecutive observations that remain far from the
+                # previous accepted target.  The ball can move between those
+                # observations, so comparing the candidate lists for exact
+                # equality would reject a real moving target forever.
+                self._lockball_jump_candidate = candidate
+                self._lockball_jump_candidate_frames += 1
+
+                if self._lockball_jump_candidate_frames < self.ball_jump_confirm_frames:
+                    return self._lockball_last_seen, False
+
+                self._lockball_last_seen = candidate
+                self._lockball_last_seen_ts = now
+                self._clear_ball_jump_candidate()
+                self._reset_lockball_pid()
+                return candidate, False
+
+        self._clear_ball_jump_candidate()
 
         self._lockball_last_seen = candidate
         self._lockball_last_seen_ts = now
@@ -153,19 +183,20 @@ class LockSeries:
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
 
-        # # Large heading errors and translation create an orbit: the ball moves
-        # # across the camera while the robot keeps turning, then the controller
-        # # reverses direction on the next frame. Align in place first.
-        # if abs(ball_angle) >= self.turn_only_angle:
-        #     self._reset_lockball_pid()
-        #     speed_w = max(
-        #         -self.turn_only_max,
-        #         min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
-        #     )
-        #     peripheral.Dribble(True)
-        #     print(speed_w)
-        #     # chassis.RobotMoveVector(0.0, 0.0, speed_w)
-        #     return False
+        # Large heading errors and translation create an orbit: the ball moves
+        # across the camera while the robot keeps turning, then the controller
+        # reverses direction on the next frame. For a ball in front of the
+        # robot, align in place first. The rear-ball controller below has its
+        # own sign and speed limits, so it must keep priority for ball_x <= 0.
+        if ball_x > 0 and abs(ball_angle) >= self.turn_only_angle:
+            self._reset_lockball_pid()
+            speed_w = max(
+                -self.turn_only_max,
+                min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
+            )
+            peripheral.Dribble(True)
+            chassis.RobotMoveVector(0.0, 0.0, speed_w)
+            return False
 
         # A rear ball cannot be reached by forward PID. Turn toward it quickly
         # while using a small lateral correction, then hand control back to the
