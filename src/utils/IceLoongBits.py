@@ -35,6 +35,10 @@ COMMAND_RESPONSE_LENGTHS = {
 }
 
 MAX_DRIBBLE_INPUT = 1.0
+MIN_KICK_POWER_LEVEL = 1
+MAX_KICK_POWER_LEVEL = 4
+DEFAULT_KICK_POWER_LEVEL = 4
+KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
 MM_PER_CM = 10.0
 
 
@@ -77,6 +81,7 @@ class IceLoongBits:
         self.position_mm = None
         self.pose = None
         self.referee_key = False
+        self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例）
         self.ser = None
@@ -392,7 +397,9 @@ class IceLoongBits:
                 case Commands.SET_WHEELS_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
-                    tx_bytes += bytes([cmd[0]])
+                    if len(cmd) != 2:
+                        raise ValueError(KICK_POWER_LEVEL_ERROR)
+                    tx_bytes += bytes([cmd[0], self._ValidateKickPowerLevel(cmd[1])])
                 case Commands.SET_DRIBBLE_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack(
                         '<ff',
@@ -493,7 +500,7 @@ class IceLoongBits:
             match port:
                 case 3:
                     if not status:
-                        self._KickNow()
+                        self.Kick()
                 case 4:
                     self._SetDribbleSpeedNow(left=status)
                 case 5:
@@ -516,11 +523,41 @@ class IceLoongBits:
             return MAX_DRIBBLE_INPUT
         return speed
 
-    def _KickNow(self):
+    @staticmethod
+    def _ValidateKickPowerLevel(value):
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_LEVEL_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        level = int(numeric_level)
+        if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        return level
+
+    def SetKickPowerLevel(self, power_level):
+        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        level = self._ValidateKickPowerLevel(power_level)
+        with self._command_lock:
+            self.kick_power_level = level
+        return level
+
+    def Kick(self, power_level=None):
+        """立即按 1 到 4 档力度弹射；省略参数时使用默认档位。"""
+        if power_level is None:
+            with self._command_lock:
+                power_level = self.kick_power_level
+        return self._KickNow(power_level)
+
+    def _KickNow(self, power_level):
+        level = self._ValidateKickPowerLevel(power_level)
         with self._command_lock:
             Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
         response = self.ExecuteCommands([
-            (Commands.KICK,),
+            (Commands.KICK, level),
             (Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2),
         ])
         self._ApplyResponses(response)

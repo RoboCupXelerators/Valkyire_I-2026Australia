@@ -108,6 +108,47 @@ def test_dribble_request_uses_protocol_range_without_legacy_scaling():
     assert sent == [b"\x05" + struct.pack("<ff", 0.25, 1.0)]
 
 
+@pytest.mark.parametrize("power_level", [1, 2, 3, 4])
+def test_kick_request_sends_selected_power_level(power_level):
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x84"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.KICK, power_level)]) == [(0x84,)]
+    assert sent == [bytes([Commands.KICK, power_level])]
+
+
+@pytest.mark.parametrize("power_level", [0, 5, 1.5, True, None, math.inf])
+def test_kick_request_rejects_invalid_power_level(power_level):
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="integer from 1 to 4"):
+        bits.ExecuteCommands([(Commands.KICK, power_level)])
+
+
+def test_kick_uses_configured_default_level():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x84\x85"
+
+    bits.SendHex = send_hex
+    bits.CommandLine["SET_DRIBBLE_SPEED"] = [0.5, 0.0]
+
+    assert bits.SetKickPowerLevel(2) == 2
+    bits.Kick()
+    assert sent == [
+        b"\x00\x04\x02\x05" + struct.pack("<ff", 0.5, 0.0) + b"\x00"
+    ]
+
+
 def test_morse_request_uses_command_0x07_and_accepts_23_bytes():
     bits = IceLoongBits(testing=True)
     sent = []

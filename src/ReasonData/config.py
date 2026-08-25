@@ -538,7 +538,7 @@ class _CompatSim:
     @property
     def YawZeroAtStart(self): return self._get("YawZeroAtStart", False)
     @property
-    def KickStrength(self): return self._get("KickStrength", 1.0)
+    def KickStrength(self): return self._get("KickStrength", 4.0)
     @property
     def DribbleStrengthScale(self): return self._get("DribbleStrengthScale", self._get("DribbleScale", 3.0))
     @property

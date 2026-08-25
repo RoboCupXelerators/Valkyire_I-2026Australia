@@ -54,7 +54,11 @@ SIM_DEFAULT_WHEEL_TO_WZ = 2.0 * math.pi * 0.029 / (60.0 * 0.09)
 SIM_DEFAULT_YAW_OFFSET_DEG = 0.0
 SIM_DEFAULT_YAW_ZERO_AT_START = False
 SIM_DEFAULT_TWIST_FROM_WHEELS = True
-SIM_DEFAULT_KICK_STRENGTH = 1.0
+SIM_DEFAULT_KICK_STRENGTH = 4.0
+MIN_KICK_POWER_LEVEL = 1
+MAX_KICK_POWER_LEVEL = 4
+DEFAULT_KICK_POWER_LEVEL = 4
+KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
 SIM_DEFAULT_DRIBBLE_SCALE = 3.0
 SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
 SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
@@ -273,8 +277,14 @@ class XeleratorSimBits:
         self._vy = 0.0
         self._wz = 0.0
         self._w = (0.0, 0.0, 0.0, 0.0)
-        self._kick_strength = float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)))
-        self._kick_strength = max(0.0, self._kick_strength)
+        configured_kick_strength = os.environ.get(
+            "XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)
+        )
+        try:
+            self.kick_power_level = self._ValidateKickPowerLevel(configured_kick_strength)
+        except ValueError:
+            self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
+        self._kick_strength = float(self.kick_power_level)
         self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", str(SIM_DEFAULT_DRIBBLE_SCALE)))
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
@@ -543,19 +553,45 @@ class XeleratorSimBits:
         self._vy = float(vy) * self._planar_move_scale
         self._wz = float(wz)
 
+    @staticmethod
+    def _ValidateKickPowerLevel(value):
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_LEVEL_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        level = int(numeric_level)
+        if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        return level
+
+    def SetKickPowerLevel(self, power_level):
+        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        level = self._ValidateKickPowerLevel(power_level)
+        with self._status_lock:
+            self.kick_power_level = level
+        return level
+
+    def Kick(self, power_level=None):
+        """立即按 1 到 4 档力度排队弹射；省略参数时使用默认档位。"""
+        if power_level is None:
+            with self._status_lock:
+                power_level = self.kick_power_level
+        level = self._ValidateKickPowerLevel(power_level)
+        self._kick_strength = float(level)
+        self._flags |= self.FLAG_KICK
+        return True
+
     def VirtualPorts(self, port, status):
         # port=3: kick, port=4: dribble strength
         if int(port) == 3:
-            # Kick strength is fixed by config and does not change per call.
-            # Any kick command is treated as a one-shot trigger.
-            self._flags |= self.FLAG_KICK
-            # Restore the configured kick strength every time a kick is triggered.
-            # Do NOT depend on the previous command packet value; peripheral.ShootBall()
-            # only toggles the port, it does not continuously stream strength.
-            self._kick_strength = max(
-                0.0,
-                float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH))),
-            )
+            # The hardware adapter triggers the configured default level when
+            # the kicker port is driven low. Keep the same edge semantics.
+            if not status:
+                self.Kick()
         elif int(port) == 4:
             # Dribble strength = config coefficient * command value [0.0, 1.0]
             try:
@@ -1143,8 +1179,6 @@ class XeleratorSimBits:
             # kick is one-shot
             if (flags & self.FLAG_KICK) != 0:
                 self._flags &= ~self.FLAG_KICK
-                # keep configured kick strength available for the next trigger
-                self._kick_strength = max(0.0, float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0")))
 
     def _rx_loop(self):
         while self._running:
