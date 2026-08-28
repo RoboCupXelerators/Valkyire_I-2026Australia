@@ -9,15 +9,17 @@ from utils.IceLoongBits import COMMAND_RESPONSE_LENGTHS, Commands, IceLoongBits
 def test_command_table_matches_motion_controller_firmware():
     assert [(command.name, command.value) for command in Commands] == [
         ("HAND_SHAKE", 0x01),
-        ("GET_POSE", 0x02),
-        ("SET_WHEELS_SPEED", 0x03),
-        ("KICK", 0x04),
-        ("SET_DRIBBLE_SPEED", 0x05),
-        ("GET_REFEREE_UNLOCK_PIN", 0x06),
-        ("MORSE_PLAY", 0x07),
+        ("SET_ROOM_SIZE", 0x02),
+        ("GET_POSE", 0x03),
+        ("SET_WHEELS_SPEED", 0x04),
+        ("KICK", 0x05),
+        ("SET_DRIBBLE_SPEED", 0x06),
+        ("GET_REFEREE_UNLOCK_PIN", 0x07),
+        ("MORSE_PLAY", 0x08),
     ]
     assert COMMAND_RESPONSE_LENGTHS == {
         Commands.HAND_SHAKE: 1,
+        Commands.SET_ROOM_SIZE: 1,
         Commands.GET_POSE: 25,
         Commands.SET_WHEELS_SPEED: 1,
         Commands.KICK: 1,
@@ -29,7 +31,7 @@ def test_command_table_matches_motion_controller_firmware():
 
 def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():
     bits = IceLoongBits(testing=True)
-    response = bytes([0x82]) + struct.pack(
+    response = bytes([0x83]) + struct.pack(
         "<ffffff", -10.0, 2.5, -3.5, 123.0, -456.0, 0.0
     )
     sent = []
@@ -43,8 +45,8 @@ def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():
     decoded = bits.ExecuteCommands([(Commands.GET_POSE,)])
     bits._ApplyResponses(decoded)
 
-    assert sent == [(b"\x02", True, 25, 0.05)]
-    assert decoded == [(0x82, -10.0, 2.5, -3.5, 123.0, -456.0, 0.0)]
+    assert sent == [(b"\x03", True, 25, 0.05)]
+    assert decoded == [(0x83, -10.0, 2.5, -3.5, 123.0, -456.0, 0.0)]
     assert bits.yaw == 350.0
     assert bits.pitch == 2.5
     assert bits.roll == -3.5
@@ -55,9 +57,9 @@ def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():
 def test_composite_command_uses_protocol_delimiters_and_response_lengths():
     bits = IceLoongBits(testing=True)
     response = (
-        b"\x80\x81\x82"
+        b"\x80\x81\x83"
         + struct.pack("<ffffff", 45.0, 1.0, 2.0, 100.0, -200.0, 0.0)
-        + b"\x86\x01\x80"
+        + b"\x87\x01\x80"
     )
     sent = []
 
@@ -74,11 +76,11 @@ def test_composite_command_uses_protocol_delimiters_and_response_lengths():
     ])
     bits._ApplyResponses(decoded)
 
-    assert sent == [(b"\x00\x01\x02\x06\x00", 30)]
+    assert sent == [(b"\x00\x01\x03\x07\x00", 30)]
     assert decoded == [
         (0x81,),
-        (0x82, 45.0, 1.0, 2.0, 100.0, -200.0, 0.0),
-        (0x86, 1),
+        (0x83, 45.0, 1.0, 2.0, 100.0, -200.0, 0.0),
+        (0x87, 1),
     ]
     assert bits.pose == (10.0, -20.0, 45.0)
     assert bits.GetRefereeUnlockPin() is True
@@ -87,7 +89,7 @@ def test_composite_command_uses_protocol_delimiters_and_response_lengths():
 def test_invalid_firmware_position_is_not_exposed_as_a_pose():
     bits = IceLoongBits(testing=True)
 
-    bits._ApplyResponses([(0x82, 30.0, 0.0, 0.0, math.inf, math.inf, 0.0)])
+    bits._ApplyResponses([(0x83, 30.0, 0.0, 0.0, math.inf, math.inf, 0.0)])
 
     assert bits.yaw == 30.0
     assert bits.position_mm is None
@@ -100,12 +102,51 @@ def test_dribble_request_uses_protocol_range_without_legacy_scaling():
 
     def send_hex(data, read_response, response_length, response_timeout):
         sent.append(data)
-        return b"\x85"
+        return b"\x86"
 
     bits.SendHex = send_hex
 
-    assert bits.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, 0.25, 1.5)]) == [(0x85,)]
-    assert sent == [b"\x05" + struct.pack("<ff", 0.25, 1.0)]
+    assert bits.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, 1.5)]) == [(0x86,)]
+    assert sent == [b"\x06" + struct.pack("<f", 1.0)]
+
+
+def test_room_size_request_encodes_horizontal_then_vertical_mm():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, response_length))
+        return b"\x82"
+
+    bits.SendHex = send_hex
+
+    assert bits.SetRoomSize(horizontal_mm=2430, vertical_mm=1820) == [(0x82,)]
+    assert sent == [(b"\x02" + struct.pack("<ff", 2430.0, 1820.0), 1)]
+    assert struct.unpack("<ff", sent[0][0][1:]) == (2430.0, 1820.0)
+
+
+@pytest.mark.parametrize("horizontal_mm, vertical_mm", [
+    (0, 1820),
+    (2430, -1),
+    (math.nan, 1820),
+    (2430, math.inf),
+    (True, 1820),
+])
+def test_room_size_request_rejects_invalid_dimensions(horizontal_mm, vertical_mm):
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="horizontal, vertical order"):
+        bits.SetRoomSize(horizontal_mm, vertical_mm)
+
+
+def test_room_size_command_requires_horizontal_and_vertical_only():
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="horizontal, vertical order"):
+        bits.ExecuteCommands([(Commands.SET_ROOM_SIZE, 2430)])
+
+    with pytest.raises(ValueError, match="horizontal, vertical order"):
+        bits.ExecuteCommands([(Commands.SET_ROOM_SIZE, 2430, 1820, 100)])
 
 
 @pytest.mark.parametrize("power_level", [1, 2, 3, 4])
@@ -115,11 +156,11 @@ def test_kick_request_sends_selected_power_level(power_level):
 
     def send_hex(data, read_response, response_length, response_timeout):
         sent.append(data)
-        return b"\x84"
+        return b"\x85"
 
     bits.SendHex = send_hex
 
-    assert bits.ExecuteCommands([(Commands.KICK, power_level)]) == [(0x84,)]
+    assert bits.ExecuteCommands([(Commands.KICK, power_level)]) == [(0x85,)]
     assert sent == [bytes([Commands.KICK, power_level])]
 
 
@@ -131,44 +172,55 @@ def test_kick_request_rejects_invalid_power_level(power_level):
         bits.ExecuteCommands([(Commands.KICK, power_level)])
 
 
-def test_kick_uses_configured_default_level():
+def test_kick_request_requires_exactly_one_power_level():
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="integer from 1 to 4"):
+        bits.ExecuteCommands([(Commands.KICK,)])
+
+    with pytest.raises(ValueError, match="integer from 1 to 4"):
+        bits.ExecuteCommands([(Commands.KICK, 1, 2)])
+
+
+def test_kick_uses_configured_default_level_and_current_dribble_speed():
     bits = IceLoongBits(testing=True)
     sent = []
 
     def send_hex(data, read_response, response_length, response_timeout):
-        sent.append(data)
-        return b"\x84\x85"
+        sent.append((data, response_length))
+        return b"\x80\x85\x86\x80"
 
     bits.SendHex = send_hex
-    bits.CommandLine["SET_DRIBBLE_SPEED"] = [0.5, 0.0]
+    bits.CommandLine["SET_DRIBBLE_SPEED"] = 0.5
 
     assert bits.SetKickPowerLevel(2) == 2
-    bits.Kick()
-    assert sent == [
-        b"\x00\x04\x02\x05" + struct.pack("<ff", 0.5, 0.0) + b"\x00"
-    ]
+    assert bits.Kick() == [(0x85,), (0x86,)]
+    assert sent == [(
+        b"\x00\x05\x02\x06" + struct.pack("<f", 0.5) + b"\x00",
+        4,
+    )]
 
 
-def test_morse_request_uses_command_0x07_and_accepts_23_bytes():
+def test_morse_request_uses_command_0x08_and_accepts_23_bytes():
     bits = IceLoongBits(testing=True)
     sent = []
 
     def send_hex(data, read_response, response_length, response_timeout):
         sent.append(data)
-        return b"\x87"
+        return b"\x88"
 
     bits.SendHex = send_hex
     message = "ABCDEFGHIJKLMNOPQRSTUVW"
 
-    assert bits.ExecuteCommands([(Commands.MORSE_PLAY, message)]) == [(0x87,)]
-    assert sent == [b"\x07\x17" + message.encode("ascii")]
+    assert bits.ExecuteCommands([(Commands.MORSE_PLAY, message)]) == [(0x88,)]
+    assert sent == [b"\x08\x17" + message.encode("ascii")]
 
 
 def test_referee_unlock_state_tracks_both_pin_levels():
     bits = IceLoongBits(testing=True)
 
-    bits._ApplyResponses([(0x86, 1)])
+    bits._ApplyResponses([(0x87, 1)])
     assert bits.GetRefereeUnlockPin() is True
 
-    bits._ApplyResponses([(0x86, 0)])
+    bits._ApplyResponses([(0x87, 0)])
     assert bits.GetRefereeUnlockPin() is False

@@ -16,16 +16,18 @@ except Exception:  # pragma: no cover - import error handled at runtime
 
 class Commands(IntEnum):
     HAND_SHAKE             = 0x01
-    GET_POSE               = 0x02
-    SET_WHEELS_SPEED       = 0x03
-    KICK                   = 0x04
-    SET_DRIBBLE_SPEED      = 0x05
-    GET_REFEREE_UNLOCK_PIN = 0x06
-    MORSE_PLAY             = 0x07
+    SET_ROOM_SIZE          = 0x02
+    GET_POSE               = 0x03
+    SET_WHEELS_SPEED       = 0x04
+    KICK                   = 0x05
+    SET_DRIBBLE_SPEED      = 0x06
+    GET_REFEREE_UNLOCK_PIN = 0x07
+    MORSE_PLAY             = 0x08
 
 
 COMMAND_RESPONSE_LENGTHS = {
     Commands.HAND_SHAKE:             1,
+    Commands.SET_ROOM_SIZE:          1,
     Commands.GET_POSE:               1 + 6 * 4,
     Commands.SET_WHEELS_SPEED:       1,
     Commands.KICK:                   1,
@@ -39,6 +41,9 @@ MIN_KICK_POWER_LEVEL = 1
 MAX_KICK_POWER_LEVEL = 4
 DEFAULT_KICK_POWER_LEVEL = 4
 KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
+ROOM_SIZE_ERROR = (
+    "room size must be positive finite millimetres in horizontal, vertical order"
+)
 MM_PER_CM = 10.0
 
 
@@ -69,8 +74,7 @@ class IceLoongBits:
             'HAND_SHAKE': True,
             'GET_POSE': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_SPEED': [0,0],
-            'KICK': False,
+            'SET_DRIBBLE_SPEED': 0.0,
             'GET_REFEREE_UNLOCK_PIN': True,
             'MORSE_PLAY': None
         }
@@ -208,11 +212,9 @@ class IceLoongBits:
                 "GET_POSE": self.CommandLine["GET_POSE"],
                 "GET_REFEREE_UNLOCK_PIN": self.CommandLine["GET_REFEREE_UNLOCK_PIN"],
                 "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
-                "SET_DRIBBLE_SPEED": tuple(self.CommandLine["SET_DRIBBLE_SPEED"]),
-                "KICK": self.CommandLine["KICK"],
+                "SET_DRIBBLE_SPEED": self.CommandLine["SET_DRIBBLE_SPEED"],
                 "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
             }
-            self.CommandLine["KICK"] = False
             self.CommandLine["MORSE_PLAY"] = None
         return snapshot
 
@@ -222,8 +224,8 @@ class IceLoongBits:
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
 
-        Dribble1, Dribble2 = snapshot["SET_DRIBBLE_SPEED"]
-        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        Dribble = snapshot["SET_DRIBBLE_SPEED"]
+        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble)])
 
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
@@ -233,8 +235,6 @@ class IceLoongBits:
             _CommandList.append((Commands.HAND_SHAKE,))
         if snapshot["GET_POSE"]:
             _CommandList.append((Commands.GET_POSE,))
-        if snapshot["KICK"]:
-            _CommandList.append((Commands.KICK,))
         if snapshot["GET_REFEREE_UNLOCK_PIN"]:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
 
@@ -247,6 +247,8 @@ class IceLoongBits:
                 case 0x00:
                     continue
                 case Commands.HAND_SHAKE:
+                    pass
+                case Commands.SET_ROOM_SIZE:
                     pass
                 case Commands.GET_POSE:
                     _, yaw, pitch, roll, x_mm, y_mm, z_mm = i
@@ -392,6 +394,15 @@ class IceLoongBits:
             match cmd[0]:
                 case Commands.HAND_SHAKE:
                     tx_bytes += bytes([cmd[0]])
+                case Commands.SET_ROOM_SIZE:
+                    if len(cmd) != 3:
+                        raise ValueError(ROOM_SIZE_ERROR)
+                    horizontal_mm = self._ValidateRoomDimensionMm(cmd[1])
+                    vertical_mm = self._ValidateRoomDimensionMm(cmd[2])
+                    # Wire order is fixed: horizontal first, vertical second.
+                    tx_bytes += bytes([cmd[0]]) + struct.pack(
+                        '<ff', horizontal_mm, vertical_mm
+                    )
                 case Commands.GET_POSE:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_WHEELS_SPEED:
@@ -402,9 +413,7 @@ class IceLoongBits:
                     tx_bytes += bytes([cmd[0], self._ValidateKickPowerLevel(cmd[1])])
                 case Commands.SET_DRIBBLE_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack(
-                        '<ff',
-                        self._NormalizeDribbleInput(cmd[1]),
-                        self._NormalizeDribbleInput(cmd[2]),
+                        '<f', self._NormalizeDribbleInput(cmd[1])
                     )
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
@@ -443,6 +452,8 @@ class IceLoongBits:
                         i += 1
                         continue
                     case Commands.HAND_SHAKE:
+                        rx_data.append((resp[i],))
+                    case Commands.SET_ROOM_SIZE:
                         rx_data.append((resp[i],))
                     case Commands.GET_POSE:
                         rx_data.append((resp[i], *struct.unpack('<ffffff', resp[i+1:i+25])))
@@ -502,9 +513,7 @@ class IceLoongBits:
                     if not status:
                         self.Kick()
                 case 4:
-                    self._SetDribbleSpeedNow(left=status)
-                case 5:
-                    self._SetDribbleSpeedNow(right=status)
+                    self._SetDribbleSpeedNow(status)
         except SerialException as e:
             self.logger.warning("VirtualPorts operation failed due to serial error: %s", e)
             self._HandleSerialError(e)
@@ -538,6 +547,32 @@ class IceLoongBits:
             raise ValueError(KICK_POWER_LEVEL_ERROR)
         return level
 
+    @staticmethod
+    def _ValidateRoomDimensionMm(value):
+        if isinstance(value, bool):
+            raise ValueError(ROOM_SIZE_ERROR)
+        try:
+            dimension_mm = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(ROOM_SIZE_ERROR) from exc
+        if not math.isfinite(dimension_mm) or dimension_mm <= 0:
+            raise ValueError(ROOM_SIZE_ERROR)
+        return dimension_mm
+
+    def SetRoomSize(self, horizontal_mm, vertical_mm):
+        """设置场地尺寸。
+
+        重要：协议顺序固定为 ``horizontal_mm, vertical_mm``，即水平在前、
+        竖直在后。两者传反会导致下位机定位算法无法正常工作。
+        """
+        horizontal_mm = self._ValidateRoomDimensionMm(horizontal_mm)
+        vertical_mm = self._ValidateRoomDimensionMm(vertical_mm)
+        response = self.ExecuteCommands([
+            (Commands.SET_ROOM_SIZE, horizontal_mm, vertical_mm),
+        ])
+        self._ApplyResponses(response)
+        return response
+
     def SetKickPowerLevel(self, power_level):
         """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
         level = self._ValidateKickPowerLevel(power_level)
@@ -546,7 +581,7 @@ class IceLoongBits:
         return level
 
     def Kick(self, power_level=None):
-        """立即按 1 到 4 档力度弹射；省略参数时使用默认档位。"""
+        """立即按 1 到 4 档力度弹射；省略参数时使用已设置的默认档位。"""
         if power_level is None:
             with self._command_lock:
                 power_level = self.kick_power_level
@@ -555,24 +590,20 @@ class IceLoongBits:
     def _KickNow(self, power_level):
         level = self._ValidateKickPowerLevel(power_level)
         with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
+            Dribble = self.CommandLine["SET_DRIBBLE_SPEED"]
         response = self.ExecuteCommands([
             (Commands.KICK, level),
-            (Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2),
+            (Commands.SET_DRIBBLE_SPEED, Dribble),
         ])
         self._ApplyResponses(response)
         return response
 
-    def _SetDribbleSpeedNow(self, left=None, right=None):
+    def _SetDribbleSpeedNow(self, value):
+        speed = self._NormalizeDribbleInput(value)
         with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
-            if left is not None:
-                Dribble1 = self._NormalizeDribbleInput(left)
-            if right is not None:
-                Dribble2 = self._NormalizeDribbleInput(right)
-            self.CommandLine["SET_DRIBBLE_SPEED"] = [Dribble1, Dribble2]
+            self.CommandLine["SET_DRIBBLE_SPEED"] = speed
 
-        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, speed)])
         self._ApplyResponses(response)
         return response
 
