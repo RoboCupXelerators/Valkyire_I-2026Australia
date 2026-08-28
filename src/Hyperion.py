@@ -4,6 +4,7 @@ from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 
 import numpy as np
 import math
+import time
 
 def activate_func(input_score):
     x = input_score
@@ -95,6 +96,7 @@ def UplaneStep(thershold = [[60,40],[100,80]]):
          
 
 def logic_step():
+    global _last_ball_missing_log
     # logger.success("UplaneScore: "+str(UplaneScore(UnitedPosition.FieldRobotPose())))
     # logger.success("HuckScore: "+str(HuckScore(UnitedPosition.FieldRobotPose())))
     # logger.success("JumpScore: "+str(JumpScore(UnitedPosition.FieldRobotPose())))
@@ -132,14 +134,11 @@ def logic_step():
             if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
                 logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
                 UnitedPosition.Pos2Pos(Settings.CheckPoints.Home)
-    # else:
-        print(UnitedPosition.FieldRobotPose())
 
 if __name__ == "__main__":
     try:
         while True:
             logic_step()
-            # time.sleep(0.03)
     except KeyboardInterrupt:
         logger.info("Program interrupted by user.")
     finally:

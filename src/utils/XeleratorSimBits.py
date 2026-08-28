@@ -211,7 +211,11 @@ class XeleratorSimBits:
         self._rx = None
 
         bind_error: OSError | None = None
-        allow_port_fallback = str(os.environ.get("XEL_SIM_PORT_FALLBACK", "1")).lower() in {
+        # Do not silently change robot_id when a stale process owns the port.
+        # Unity will keep publishing the configured robot's status packet, so
+        # an automatic fallback can look exactly like intermittent packet loss.
+        # Opt in only when deliberately running parallel simulator instances.
+        allow_port_fallback = str(os.environ.get("XEL_SIM_PORT_FALLBACK", "0")).lower() in {
             "1",
             "true",
             "yes",
@@ -1329,10 +1333,20 @@ class Lidar:
         self._long = float(bounds_long_cm)
         self._short = float(bounds_short_cm)
         self._running = bool(auto_start)
+        self.backend = "sim"
+        self.driver = None
+        self.running = self._running
+        self.disabled = not self._running
+        self.last_point_cloud = ()
+        self.last_raw_scan_count = 0
+        self.last_scan_point_count = 0
+        self.last_line_count = 0
         self._get_yaw = get_yaw_callable
 
     def stop(self):
         self._running = False
+        self.running = False
+        self.disabled = True
 
     def GetDists(self):
         if not self._running or self._get_pose is None:

@@ -58,6 +58,14 @@ from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 from .motion.recording_chassis import RecordingCar
 
 
+def play_morse(message: str) -> None:
+    """Play an optional status message when the active backend supports it."""
+
+    callback = Morse
+    if callable(callback):
+        callback(message)
+
+
 def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None,
                   set_chassis_twist=None, get_chassis_telemetry=None,
                   shutdown=None, stop=None, disable=None, emergency_stop=None,
@@ -192,7 +200,7 @@ def _start_bits_thread_monitor(bits_obj):
                     logger.warning("Bits background thread is dead, attempting restart...")
                     bits_obj.RestartThreadIfNeeded()
             except Exception as e:
-                logger.exception("Bits thread monitor error: %s", e)
+                    logger.exception(f"Bits thread monitor error: {e}")
             # 每 1 秒检查一次
             _bits_monitor_stop.wait(1.0)
     
@@ -327,6 +335,23 @@ def _selected_backend_name() -> str:
     return str(getattr(cfg.RoboInfo, "Bit", "")).strip().upper()
 
 
+def _resolve_runtime_sensor_source(backend_name: str) -> str:
+    """Select a sensor source that matches the active transport backend.
+
+    The simulator derives wall distances from the fresh Unity pose packet; it
+    must not inherit a stale hardware-only ``Sensor.Source=ros2`` setting from
+    a robot configuration copied onto a development machine.  An explicit
+    ``XEL_SIM_SENSOR_SOURCE`` remains available for specialized experiments.
+    """
+
+    if backend_name == "SIM":
+        override = os.environ.get("XEL_SIM_SENSOR_SOURCE", "").strip()
+        if override:
+            return _resolve_source(override)
+        return "bits"
+    return _resolve_source(None)
+
+
 def _init_runtime(*, auto_start_lidar: bool = True):
     """Initialize the selected SIM or IceLoong runtime and semantic sensor."""
 
@@ -360,6 +385,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
             pose_provider=bits_pose_provider,
             yaw_provider=compass,
             lidar=assembly["raw_lidar"],
+            source=_resolve_runtime_sensor_source(backend_name),
             bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260.0)),
             bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200.0)),
         )
@@ -371,7 +397,7 @@ def _init_runtime(*, auto_start_lidar: bool = True):
         if backend_name == "IL":
             _start_bits_thread_monitor(Bits)
         _runtime_initialized = True
-        logger.info("LunaPre runtime loaded: backend=%s sensor_source=%s", backend_name, sensor.Source)
+        logger.info(f"LunaPre runtime loaded: backend={backend_name} sensor_source={sensor.Source}")
     except Exception as e:
         shutdown_runtime()
         logger.error(f"Failed to init runtime: {e}")

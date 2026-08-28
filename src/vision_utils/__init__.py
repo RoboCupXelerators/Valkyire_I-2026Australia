@@ -91,7 +91,7 @@ def _select_backend(requested: str, *, loader=None, blob_loader=None):
     except _OptionalBackendDependencyMissing as exc:
         backend = blob_loader()
         reason = str(exc)
-        logger.warning("vision_utils: %s; using BlobBased fallback", reason)
+        logger.warning(f"vision_utils: {reason}; using BlobBased fallback")
         return backend, {
             "requested": requested,
             "active": backend.__name__,

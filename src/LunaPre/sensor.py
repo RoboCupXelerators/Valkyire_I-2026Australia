@@ -347,7 +347,7 @@ class Sensor:
         if source is None:
             logger.warning("Sensor has no valid observation source")
         elif self.last_source is not None:
-            logger.info("Sensor source switched: %s -> %s", self.last_source, source)
+            logger.info(f"Sensor source switched: {self.last_source} -> {source}")
         self.last_source = source
 
     def _candidate_sources(self) -> tuple[str, ...]:

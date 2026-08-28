@@ -120,13 +120,13 @@ class IceLoongBits:
             except SerialException as e:
                 self._consecutive_errors += 1
                 self.logger.warning(
-                    "Serial I/O error in command loop (attempt %d/%d): %s", 
-                    self._consecutive_errors, self._max_consecutive_errors, e
+                    f"Serial I/O error in command loop (attempt {self._consecutive_errors}/"
+                    f"{self._max_consecutive_errors}): {e}"
                 )
                 # 尝试串口重连
                 self._HandleSerialError(e)
             except Exception as e:
-                self.logger.exception("IceLoongBits command loop failed: %s", e)
+                self.logger.exception(f"IceLoongBits command loop failed: {e}")
             time.sleep(0.02)
 
     def _HandleSerialError(self, error: Exception) -> bool:
@@ -139,7 +139,7 @@ class IceLoongBits:
             bool: 重连是否成功
         """
         with self._reconnect_lock:
-            self.logger.info("Attempting serial reconnection due to error: %s", error)
+            self.logger.info(f"Attempting serial reconnection due to error: {error}")
             
             # 先关闭现有连接
             self._ForceClosePort()
@@ -149,10 +149,10 @@ class IceLoongBits:
             
             try:
                 self.OpenPort()
-                self.logger.info("Serial port reconnected successfully: %s", self.port)
+                self.logger.info(f"Serial port reconnected successfully: {self.port}")
                 return True
             except Exception as e:
-                self.logger.error("Failed to reconnect serial port: %s", e)
+                self.logger.error(f"Failed to reconnect serial port: {e}")
                 return False
 
     def _ForceClosePort(self) -> None:
@@ -291,7 +291,7 @@ class IceLoongBits:
             except Exception as e:
                 import subprocess
                 a = subprocess.run(['sudo fuser -k /dev/iceloong'], shell=True, capture_output=True, text=True)
-                self.logger.exception("关闭串口失败: %s", a.returncode)
+                self.logger.exception(f"关闭串口失败: {a.returncode}")
             finally:
                 self.ser = None
 
@@ -436,11 +436,11 @@ class IceLoongBits:
         try:
             resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
         except SerialException as e:
-            self.logger.warning("ExecuteCommands failed due to serial error: %s", e)
+            self.logger.warning(f"ExecuteCommands failed due to serial error: {e}")
             self._HandleSerialError(e)
             return []
         except Exception as e:
-            self.logger.exception("ExecuteCommands failed with unexpected error: %s", e)
+            self.logger.exception(f"ExecuteCommands failed with unexpected error: {e}")
             return []
 
         rx_data = []
@@ -479,7 +479,7 @@ class IceLoongBits:
             try:
                 self._RefreshPose()
             except Exception as e:
-                self.logger.debug("Refresh yaw failed: %s", e)
+                self.logger.debug(f"Refresh yaw failed: {e}")
         return self.yaw
 
     def GetPose(self):
@@ -489,7 +489,7 @@ class IceLoongBits:
             try:
                 self._RefreshPose()
             except Exception as e:
-                self.logger.debug("Refresh pose failed: %s", e)
+                self.logger.debug(f"Refresh pose failed: {e}")
         return self.pose
 
     def _RefreshPose(self):
@@ -515,10 +515,10 @@ class IceLoongBits:
                 case 4:
                     self._SetDribbleSpeedNow(status)
         except SerialException as e:
-            self.logger.warning("VirtualPorts operation failed due to serial error: %s", e)
+            self.logger.warning(f"VirtualPorts operation failed due to serial error: {e}")
             self._HandleSerialError(e)
         except Exception as e:
-            self.logger.exception("VirtualPorts operation failed: %s", e)
+            self.logger.exception(f"VirtualPorts operation failed: {e}")
 
     @staticmethod
     def _NormalizeDribbleInput(value):

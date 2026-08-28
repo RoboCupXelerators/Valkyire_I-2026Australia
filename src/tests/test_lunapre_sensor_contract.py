@@ -223,3 +223,26 @@ def test_iceloong_runtime_wires_bits_pose_to_field_robot_pose(monkeypatch):
     positions = object.__new__(Positions)
     positions.LidarPos = list(POSE_NOT_FOUND)
     assert positions.FieldRobotPose() == [12.5, -34.0, 270.0]
+
+
+def test_optional_morse_output_is_safe_when_backend_has_none(monkeypatch):
+    monkeypatch.setattr(runtime, "Morse", None)
+    runtime.play_morse("No Position Data!")
+
+
+def test_optional_morse_output_delegates_to_hardware_callback(monkeypatch):
+    messages = []
+    monkeypatch.setattr(runtime, "Morse", messages.append)
+    runtime.play_morse("No Position Data!")
+    assert messages == ["No Position Data!"]
+
+
+def test_sim_runtime_uses_bits_sensor_source_for_stale_hardware_config(monkeypatch):
+    monkeypatch.setattr(runtime.cfg.Sensor, "Source", "ros2")
+    monkeypatch.delenv("XEL_SIM_SENSOR_SOURCE", raising=False)
+    assert runtime._resolve_runtime_sensor_source("SIM") == "bits"
+
+
+def test_sim_runtime_sensor_source_can_be_explicitly_overridden(monkeypatch):
+    monkeypatch.setenv("XEL_SIM_SENSOR_SOURCE", "auto")
+    assert runtime._resolve_runtime_sensor_source("SIM") == "auto"

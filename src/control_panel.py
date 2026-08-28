@@ -617,7 +617,11 @@ class ControlPanelApp:
                 if callable(snapshot):
                     dists = list(snapshot())
                 else:
-                    dists = list(lidar.GetDists())
+                    direct_distance = getattr(positions, "DirectDistance", None)
+                    if callable(direct_distance):
+                        dists = list(direct_distance())
+                    else:
+                        dists = list(lidar.GetDists())
             else:
                 dists = list(lidar.GetDists())
             status["dist_mm"] = dists

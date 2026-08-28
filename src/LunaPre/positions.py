@@ -29,7 +29,10 @@ POS2POS_KP = 0.018
 POS2POS_KI = 0.00001
 POS2POS_KD = 0.0002
 POS2POS_OUTPUT_LIMIT_MPS = 1.2
-POS2POS_MIN_SPEED_MPS = 0.08
+# Keep recovery commands above the SIM bridge's 0.6 planar scale and 0.064
+# command deadzone (0.12 * 0.6 = 0.072). Normal positioning does not use this
+# floor, so fine final approach remains unchanged.
+POS2POS_MIN_SPEED_MPS = 0.12
 POS2POS_ARRIVAL_SCALE = 0.5
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
@@ -376,7 +379,7 @@ class Positions:
                     # If it keeps dying, stop respawning (prevents resource_tracker leaked semaphores).
                     if restart_count >= max_restart:
                         self._vision_enabled = False
-                        logger.warning("Vision disabled: subprocess crashed too many times (max_restart=%s).", max_restart)
+                        logger.warning(f"Vision disabled: subprocess crashed too many times (max_restart={max_restart}).")
                         continue
 
                     now = time.time()
@@ -1605,7 +1608,7 @@ class Positions:
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
             runtime.chassis.stop()
-            runtime.Morse("No Position Data!")
+            runtime.play_morse("No Position Data!")
             return False
 
         start = [loc_x, loc_y, loc_yaw]
@@ -1618,7 +1621,14 @@ class Positions:
         dist = math.hypot(err_x, err_y)
         arrival_cm = max(1.0, float(Settings.Motion.ErrorRange) * 0.5)
 
-        if dist <= arrival_cm:
+        # A recovery target can intentionally be inside Pos2Pos's normal
+        # arrival window.  In that case stopping would leave the robot in the
+        # restricted area, so keep translating until the pose itself is safe.
+        recovery_escape_pending = (
+            self.IsPoseInRestrictedArea(start)
+            and not self.IsPoseInRestrictedArea(AimPos)
+        )
+        if dist <= arrival_cm and not recovery_escape_pending:
             if abs(err_yaw) <= float(Settings.Motion.ErrorRange):
                 runtime.chassis.stop()
                 self._reset_pos2pos_pid()
@@ -1632,6 +1642,17 @@ class Positions:
         self.Position_Y_PID.setpoint = float(aim_y)
         cmd_x = self.Position_X_PID(float(loc_x)) * gain
         cmd_y = self.Position_Y_PID(float(loc_y)) * gain
+        if recovery_escape_pending:
+            # Simulator and some motor controllers have a small planar command
+            # deadzone.  A recovery PID command can fall below it while the
+            # robot is still technically restricted, leaving the guard active
+            # forever.  Keep only this safety escape above the configured
+            # minimum; normal position control should retain its fine approach.
+            cmd_norm = math.hypot(cmd_x, cmd_y)
+            if 0.0 < cmd_norm < POS2POS_MIN_SPEED_MPS:
+                scale = POS2POS_MIN_SPEED_MPS / cmd_norm
+                cmd_x *= scale
+                cmd_y *= scale
         runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
         return False
 
@@ -1760,7 +1781,7 @@ class Positions:
         start = self.FieldRobotPose()
         if start == POSE_NOT_FOUND:
             runtime.chassis.stop()
-            runtime.Morse("No Position Data!")
+            runtime.play_morse("No Position Data!")
             return False
         waypoint = self._navigate_waypoint(start, AimPos)
         return self.Pos2Pos(waypoint, speed_gain)
