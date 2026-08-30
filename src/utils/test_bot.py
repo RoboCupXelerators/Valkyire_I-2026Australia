@@ -6,9 +6,9 @@ from IceLoongBits import IceLoongBits, Commands
 
 def main():
     # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    # PORT = "/dev/ttyTHS1"
+    PORT = "/dev/ttyTHS1"
     # PORT = "/dev/iceloong"
-    PORT = "/dev/ttyUSB0"
+    # PORT = "/dev/ttyUSB0"
     
     with IceLoongBits(port=PORT,testing=True) as bot:
 
@@ -24,12 +24,11 @@ def main():
             (Commands.HAND_SHAKE,),
             (Commands.GET_POSE,),
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
-            (Commands.KICK, 3),
+            # (Commands.KICK, 4),
             # (Commands.SET_WHEELS_SPEED, 100, 100, 100, 100), 
             # (Commands.MORSE_PLAY, "Hello")
         ])
         print("响应:", resp2)
-        time.sleep(1)
 
 if __name__ == "__main__":
     try:

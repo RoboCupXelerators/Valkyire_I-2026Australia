@@ -682,6 +682,34 @@ class ControlPanelApp:
             "wall_segments_cm": [],
         }
 
+    def chassis_range_capture_start(self, known_range_cm) -> dict:
+        """Start a visual chassis range capture without touching the runtime."""
+        if self.vision is None:
+            return {"success": False, "error": "vision_not_available"}
+
+        capture = getattr(self.vision, "StartChassisRangeCapture", None)
+        if not callable(capture):
+            return {"success": False, "error": "range_capture_not_supported"}
+        try:
+            return capture(float(known_range_cm))
+        except (TypeError, ValueError):
+            return {"success": False, "error": "invalid_known_range_cm"}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def chassis_range_capture_status(self) -> dict:
+        """Return visual chassis range capture status without touching the runtime."""
+        if self.vision is None:
+            return {"success": False, "error": "vision_not_available"}
+
+        get_status = getattr(self.vision, "GetChassisRangeCaptureStatus", None)
+        if not callable(get_status):
+            return {"success": False, "error": "range_capture_not_supported"}
+        try:
+            return {"success": True, "capture": get_status()}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def _lidar_preview_mode(self) -> str:
         """Return the preview matching the configured and active Sensor source."""
 
