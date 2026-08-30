@@ -184,7 +184,7 @@ class LD07Driver:
         while not self._stop_event.is_set():
             lidar_serial = None
             try:
-                LOGGER.info("Opening LD07 port=%s baudrate=%s", self.port, self.baudrate)
+                LOGGER.info(f"Opening LD07 port={self.port} baudrate={self.baudrate}")
                 lidar_serial = serial.Serial(
                     self.port,
                     baudrate=self.baudrate,
@@ -218,7 +218,7 @@ class LD07Driver:
                             self._publish_scan(scan_queue, scan)
             except (serial.SerialException, OSError) as error:
                 if not self._stop_event.is_set():
-                    LOGGER.warning("LD07 serial error: %s; reconnecting", error)
+                    LOGGER.warning(f"LD07 serial error: {error}; reconnecting")
             except Exception:
                 if not self._stop_event.is_set():
                     LOGGER.exception("LD07 driver error; reconnecting")

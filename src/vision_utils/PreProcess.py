@@ -2,48 +2,33 @@
 
 This module is used by multiple vision backends (Hailo / BPU / Blob).
 
-Compatibility note:
-- The main system config is `src/ReasonData/data/config.json`.
-- `vision_utils` historically also shipped its own config `vision_utils/VisionDatas/data/vision.json`.
-
-To reduce "config split" issues, we prefer importing `ReasonData.Settings/logger`
-when available, and fallback to `vision_utils.VisionDatas`.
+Configuration comes from ``merged_settings`` so backend selection, camera
+preprocessing, and projection all see the same system config plus optional
+vision overlay. Runtime logging and data-directory ownership remain in
+``ReasonData``.
 """
 
 from pathlib import Path
 
 _REASON_DATA_DIR_FALLBACK = Path(__file__).resolve().parents[1] / "ReasonData" / "data"
 
-# Settings/logger import order:
-#  1) ReasonData (installed package usage)
-#  2) src.ReasonData (running from repo root, imports as "src.*")
-#  3) merged_settings (vision-only merged config; always provides VisionVals defaults)
-#  4) legacy VisionDatas (vision-only config)
+# All active vision modules import this singleton rather than constructing a
+# second Settings object from ReasonData or VisionDatas.
+from .merged_settings import Settings
+from .modern_calibration import ModernCalibration, ModernCalibrationError
+
 try:
-    from ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+    from ReasonData import logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
 except Exception:  # pragma: no cover
     try:
-        from src.ReasonData import Settings, logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
+        from src.ReasonData import logger, DATA_DIR as REASON_DATA_DIR  # type: ignore
     except Exception:  # pragma: no cover
-        try:
-            # merged_settings does not expose logger; keep legacy logger
-            from .merged_settings import Settings  # type: ignore
-            try:
-                from .VisionDatas import logger
-            except Exception:
-                import logging
+        import logging
 
-                logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
-        except Exception:  # pragma: no cover
-            try:
-                from .VisionDatas import Settings, logger
-            except Exception:
-                from .merged_settings import Settings  # type: ignore
-                import logging
-
-                logger = logging.getLogger(__name__)
-            REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK  # type: ignore
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            logger.addHandler(logging.NullHandler())
+        REASON_DATA_DIR = _REASON_DATA_DIR_FALLBACK
 import threading
 import queue
 import time
@@ -86,61 +71,6 @@ def _norm_rel_folder(folder: str | None, default: str) -> str:
     # '/Calibration/' -> 'Calibration'
     s = s.strip("/")
     return s or default.strip("/")
-
-
-def _npz_text(data, key: str, default: str = "") -> str:
-    if key not in data.files:
-        return default
-    try:
-        return str(np.atleast_1d(data[key])[0])
-    except Exception:
-        return default
-
-
-def _npz_bool(data, key: str, default: bool = False) -> bool:
-    if key not in data.files:
-        return default
-    try:
-        value = np.atleast_1d(data[key])[0]
-        if isinstance(value, str):
-            return value.strip().lower() in ("1", "true", "yes", "on")
-        return bool(value)
-    except Exception:
-        return default
-
-
-def _modern_pose_from_npz(data):
-    H = np.asarray(data["H"], dtype=np.float64)
-    rvec = np.asarray(data["rvec"], dtype=np.float64) if "rvec" in data.files else None
-    tvec = np.asarray(data["tvec"], dtype=np.float64) if "tvec" in data.files else None
-    if rvec is not None and rvec.size == 0:
-        rvec = None
-    if tvec is not None and tvec.size == 0:
-        tvec = None
-
-    if (
-        _npz_text(data, "origin") == "robot_center"
-        and _npz_text(data, "coordinate_convention") != "robot_center_v2"
-        and "origin_offset_cm" in data.files
-    ):
-        offset = np.asarray(data["origin_offset_cm"], dtype=np.float64).reshape(-1)
-        if offset.size >= 2:
-            dy_mm = 2.0 * float(offset[1]) * 10.0
-            new_to_old = np.array(
-                [
-                    [1.0, 0.0, 0.0],
-                    [0.0, 1.0, -dy_mm],
-                    [0.0, 0.0, 1.0],
-                ],
-                dtype=np.float64,
-            )
-            H = H @ new_to_old
-            if rvec is not None and tvec is not None:
-                R, _ = cv2.Rodrigues(rvec)
-                d = np.array([[0.0], [-dy_mm], [0.0]], dtype=np.float64)
-                tvec = np.asarray(tvec, dtype=np.float64).reshape(3, 1) + R @ d
-
-    return H, rvec, tvec
 
 
 def _is_jetson_nano() -> bool:
@@ -757,25 +687,10 @@ class VisionPreUntil:
             pass
 
     def _init_calibration(self):
-        """Load per-camera calibration used by Pixel2CM/CM2Pixel.
+        """Load only pixel2cm_v2 raw-pixel-to-ground-plane calibrations."""
 
-        Expected file: {DATA_DIR}/Calibration/CalibrationData{port}.npz
-        with keys:
-        - matrix: 3x3 perspective transform
-        - p2c: (k, hb, vb)
-        """
-
-        perspective_matrices: list[np.ndarray] = []
-        p2ck: list[float] = []
-        p2chb: list[float] = []
-        p2cvb: list[float] = []
-        calibration_ks: list[np.ndarray | None] = []
-        calibration_dists: list[np.ndarray | None] = []
-        calibration_hs: list[np.ndarray | None] = []
-        calibration_rvecs: list[np.ndarray | None] = []
-        calibration_tvecs: list[np.ndarray | None] = []
-        calibration_modes: list[str] = []
-        calibration_undistort_points: list[bool] = []
+        projectors: list[ModernCalibration | None] = []
+        calibration_errors: list[str] = []
 
         vision_vals = getattr(self.cfg, "VisionVals", object())
         vision_cfg = getattr(self.cfg, "Vision", object())
@@ -787,66 +702,20 @@ class VisionPreUntil:
         for port in self.CamPorts:
             npz_path = calib_dir / f"CalibrationData{port}.npz"
             try:
-                data = np.load(str(npz_path))
-                matrix = data["matrix"]
-                p2c = data["p2c"]
-
-                perspective_matrices.append(matrix)
-                # Be tolerant to p2c shape (sometimes it's nested).
-                p2ck.append(float(p2c[0]))
-                p2chb.append(float(p2c[1]))
-                p2cvb.append(float(p2c[2]))
-                if {"K", "dist", "H"}.issubset(set(data.files)) or (
-                    "version" in data.files and int(np.atleast_1d(data["version"])[0]) >= 2
-                ):
-                    H, rvec, tvec = _modern_pose_from_npz(data)
-                    calibration_ks.append(np.asarray(data["K"], dtype=np.float64))
-                    calibration_dists.append(np.asarray(data["dist"], dtype=np.float64))
-                    calibration_hs.append(H)
-                    calibration_rvecs.append(rvec)
-                    calibration_tvecs.append(tvec)
-                    calibration_modes.append("modern")
-                    calibration_undistort_points.append(_npz_bool(data, "undistort_points", True))
-                else:
-                    calibration_ks.append(None)
-                    calibration_dists.append(None)
-                    calibration_hs.append(None)
-                    calibration_rvecs.append(None)
-                    calibration_tvecs.append(None)
-                    calibration_modes.append("legacy")
-                    calibration_undistort_points.append(False)
+                projectors.append(ModernCalibration.load(npz_path))
             except Exception as e:
-                self.logger.warning(
-                    f"Calibration load failed for camera port {port} ({npz_path}): {e}. "
-                    "Fallback to identity Pixel2CM."
-                )
-                perspective_matrices.append(np.eye(3, dtype=np.float64))
-                p2ck.append(1.0)
-                p2chb.append(0.0)
-                p2cvb.append(0.0)
-                calibration_ks.append(None)
-                calibration_dists.append(None)
-                calibration_hs.append(None)
-                calibration_rvecs.append(None)
-                calibration_tvecs.append(None)
-                calibration_modes.append("missing")
-                calibration_undistort_points.append(False)
+                self.logger.error(f"Modern calibration required for camera port {port} ({npz_path}): {e}")
+                projectors.append(None)
+                calibration_errors.append(str(e))
 
-        self.PerspectiveMatrices = perspective_matrices
-        self.P2CK = p2ck
-        self.P2CHB = p2chb
-        self.P2CVB = p2cvb
-        self.CalibrationKs = calibration_ks
-        self.CalibrationDists = calibration_dists
-        self.CalibrationHs = calibration_hs
-        self.CalibrationRvecs = calibration_rvecs
-        self.CalibrationTvecs = calibration_tvecs
-        self.CalibrationModes = calibration_modes
-        self.CalibrationUndistortPoints = calibration_undistort_points
+        self.CalibrationProjectors = projectors
+        self.CalibrationModes = ["modern" if projector is not None else "missing" for projector in projectors]
+        self.CalibrationImageSizes = [None if projector is None else projector.image_size for projector in projectors]
+        self.CalibrationErrors = calibration_errors
 
     def reload_calibration(self):
         self._init_calibration()
-        return {"modes": list(getattr(self, "CalibrationModes", []))}
+        return {"modes": list(getattr(self, "CalibrationModes", [])), "errors": list(getattr(self, "CalibrationErrors", []))}
 
 
     def ApplyPerspectiveTransform(self, X, Y, Matrix):
@@ -871,86 +740,32 @@ class VisionPreUntil:
         return float(und[0, 0, 0]), float(und[0, 0, 1])
 
 
-    def Pixel2CM(self, X, Y, CamIndex: int):
-        """Convert pixel coordinate to cm coordinate for a specific camera.
+    def Pixel2CM(self, X, Y, CamIndex: int, frame_size: tuple[int, int] | None = None):
+        """Project a raw camera pixel to the calibrated robot-centred ground plane."""
 
-        Notes:
-        - This is shared by Hailo/BPU/Blob pipelines.
-        - If calibration wasn't loaded, returns (X, Y) as-is.
-        """
-
-        if not getattr(self, "PerspectiveMatrices", None):
+        if not hasattr(self, "CalibrationProjectors"):
             self._init_calibration()
-
         try:
-            cam_i = int(CamIndex)
-            if (
-                0 <= cam_i < len(self.CalibrationModes)
-                and self.CalibrationModes[cam_i] == "modern"
-                and self.CalibrationHs[cam_i] is not None
-            ):
-                u, v = float(X), float(Y)
-                undistort = (
-                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
-                    and self.CalibrationUndistortPoints[cam_i]
-                    and self.CalibrationKs[cam_i] is not None
-                    and self.CalibrationDists[cam_i] is not None
-                )
-                if undistort:
-                    u, v = self._undistort_point(X, Y, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
-                world_x_mm, world_y_mm = self._apply_homography_float(u, v, np.linalg.inv(self.CalibrationHs[cam_i]))
-                return round(world_x_mm / 10.0, 2), round(world_y_mm / 10.0, 2)
-
-            X, Y = self.ApplyPerspectiveTransform(X, Y, self.PerspectiveMatrices[cam_i])
-            X = round(self.P2CK[cam_i] * X + self.P2CHB[cam_i], 2)
-            Y = round(-self.P2CK[cam_i] * Y + self.P2CVB[cam_i], 2)
-            return X, Y
-        except Exception as e:
-            self.logger.warning(f"Pixel2CM failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
-            return X, Y
+            projector = self.CalibrationProjectors[int(CamIndex)]
+            if projector is None:
+                raise ModernCalibrationError(f"camera {CamIndex} has no modern calibration")
+            return projector.pixel_to_cm(X, Y, frame_size=frame_size)
+        except Exception as exc:
+            raise ModernCalibrationError(f"Pixel2CM failed (CamIndex={CamIndex}, X={X}, Y={Y}): {exc}") from exc
 
 
     def CM2Pixel(self, X, Y, CamIndex: int):
-        """Convert cm coordinate back to pixel coordinate for a specific camera."""
+        """Project a robot-centred ground-plane point into raw camera pixels."""
 
-        if not getattr(self, "PerspectiveMatrices", None):
+        if not hasattr(self, "CalibrationProjectors"):
             self._init_calibration()
-
         try:
-            cam_i = int(CamIndex)
-            if (
-                0 <= cam_i < len(self.CalibrationModes)
-                and self.CalibrationModes[cam_i] == "modern"
-            ):
-                undistort = (
-                    cam_i < len(getattr(self, "CalibrationUndistortPoints", []))
-                    and self.CalibrationUndistortPoints[cam_i]
-                    and self.CalibrationKs[cam_i] is not None
-                    and self.CalibrationDists[cam_i] is not None
-                )
-                obj = np.array([[[float(X) * 10.0, float(Y) * 10.0, 0.0]]], dtype=np.float64)
-                rvec = self.CalibrationRvecs[cam_i] if cam_i < len(self.CalibrationRvecs) else None
-                tvec = self.CalibrationTvecs[cam_i] if cam_i < len(self.CalibrationTvecs) else None
-                if undistort and rvec is not None and tvec is not None:
-                    img, _ = cv2.projectPoints(obj, rvec, tvec, self.CalibrationKs[cam_i], self.CalibrationDists[cam_i])
-                    return int(round(float(img[0, 0, 0]))), int(round(float(img[0, 0, 1])))
-
-                H = self.CalibrationHs[cam_i] if cam_i < len(self.CalibrationHs) else None
-                if H is not None:
-                    px_x, px_y = self._apply_homography_float(float(X) * 10.0, float(Y) * 10.0, H)
-                    return int(round(px_x)), int(round(px_y))
-
-            p2ck = self.P2CK[cam_i]
-            p2chb = self.P2CHB[cam_i]
-            p2cvb = self.P2CVB[cam_i]
-
-            X = (X - p2chb) / p2ck
-            Y = -(Y - p2cvb) / p2ck
-            X, Y = self.ApplyPerspectiveTransform(X, Y, np.linalg.inv(self.PerspectiveMatrices[cam_i]))
-            return int(X), int(Y)
-        except Exception as e:
-            self.logger.warning(f"CM2Pixel failed (CamIndex={CamIndex}, X={X}, Y={Y}): {e}")
-            return int(X), int(Y)
+            projector = self.CalibrationProjectors[int(CamIndex)]
+            if projector is None:
+                raise ModernCalibrationError(f"camera {CamIndex} has no modern calibration")
+            return projector.cm_to_pixel(X, Y)
+        except Exception as exc:
+            raise ModernCalibrationError(f"CM2Pixel failed (CamIndex={CamIndex}, X={X}, Y={Y}): {exc}") from exc
 
 
     def InitVideo(self):

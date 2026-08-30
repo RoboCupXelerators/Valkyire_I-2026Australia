@@ -27,6 +27,7 @@ Notes
 from __future__ import annotations
 
 from .PreProcess import Settings, logger, MODEL_DIR, VisionPreUntil, threading, queue, time, cv2, np
+from .modern_calibration import model_bbox_to_raw
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -219,23 +220,19 @@ class TunaIntelligence(VisionPreUntil):
         return PaddedImage
 
     @staticmethod
-    def _ball_queue_output_from_xyxy(cam_i: int, xyxy: Tuple[float, float, float, float], conf: float):
-        """Convert raw YOLO xyxy into the legacy BallQueue item.
-
-        Keep the raw bbox width/height. Older code only expects the bottom
-        point to use the -80 px calibration offset; shrinking the whole box
-        makes small far-away balls disappear before Pixel2CM can run.
-        """
-        x1, y1, x2, y2 = xyxy
-        x1_i = int(round(float(x1)))
-        y1_i = int(round(float(y1)))
-        x2_i = int(round(float(x2)))
-        y2_i = int(round(float(y2)))
-        cx = int(round((float(x1) + float(x2)) / 2.0))
-        bottom_y = y2_i - 80
-        w = max(0, x2_i - x1_i)
-        h = max(0, y2_i - y1_i)
-        return [int(cam_i), cx, bottom_y, w, h, float(conf)]
+    def _ball_queue_output_from_xyxy(
+        cam_i: int,
+        xyxy: Tuple[float, float, float, float],
+        conf: float,
+        source_size: tuple[int, int],
+    ):
+        """Convert a model-space ball box into a raw-camera ground anchor."""
+        x1, y1, x2, y2 = model_bbox_to_raw(xyxy, source_size)
+        cx = int(round((x1 + x2) / 2.0))
+        bottom_y = int(round(y2))
+        w = max(0, int(round(x2 - x1)))
+        h = max(0, int(round(y2 - y1)))
+        return [int(cam_i), cx, bottom_y, w, h, float(conf), int(source_size[0]), int(source_size[1])]
 
     def _drain_latest_queue(self, queue_name: str, cache_name: str):
         """Read the newest queue item, retaining a cache for direct-backend users."""
@@ -380,10 +377,12 @@ class TunaIntelligence(VisionPreUntil):
         while not self._stop_event.is_set():
             t0 = time.time()
             frames_640: List[Optional[np.ndarray]] = [None, None, None, None]
+            source_sizes: List[Optional[tuple[int, int]]] = [None, None, None, None]
             for i in range(4):
                 Frame = self.Frames[i] if i < len(self.Frames) else None
                 if Frame is None:
                     continue
+                source_sizes[i] = (int(Frame.shape[1]), int(Frame.shape[0]))
                 Frame = self.Resize(Frame, (640, 640))
                 frames_640[i] = Frame
 
@@ -393,7 +392,7 @@ class TunaIntelligence(VisionPreUntil):
             try:
                 if self.YOLOQueue.full():
                     _ = self.YOLOQueue.get_nowait()
-                self.YOLOQueue.put_nowait(frames_640)
+                self.YOLOQueue.put_nowait((frames_640, source_sizes))
             except Exception:
                 # queue full race, just drop this frame
                 pass
@@ -469,9 +468,14 @@ class TunaIntelligence(VisionPreUntil):
                 LastTime = CurrentTime
 
             try:
-                frames_640: List[Optional[np.ndarray]] = self.YOLOQueue.get(timeout=0.1)
+                queued = self.YOLOQueue.get(timeout=0.1)
             except Exception:
                 continue
+            if isinstance(queued, tuple) and len(queued) == 2:
+                frames_640, source_sizes = queued
+            else:
+                frames_640 = queued
+                source_sizes = [None, None, None, None]
             if self._stop_event.is_set():
                 break
             self.InferTF += 1
@@ -525,11 +529,19 @@ class TunaIntelligence(VisionPreUntil):
                     if chassis_candidate is not None:
                         x1, y1, x2, y2 = chassis_candidate.xyxy
                         chassis_bbox_out[cam_i] = [cam_i, int(x1), int(y1), int(x2), int(y2), float(chassis_candidate.conf)]
-                        cx = int((x1 + x2) / 2)
-                        bottom_y = int(y2)
-                        w = int(x2 - x1)
-                        h = int(y2 - y1)
-                        chassis_out[cam_i] = [cam_i, cx, bottom_y, w, h, float(chassis_candidate.conf)]
+                        source_size = source_sizes[cam_i]
+                        if source_size is not None:
+                            rx1, ry1, rx2, ry2 = model_bbox_to_raw(chassis_candidate.xyxy, source_size)
+                            chassis_out[cam_i] = [
+                                cam_i,
+                                int(round((rx1 + rx2) / 2.0)),
+                                int(round(ry2)),
+                                max(0, int(round(rx2 - rx1))),
+                                max(0, int(round(ry2 - ry1))),
+                                float(chassis_candidate.conf),
+                                int(source_size[0]),
+                                int(source_size[1]),
+                            ]
 
                     # Choose ball
                     ball_candidate = next(
@@ -539,11 +551,14 @@ class TunaIntelligence(VisionPreUntil):
                     if ball_candidate is not None:
                         x1, y1, x2, y2 = ball_candidate.xyxy
                         ball_bbox_out[cam_i] = [cam_i, int(x1), int(y1), int(x2), int(y2), float(ball_candidate.conf)]
-                        ball_out[cam_i] = self._ball_queue_output_from_xyxy(
-                            cam_i,
-                            ball_candidate.xyxy,
-                            float(ball_candidate.conf),
-                        )
+                        source_size = source_sizes[cam_i]
+                        if source_size is not None:
+                            ball_out[cam_i] = self._ball_queue_output_from_xyxy(
+                                cam_i,
+                                ball_candidate.xyxy,
+                                float(ball_candidate.conf),
+                                source_size,
+                            )
 
                     # Choose goal (prefer the more confident between blue/yellow)
                     goal_candidate = next(
@@ -557,11 +572,20 @@ class TunaIntelligence(VisionPreUntil):
                     )
                     if goal_candidate is not None:
                         x1, y1, x2, y2 = goal_candidate.xyxy
-                        cx = int((x1 + x2) / 2)
-                        bottom_y = int(y2)
-                        w = int(x2 - x1)
-                        h = int(y2 - y1)
-                        goal_out[cam_i] = [cam_i, int(goal_candidate.cls), cx, bottom_y, w, h, float(goal_candidate.conf)]
+                        source_size = source_sizes[cam_i]
+                        if source_size is not None:
+                            rx1, ry1, rx2, ry2 = model_bbox_to_raw(goal_candidate.xyxy, source_size)
+                            goal_out[cam_i] = [
+                                cam_i,
+                                int(goal_candidate.cls),
+                                int(round((rx1 + rx2) / 2.0)),
+                                int(round(ry2)),
+                                max(0, int(round(rx2 - rx1))),
+                                max(0, int(round(ry2 - ry1))),
+                                float(goal_candidate.conf),
+                                int(source_size[0]),
+                                int(source_size[1]),
+                            ]
 
             # Queues are size=1, keep latest
             if self.ChassisQueue.full():

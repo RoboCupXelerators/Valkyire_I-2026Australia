@@ -37,6 +37,7 @@ cfg = Settings
 
 Bits = None
 lidar = None
+sensor = None
 chassis = None
 compass = None
 peripheral = None
@@ -52,9 +53,17 @@ _referee_state_provider = None
 _referee_serial_provider = None
 _runtime_initialized = False
 
-from .sensor import Lidar
+from .sensor import Lidar, Sensor, _resolve_source, coerce_pose
 from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
 from .motion.recording_chassis import RecordingCar
+
+
+def play_morse(message: str) -> None:
+    """Play an optional status message when the active backend supports it."""
+
+    callback = Morse
+    if callable(callback):
+        callback(message)
 
 
 def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None,
@@ -80,12 +89,18 @@ def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None,
 
 
 def get_field_pose():
-    """Return runtime-provided field pose [x_cm, y_cm, yaw_deg], or None."""
+    """Return the valid Bits pose as ``[x_cm, y_cm, yaw_deg]``, or ``None``."""
 
     if _field_pose_provider is None:
         return None
-    x, y, yaw = _field_pose_provider()
-    return [round(float(x), 2), round(float(y), 2), float(yaw)]
+    try:
+        pose = coerce_pose(_field_pose_provider())
+    except Exception:
+        return None
+    if pose is None:
+        return None
+    x_cm, y_cm, yaw_deg = pose
+    return [round(x_cm, 2), round(y_cm, 2), yaw_deg]
 
 
 def get_referee_status() -> bool:
@@ -185,7 +200,7 @@ def _start_bits_thread_monitor(bits_obj):
                     logger.warning("Bits background thread is dead, attempting restart...")
                     bits_obj.RestartThreadIfNeeded()
             except Exception as e:
-                logger.exception("Bits thread monitor error: %s", e)
+                    logger.exception(f"Bits thread monitor error: {e}")
             # 每 1 秒检查一次
             _bits_monitor_stop.wait(1.0)
     
@@ -218,12 +233,12 @@ def _stop_bits_thread_monitor():
 def shutdown_runtime() -> None:
     """Release runtime-owned resources so a simulator worker can restart cleanly."""
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
+    global Bits, lidar, sensor, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
     global _field_pose_provider, _velocity_provider, _referee_status_provider
     global _referee_state_provider, _referee_serial_provider, _runtime_initialized
 
     _stop_bits_thread_monitor()
-    for resource in (vision, lidar):
+    for resource in (vision, sensor):
         for method_name in ("Close", "close", "stop"):
             method = getattr(resource, method_name, None)
             if callable(method):
@@ -241,154 +256,153 @@ def shutdown_runtime() -> None:
                 pass
             break
 
-    Bits = lidar = chassis = compass = peripheral = key = Odometer = Morse = referee = vision = None
+    Bits = lidar = sensor = chassis = compass = peripheral = key = Odometer = Morse = referee = vision = None
     _field_pose_provider = _velocity_provider = _referee_status_provider = None
     _referee_state_provider = _referee_serial_provider = None
     _runtime_initialized = False
 
 
-def _init_runtime(*, auto_start_lidar: bool = True):
-    """初始化 Bits / chassis / peripheral / lidar 等全局对象。
+def _build_sim_backend(*, auto_start_lidar: bool) -> dict:
+    """Assemble the Unity adapter without mutating runtime globals."""
 
-    支持的硬件类型：
-    - SIM: Unity 仿真器 (XeleratorSimBits + XeleratorVision)
-    - AB: Arisu Bit (比赛机)
-    - IL: IceLoong Bit (比赛机)
+    from utils.XeleratorSimBits import create_bits_and_lidar
+    from vision_utils.XeleratorVision import XeleratorVision
+
+    bits, raw_lidar = create_bits_and_lidar(cfg)
+    return {
+        "Bits": bits,
+        "raw_lidar": raw_lidar,
+        "vision": XeleratorVision(bits),
+        "chassis": _make_chassis(bits.SetWheelSpeed, bits.GetYaw),
+        "compass": bits.GetYaw,
+        "peripheral": Peripherals(bits.VirtualPorts),
+        "key": Key(bits.GetKey),
+        "Odometer": None,
+        "Morse": None,
+        "referee": None,
+        "field_pose_provider": bits.GetPose,
+        "velocity_provider": bits.GetVelocity,
+        "referee_status_provider": bits.GetControlEnabled,
+    }
+
+
+def _build_iceloong_backend(*, auto_start_lidar: bool) -> dict:
+    """Assemble IceLoong hardware through the active Bits contract only."""
+
+    from utils.IceLoongBits import IceLoongBits
+
+    bits = IceLoongBits(port=getattr(cfg.Ports, "IceLoongPort", "/dev/iceloong"))
+    sensor_source = _resolve_source(None)
+    native_backend = sensor_source if sensor_source in {"ros2", "ld07"} else None
+    return {
+        "Bits": bits,
+        "raw_lidar": Lidar(
+            bits.GetYaw,
+            backend=native_backend,
+            # A Bits-only deployment has no native scan consumer to start.
+            auto_start=bool(auto_start_lidar and sensor_source != "bits"),
+        ),
+        "vision": None,
+        "chassis": _make_chassis(
+            bits.SetWheelSpeed,
+            bits.GetYaw,
+            permission=bits.GetRefereeUnlockPin,
+        ),
+        "compass": bits.GetYaw,
+        "peripheral": Peripherals(bits.VirtualPorts, bits.GetRefereeUnlockPin),
+        "key": None,
+        "Odometer": None,
+        "Morse": bits.MorsePlay,
+        "referee": bits.GetRefereeUnlockPin,
+        "field_pose_provider": bits.GetPose,
+        "velocity_provider": getattr(bits, "GetVelocity", None),
+        "referee_status_provider": bits.GetRefereeUnlockPin,
+    }
+
+
+_BACKEND_FACTORIES = {
+    "SIM": _build_sim_backend,
+    "IL": _build_iceloong_backend,
+}
+
+
+def _selected_backend_name() -> str:
+    """Return the requested active backend after honoring the env override."""
+
+    override = os.environ.get("ROBOCUPX_BITS", "").strip().upper()
+    if override:
+        return override
+    return str(getattr(cfg.RoboInfo, "Bit", "")).strip().upper()
+
+
+def _resolve_runtime_sensor_source(backend_name: str) -> str:
+    """Select a sensor source that matches the active transport backend.
+
+    The simulator derives wall distances from the fresh Unity pose packet; it
+    must not inherit a stale hardware-only ``Sensor.Source=ros2`` setting from
+    a robot configuration copied onto a development machine.  An explicit
+    ``XEL_SIM_SENSOR_SOURCE`` remains available for specialized experiments.
     """
 
-    global Bits, lidar, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
+    if backend_name == "SIM":
+        override = os.environ.get("XEL_SIM_SENSOR_SOURCE", "").strip()
+        if override:
+            return _resolve_source(override)
+        return "bits"
+    return _resolve_source(None)
+
+
+def _init_runtime(*, auto_start_lidar: bool = True):
+    """Initialize the selected SIM or IceLoong runtime and semantic sensor."""
+
+    global Bits, lidar, sensor, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
     global _field_pose_provider, _velocity_provider, _referee_status_provider, _runtime_initialized
 
     if _runtime_initialized:
         return
 
+    backend_name = _selected_backend_name()
+    factory = _BACKEND_FACTORIES.get(backend_name)
+    if factory is None:
+        supported = ", ".join(_BACKEND_FACTORIES)
+        raise RuntimeError(f"Unknown Bits model: {backend_name!r}. Supported: {supported}")
+
     try:
-        # Simulator runtime: UDP bridge to Unity (SoccerSimulatorForXels)
-        # Enable via config: Settings.RoboInfo.Bit == "SIM"
-        # Or env override: ROBOCUPX_BITS=SIM
-        bits_override = os.environ.get("ROBOCUPX_BITS", "").strip().upper()
-        if bits_override:
-            try:
-                cfg.RoboInfo.Bit = bits_override
-            except Exception:
-                pass
-
-        if str(cfg.RoboInfo.Bit).upper() == "SIM":
-            from utils.XeleratorSimBits import create_bits_and_lidar
-            from vision_utils.XeleratorVision import XeleratorVision
-
-            Bits, lidar = create_bits_and_lidar(cfg)
-            vision = XeleratorVision(Bits)
-            chassis = _make_chassis(Bits.SetWheelSpeed, Bits.GetYaw)
-            compass = Bits.GetYaw
-            peripheral = Peripherals(Bits.VirtualPorts)
-            key = Key(Bits.GetKey)
-            Odometer = None
-            referee = None
-            Morse = None
-            _field_pose_provider = Bits.GetPose
-            _velocity_provider = Bits.GetVelocity
-            _referee_status_provider = Bits.GetControlEnabled
-            _configure_referee_provider()
-            logger.info(
-                f"Simulator Bits loaded: unity={Bits.unity_ip}:{Bits.cmd_port}, "
-                f"status_port={Bits.status_port}, robot_id={Bits.robot_id}"
-            )
-            _runtime_initialized = True
-            return
-
-        if cfg.RoboInfo.Bit == "AB":
-            logger.error("Initializing Arisu Bit... Nice to See You Again, Arisu!")
-            from utils.ArisuBits import ArisBit
-
-            Bits = ArisBit()
-            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            chassis = _make_chassis(
-                Bits.SetMotor,
-                Bits.GetYaw,
-                motor_encoder=Bits.get_motor_encoder,
-            )
-            compass = Bits.GetYaw
-            peripheral = Peripherals(Bits.SetIO)
-            key = Key(Bits.GetKey)
-            Odometer = None
-            referee = None
-            Morse = None
-            _field_pose_provider = getattr(Bits, "GetPose", None)
-            _velocity_provider = getattr(Bits, "GetVelocity", None)
-            _referee_status_provider = lambda: bool(getattr(Bits, "referee_key", False))
-            _configure_referee_provider()
-            logger.info("Arisu Bit loaded.")
-            _runtime_initialized = True
-            return
-
-        if cfg.RoboInfo.Bit == "IL":
-            from utils.IceLoongBits import IceLoongBits
-
-            Bits = IceLoongBits(port=getattr(cfg.Ports, "IceLoongPort", "/dev/iceloong"))
-            lidar = Lidar(Bits.GetYaw, auto_start=auto_start_lidar)
-            peripheral = Peripherals(Bits.VirtualPorts, Bits.GetRefereeUnlockPin)  # TODO
-            chassis = _make_chassis(
-                Bits.SetWheelSpeed,
-                Bits.GetYaw,
-                permission=Bits.GetRefereeUnlockPin,
-            )
-            compass = Bits.GetYaw
-            key = Bits.GetKey
-            referee = Bits.GetRefereeUnlockPin
-            Morse = Bits.MosePrint
-            Odometer = None  # TODO add odometer support
-            _field_pose_provider = getattr(Bits, "GetPose", None)
-            _velocity_provider = getattr(Bits, "GetVelocity", None)
-            _referee_status_provider = Bits.GetRefereeUnlockPin
-            _configure_referee_provider()
-            
-            # 启动后台线程监控器，确保 IceLoongBits 命令线程崩溃后能自动重启
+        assembly = factory(auto_start_lidar=auto_start_lidar)
+        Bits = assembly["Bits"]
+        chassis = assembly["chassis"]
+        compass = assembly["compass"]
+        peripheral = assembly["peripheral"]
+        key = assembly["key"]
+        Odometer = assembly["Odometer"]
+        Morse = assembly["Morse"]
+        referee = assembly["referee"]
+        vision = assembly["vision"]
+        bits_pose_provider = assembly["field_pose_provider"]
+        _velocity_provider = assembly["velocity_provider"]
+        _referee_status_provider = assembly["referee_status_provider"]
+        sensor = Sensor(
+            pose_provider=bits_pose_provider,
+            yaw_provider=compass,
+            lidar=assembly["raw_lidar"],
+            source=_resolve_runtime_sensor_source(backend_name),
+            bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260.0)),
+            bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200.0)),
+        )
+        _field_pose_provider = sensor.GetPose
+        # ``lidar`` stays as a compatibility global, but is now the semantic
+        # Sensor facade instead of a second localization owner.
+        lidar = sensor
+        _configure_referee_provider()
+        if backend_name == "IL":
             _start_bits_thread_monitor(Bits)
-            
-            logger.info("IceLoongBits Bit loaded.")
-            _runtime_initialized = True
-            return
-
-        if str(cfg.RoboInfo.Bit).upper() == "DM2325":
-            from utils.DM2325Bits import DM2325Bits
-
-            Bits = DM2325Bits(port=cfg.Ports.DM2325Port)
-            Bits.HandShake()
-            chassis = _make_chassis(
-                None, Bits.GetYaw,
-                set_chassis_twist=Bits.SetChassisTwist,
-                get_chassis_telemetry=Bits.GetChassisTelemetry,
-                shutdown=Bits.shutdown,
-                stop=Bits.stop,
-                disable=Bits.disable,
-                emergency_stop=Bits.emergency_stop,
-                is_imu_healthy=Bits.IsIMUHealthy,
-                get_imu_state=Bits.GetIMUState,
-            )
-            compass = Bits.GetYaw
-            # Lidar runs in a background thread. It may read the last fresh
-            # snapshot, but must never become a second CDC RX owner.
-            lidar = Lidar(Bits.GetCachedYaw, auto_start=auto_start_lidar)
-            peripheral = None
-            key = None
-            Odometer = None
-            referee = None
-            Morse = None
-            _field_pose_provider = None
-            _velocity_provider = None
-            _referee_status_provider = None
-            _configure_referee_provider()
-            logger.info("DM2325 chassis backend loaded; explicit Arm is required before motion.")
-            _runtime_initialized = True
-            return
-
-        raise ImportError(f"Unknown Bits model: {cfg.RoboInfo.Bit}. Supported: SIM, AB, IL, DM2325")
-
+        _runtime_initialized = True
+        logger.info(f"LunaPre runtime loaded: backend={backend_name} sensor_source={sensor.Source}")
     except Exception as e:
+        shutdown_runtime()
         logger.error(f"Failed to init runtime: {e}")
         raise RuntimeError(
-            f"Runtime initialization failed. Ensure config.RoboInfo.Bit is set correctly (SIM/AB/IL/DM2325). Error: {e}"
+            f"Runtime initialization failed for Bits={backend_name!r}. Supported: SIM, IL. Error: {e}"
         ) from e
 
 

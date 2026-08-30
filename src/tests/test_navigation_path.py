@@ -7,6 +7,7 @@ import pytest
 
 from LunaPre import UnitedPosition, runtime
 from ReasonData import Settings
+from LunaPre.positions import POS2POS_MIN_SPEED_MPS
 from LunaPre.strategy_tools import angle_error_deg
 
 
@@ -95,6 +96,31 @@ def test_pos2pos_relay_progresses_to_final_target(monkeypatch):
     assert UnitedPosition.Position_X_PID.setpoint == 80.0
     assert UnitedPosition.Position_Y_PID.setpoint == -54.0
     assert [item[0] for item in commands] == ["move", "move", "move"]
+
+
+def test_restricted_area_does_not_stop_inside_arrival_slop(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def stop(self):
+            commands.append(("stop",))
+
+        def FieldMoveVector(self, x, y, yaw):
+            commands.append(("move", x, y, yaw))
+
+        def FieldTurn(self, yaw):
+            commands.append(("turn", yaw))
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [87.0, 0.0, 0.0])
+
+    # With the standard fixture, x=87.0 projects to x=84.0.  The 3 cm
+    # difference is smaller than Pos2Pos's 5 cm arrival window, but the start
+    # pose is still restricted and must receive an escape command above the
+    # simulator's planar deadzone.
+    assert UnitedPosition.RestrictedArea() is False
+    assert commands and commands[0][0] == "move"
+    assert (commands[0][1] ** 2 + commands[0][2] ** 2) ** 0.5 >= POS2POS_MIN_SPEED_MPS
 
 
 def test_recovery_from_outside_boundary_uses_far_edge_route():

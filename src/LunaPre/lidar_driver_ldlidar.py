@@ -184,11 +184,7 @@ class LDLidarDriver:
         while not self._stop_event.is_set():
             lidar_serial = None
             try:
-                LOGGER.info(
-                    "Opening LD06 port=%s baudrate=%s (8N1)",
-                    self.port,
-                    self.baudrate,
-                )
+                LOGGER.info(f"Opening LD06 port={self.port} baudrate={self.baudrate} (8N1)")
                 lidar_serial = serial.Serial(
                     self.port,
                     baudrate=self.baudrate,
@@ -227,7 +223,7 @@ class LDLidarDriver:
                             previous_angle = angle
             except (serial.SerialException, OSError) as error:
                 if not self._stop_event.is_set():
-                    LOGGER.warning("LD06 serial error: %s; reconnecting", error)
+                    LOGGER.warning(f"LD06 serial error: {error}; reconnecting")
             except Exception:
                 if not self._stop_event.is_set():
                     LOGGER.exception("LD06 driver error; reconnecting")

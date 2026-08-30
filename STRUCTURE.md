@@ -1,15 +1,15 @@
 # Software 目录结构
 
-这份文件只记录当前仍然推荐阅读和维护的结构。更细的调用关系请看
-`docs/codegraph_view.html`。
+这份文件只记录当前仍然推荐阅读和维护的结构。
 
 ## 顶层目录
 
 ```text
 Software/
 ├── src/                    # 机器人运行代码、策略、视觉、数据和测试
-├── docs/                   # 当前维护文档与 codegraph
-├── scripts/                # 可重复运行的部署、调试、模型和图生成脚本
+├── docs/                   # 当前维护文档
+├── scripts/                # 可重复运行的部署、调试、模型脚本
+├── legacy/                 # 已归档的硬件实现、现场脚本和历史证据
 ├── web/control_panel/      # control_panel.py 使用的前端资源
 ├── Tools/                  # 历史标定数据、归档说明和许可
 ├── Calibration_2605/       # 标定数据
@@ -28,9 +28,6 @@ Software/
 # 跑当前保留的自动化测试
 ../venv/bin/python3 -m pytest
 
-# 生成代码关系图
-python3 scripts/build_codegraph_view.py
-
 # 启动控制面板
 python3 src/control_panel.py
 ```
@@ -43,8 +40,6 @@ src/
 ├── Hyperion.py             # Hyperion 策略入口
 ├── offence.py              # 进攻策略
 ├── defence.py              # 防守策略
-├── alpha.py                # Alpha 策略
-├── lambda_strategy.py      # Lambda 策略
 ├── control_panel.py        # Web 控制面板后端
 ├── STRATEGY_CODE_STYLE.md  # 当前策略代码风格说明
 ├── LunaPre/                # 运行时 facade、定位、传感器、底盘抽象
@@ -64,7 +59,6 @@ src/LunaPre/
 ├── positions.py            # 语义位置、球、路径和 Pos2Pos API
 ├── position_recorder.py    # Positions 记录包装
 ├── sensor.py               # Lidar facade
-├── lidar_driver_rplidar.py # 直接 RPLidar 驱动
 ├── lidar_driver_ros2.py    # ROS2 /scan 驱动
 ├── strategy_tools.py       # 策略复用工具
 └── motion/
@@ -76,11 +70,10 @@ src/LunaPre/
 
 边界约定：
 
-- `runtime.py` 负责选择 `ArisuBits` / `IceLoongBits` / `XeleratorSimBits`。
-- `runtime.py` 也负责装配 `DM2325Bits`；具体串口驱动不进入策略层。
+- `runtime.py` 负责选择 `IceLoongBits` / `XeleratorSimBits`。
 - `chassis.py` 不直接导入具体 Bits，只接收 runtime 注入的 callable。
 - `positions.py` 消费 runtime 提供的语义接口，不直接碰具体 Bits。
-- `sensor.py` 只负责 lidar facade 和 lidar driver 选择，不消费 vision。
+- `sensor.py` 只负责 Sensor.Source（`auto` / `bits` / `ros2` / `ld07`）和数据源选择，不消费 vision。
 
 ### vision_utils/
 
@@ -117,8 +110,6 @@ src/tests/
 
 ```text
 docs/
-├── codegraph_view.html     # 代码关系可视化
-├── DM2325_ARCHITECTURE.md  # DM2325 历史、仓库职责和迁移边界
 ├── interface_semantics.md  # 坐标、哨兵值、语义接口约定
 ├── MULTI_ROBOT_SCRIMMAGE.md
 ├── OTA_GUIDE.md
@@ -128,11 +119,16 @@ docs/
 
 已过期的流水账、草稿报告、一次性提示词和临时脚本不再放在 `docs/`。
 
+## legacy/
+
+`legacy/` 不属于活动运行时、默认依赖或 pytest 测试范围。它保留已归档的
+ArisuBits、DM2325 和直连 RPLidar 实现、现场脚本、测试及硬件记录，供历史
+排查而非新部署使用。
+
 ## scripts/
 
 ```text
 scripts/
-├── build_codegraph_view.py
 ├── fetch_packages.py
 ├── setup_env_auto.sh
 ├── setup_venv_jetson_orin_nano.sh

@@ -30,6 +30,6 @@ def test_tuna_intelligence_exposes_control_panel_goal_compat_methods():
 
 
 def test_tuna_ball_queue_output_keeps_small_far_ball_dimensions():
-    out = TunaIntelligence._ball_queue_output_from_xyxy(2, (100, 200, 120, 220), 0.7)
+    out = TunaIntelligence._ball_queue_output_from_xyxy(2, (100, 200, 120, 220), 0.7, (640, 480))
 
-    assert out == [2, 110, 140, 20, 20, 0.7]
+    assert out == [2, 110, 140, 20, 20, 0.7, 640, 480]

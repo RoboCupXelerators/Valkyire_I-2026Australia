@@ -1,4 +1,4 @@
-"""Legacy ROS2 lidar scan driver."""
+"""ROS2 lidar scan driver."""
 
 from __future__ import annotations
 
@@ -131,9 +131,9 @@ except ModuleNotFoundError:
 
 def _lidar_type_from_settings() -> str:
     try:
-        return str(Preference().read("RoboInfo", "LidarType")).lower()
+        return str(Preference().read("Sensor", "Ros2Model")).lower()
     except Exception:
-        return str(getattr(Settings.RoboInfo, "LidarType", "s2")).lower()
+        return str(getattr(Settings.Sensor, "Ros2Model", "s3")).lower()
 
 
 def _setting_value(section: str, key: str, default=None):
@@ -166,7 +166,7 @@ def _setting_bool(section: str, key: str, default: bool = False) -> bool:
 
 
 def _lidar_inverted_from_settings() -> bool:
-    return _setting_bool("RoboInfo", "LidarInverted", False)
+    return _setting_bool("Sensor", "Inverted", False)
 
 
 def _lidar_serial_port_from_settings(default: str = "/dev/sllidar") -> str:

@@ -43,17 +43,20 @@ class Preference:
         "RoboInfo": {
             "number": 1,
             "type": "OP",           # OP(OffencePlayer) / DP(DefencePlayer)
-            "Bit": "SIM",           # SIM / AB / IL / DM2325
+            "Bit": "SIM",           # SIM / IL
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
-            "LidarBackend": "ros2", # rplidar / ros2 / ldlidar (LD06)
-            "LidarType": "s3",    # s1 / s2 / s3 / ld06 / ld07
-            "LidarInverted": False, # 雷达倒置安装时启用
+        },
+        "Sensor": {
+            # Pose and wall-distance source: auto / bits / ros2 / ld07.
+            "Source": "auto",
+            # SLLidar model used when ROS2 owns /scan.
+            "Ros2Model": "s3",
+            "Inverted": False,
         },
         "Ports": {
             "LidarID": random.randrange(1, 99),
             "LidarPort": "/dev/sllidar",
             "IceLoongPort": "/dev/iceloong",
-            "DM2325Port": "/dev/ttyACM0",
             "ElecMagnet": 3,
             "Dribble": 4,
             "LeftFront": 1,
@@ -71,10 +74,10 @@ class Preference:
             "ModelName": "ArisuModel_v1.2s",
             # 标定文件夹
             "CalibrationFolder": "Calibration",
-            # 目标物理尺寸 (cm) - 用于bbox距离估计
+            # Target dimensions (cm) for operator-facing object semantics.
             "BallDiameter": 4.2,
             "ChassisWidth": 18.0,
-            "ChassisHeight": 18.0,
+            "ChassisHeight": 5.0,
             "GoalWidth": 90.0,
             "GoalHeight": 18.0,
             "MinBallBBoxArea": 40,
@@ -122,12 +125,13 @@ class Preference:
                 "RearAngularMaxDegS": 120.0,
                 "LostHoldSeconds": 0.18,
                 "NearCreepMaxMps": 0.14,
-                "BallJumpRejectCm": 45.0
+                "BallJumpRejectCm": 45.0,
+                "BallJumpConfirmFrames": 2
             },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
-                "XLimit": 100.0,
-                "YLimit": 70.0,
+                "XLimit": 110.0,
+                "YLimit": 80.0,
                 "GoalBoxWidth": 25.0,
                 "GoalBoxYHalf": 40.0,
                 "GoalBoxCornerRadius": 20.0,
@@ -163,6 +167,60 @@ class Preference:
         # 检查是否需要迁移旧配置
         if self._needs_migration():
             self._migrate_config()
+        self._validate_active_config(self.cfg)
+
+    @staticmethod
+    def _active_bit(value) -> str:
+        return str(value or "").strip().upper()
+
+    def _validate_active_config(self, config: dict) -> None:
+        bit = self._active_bit(config.get("RoboInfo", {}).get("Bit"))
+        if bit not in {"SIM", "IL"}:
+            raise ValueError(
+                "Unsupported RoboInfo.Bit=%r. Active Bits are SIM and IL; "
+                "AB/ArisuBits and DM2325 are archived under legacy/. "
+                "Select SIM or IL before starting LunaPre." % bit
+            )
+
+        source = str(config.get("Sensor", {}).get("Source", "")).strip().lower()
+        if source not in {"auto", "bits", "ros2", "ld07"}:
+            raise ValueError(
+                "Unsupported Sensor.Source=%r. Supported values are auto, bits, ros2, and ld07."
+                % source
+            )
+
+    @staticmethod
+    def _migrate_sensor_config(old_cfg: dict) -> dict | None:
+        old_robot = old_cfg.get("RoboInfo", {})
+        if not isinstance(old_robot, dict) or "LidarBackend" not in old_robot:
+            return None
+
+        backend = str(old_robot.get("LidarBackend", "")).strip().lower()
+        lidar_type = str(old_robot.get("LidarType", "")).strip().lower()
+        inverted = old_robot.get("LidarInverted", False)
+
+        if backend == "ros2":
+            return {
+                "Source": "ros2",
+                "Ros2Model": lidar_type or "s3",
+                "Inverted": inverted,
+            }
+        if backend in {"ldlidar", "ld07"} and lidar_type == "ld07":
+            return {"Source": "ld07", "Inverted": inverted}
+        if backend in {"rplidar", "direct"}:
+            raise ValueError(
+                "Direct RPLidar is no longer supported. Configure Sensor.Source=ros2 "
+                "for an existing ROS2 /scan producer, or Sensor.Source=ld07 for LD07."
+            )
+        if backend in {"ldlidar", "ld07"}:
+            raise ValueError(
+                "Legacy LidarType=%r cannot migrate to Sensor.Source. Only LD07 is active; "
+                "choose ros2, ld07, bits, or auto explicitly." % lidar_type
+            )
+        raise ValueError(
+            "Unsupported legacy RoboInfo.LidarBackend=%r. Configure Sensor.Source as "
+            "auto, bits, ros2, or ld07 explicitly." % backend
+        )
 
     def _create_default_config(self):
         try:
@@ -193,14 +251,16 @@ class Preference:
 
     def _migrate_config(self):
         """迁移旧配置到新格式"""
+        # Validate and derive any legacy lidar mapping before moving the source
+        # config file, so an unsupported backend remains intact for manual repair.
+        with open(CONFIG_FILE, "r") as f:
+            old_cfg = _json.load(f)
+        legacy_sensor = self._migrate_sensor_config(old_cfg)
+
         # 备份旧配置
         if os.path.exists(CACHE_FILE):
             os.remove(CACHE_FILE)
         os.rename(CONFIG_FILE, CACHE_FILE)
-
-        # 读取旧配置
-        with open(CACHE_FILE, "r") as f:
-            old_cfg = _json.load(f)
 
         # 创建新配置，先保留现有新格式值，再兼容旧字段映射。
         new_cfg = _json.loads(_json.dumps(self.DEFAULT_CONFIG))
@@ -215,6 +275,8 @@ class Preference:
                     dst[key] = value
 
         merge_existing(new_cfg, old_cfg)
+        if legacy_sensor:
+            new_cfg["Sensor"].update(legacy_sensor)
         
         # 迁移映射表
         migrations = {
@@ -271,6 +333,8 @@ class Preference:
             new_cfg["Vision"]["CamPorts"] = unique_ports
         except Exception:
             pass
+
+        self._validate_active_config(new_cfg)
 
         # 写入新配置
         with open(CONFIG_FILE, "w") as f:
@@ -345,7 +409,7 @@ class _CompatVisionVals:
     @property
     def YellowGoalHeightCM(self): return self._s.Vision.GoalHeight
     @property
-    def EnableBBoxDistanceEstimate(self): return True
+    def EnableBBoxDistanceEstimate(self): return False
     @property
     def Record(self): return self._s.Vision.Record
     @property
@@ -474,7 +538,7 @@ class _CompatSim:
     @property
     def YawZeroAtStart(self): return self._get("YawZeroAtStart", False)
     @property
-    def KickStrength(self): return self._get("KickStrength", 1.0)
+    def KickStrength(self): return self._get("KickStrength", 4.0)
     @property
     def DribbleStrengthScale(self): return self._get("DribbleStrengthScale", self._get("DribbleScale", 3.0))
     @property

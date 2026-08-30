@@ -1,15 +1,6 @@
-# IceLoongBits.py
-#
-# TODO lower-controller compatibility:
-# - Keep this legacy class stable for existing robots and demos.
-# - New lower-controller protocol work should fork/create a new Bits component
-#   that follows the new standard, rather than expanding this legacy wire format.
-# - The new standard should expose GetPose() for fused localization [x, y, yaw].
-# - Pos2Pos remains an upper-controller closed-loop behavior for now.
-# - Existing Commands / CommandLine payloads in this file should stay unchanged.
-
 import logging
-from typing import Optional, List, Tuple
+import math
+from typing import Optional, List
 from enum import IntEnum
 import struct
 import time
@@ -25,32 +16,39 @@ except Exception:  # pragma: no cover - import error handled at runtime
 
 class Commands(IntEnum):
     HAND_SHAKE             = 0x01
-    GET_BMI088_DATA        = 0x02
-    SET_WHEELS_SPEED       = 0x03
-    KICK                   = 0x04
-    SET_DRIBBLE_SPEED      = 0x05
-    GET_REFEREE_UNLOCK_PIN = 0x06
-    GET_RUN_KEY_DELTA      = 0x07
+    SET_ROOM_SIZE          = 0x02
+    GET_POSE               = 0x03
+    SET_WHEELS_SPEED       = 0x04
+    KICK                   = 0x05
+    SET_DRIBBLE_SPEED      = 0x06
+    GET_REFEREE_UNLOCK_PIN = 0x07
     MORSE_PLAY             = 0x08
 
 
 COMMAND_RESPONSE_LENGTHS = {
-    Commands.HAND_SHAKE:             1, 
-    Commands.GET_BMI088_DATA:        1 + 3 * 4, 
-    Commands.SET_WHEELS_SPEED:       1, 
-    Commands.KICK:                   1, 
-    Commands.SET_DRIBBLE_SPEED:      1, 
-    Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1, 
-    Commands.GET_RUN_KEY_DELTA:      1 + 1, 
-    Commands.MORSE_PLAY:             1
+    Commands.HAND_SHAKE:             1,
+    Commands.SET_ROOM_SIZE:          1,
+    Commands.GET_POSE:               1 + 6 * 4,
+    Commands.SET_WHEELS_SPEED:       1,
+    Commands.KICK:                   1,
+    Commands.SET_DRIBBLE_SPEED:      1,
+    Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1,
+    Commands.MORSE_PLAY:             1,
 }
 
 MAX_DRIBBLE_INPUT = 1.0
-MAX_DRIBBLE_SPEED = 0.5
+MIN_KICK_POWER_LEVEL = 1
+MAX_KICK_POWER_LEVEL = 4
+DEFAULT_KICK_POWER_LEVEL = 4
+KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
+ROOM_SIZE_ERROR = (
+    "room size must be positive finite millimetres in horizontal, vertical order"
+)
+MM_PER_CM = 10.0
 
 
 class IceLoongBits:
-    """串口通信封装类，用于与 F407（STM32）类设备交互。
+    """串口通信封装类，用于与运动控制器交互。
     方法命名使用大驼峰（PascalCase）。
     
     支持串口异常自动恢复：
@@ -74,18 +72,20 @@ class IceLoongBits:
 
         self.CommandLine = {
             'HAND_SHAKE': True,
-            'GET_BMI088_DATA': True,
-            'GET_RUN_KEY_DELTA': True,
+            'GET_POSE': True,
             'SET_WHEELS_SPEED': (0,0,0,0),
-            'SET_DRIBBLE_SPEED': [0,0],
-            'KICK': False,
+            'SET_DRIBBLE_SPEED': 0.0,
             'GET_REFEREE_UNLOCK_PIN': True,
             'MORSE_PLAY': None
         }
 
         self.yaw = 0.0
-        self.key = False
+        self.pitch = 0.0
+        self.roll = 0.0
+        self.position_mm = None
+        self.pose = None
         self.referee_key = False
+        self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例）
         self.ser = None
@@ -101,8 +101,8 @@ class IceLoongBits:
         if not self.logger.handlers:
             self.logger.addHandler(logging.NullHandler())
 
+        self._stop_thread = threading.Event()
         if not testing:
-            self._stop_thread = threading.Event()
             self.SendUnitedCommandThread = threading.Thread(
                 target=self._SendUnitedCommandLoop, 
                 daemon=True,
@@ -120,13 +120,13 @@ class IceLoongBits:
             except SerialException as e:
                 self._consecutive_errors += 1
                 self.logger.warning(
-                    "Serial I/O error in command loop (attempt %d/%d): %s", 
-                    self._consecutive_errors, self._max_consecutive_errors, e
+                    f"Serial I/O error in command loop (attempt {self._consecutive_errors}/"
+                    f"{self._max_consecutive_errors}): {e}"
                 )
                 # 尝试串口重连
                 self._HandleSerialError(e)
             except Exception as e:
-                self.logger.exception("IceLoongBits command loop failed: %s", e)
+                self.logger.exception(f"IceLoongBits command loop failed: {e}")
             time.sleep(0.02)
 
     def _HandleSerialError(self, error: Exception) -> bool:
@@ -139,7 +139,7 @@ class IceLoongBits:
             bool: 重连是否成功
         """
         with self._reconnect_lock:
-            self.logger.info("Attempting serial reconnection due to error: %s", error)
+            self.logger.info(f"Attempting serial reconnection due to error: {error}")
             
             # 先关闭现有连接
             self._ForceClosePort()
@@ -149,10 +149,10 @@ class IceLoongBits:
             
             try:
                 self.OpenPort()
-                self.logger.info("Serial port reconnected successfully: %s", self.port)
+                self.logger.info(f"Serial port reconnected successfully: {self.port}")
                 return True
             except Exception as e:
-                self.logger.error("Failed to reconnect serial port: %s", e)
+                self.logger.error(f"Failed to reconnect serial port: {e}")
                 return False
 
     def _ForceClosePort(self) -> None:
@@ -209,15 +209,12 @@ class IceLoongBits:
         with self._command_lock:
             snapshot = {
                 "HAND_SHAKE": self.CommandLine["HAND_SHAKE"],
-                "GET_BMI088_DATA": self.CommandLine["GET_BMI088_DATA"],
-                "GET_RUN_KEY_DELTA": self.CommandLine["GET_RUN_KEY_DELTA"],
+                "GET_POSE": self.CommandLine["GET_POSE"],
                 "GET_REFEREE_UNLOCK_PIN": self.CommandLine["GET_REFEREE_UNLOCK_PIN"],
                 "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
-                "SET_DRIBBLE_SPEED": tuple(self.CommandLine["SET_DRIBBLE_SPEED"]),
-                "KICK": self.CommandLine["KICK"],
+                "SET_DRIBBLE_SPEED": self.CommandLine["SET_DRIBBLE_SPEED"],
                 "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
             }
-            self.CommandLine["KICK"] = False
             self.CommandLine["MORSE_PLAY"] = None
         return snapshot
 
@@ -227,8 +224,8 @@ class IceLoongBits:
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
         self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
 
-        Dribble1, Dribble2 = snapshot["SET_DRIBBLE_SPEED"]
-        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+        Dribble = snapshot["SET_DRIBBLE_SPEED"]
+        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble)])
 
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
@@ -236,12 +233,8 @@ class IceLoongBits:
         _CommandList = []
         if snapshot["HAND_SHAKE"]:
             _CommandList.append((Commands.HAND_SHAKE,))
-        if snapshot["GET_BMI088_DATA"]:
-            _CommandList.append((Commands.GET_BMI088_DATA,))
-        if snapshot["KICK"]:
-            _CommandList.append((Commands.KICK,))
-        if snapshot["GET_RUN_KEY_DELTA"]:
-            _CommandList.append((Commands.GET_RUN_KEY_DELTA,))
+        if snapshot["GET_POSE"]:
+            _CommandList.append((Commands.GET_POSE,))
         if snapshot["GET_REFEREE_UNLOCK_PIN"]:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
 
@@ -255,9 +248,21 @@ class IceLoongBits:
                     continue
                 case Commands.HAND_SHAKE:
                     pass
-                case Commands.GET_BMI088_DATA:
-                    _, yaw, pitch, roll = i
+                case Commands.SET_ROOM_SIZE:
+                    pass
+                case Commands.GET_POSE:
+                    _, yaw, pitch, roll, x_mm, y_mm, z_mm = i
                     self.yaw = yaw % 360
+                    self.pitch = pitch
+                    self.roll = roll
+                    if all(math.isfinite(value) for value in (x_mm, y_mm, z_mm)):
+                        self.position_mm = (x_mm, y_mm, z_mm)
+                    else:
+                        self.position_mm = None
+                    if self.position_mm is not None and math.isfinite(yaw):
+                        self.pose = (x_mm / MM_PER_CM, y_mm / MM_PER_CM, self.yaw)
+                    else:
+                        self.pose = None
                 case Commands.SET_WHEELS_SPEED:
                     pass
                 case Commands.KICK:
@@ -268,16 +273,7 @@ class IceLoongBits:
                     pass
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     _, referee_key = i
-                    if referee_key == 1:
-                        self.referee_key = True
-                    else:
-                        pass
-                case Commands.GET_RUN_KEY_DELTA:
-                    _, key = i
-                    if key == 1:
-                        self.key = True
-                    else:
-                        pass
+                    self.referee_key = bool(referee_key)
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -295,7 +291,7 @@ class IceLoongBits:
             except Exception as e:
                 import subprocess
                 a = subprocess.run(['sudo fuser -k /dev/iceloong'], shell=True, capture_output=True, text=True)
-                self.logger.exception("关闭串口失败: %s", a.returncode)
+                self.logger.exception(f"关闭串口失败: {a.returncode}")
             finally:
                 self.ser = None
 
@@ -310,7 +306,7 @@ class IceLoongBits:
         return bytes(buf)
 
     def SendHex(self, data: bytes, read_response: bool = False, response_length: int = 0, response_timeout: Optional[float] = None) -> bytes:
-        """发送原始字节命令到 F407。
+        """发送原始字节命令到运动控制器。
 
         Args:
             data: 需要发送的原始字节数据。
@@ -377,14 +373,14 @@ class IceLoongBits:
     def __exit__(self, exc_type, exc, tb):
         self.ClosePort()
 
-    def ExecuteCommands(self, commands: List[tuple]) -> tuple:
+    def ExecuteCommands(self, commands: List[tuple]) -> list[tuple]:
         """执行单条或多条命令
         
         Args:
             commands: 命令列表
             
         Returns:
-            tuple: 响应数据列表，失败时返回空列表
+            list[tuple]: 响应数据列表，失败时返回空列表
             
         Note:
             此方法会捕获串口异常并尝试重连，不会向调用者抛出异常。
@@ -398,26 +394,34 @@ class IceLoongBits:
             match cmd[0]:
                 case Commands.HAND_SHAKE:
                     tx_bytes += bytes([cmd[0]])
-                case Commands.GET_BMI088_DATA:
+                case Commands.SET_ROOM_SIZE:
+                    if len(cmd) != 3:
+                        raise ValueError(ROOM_SIZE_ERROR)
+                    horizontal_mm = self._ValidateRoomDimensionMm(cmd[1])
+                    vertical_mm = self._ValidateRoomDimensionMm(cmd[2])
+                    # Wire order is fixed: horizontal first, vertical second.
+                    tx_bytes += bytes([cmd[0]]) + struct.pack(
+                        '<ff', horizontal_mm, vertical_mm
+                    )
+                case Commands.GET_POSE:
                     tx_bytes += bytes([cmd[0]])
                 case Commands.SET_WHEELS_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack('<ffff', cmd[1], cmd[2], cmd[3], cmd[4])
                 case Commands.KICK:
-                    tx_bytes += bytes([cmd[0]])
+                    if len(cmd) != 2:
+                        raise ValueError(KICK_POWER_LEVEL_ERROR)
+                    tx_bytes += bytes([cmd[0], self._ValidateKickPowerLevel(cmd[1])])
                 case Commands.SET_DRIBBLE_SPEED:
                     tx_bytes += bytes([cmd[0]]) + struct.pack(
-                        '<ff',
-                        self._MapDribbleSpeed(cmd[1]),
-                        self._MapDribbleSpeed(cmd[2]),
+                        '<f', self._NormalizeDribbleInput(cmd[1])
                     )
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
-                case Commands.GET_RUN_KEY_DELTA:
-                    tx_bytes += bytes([cmd[0]])
                 case Commands.MORSE_PLAY:
                     msg = str(cmd[1]) if len(cmd) > 1 else ""
-                    raw = msg.encode('utf-8')[:23]
-                    raw += b'\x00'
+                    raw = msg.encode('ascii', errors='replace')[:23]
+                    if len(raw) < 23:
+                        raw += b'\x00'
                     length = len(raw)
                     tx_bytes += bytes([cmd[0], length]) + raw
                 case _:
@@ -432,11 +436,11 @@ class IceLoongBits:
         try:
             resp = self.SendHex(tx_bytes, True, resp_len, 0.05)
         except SerialException as e:
-            self.logger.warning("ExecuteCommands failed due to serial error: %s", e)
+            self.logger.warning(f"ExecuteCommands failed due to serial error: {e}")
             self._HandleSerialError(e)
             return []
         except Exception as e:
-            self.logger.exception("ExecuteCommands failed with unexpected error: %s", e)
+            self.logger.exception(f"ExecuteCommands failed with unexpected error: {e}")
             return []
 
         rx_data = []
@@ -449,8 +453,10 @@ class IceLoongBits:
                         continue
                     case Commands.HAND_SHAKE:
                         rx_data.append((resp[i],))
-                    case Commands.GET_BMI088_DATA:
-                        rx_data.append((resp[i], *struct.unpack('<fff', resp[i+1:i+13])))
+                    case Commands.SET_ROOM_SIZE:
+                        rx_data.append((resp[i],))
+                    case Commands.GET_POSE:
+                        rx_data.append((resp[i], *struct.unpack('<ffffff', resp[i+1:i+25])))
                     case Commands.SET_WHEELS_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.KICK:
@@ -458,8 +464,6 @@ class IceLoongBits:
                     case Commands.SET_DRIBBLE_SPEED:
                         rx_data.append((resp[i],))
                     case Commands.GET_REFEREE_UNLOCK_PIN:
-                        rx_data.append((resp[i], resp[i+1]))
-                    case Commands.GET_RUN_KEY_DELTA:
                         rx_data.append((resp[i], resp[i+1]))
                     case Commands.MORSE_PLAY:
                         rx_data.append((resp[i],))
@@ -473,15 +477,25 @@ class IceLoongBits:
         thread = getattr(self, "SendUnitedCommandThread", None)
         if thread is None or not thread.is_alive():
             try:
-                self._RefreshYaw()
+                self._RefreshPose()
             except Exception as e:
-                self.logger.debug("Refresh yaw failed: %s", e)
+                self.logger.debug(f"Refresh yaw failed: {e}")
         return self.yaw
 
-    def _RefreshYaw(self):
-        response = self.ExecuteCommands([(Commands.GET_BMI088_DATA,)])
+    def GetPose(self):
+        """返回融合场地位姿 ``(x_cm, y_cm, yaw_deg)``，无效时返回 ``None``。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            try:
+                self._RefreshPose()
+            except Exception as e:
+                self.logger.debug(f"Refresh pose failed: {e}")
+        return self.pose
+
+    def _RefreshPose(self):
+        response = self.ExecuteCommands([(Commands.GET_POSE,)])
         self._ApplyResponses(response)
-        return self.yaw
+        return self.pose
     
     def VirtualPorts(self, port, status):
         """设置虚拟端口状态（带异常保护）。
@@ -497,16 +511,14 @@ class IceLoongBits:
             match port:
                 case 3:
                     if not status:
-                        self._KickNow()
+                        self.Kick()
                 case 4:
-                    self._SetDribbleSpeedNow(left=status)
-                case 5:
-                    self._SetDribbleSpeedNow(right=status)
+                    self._SetDribbleSpeedNow(status)
         except SerialException as e:
-            self.logger.warning("VirtualPorts operation failed due to serial error: %s", e)
+            self.logger.warning(f"VirtualPorts operation failed due to serial error: {e}")
             self._HandleSerialError(e)
         except Exception as e:
-            self.logger.exception("VirtualPorts operation failed: %s", e)
+            self.logger.exception(f"VirtualPorts operation failed: {e}")
 
     @staticmethod
     def _NormalizeDribbleInput(value):
@@ -520,30 +532,78 @@ class IceLoongBits:
             return MAX_DRIBBLE_INPUT
         return speed
 
-    @classmethod
-    def _MapDribbleSpeed(cls, value):
-        return cls._NormalizeDribbleInput(value) * MAX_DRIBBLE_SPEED / MAX_DRIBBLE_INPUT
+    @staticmethod
+    def _ValidateKickPowerLevel(value):
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_LEVEL_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        level = int(numeric_level)
+        if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        return level
 
-    def _KickNow(self):
-        with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
+    @staticmethod
+    def _ValidateRoomDimensionMm(value):
+        if isinstance(value, bool):
+            raise ValueError(ROOM_SIZE_ERROR)
+        try:
+            dimension_mm = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(ROOM_SIZE_ERROR) from exc
+        if not math.isfinite(dimension_mm) or dimension_mm <= 0:
+            raise ValueError(ROOM_SIZE_ERROR)
+        return dimension_mm
+
+    def SetRoomSize(self, horizontal_mm, vertical_mm):
+        """设置场地尺寸。
+
+        重要：协议顺序固定为 ``horizontal_mm, vertical_mm``，即水平在前、
+        竖直在后。两者传反会导致下位机定位算法无法正常工作。
+        """
+        horizontal_mm = self._ValidateRoomDimensionMm(horizontal_mm)
+        vertical_mm = self._ValidateRoomDimensionMm(vertical_mm)
         response = self.ExecuteCommands([
-            (Commands.KICK,),
-            (Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2),
+            (Commands.SET_ROOM_SIZE, horizontal_mm, vertical_mm),
         ])
         self._ApplyResponses(response)
         return response
 
-    def _SetDribbleSpeedNow(self, left=None, right=None):
+    def SetKickPowerLevel(self, power_level):
+        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        level = self._ValidateKickPowerLevel(power_level)
         with self._command_lock:
-            Dribble1, Dribble2 = self.CommandLine["SET_DRIBBLE_SPEED"]
-            if left is not None:
-                Dribble1 = self._NormalizeDribbleInput(left)
-            if right is not None:
-                Dribble2 = self._NormalizeDribbleInput(right)
-            self.CommandLine["SET_DRIBBLE_SPEED"] = [Dribble1, Dribble2]
+            self.kick_power_level = level
+        return level
 
-        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble1, Dribble2)])
+    def Kick(self, power_level=None):
+        """立即按 1 到 4 档力度弹射；省略参数时使用已设置的默认档位。"""
+        if power_level is None:
+            with self._command_lock:
+                power_level = self.kick_power_level
+        return self._KickNow(power_level)
+
+    def _KickNow(self, power_level):
+        level = self._ValidateKickPowerLevel(power_level)
+        with self._command_lock:
+            Dribble = self.CommandLine["SET_DRIBBLE_SPEED"]
+        response = self.ExecuteCommands([
+            (Commands.KICK, level),
+            (Commands.SET_DRIBBLE_SPEED, Dribble),
+        ])
+        self._ApplyResponses(response)
+        return response
+
+    def _SetDribbleSpeedNow(self, value):
+        speed = self._NormalizeDribbleInput(value)
+        with self._command_lock:
+            self.CommandLine["SET_DRIBBLE_SPEED"] = speed
+
+        response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, speed)])
         self._ApplyResponses(response)
         return response
 
@@ -552,7 +612,7 @@ class IceLoongBits:
         with self._command_lock:
             self.CommandLine['SET_WHEELS_SPEED'] = (-Speed1*self.motor_speed_k,-Speed2*self.motor_speed_k,Speed3*self.motor_speed_k,Speed4*self.motor_speed_k)
 
-    def MosePrint(self, Msg):
+    def MorsePlay(self, Msg):
         """摩斯电码播放"""
         with self._command_lock:
             self.CommandLine['MORSE_PLAY'] = Msg
@@ -560,28 +620,9 @@ class IceLoongBits:
     def GetRefereeUnlockPin(self):
         """获取裁判解锁状态"""
         with self._command_lock:
-            return self.CommandLine['GET_REFEREE_UNLOCK_PIN']
-
-    def GetKey(self):
-        """获取按键状态"""
-        if self.key:
-            self.key = False
-            return True
-        else:
-            return False
+            return self.referee_key
 
     def Shutdown(self):
         """安全关闭串口和后台线程。"""
         self._stop_thread.set()
         self.ClosePort()
-
-
-if __name__ == "__main__":
-    bits = IceLoongBits(port='/dev/iceloong')
-    while(1):
-        if bits.key:
-            print(bits.GetKey())
-            bits.MosePrint("Hello World")
-            break
-        else:
-            pass

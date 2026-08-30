@@ -54,11 +54,16 @@ SIM_DEFAULT_WHEEL_TO_WZ = 2.0 * math.pi * 0.029 / (60.0 * 0.09)
 SIM_DEFAULT_YAW_OFFSET_DEG = 0.0
 SIM_DEFAULT_YAW_ZERO_AT_START = False
 SIM_DEFAULT_TWIST_FROM_WHEELS = True
-SIM_DEFAULT_KICK_STRENGTH = 1.0
+SIM_DEFAULT_KICK_STRENGTH = 4.0
+MIN_KICK_POWER_LEVEL = 1
+MAX_KICK_POWER_LEVEL = 4
+DEFAULT_KICK_POWER_LEVEL = 4
+KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
 SIM_DEFAULT_DRIBBLE_SCALE = 3.0
 SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
 SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
 SIM_DEFAULT_VISION_NOISE_SEED = 0
+SIM_DEFAULT_POSE_MAX_AGE_S = 1.0
 
 
 def create_bits_and_lidar(cfg):
@@ -206,7 +211,11 @@ class XeleratorSimBits:
         self._rx = None
 
         bind_error: OSError | None = None
-        allow_port_fallback = str(os.environ.get("XEL_SIM_PORT_FALLBACK", "1")).lower() in {
+        # Do not silently change robot_id when a stale process owns the port.
+        # Unity will keep publishing the configured robot's status packet, so
+        # an automatic fallback can look exactly like intermittent packet loss.
+        # Opt in only when deliberately running parallel simulator instances.
+        allow_port_fallback = str(os.environ.get("XEL_SIM_PORT_FALLBACK", "0")).lower() in {
             "1",
             "true",
             "yes",
@@ -261,6 +270,10 @@ class XeleratorSimBits:
         self._running = True
         self._status = SimStatus(robot_id=self.robot_id)
         self._status_lock = threading.Lock()
+        self._pose_max_age_s = max(
+            0.05,
+            float(os.environ.get("XEL_SIM_POSE_MAX_AGE_S", str(SIM_DEFAULT_POSE_MAX_AGE_S))),
+        )
 
         # current command cache
         self._flags = 0
@@ -268,8 +281,14 @@ class XeleratorSimBits:
         self._vy = 0.0
         self._wz = 0.0
         self._w = (0.0, 0.0, 0.0, 0.0)
-        self._kick_strength = float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)))
-        self._kick_strength = max(0.0, self._kick_strength)
+        configured_kick_strength = os.environ.get(
+            "XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)
+        )
+        try:
+            self.kick_power_level = self._ValidateKickPowerLevel(configured_kick_strength)
+        except ValueError:
+            self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
+        self._kick_strength = float(self.kick_power_level)
         self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", str(SIM_DEFAULT_DRIBBLE_SCALE)))
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
@@ -538,19 +557,45 @@ class XeleratorSimBits:
         self._vy = float(vy) * self._planar_move_scale
         self._wz = float(wz)
 
+    @staticmethod
+    def _ValidateKickPowerLevel(value):
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_LEVEL_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        level = int(numeric_level)
+        if not MIN_KICK_POWER_LEVEL <= level <= MAX_KICK_POWER_LEVEL:
+            raise ValueError(KICK_POWER_LEVEL_ERROR)
+        return level
+
+    def SetKickPowerLevel(self, power_level):
+        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        level = self._ValidateKickPowerLevel(power_level)
+        with self._status_lock:
+            self.kick_power_level = level
+        return level
+
+    def Kick(self, power_level=None):
+        """立即按 1 到 4 档力度排队弹射；省略参数时使用默认档位。"""
+        if power_level is None:
+            with self._status_lock:
+                power_level = self.kick_power_level
+        level = self._ValidateKickPowerLevel(power_level)
+        self._kick_strength = float(level)
+        self._flags |= self.FLAG_KICK
+        return True
+
     def VirtualPorts(self, port, status):
         # port=3: kick, port=4: dribble strength
         if int(port) == 3:
-            # Kick strength is fixed by config and does not change per call.
-            # Any kick command is treated as a one-shot trigger.
-            self._flags |= self.FLAG_KICK
-            # Restore the configured kick strength every time a kick is triggered.
-            # Do NOT depend on the previous command packet value; peripheral.ShootBall()
-            # only toggles the port, it does not continuously stream strength.
-            self._kick_strength = max(
-                0.0,
-                float(os.environ.get("XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH))),
-            )
+            # The hardware adapter triggers the configured default level when
+            # the kicker port is driven low. Keep the same edge semantics.
+            if not status:
+                self.Kick()
         elif int(port) == 4:
             # Dribble strength = config coefficient * command value [0.0, 1.0]
             try:
@@ -711,15 +756,34 @@ class XeleratorSimBits:
         return noisy
 
     def GetPose(self):
-        """Return (x_forward_cm, y_left_cm, yaw_deg)."""
+        """Return a fresh finite ``(x_forward_cm, y_left_cm, yaw_deg)``, or ``None``.
+
+        Before Unity has published a status packet, ``SimStatus`` contains
+        default zeroes.  Those are transport defaults rather than a real field
+        pose and must not be exposed as a valid robot origin.
+        """
+
         with self._status_lock:
+            status_ts = float(self._status.ts)
             x_cm = float(self._status.x_m) * self._unity_to_cm
             y_cm = float(self._status.y_m) * self._unity_to_cm
+            raw_yaw_deg = float(self._status.yaw_deg)
+
+        if (
+            not math.isfinite(status_ts)
+            or status_ts <= 0.0
+            or time.time() - status_ts > getattr(self, "_pose_max_age_s", SIM_DEFAULT_POSE_MAX_AGE_S)
+            or not all(math.isfinite(value) for value in (x_cm, y_cm, raw_yaw_deg))
+        ):
+            return None
 
         # apply origin shift + scale outside the lock
         x_cm = (x_cm - float(self._origin_x_cm)) * self._pose_scale
         y_cm = (y_cm - float(self._origin_y_cm)) * self._pose_scale
-        return (x_cm, y_cm, float(self.GetYaw()))
+        yaw_deg = float(self.GetYaw())
+        if not all(math.isfinite(value) for value in (x_cm, y_cm, yaw_deg)):
+            return None
+        return (x_cm, y_cm, yaw_deg)
 
     def GetVelocity(self):
         """Return field-frame (vx_cm_s, vy_cm_s, wz_deg_s)."""
@@ -1105,17 +1169,20 @@ class XeleratorSimBits:
                 now = time.time()
                 if (now - self._last_debug_t) > 1.0:
                     self._last_debug_t = now
-                    x, y, yaw = self.GetPose()
+                    pose = self.GetPose()
+                    pose_text = (
+                        "unavailable"
+                        if pose is None
+                        else f"({pose[0]:.1f},{pose[1]:.1f},{pose[2]:.1f})"
+                    )
                     print(
                         f"[XEL_DEBUG] tx={self._tx_count} rx={self._rx_count} seq={self._seq} "
-                        f"to={self.unity_ip}:{self.cmd_port} pose_cm=({x:.1f},{y:.1f},{yaw:.1f}) hasBall={self.HasBall()}"
+                        f"to={self.unity_ip}:{self.cmd_port} pose_cm={pose_text} hasBall={self.HasBall()}"
                     )
 
             # kick is one-shot
             if (flags & self.FLAG_KICK) != 0:
                 self._flags &= ~self.FLAG_KICK
-                # keep configured kick strength available for the next trigger
-                self._kick_strength = max(0.0, float(os.environ.get("XEL_SIM_KICK_STRENGTH", "1.0")))
 
     def _rx_loop(self):
         while self._running:
@@ -1266,10 +1333,20 @@ class Lidar:
         self._long = float(bounds_long_cm)
         self._short = float(bounds_short_cm)
         self._running = bool(auto_start)
+        self.backend = "sim"
+        self.driver = None
+        self.running = self._running
+        self.disabled = not self._running
+        self.last_point_cloud = ()
+        self.last_raw_scan_count = 0
+        self.last_scan_point_count = 0
+        self.last_line_count = 0
         self._get_yaw = get_yaw_callable
 
     def stop(self):
         self._running = False
+        self.running = False
+        self.disabled = True
 
     def GetDists(self):
         if not self._running or self._get_pose is None:

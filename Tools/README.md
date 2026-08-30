@@ -9,6 +9,5 @@ Current calibration workflow:
 - Runtime vision code reads calibration from the ReasonData calibration folder.
 
 The `Calibration_*` datasets predate the DM2325 integration and remain here.
-The duplicate DM2325 `imu_web` was removed; hardware control and IMU telemetry
-are available through `web/control_panel/`. See
-`docs/DM2325_ARCHITECTURE.md` for the repository boundary.
+DM2325 hardware material is archived under `legacy/hardware/dm2325/`; it is
+not part of the active runtime or control-panel surface.

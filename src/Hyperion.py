@@ -5,7 +5,6 @@ from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 import math
 import numpy as np
 
-
 def activate_func(input_score):
     x = input_score
     y1 = 1 / (1 + math.e ** (-x))
@@ -133,7 +132,6 @@ def logic_step():
         UplaneStep()
     else:
         logger.debug("Jump/rebound score selected; shot action is disabled.")
-
 
 if __name__ == "__main__":
     try:
