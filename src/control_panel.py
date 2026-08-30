@@ -38,6 +38,11 @@ LIDAR_DISABLED_DISTS = [BALL_NOT_FOUND[0], BALL_NOT_FOUND[0], BALL_NOT_FOUND[0],
 DEFAULT_CALIB_ORIGIN_X_CM = 7.5
 DEFAULT_CALIB_ORIGIN_Y_CM = 16.5
 CONTROL_MAX_LINEAR_MPS = 2.29
+CONTROL_COMMAND_TIMEOUT_S = 0.45
+KICK_POWER_MIN = 1
+KICK_POWER_MAX = 4
+KICK_POWER_DEFAULT = 4
+KICK_POWER_ERROR = "kick power level must be an integer from 1 to 4"
 
 
 def _repo_root() -> Path:
@@ -435,6 +440,7 @@ class ControlPanelApp:
 
         # Bits 对象（用于模拟器环境下获取位姿和球位置）
         self.bits = bits
+        self._kick_power_level = KICK_POWER_DEFAULT
         self._allow_runtime_init = bool(allow_runtime_init)
         self._last_lidar_status = None
 
@@ -448,6 +454,14 @@ class ControlPanelApp:
         self._control_turn_speed = 120.0  # 默认转向速度，deg/s
         self._dribble_active = False  # 盘球状态
         self._control_runtime_error = None
+        self._control_last_motion_ts = None
+        self._control_watchdog_stop = threading.Event()
+        self._control_watchdog_thread = threading.Thread(
+            target=self._control_watchdog_loop,
+            daemon=True,
+            name="ControlPanel-MotionWatchdog",
+        )
+        self._control_watchdog_thread.start()
 
         # 摄像头资源管理器
         self.camera_manager = CameraResourceManager()
@@ -2079,14 +2093,17 @@ class ControlPanelApp:
                         "error": self._control_runtime_error or "Control runtime unavailable",
                     }
                 self._control_enabled = True
+                self._control_last_motion_ts = None
                 self._control_runtime_error = None
                 return {"success": True, "enabled": True}
 
             if not self._control_enabled:
+                self._control_last_motion_ts = None
                 self._control_runtime_error = None
                 return {"success": True, "enabled": False}
 
             self._control_enabled = False
+            self._control_last_motion_ts = None
             try:
                 self._control_stop()
             except Exception as e:
@@ -2106,9 +2123,84 @@ class ControlPanelApp:
                 self._control_turn_speed = max(0.0, min(360.0, float(turn_speed)))
         return {"success": True, "speed": self._control_speed, "turn_speed": self._control_turn_speed}
 
+    @staticmethod
+    def _validate_kick_power_level(value) -> int:
+        if isinstance(value, bool):
+            raise ValueError(KICK_POWER_ERROR)
+        try:
+            numeric_level = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(KICK_POWER_ERROR) from exc
+        if not math.isfinite(numeric_level) or not numeric_level.is_integer():
+            raise ValueError(KICK_POWER_ERROR)
+        level = int(numeric_level)
+        if not KICK_POWER_MIN <= level <= KICK_POWER_MAX:
+            raise ValueError(KICK_POWER_ERROR)
+        return level
+
+    def _get_control_bits(self, *, initialize: bool = False):
+        """Return the active Bits object without creating a second runtime."""
+        bits = getattr(self, "bits", None)
+        if bits is None:
+            runtime = sys.modules.get("LunaPre.runtime")
+            bits = getattr(runtime, "Bits", None) if runtime is not None else None
+            if bits is not None:
+                self.bits = bits
+        if bits is None and initialize:
+            self._ensure_control_runtime()
+            bits = getattr(self, "bits", None)
+            if bits is None:
+                runtime = sys.modules.get("LunaPre.runtime")
+                bits = getattr(runtime, "Bits", None) if runtime is not None else None
+                if bits is not None:
+                    self.bits = bits
+        return bits
+
+    def _current_kick_power_level(self, bits=None) -> int:
+        value = getattr(bits, "kick_power_level", getattr(self, "_kick_power_level", KICK_POWER_DEFAULT))
+        try:
+            return self._validate_kick_power_level(value)
+        except ValueError:
+            return KICK_POWER_DEFAULT
+
+    def control_set_kick_power(self, power_level) -> dict:
+        """Set the default kick level used by the active IceLoongBits backend."""
+        try:
+            level = self._validate_kick_power_level(power_level)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        with self._control_lock:
+            bits = self._get_control_bits(initialize=True)
+            if bits is None:
+                return {
+                    "success": False,
+                    "error": self._control_runtime_error or "Bits runtime unavailable",
+                }
+
+            setter = getattr(bits, "SetKickPowerLevel", None)
+            if not callable(setter):
+                return {"success": False, "error": "Kick power control unavailable"}
+            try:
+                applied = setter(level)
+                applied_level = self._validate_kick_power_level(
+                    level if applied is None else applied
+                )
+                self._kick_power_level = applied_level
+                return {
+                    "success": True,
+                    "kick_power_level": applied_level,
+                    "kick_power_min": KICK_POWER_MIN,
+                    "kick_power_max": KICK_POWER_MAX,
+                }
+            except Exception as exc:
+                return {"success": False, "error": str(exc)}
+
     def control_get_status(self) -> dict:
         """Return generic manual-control state without hardware-specific telemetry."""
         chassis, peripheral = self._get_chassis_and_peripheral(initialize=False)
+        bits = self._get_control_bits(initialize=False)
+        kick_power_level = self._current_kick_power_level(bits)
         return {
             "enabled": self._control_enabled,
             "speed": self._control_speed,
@@ -2117,13 +2209,47 @@ class ControlPanelApp:
             "runtime_initialized": self._is_control_runtime_initialized(),
             "chassis_available": bool(chassis),
             "peripheral_available": bool(peripheral),
-            "backend": type(self.bits).__name__ if self.bits is not None else None,
+            "backend": type(bits).__name__ if bits is not None else None,
+            "kick_power_level": kick_power_level,
+            "kick_power_min": KICK_POWER_MIN,
+            "kick_power_max": KICK_POWER_MAX,
+            "kick_power_supported": callable(getattr(bits, "SetKickPowerLevel", None)),
             "runtime_error": self._control_runtime_error,
         }
 
     def _is_control_runtime_initialized(self) -> bool:
         runtime = sys.modules.get("LunaPre.runtime")
         return bool(runtime is not None and getattr(runtime, "_runtime_initialized", False))
+
+    def _control_watchdog_loop(self):
+        """Stop manual motion when the browser stops renewing its command."""
+        watchdog_stop = getattr(self, "_control_watchdog_stop", None)
+        if watchdog_stop is None:
+            return
+        while not watchdog_stop.wait(0.05):
+            self._control_stop_if_stale()
+
+    def _control_stop_if_stale(self, now=None) -> bool:
+        """Apply a fail-safe stop when no recent manual command is available."""
+        now = time.monotonic() if now is None else float(now)
+        with self._control_lock:
+            if not self._control_enabled:
+                return False
+            last_motion_ts = getattr(self, "_control_last_motion_ts", None)
+            if last_motion_ts is None or now - last_motion_ts <= CONTROL_COMMAND_TIMEOUT_S:
+                return False
+
+            self._control_last_motion_ts = None
+            chassis, _ = self._get_chassis_and_peripheral(initialize=False)
+            if not chassis:
+                return False
+            try:
+                chassis.stop()
+                return True
+            except Exception as exc:
+                self._control_runtime_error = str(exc)
+                print(f"[ControlPanel] Watchdog stop failed: {exc}")
+                return False
 
     def _ensure_control_runtime(self):
         """Initialize LunaPre runtime on demand for manual control."""
@@ -2182,11 +2308,18 @@ class ControlPanelApp:
         with self._control_lock:
             was_enabled = self._control_enabled
             self._control_enabled = False
+            self._control_last_motion_ts = None
+        watchdog_stop = getattr(self, "_control_watchdog_stop", None)
+        if watchdog_stop is not None:
+            watchdog_stop.set()
         if was_enabled:
             try:
                 self._control_stop()
             except Exception as e:
                 print(f"[ControlPanel] Shutdown stop failed: {e}")
+        watchdog_thread = getattr(self, "_control_watchdog_thread", None)
+        if watchdog_thread is not None and watchdog_thread.is_alive():
+            watchdog_thread.join(timeout=0.2)
 
     @staticmethod
     def _move_chassis(chassis, vx_mps: float, vy_mps: float, wz_deg_s: float):
@@ -2227,8 +2360,12 @@ class ControlPanelApp:
                     self._move_chassis(chassis, 0, 0, -turn_speed)
                 elif direction == 'stop':
                     chassis.stop()
+                    self._control_last_motion_ts = None
                 else:
                     return {"success": False, "error": f"Unknown direction: {direction}"}
+
+                if direction != 'stop':
+                    self._control_last_motion_ts = time.monotonic()
 
                 return {"success": True, "direction": direction}
             except Exception as e:
@@ -2260,7 +2397,12 @@ class ControlPanelApp:
                     scale = CONTROL_MAX_LINEAR_MPS / magnitude
                     vx *= scale
                     vy *= scale
-                self._move_chassis(chassis, vx, vy, wz)
+                if vx == 0.0 and vy == 0.0 and wz == 0.0:
+                    chassis.stop()
+                    self._control_last_motion_ts = None
+                else:
+                    self._move_chassis(chassis, vx, vy, wz)
+                    self._control_last_motion_ts = time.monotonic()
                 return {"success": True, "vx": vx, "vy": vy, "wz": wz}
             except Exception as e:
                 return {"success": False, "error": str(e)}
@@ -2277,7 +2419,12 @@ class ControlPanelApp:
 
             try:
                 peripheral.ShootBall()
-                return {"success": True, "action": "kick"}
+                bits = self._get_control_bits(initialize=False)
+                return {
+                    "success": True,
+                    "action": "kick",
+                    "kick_power_level": self._current_kick_power_level(bits),
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
@@ -2822,6 +2969,17 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json(app.control_get_status())
             return
 
+        if path in ('/api/control/kick-power', '/api/control/kick_power'):
+            status = app.control_get_status()
+            self._send_json({
+                "success": True,
+                "kick_power_level": status["kick_power_level"],
+                "kick_power_min": status["kick_power_min"],
+                "kick_power_max": status["kick_power_max"],
+                "kick_power_supported": status["kick_power_supported"],
+            })
+            return
+
         self.send_error(404, 'Not found')
 
     def do_POST(self):
@@ -2979,6 +3137,14 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/control/kick':
             result = app.control_kick()
+            self._send_json(result)
+            return
+
+        if path in ('/api/control/kick-power', '/api/control/kick_power'):
+            data = self._parse_json_body()
+            result = app.control_set_kick_power(
+                data.get('power_level', data.get('kick_power_level'))
+            )
             self._send_json(result)
             return
 

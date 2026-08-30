@@ -137,6 +137,10 @@ function navigateTo(page) {
   const previousPage = state.currentPage;
   state.currentPage = page;
 
+  if (previousPage === "control" && page !== "control") {
+    disableControlForSafety();
+  }
+
   elements.navItems.forEach((item) => {
     item.classList.toggle("active", item.dataset.page === page);
   });
@@ -3531,6 +3535,10 @@ const controlState = {
   enabled: false,
   speed: 0.1,
   turnSpeed: 50,
+  kickPowerLevel: 4,
+  kickPowerMin: 1,
+  kickPowerMax: 4,
+  kickPowerSupported: false,
   dribbleActive: false,
   runtimeInitialized: false,
   chassisAvailable: false,
@@ -3546,6 +3554,11 @@ const controlState = {
   mouseTurnWz: 0,
   mouseTurnResetTimer: null,
 };
+
+const CONTROL_HEARTBEAT_INTERVAL_MS = 100;
+let pendingControlVector = null;
+let controlVectorRequestInFlight = false;
+let motionHeartbeatTimer = null;
 
 // 初始化键盘控制页面
 function setupControlPage() {
@@ -3577,12 +3590,25 @@ function setupControlPage() {
     });
   }
 
+  // IceLoongBits uses four integer kick-power levels.
+  const kickPowerSlider = document.getElementById("control-kick-power");
+  if (kickPowerSlider) {
+    kickPowerSlider.addEventListener("input", (e) => {
+      controlState.kickPowerLevel = parseInt(e.target.value, 10);
+      updateKickPowerUI();
+    });
+    kickPowerSlider.addEventListener("change", () => {
+      setControlKickPower(controlState.kickPowerLevel);
+    });
+  }
+
   // 键盘事件
   document.addEventListener("keydown", handleKeyDown);
   document.addEventListener("keyup", handleKeyUp);
 
   // 鼠标控制
   setupMouseControl();
+  updateKickPowerUI();
 
   // 定期更新控制状态
   setInterval(updateControlStatus, 500);
@@ -3594,10 +3620,46 @@ function setupControlPage() {
   window.addEventListener("pagehide", disableControlForSafety);
 }
 
+function hasActiveMotionInput() {
+  const translationActive = ["w", "s", "a", "d"].some((key) =>
+    controlState.keysPressed.has(key),
+  );
+  const rotationActive =
+    controlState.mouseCaptured &&
+    controlState.mouseControlEnabled &&
+    Math.abs(controlState.mouseTurnWz) > 0.1;
+  return translationActive || rotationActive;
+}
+
+function stopMotionHeartbeat() {
+  if (motionHeartbeatTimer !== null) {
+    clearInterval(motionHeartbeatTimer);
+    motionHeartbeatTimer = null;
+  }
+}
+
+function refreshMotionHeartbeat() {
+  if (!controlState.enabled || !hasActiveMotionInput()) {
+    stopMotionHeartbeat();
+    return;
+  }
+  if (motionHeartbeatTimer !== null) return;
+
+  motionHeartbeatTimer = setInterval(() => {
+    if (!controlState.enabled || !hasActiveMotionInput()) {
+      stopMotionHeartbeat();
+      sendControlMoveVector(0, 0, 0);
+      return;
+    }
+    sendCombinedControlVector();
+  }, CONTROL_HEARTBEAT_INTERVAL_MS);
+}
+
 function releaseControlKeys() {
   controlState.keysPressed.clear();
   controlState.mouseTurnWz = 0;
   if (controlState.enabled) sendControlMoveVector(0, 0, 0);
+  stopMotionHeartbeat();
   updateDirectionDisplayFromVector(0, 0, 0);
   updateDirectionDisplay();
 }
@@ -3605,6 +3667,7 @@ function releaseControlKeys() {
 function disableControlForSafety() {
   if (!controlState.enabled) return;
   releaseControlKeys();
+  stopMotionHeartbeat();
   controlState.enabled = false;
   fetch("/api/control/enable", {
     method: "POST",
@@ -3820,6 +3883,36 @@ async function updateControlSpeed() {
   }
 }
 
+async function setControlKickPower(level) {
+  const slider = document.getElementById("control-kick-power");
+  try {
+    const response = await fetch("/api/control/kick-power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ power_level: level }),
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      controlState.kickPowerLevel = Number(data.kick_power_level);
+      updateKickPowerUI();
+      setControlStatusMessage(`状态: 弹射力度 ${controlState.kickPowerLevel} 档`);
+    } else {
+      updateKickPowerUI();
+      setControlStatusMessage("状态: " + (data.error || "力度设置失败"), true);
+    }
+  } catch (e) {
+    updateKickPowerUI();
+    console.error("Failed to update kick power:", e);
+    setControlStatusMessage("状态: 弹射力度请求失败", true);
+  } finally {
+    if (slider) {
+      slider.disabled =
+        !controlState.kickPowerSupported && controlState.runtimeInitialized;
+    }
+  }
+}
+
 // 处理键盘按下
 function handleKeyDown(e) {
   // 只在控制页面且启用时响应
@@ -3909,28 +4002,51 @@ function sendCombinedControlVector() {
     sendControlMoveVector(vx, vy, wz);
     updateDirectionDisplayFromVector(vx, vy, wz);
   }
+  refreshMotionHeartbeat();
   updateDirectionDisplay();
 }
 
 // 发送控制向量
-async function sendControlMoveVector(vx, vy, wz) {
+function sendControlMoveVector(vx, vy, wz) {
+  pendingControlVector = { vx, vy, wz };
+  flushControlVectorRequests();
+}
+
+async function flushControlVectorRequests() {
+  if (controlVectorRequestInFlight) return;
+  controlVectorRequestInFlight = true;
+
   try {
-    const response = await fetch("/api/control/move_vector", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ vx, vy, wz }),
-    });
+    while (pendingControlVector !== null) {
+      const vector = pendingControlVector;
+      pendingControlVector = null;
 
-    const data = await response.json();
+      try {
+        const response = await fetch("/api/control/move_vector", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(vector),
+        });
+        if (!response.ok) {
+          throw new Error(`move request failed: ${response.status}`);
+        }
 
-    if (data.success) {
-      controlState.currentVector = { vx, vy, wz };
-    } else {
-      setControlStatusMessage("状态: " + (data.error || "移动失败"), true);
+        const data = await response.json();
+        if (data.success) {
+          controlState.currentVector = vector;
+        } else {
+          setControlStatusMessage("状态: " + (data.error || "移动失败"), true);
+        }
+      } catch (e) {
+        console.error("Failed to send move vector:", e);
+        setControlStatusMessage("状态: 移动请求失败", true);
+      }
     }
-  } catch (e) {
-    console.error("Failed to send move vector:", e);
-    setControlStatusMessage("状态: 移动请求失败", true);
+  } finally {
+    controlVectorRequestInFlight = false;
+    if (pendingControlVector !== null) {
+      flushControlVectorRequests();
+    }
   }
 }
 
@@ -4014,7 +4130,10 @@ async function sendControlKick() {
       // 短暂高亮提示
       const statusEl = document.getElementById("control-status");
       if (statusEl) {
-        statusEl.textContent = "状态: 弹射!";
+        const level = Number.isFinite(Number(data.kick_power_level))
+          ? ` ${Number(data.kick_power_level)} 档`
+          : "";
+        statusEl.textContent = `状态: 弹射${level}`;
         statusEl.style.color = "#22c55e";
         setTimeout(() => {
           statusEl.textContent = controlState.enabled
@@ -4119,6 +4238,33 @@ function updateDribbleDisplay() {
   }
 }
 
+function updateKickPowerUI() {
+  const slider = document.getElementById("control-kick-power");
+  const valueEl = document.getElementById("control-kick-power-value");
+  const hintEl = document.getElementById("control-kick-power-hint");
+  if (!slider) return;
+
+  const min = Number.isFinite(controlState.kickPowerMin)
+    ? controlState.kickPowerMin
+    : 1;
+  const max = Number.isFinite(controlState.kickPowerMax)
+    ? controlState.kickPowerMax
+    : 4;
+  const level = Math.min(max, Math.max(min, controlState.kickPowerLevel));
+
+  slider.min = min;
+  slider.max = max;
+  slider.value = level;
+  if (valueEl) valueEl.textContent = `${level} 档`;
+  if (hintEl) {
+    hintEl.textContent = controlState.kickPowerSupported
+      ? `IceLoongBits：${min}-${max} 档`
+      : "启动 Bits 后可用";
+  }
+  slider.disabled =
+    !controlState.kickPowerSupported && controlState.runtimeInitialized;
+}
+
 function updateControlDiagnostics() {
   const runtimeEl = document.getElementById("control-runtime-status");
   const chassisEl = document.getElementById("control-chassis-status");
@@ -4159,6 +4305,16 @@ async function updateControlStatus() {
     controlState.enabled = data.enabled;
     controlState.speed = data.speed;
     controlState.turnSpeed = data.turn_speed;
+    controlState.kickPowerLevel = Number.isFinite(Number(data.kick_power_level))
+      ? Number(data.kick_power_level)
+      : controlState.kickPowerLevel;
+    controlState.kickPowerMin = Number.isFinite(Number(data.kick_power_min))
+      ? Number(data.kick_power_min)
+      : 1;
+    controlState.kickPowerMax = Number.isFinite(Number(data.kick_power_max))
+      ? Number(data.kick_power_max)
+      : 4;
+    controlState.kickPowerSupported = data.kick_power_supported === true;
     controlState.dribbleActive = data.dribble_active;
     controlState.runtimeInitialized = !!data.runtime_initialized;
     controlState.chassisAvailable = !!data.chassis_available;
@@ -4181,6 +4337,7 @@ async function updateControlStatus() {
 
     updateControlUI();
     updateDribbleDisplay();
+    updateKickPowerUI();
     updateControlDiagnostics();
     if (data.runtime_error) {
       setControlStatusMessage("状态: " + data.runtime_error, true);
