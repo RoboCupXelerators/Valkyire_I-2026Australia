@@ -25,16 +25,18 @@ from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_err
 
 cfg = runtime.cfg
 
-# Pos2Pos is a 30 Hz field-position controller. The pose error is in cm and
-# the command is in m/s, so keep this conservative and use PD only: integral
-# action accumulates during delayed pose updates and causes a late overshoot.
-POS2POS_KP = 0.009
+# Pos2Pos receives intermittent hardware pose packets. Keep integral action
+# disabled, and keep D low enough that a newly arrived pose cannot turn into a
+# one-tick braking spike between otherwise identical observations.
+POS2POS_KP = 0.011
 POS2POS_KI = 0.0
-POS2POS_KD = 0.0006
-POS2POS_OUTPUT_LIMIT_MPS = 0.55
-POS2POS_COMMAND_LIMIT_MPS = 0.65
-POS2POS_NEAR_COMMAND_LIMIT_MPS = 0.18
-POS2POS_NEAR_DISTANCE_CM = 30.0
+POS2POS_KD = 0.00015
+POS2POS_OUTPUT_LIMIT_MPS = 0.65
+POS2POS_COMMAND_LIMIT_MPS = 0.75
+POS2POS_NEAR_COMMAND_LIMIT_MPS = 0.20
+POS2POS_BRAKE_ACCEL_MPS2 = 0.9
+POS2POS_YAW_KP = 0.75
+POS2POS_MAX_YAW_RATE_DEG_S = 100.0
 # Keep recovery commands above the SIM bridge's 0.6 planar scale and 0.064
 # command deadzone (0.12 * 0.6 = 0.072). Normal positioning does not use this
 # floor, so fine final approach remains unchanged.
@@ -275,6 +277,7 @@ class Positions:
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
+        self._last_pos2pos_command = (0.0, 0.0, 0.0)
         self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
@@ -295,16 +298,34 @@ class Positions:
         self.Position_Y_PID.reset()
 
     @staticmethod
-    def _pos2pos_command_limit(distance_cm: float) -> float:
-        """Limit final planar speed as the robot enters the target zone."""
+    def _pos2pos_command_limit(distance_cm: float, arrival_cm: float = 5.0) -> float:
+        """Use a braking-distance profile for the final planar speed."""
 
         distance_cm = max(0.0, float(distance_cm))
-        if distance_cm >= POS2POS_NEAR_DISTANCE_CM:
-            return POS2POS_COMMAND_LIMIT_MPS
+        arrival_cm = max(0.0, float(arrival_cm))
+        distance_to_brake_cm = max(0.0, distance_cm - arrival_cm)
+        if distance_to_brake_cm <= 0.0:
+            return POS2POS_NEAR_COMMAND_LIMIT_MPS
+
+        # v = sqrt(2*a*d), with d converted from cm to m. This keeps the
+        # robot fast when far away and continuously removes speed before the
+        # arrival window instead of applying a fixed near-target cutoff.
+        braking_limit = math.sqrt(
+            2.0 * POS2POS_BRAKE_ACCEL_MPS2 * distance_to_brake_cm / 100.0
+        )
         return max(
             POS2POS_NEAR_COMMAND_LIMIT_MPS,
-            POS2POS_COMMAND_LIMIT_MPS * distance_cm / POS2POS_NEAR_DISTANCE_CM,
+            min(POS2POS_COMMAND_LIMIT_MPS, braking_limit),
         )
+
+    @staticmethod
+    def _pos2pos_yaw_kp(yaw_error_deg: float) -> float:
+        """Keep heading correction concurrent with translation."""
+
+        error = abs(float(yaw_error_deg))
+        if error <= 1e-6:
+            return POS2POS_YAW_KP
+        return min(POS2POS_YAW_KP, POS2POS_MAX_YAW_RATE_DEG_S / error)
 
     def _reset_pos2pos_on_pose_change(self):
         bits = getattr(runtime, "Bits", None)
@@ -1641,6 +1662,7 @@ class Positions:
         self._ensure_motion_runtime()
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
+            self._last_pos2pos_command = (0.0, 0.0, 0.0)
             self._stop_chassis()
             runtime.play_morse("No Position Data!")
             return False
@@ -1664,24 +1686,33 @@ class Positions:
         )
         if dist <= arrival_cm and not recovery_escape_pending:
             if abs(err_yaw) <= float(Settings.Motion.ErrorRange):
+                self._last_pos2pos_command = (0.0, 0.0, 0.0)
                 self._stop_chassis()
                 self._reset_pos2pos_pid()
                 return True
             self._reset_pos2pos_pid()
+            self._last_pos2pos_command = (0.0, 0.0, aim_yaw)
             runtime.chassis.FieldTurn(aim_yaw)
             return False
 
         gain = self._resolve_speed_gain(speed_gain)
         self.Position_X_PID.setpoint = float(aim_x)
         self.Position_Y_PID.setpoint = float(aim_y)
-        cmd_x = self.Position_X_PID(float(loc_x)) * gain
-        cmd_y = self.Position_Y_PID(float(loc_y)) * gain
-        cmd_norm = math.hypot(cmd_x, cmd_y)
-        command_limit = self._pos2pos_command_limit(dist)
-        if cmd_norm > command_limit:
-            scale = command_limit / cmd_norm
-            cmd_x *= scale
-            cmd_y *= scale
+        pid_x = self.Position_X_PID(float(loc_x)) * gain
+        pid_y = self.Position_Y_PID(float(loc_y)) * gain
+        pid_norm = math.hypot(pid_x, pid_y)
+        command_limit = self._pos2pos_command_limit(dist, arrival_cm)
+        if dist > 1e-6 and pid_norm > 0.0:
+            # Keep the translation direction tied to the target vector. The
+            # two axis PID derivatives can differ when pose packets arrive at
+            # different rates; using their norm for speed but the position
+            # error for direction prevents that noise from bending the path.
+            command_speed = min(pid_norm, command_limit)
+            cmd_x = command_speed * float(err_x) / dist
+            cmd_y = command_speed * float(err_y) / dist
+        else:
+            cmd_x = 0.0
+            cmd_y = 0.0
         if recovery_escape_pending:
             # Simulator and some motor controllers have a small planar command
             # deadzone.  A recovery PID command can fall below it while the
@@ -1693,7 +1724,13 @@ class Positions:
                 scale = POS2POS_MIN_SPEED_MPS / cmd_norm
                 cmd_x *= scale
                 cmd_y *= scale
-        runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
+        self._last_pos2pos_command = (float(cmd_x), float(cmd_y), aim_yaw)
+        runtime.chassis.FieldMoveVector(
+            cmd_x,
+            cmd_y,
+            aim_yaw,
+            KpW=self._pos2pos_yaw_kp(err_yaw),
+        )
         return False
 
     def _path_hits_restricted_area(self, start, target, samples: int = 32) -> bool:
@@ -1822,7 +1859,6 @@ class Positions:
         start = self.FieldRobotPose()
         if start == POSE_NOT_FOUND:
             self._stop_chassis()
-            runtime.play_morse("No Position Data!")
             return False
         waypoint = self._navigate_waypoint(start, AimPos)
         return self.Pos2Pos(waypoint, speed_gain)
