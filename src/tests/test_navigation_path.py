@@ -7,7 +7,14 @@ import pytest
 
 from LunaPre import UnitedPosition, runtime
 from ReasonData import Settings
-from LunaPre.positions import POS2POS_MIN_SPEED_MPS
+from LunaPre.positions import (
+    POS2POS_COMMAND_LIMIT_MPS,
+    POS2POS_KD,
+    POS2POS_KI,
+    POS2POS_KP,
+    POS2POS_MIN_SPEED_MPS,
+    POS2POS_NEAR_COMMAND_LIMIT_MPS,
+)
 from LunaPre.strategy_tools import angle_error_deg
 
 
@@ -39,6 +46,52 @@ def test_pos2pos_arrives_when_negative_target_yaw_matches_wrapped_pose(monkeypat
     monkeypatch.setattr(runtime, "chassis", SimpleNamespace(stop=lambda: None))
 
     assert UnitedPosition.Pos2Pos([10.0, 20.0, -30.0], speed_gain=1.0) is True
+
+
+def test_pos2pos_initializes_runtime_before_first_command(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def stop(self):
+            commands.append("stop")
+
+    monkeypatch.setattr(runtime, "chassis", None)
+    monkeypatch.setattr(runtime, "ensure_runtime", lambda **_kwargs: setattr(runtime, "chassis", FakeChassis()))
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [0xFFF, 0xFFF, 0xFFF])
+
+    assert UnitedPosition.Pos2Pos([10.0, 20.0, 0.0]) is False
+    assert commands == ["stop"]
+
+
+def test_pos2pos_pid_is_hardcoded_as_conservative_pd(monkeypatch):
+    monkeypatch.setattr(runtime, "chassis", SimpleNamespace(stop=lambda: None))
+
+    assert UnitedPosition.Position_X_PID.Kp == POS2POS_KP
+    assert UnitedPosition.Position_X_PID.Ki == POS2POS_KI == 0.0
+    assert UnitedPosition.Position_X_PID.Kd == POS2POS_KD
+    assert UnitedPosition.Position_X_PID.output_limits == (-0.55, 0.55)
+    assert UnitedPosition._pos2pos_command_limit(0.0) == POS2POS_NEAR_COMMAND_LIMIT_MPS
+    assert UnitedPosition._pos2pos_command_limit(100.0) == POS2POS_COMMAND_LIMIT_MPS
+
+
+def test_pos2pos_caps_scaled_command_near_target(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def FieldMoveVector(self, x, y, yaw):
+            commands.append((x, y, yaw))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [25.0, 0.0, 0.0])
+    UnitedPosition._reset_pos2pos_pid()
+
+    assert UnitedPosition.Pos2Pos([0.0, 0.0, 0.0], speed_gain=6.0) is False
+    assert commands
+    command_norm = (commands[0][0] ** 2 + commands[0][1] ** 2) ** 0.5
+    assert command_norm <= UnitedPosition._pos2pos_command_limit(25.0) + 1e-9
 
 
 def test_navigate2_uses_target_when_path_is_clear(monkeypatch):

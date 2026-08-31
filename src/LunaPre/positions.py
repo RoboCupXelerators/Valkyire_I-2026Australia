@@ -25,10 +25,16 @@ from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_err
 
 cfg = runtime.cfg
 
-POS2POS_KP = 0.018
-POS2POS_KI = 0.00001
-POS2POS_KD = 0.0002
-POS2POS_OUTPUT_LIMIT_MPS = 1.2
+# Pos2Pos is a 30 Hz field-position controller. The pose error is in cm and
+# the command is in m/s, so keep this conservative and use PD only: integral
+# action accumulates during delayed pose updates and causes a late overshoot.
+POS2POS_KP = 0.009
+POS2POS_KI = 0.0
+POS2POS_KD = 0.0006
+POS2POS_OUTPUT_LIMIT_MPS = 0.55
+POS2POS_COMMAND_LIMIT_MPS = 0.65
+POS2POS_NEAR_COMMAND_LIMIT_MPS = 0.18
+POS2POS_NEAR_DISTANCE_CM = 30.0
 # Keep recovery commands above the SIM bridge's 0.6 planar scale and 0.064
 # command deadzone (0.12 * 0.6 = 0.072). Normal positioning does not use this
 # floor, so fine final approach remains unchanged.
@@ -288,6 +294,18 @@ class Positions:
         self.Position_X_PID.reset()
         self.Position_Y_PID.reset()
 
+    @staticmethod
+    def _pos2pos_command_limit(distance_cm: float) -> float:
+        """Limit final planar speed as the robot enters the target zone."""
+
+        distance_cm = max(0.0, float(distance_cm))
+        if distance_cm >= POS2POS_NEAR_DISTANCE_CM:
+            return POS2POS_COMMAND_LIMIT_MPS
+        return max(
+            POS2POS_NEAR_COMMAND_LIMIT_MPS,
+            POS2POS_COMMAND_LIMIT_MPS * distance_cm / POS2POS_NEAR_DISTANCE_CM,
+        )
+
     def _reset_pos2pos_on_pose_change(self):
         bits = getattr(runtime, "Bits", None)
         getter = getattr(bits, "GetPoseRevision", None)
@@ -302,6 +320,21 @@ class Positions:
         if speed_gain is None:
             return 1.0
         return clamp(float(speed_gain), 0.2, 6.0)
+
+    @staticmethod
+    def _ensure_motion_runtime() -> None:
+        """Ensure command paths have a concrete chassis, not only a lazy facade."""
+
+        if runtime.chassis is None:
+            runtime.ensure_runtime(auto_start_lidar=True)
+
+    @staticmethod
+    def _stop_chassis() -> None:
+        """Stop when a chassis is available; pose queries may run pre-init."""
+
+        chassis = runtime.chassis
+        if chassis is not None:
+            chassis.stop()
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -1605,9 +1638,10 @@ class Positions:
         ``Pos2Pos`` 调用内被替换，不会把“到达中继点”误报成到达最终目标；
         下一帧会重新检查从中继点到最终目标的路径。
         """
+        self._ensure_motion_runtime()
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
-            runtime.chassis.stop()
+            self._stop_chassis()
             runtime.play_morse("No Position Data!")
             return False
 
@@ -1630,7 +1664,7 @@ class Positions:
         )
         if dist <= arrival_cm and not recovery_escape_pending:
             if abs(err_yaw) <= float(Settings.Motion.ErrorRange):
-                runtime.chassis.stop()
+                self._stop_chassis()
                 self._reset_pos2pos_pid()
                 return True
             self._reset_pos2pos_pid()
@@ -1642,6 +1676,12 @@ class Positions:
         self.Position_Y_PID.setpoint = float(aim_y)
         cmd_x = self.Position_X_PID(float(loc_x)) * gain
         cmd_y = self.Position_Y_PID(float(loc_y)) * gain
+        cmd_norm = math.hypot(cmd_x, cmd_y)
+        command_limit = self._pos2pos_command_limit(dist)
+        if cmd_norm > command_limit:
+            scale = command_limit / cmd_norm
+            cmd_x *= scale
+            cmd_y *= scale
         if recovery_escape_pending:
             # Simulator and some motor controllers have a small planar command
             # deadzone.  A recovery PID command can fall below it while the
@@ -1778,9 +1818,10 @@ class Positions:
         保留这个接口是为了兼容已有策略；``Pos2Pos`` 现在也会执行同样的
         路径检查，避免直接调用 ``Pos2Pos`` 时绕过禁区保护。
         """
+        self._ensure_motion_runtime()
         start = self.FieldRobotPose()
         if start == POSE_NOT_FOUND:
-            runtime.chassis.stop()
+            self._stop_chassis()
             runtime.play_morse("No Position Data!")
             return False
         waypoint = self._navigate_waypoint(start, AimPos)
@@ -1819,7 +1860,7 @@ class Positions:
                     break
 
                 if point_timeout > 0 and time.time() - start_t > point_timeout:
-                    runtime.chassis.stop()
+                    self._stop_chassis()
                     logger.warning(
                         "Move2Path timeout at point {}/{} target={} current={}",
                         idx + 1,

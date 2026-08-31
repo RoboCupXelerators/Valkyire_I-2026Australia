@@ -186,23 +186,24 @@ def _start_bits_thread_monitor(bits_obj):
         logger.debug("Bits object does not support thread monitoring interface")
         return
     
-    # 如果已经有监控线程在运行，先停止它
-    if _bits_monitor_stop is not None:
-        _bits_monitor_stop.set()
-    
-    _bits_monitor_stop = threading.Event()
-    
+    # 如果已经有监控线程在运行，先停止并等待它退出。
+    _stop_bits_thread_monitor()
+
+    stop_event = threading.Event()
+
     def _monitor_loop():
         """监控循环，定期检查线程状态并在需要时重启。"""
-        while not _bits_monitor_stop.is_set():
+        while not stop_event.is_set():
             try:
                 if not bits_obj.IsThreadAlive():
                     logger.warning("Bits background thread is dead, attempting restart...")
                     bits_obj.RestartThreadIfNeeded()
             except Exception as e:
-                    logger.exception(f"Bits thread monitor error: {e}")
+                logger.exception(f"Bits thread monitor error: {e}")
             # 每 1 秒检查一次
-            _bits_monitor_stop.wait(1.0)
+            stop_event.wait(1.0)
+
+    _bits_monitor_stop = stop_event
     
     _bits_monitor_thread = threading.Thread(
         target=_monitor_loop,
@@ -217,16 +218,20 @@ def _stop_bits_thread_monitor():
     """停止 Bits 线程监控器。"""
     global _bits_monitor_stop, _bits_monitor_thread
     
-    if _bits_monitor_stop is not None:
-        _bits_monitor_stop.set()
-        _bits_monitor_stop = None
-    
-    if _bits_monitor_thread is not None:
+    stop_event = _bits_monitor_stop
+    monitor_thread = _bits_monitor_thread
+    _bits_monitor_stop = None
+    _bits_monitor_thread = None
+
+    if stop_event is not None:
+        stop_event.set()
+
+    if monitor_thread is not None:
         try:
-            _bits_monitor_thread.join(timeout=2.0)
+            if monitor_thread is not threading.current_thread():
+                monitor_thread.join(timeout=2.0)
         except Exception:
             pass
-        _bits_monitor_thread = None
     logger.info("Bits thread monitor stopped")
 
 
@@ -404,6 +409,13 @@ def _init_runtime(*, auto_start_lidar: bool = True):
         raise RuntimeError(
             f"Runtime initialization failed for Bits={backend_name!r}. Supported: SIM, IL. Error: {e}"
         ) from e
+
+
+def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
+    """Initialize the selected runtime before a command path uses its objects."""
+
+    if not _runtime_initialized:
+        _init_runtime(auto_start_lidar=auto_start_lidar)
 
 
 Beta_Func = False

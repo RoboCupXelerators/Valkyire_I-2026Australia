@@ -237,6 +237,29 @@ def test_optional_morse_output_delegates_to_hardware_callback(monkeypatch):
     assert messages == ["No Position Data!"]
 
 
+def test_bits_thread_monitor_owns_its_stop_event(monkeypatch):
+    class FakeBits:
+        def IsThreadAlive(self):
+            return True
+
+        def RestartThreadIfNeeded(self):
+            raise AssertionError("a live fake thread should not be restarted")
+
+    runtime._stop_bits_thread_monitor()
+    runtime._start_bits_thread_monitor(FakeBits())
+    first_thread = runtime._bits_monitor_thread
+
+    try:
+        runtime._start_bits_thread_monitor(FakeBits())
+        assert first_thread is not runtime._bits_monitor_thread
+        assert not first_thread.is_alive()
+    finally:
+        runtime._stop_bits_thread_monitor()
+
+    assert runtime._bits_monitor_thread is None
+    assert runtime._bits_monitor_stop is None
+
+
 def test_sim_runtime_uses_bits_sensor_source_for_stale_hardware_config(monkeypatch):
     monkeypatch.setattr(runtime.cfg.Sensor, "Source", "ros2")
     monkeypatch.delenv("XEL_SIM_SENSOR_SOURCE", raising=False)
