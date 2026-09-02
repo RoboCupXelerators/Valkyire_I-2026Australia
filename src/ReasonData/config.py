@@ -72,6 +72,9 @@ class Preference:
             # - TunaIntelligence/HybridVision (TI/HV): 使用 .pt 和 .engine
             # - LunaIntelligence/SimYoloVision (SY/LI): 使用 .pt 和 .engine
             "ModelName": "ArisuModel_v1.2s",
+            # OpenCV V4L2 values: 1=manual, 3=automatic. Exposure is in 100 us units.
+            "AutoExposure": 1,
+            "Exposure": 78,
             # 标定文件夹
             "CalibrationFolder": "Calibration",
             # Target dimensions (cm) for operator-facing object semantics.

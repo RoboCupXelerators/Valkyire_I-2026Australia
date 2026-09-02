@@ -1362,6 +1362,8 @@ class ControlPanelApp:
             # Vision
             ("Vision", "CamPorts"): {"type": "list[int]", "label": "摄像头端口", "description": "按顺序: 后, 左, 前, 右", "item_labels": ["后", "左", "前", "右"], "tab": "vision", "icon": "📷"},
             ("Vision", "ModelName"): {"type": "string", "label": "模型名称", "description": "不含后缀，各推理库自动选择所需格式", "tab": "vision"},
+            ("Vision", "AutoExposure"): {"type": "select", "label": "自动曝光", "options": [1, 3], "option_labels": {"1": "手动", "3": "自动"}, "tab": "vision"},
+            ("Vision", "Exposure"): {"type": "int", "label": "快门曝光 (100 us)", "description": "手动曝光时有效；78 约为 7.8 ms（比 157 少约 1 EV）", "min": 1, "max": 10000, "tab": "vision"},
             ("Vision", "CalibrationFolder"): {"type": "string", "label": "标定文件夹", "tab": "vision"},
             ("Vision", "BallDiameter"): {"type": "float", "label": "球直径 (CM)", "min": 1.0, "max": 20.0, "step": 0.1, "tab": "vision"},
             ("Vision", "ChassisWidth"): {"type": "float", "label": "底盘宽度 (CM)", "min": 5.0, "max": 30.0, "step": 0.5, "tab": "vision"},

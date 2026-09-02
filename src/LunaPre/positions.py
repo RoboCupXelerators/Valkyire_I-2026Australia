@@ -390,6 +390,16 @@ class Positions:
         self.get_vision_data_process.daemon = True
         self.get_vision_data_process.start()
         return True
+
+    @staticmethod
+    def _start_vision_subprocess():
+        """Launch the vision UDP producer with its package import context."""
+        project_root = Path(__file__).resolve().parents[2]
+        source_root = project_root / "src"
+        return subprocess.Popen(
+            [sys.executable, "-m", "vision_utils.Vision"],
+            cwd=str(source_root),
+        )
         
     def _get_vision_data(self):
         # Backoff for restarting vision subprocess when it's crashing repeatedly.
@@ -440,12 +450,8 @@ class Positions:
                     if (now - last_restart_t) < restart_backoff_s:
                         time.sleep(restart_backoff_s)
                     last_restart_t = now
-                    project_root = Path(__file__).resolve().parents[2]
-                    vision_script = project_root / "src" / "vision_utils" / "Vision.py"
-                    if not vision_script.exists():
-                        vision_script = project_root / "src" / "Vision.py"
-                    self.vision_process = subprocess.Popen([sys.executable, str(vision_script)], cwd=str(project_root))
-                    logger.info("Started vision server process")
+                    self.vision_process = self._start_vision_subprocess()
+                    logger.info("Started vision server process as vision_utils.Vision")
                     restart_count += 1
 
                 self.vision_data = {
