@@ -85,8 +85,15 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
         "RecordFPS": existing.get("RecordFPS", 30),
         "RecordCodec": existing.get("RecordCodec", "mp4v"),
         "RecordExt": existing.get("RecordExt", "mp4"),
-        "ExposeVal": existing.get("ExposeVal", 100),
-        "AutoExpose": existing.get("AutoExpose", 0),
+        # Prefer the unified Vision settings while retaining legacy overlays.
+        "AutoExposure": vision.get(
+            "AutoExposure", existing.get("AutoExposure", existing.get("AutoExpose", 3))
+        ),
+        "Exposure": vision.get(
+            "Exposure", existing.get("Exposure", existing.get("ExposeVal", 157))
+        ),
+        "ExposeVal": existing.get("ExposeVal", vision.get("Exposure", 157)),
+        "AutoExpose": existing.get("AutoExpose", vision.get("AutoExposure", 3)),
         "CalibrationFolder": vision.get("CalibrationFolder", existing.get("CalibrationFolder", "Calibration")),
         "HailoModelPath": vision.get("HailoModelPath", existing.get("HailoModelPath", "/yoloV8_Weighs/")),
         "TunaModelName": vision.get("ModelPath", existing.get("TunaModelName", "")),

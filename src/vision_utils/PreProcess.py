@@ -823,6 +823,12 @@ class VisionPreUntil:
         Width = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamWidth", Width))
         Height = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamHeight", Height))
         fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamFps", 30))
+        AutoExposure = float(
+            getattr(getattr(self.cfg, "VisionVals", object()), "AutoExposure", AutoExposure)
+        )
+        Exposure = float(
+            getattr(getattr(self.cfg, "VisionVals", object()), "Exposure", Exposure)
+        )
 
         use_gst = False
         if isinstance(backend, str):
@@ -862,8 +868,13 @@ class VisionPreUntil:
                 Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
                 Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
                 # Exposure controls may not be supported on all cameras.
-                Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
-                Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
+                auto_exposure_set = Cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, AutoExposure)
+                exposure_set = Cam.set(cv2.CAP_PROP_EXPOSURE, Exposure)
+                if not (auto_exposure_set and exposure_set):
+                    self.logger.warning(
+                        f"Camera exposure control unsupported: /dev/video{Port} "
+                        f"auto={AutoExposure} exposure={Exposure}"
+                    )
                 Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
                 Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
                 Cam.set(cv2.CAP_PROP_SATURATION, Saturation)

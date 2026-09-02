@@ -6,14 +6,9 @@ import math
 import numpy as np
 
 def activate_func(input_score):
-    x = input_score
-    y1 = 1 / (1 + math.e ** (-x))
-    y11 = 1 / (2 + math.e ** (-x) + math.e ** x)
-    y2 = (math.e ** x - math.e ** (-x)) / (math.e ** x + math.e ** (-x))
-    y22 = 1 - y2 * y2
-    y3 = np.where(x < 0, 0, x)
-    y33 = np.where(x < 0, 0, 1)
-    return y33
+    """Return the binary activation used by the strategy scoring functions."""
+    activation = np.where(np.asarray(input_score) < 0, 0.0, 1.0)
+    return activation.item() if activation.ndim == 0 else activation
 
 
 def sigmod(x):
