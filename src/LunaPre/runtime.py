@@ -52,6 +52,7 @@ _referee_status_provider = None
 _referee_state_provider = None
 _referee_serial_provider = None
 _runtime_initialized = False
+_runtime_lock = threading.RLock()
 
 from .sensor import Lidar, Sensor, _resolve_source, coerce_pose
 from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
@@ -235,7 +236,7 @@ def _stop_bits_thread_monitor():
     logger.info("Bits thread monitor stopped")
 
 
-def shutdown_runtime() -> None:
+def _shutdown_runtime_unlocked() -> None:
     """Release runtime-owned resources so a simulator worker can restart cleanly."""
 
     global Bits, lidar, sensor, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
@@ -265,6 +266,13 @@ def shutdown_runtime() -> None:
     _field_pose_provider = _velocity_provider = _referee_status_provider = None
     _referee_state_provider = _referee_serial_provider = None
     _runtime_initialized = False
+
+
+def shutdown_runtime() -> None:
+    """Release runtime-owned resources without racing an initialization."""
+
+    with _runtime_lock:
+        _shutdown_runtime_unlocked()
 
 
 def _build_sim_backend(*, auto_start_lidar: bool) -> dict:
@@ -358,6 +366,13 @@ def _resolve_runtime_sensor_source(backend_name: str) -> str:
 
 
 def _init_runtime(*, auto_start_lidar: bool = True):
+    """Initialize the selected runtime at most once per Python process."""
+
+    with _runtime_lock:
+        return _init_runtime_unlocked(auto_start_lidar=auto_start_lidar)
+
+
+def _init_runtime_unlocked(*, auto_start_lidar: bool = True):
     """Initialize the selected SIM or IceLoong runtime and semantic sensor."""
 
     global Bits, lidar, sensor, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
