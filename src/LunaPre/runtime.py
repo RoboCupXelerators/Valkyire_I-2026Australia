@@ -299,6 +299,18 @@ def _build_sim_backend(*, auto_start_lidar: bool) -> dict:
     }
 
 
+def _debug_motion_enabled() -> bool:
+    """Allow an explicit local debug run to bypass the referee motion gate."""
+
+    return os.environ.get("ROBOCUPX_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _motion_permission(bits) -> bool:
+    """Use the hardware referee gate except during an explicitly enabled debug run."""
+
+    return _debug_motion_enabled() or bool(bits.GetRefereeUnlockPin())
+
+
 def _build_iceloong_backend(*, auto_start_lidar: bool) -> dict:
     """Assemble IceLoong hardware through the active Bits contract only."""
 
@@ -319,10 +331,10 @@ def _build_iceloong_backend(*, auto_start_lidar: bool) -> dict:
         "chassis": _make_chassis(
             bits.SetWheelSpeed,
             bits.GetYaw,
-            permission=bits.GetRefereeUnlockPin,
+            permission=lambda: _motion_permission(bits),
         ),
         "compass": bits.GetYaw,
-        "peripheral": Peripherals(bits.VirtualPorts, bits.GetRefereeUnlockPin),
+        "peripheral": Peripherals(bits.VirtualPorts, lambda: _motion_permission(bits)),
         "key": None,
         "Odometer": None,
         "Morse": bits.MorsePlay,

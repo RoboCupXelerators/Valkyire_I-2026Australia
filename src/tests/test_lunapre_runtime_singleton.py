@@ -4,8 +4,19 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 from LunaPre import runtime
+
+
+def test_debug_motion_bypasses_only_the_runtime_motion_permission(monkeypatch):
+    bits = SimpleNamespace(GetRefereeUnlockPin=lambda: False)
+
+    monkeypatch.delenv("ROBOCUPX_DEBUG", raising=False)
+    assert runtime._motion_permission(bits) is False
+
+    monkeypatch.setenv("ROBOCUPX_DEBUG", "true")
+    assert runtime._motion_permission(bits) is True
 
 
 def test_concurrent_runtime_initialization_builds_one_backend(monkeypatch):
