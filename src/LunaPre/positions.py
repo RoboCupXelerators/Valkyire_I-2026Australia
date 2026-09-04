@@ -21,16 +21,26 @@ import simple_pid
 from ReasonData import logger, Settings
 
 from . import runtime
-from .sensor import LIDAR_DISABLED_DISTS
 from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_error_deg, clamp
 
 cfg = runtime.cfg
 
-POS2POS_KP = 0.018
-POS2POS_KI = 0.00001
-POS2POS_KD = 0.0002
-POS2POS_OUTPUT_LIMIT_MPS = 1.2
-POS2POS_MIN_SPEED_MPS = 0.08
+# Pos2Pos receives intermittent hardware pose packets. Keep integral action
+# disabled, and keep D low enough that a newly arrived pose cannot turn into a
+# one-tick braking spike between otherwise identical observations.
+POS2POS_KP = 0.011
+POS2POS_KI = 0.0
+POS2POS_KD = 0.00015
+POS2POS_OUTPUT_LIMIT_MPS = 0.65
+POS2POS_COMMAND_LIMIT_MPS = 0.75
+POS2POS_NEAR_COMMAND_LIMIT_MPS = 0.20
+POS2POS_BRAKE_ACCEL_MPS2 = 0.9
+POS2POS_YAW_KP = 0.75
+POS2POS_MAX_YAW_RATE_DEG_S = 100.0
+# Keep recovery commands above the SIM bridge's 0.6 planar scale and 0.064
+# command deadzone (0.12 * 0.6 = 0.072). Normal positioning does not use this
+# floor, so fine final approach remains unchanged.
+POS2POS_MIN_SPEED_MPS = 0.12
 POS2POS_ARRIVAL_SCALE = 0.5
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
@@ -267,6 +277,7 @@ class Positions:
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
+        self._last_pos2pos_command = (0.0, 0.0, 0.0)
         self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
@@ -286,6 +297,36 @@ class Positions:
         self.Position_X_PID.reset()
         self.Position_Y_PID.reset()
 
+    @staticmethod
+    def _pos2pos_command_limit(distance_cm: float, arrival_cm: float = 5.0) -> float:
+        """Use a braking-distance profile for the final planar speed."""
+
+        distance_cm = max(0.0, float(distance_cm))
+        arrival_cm = max(0.0, float(arrival_cm))
+        distance_to_brake_cm = max(0.0, distance_cm - arrival_cm)
+        if distance_to_brake_cm <= 0.0:
+            return POS2POS_NEAR_COMMAND_LIMIT_MPS
+
+        # v = sqrt(2*a*d), with d converted from cm to m. This keeps the
+        # robot fast when far away and continuously removes speed before the
+        # arrival window instead of applying a fixed near-target cutoff.
+        braking_limit = math.sqrt(
+            2.0 * POS2POS_BRAKE_ACCEL_MPS2 * distance_to_brake_cm / 100.0
+        )
+        return max(
+            POS2POS_NEAR_COMMAND_LIMIT_MPS,
+            min(POS2POS_COMMAND_LIMIT_MPS, braking_limit),
+        )
+
+    @staticmethod
+    def _pos2pos_yaw_kp(yaw_error_deg: float) -> float:
+        """Keep heading correction concurrent with translation."""
+
+        error = abs(float(yaw_error_deg))
+        if error <= 1e-6:
+            return POS2POS_YAW_KP
+        return min(POS2POS_YAW_KP, POS2POS_MAX_YAW_RATE_DEG_S / error)
+
     def _reset_pos2pos_on_pose_change(self):
         bits = getattr(runtime, "Bits", None)
         getter = getattr(bits, "GetPoseRevision", None)
@@ -300,6 +341,21 @@ class Positions:
         if speed_gain is None:
             return 1.0
         return clamp(float(speed_gain), 0.2, 6.0)
+
+    @staticmethod
+    def _ensure_motion_runtime() -> None:
+        """Ensure command paths have a concrete chassis, not only a lazy facade."""
+
+        if runtime.chassis is None:
+            runtime.ensure_runtime(auto_start_lidar=True)
+
+    @staticmethod
+    def _stop_chassis() -> None:
+        """Stop when a chassis is available; pose queries may run pre-init."""
+
+        chassis = runtime.chassis
+        if chassis is not None:
+            chassis.stop()
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -334,6 +390,16 @@ class Positions:
         self.get_vision_data_process.daemon = True
         self.get_vision_data_process.start()
         return True
+
+    @staticmethod
+    def _start_vision_subprocess():
+        """Launch the vision UDP producer with its package import context."""
+        project_root = Path(__file__).resolve().parents[2]
+        source_root = project_root / "src"
+        return subprocess.Popen(
+            [sys.executable, "-m", "vision_utils.Vision"],
+            cwd=str(source_root),
+        )
         
     def _get_vision_data(self):
         # Backoff for restarting vision subprocess when it's crashing repeatedly.
@@ -377,19 +443,15 @@ class Positions:
                     # If it keeps dying, stop respawning (prevents resource_tracker leaked semaphores).
                     if restart_count >= max_restart:
                         self._vision_enabled = False
-                        logger.warning("Vision disabled: subprocess crashed too many times (max_restart=%s).", max_restart)
+                        logger.warning(f"Vision disabled: subprocess crashed too many times (max_restart={max_restart}).")
                         continue
 
                     now = time.time()
                     if (now - last_restart_t) < restart_backoff_s:
                         time.sleep(restart_backoff_s)
                     last_restart_t = now
-                    project_root = Path(__file__).resolve().parents[2]
-                    vision_script = project_root / "src" / "vision_utils" / "Vision.py"
-                    if not vision_script.exists():
-                        vision_script = project_root / "src" / "Vision.py"
-                    self.vision_process = subprocess.Popen([sys.executable, str(vision_script)], cwd=str(project_root))
-                    logger.info("Started vision server process")
+                    self.vision_process = self._start_vision_subprocess()
+                    logger.info("Started vision server process as vision_utils.Vision")
                     restart_count += 1
 
                 self.vision_data = {
@@ -700,99 +762,50 @@ class Positions:
         self._ball_predictor().observe(ball_field, timestamp_s=timestamp_s)
 
     def DirectDistance(self):
-        '''
-        `非阻塞函数`
-        Get the [Direct] Distance From the bound to the Bound, unit mm [Forward,Left,Backward,Right]
+        """Return semantic wall ranges [front, left, back, right] in millimetres."""
 
-        获取四面墙的距离 单位 mm [Forward,Left,Backward,Right]
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "DirectDistance", None)
+        if not callable(getter):
+            from .sensor import LIDAR_DISABLED_DISTS
 
-        #### Args:
-
-        #### Returns:
-            RobotPosition: [0,0]
-        #### Note:
-            `0xfff` stand for `NoPosition`
-        '''
-        self.BoundsDistance = runtime.lidar.GetDists()
-        # disabled runtime.lidar returns [0xfff,...]
-        if self.BoundsDistance == LIDAR_DISABLED_DISTS:
             return list(LIDAR_DISABLED_DISTS)
-        if self.BoundsDistance == [0, 0, 0, 0]:
-            self.WarnedLidarCount +=1
-            logger.warning("Lidar Not Started! Retry for %s time in %s second"%(self.WarnedLidarCount,self.WaitTime))
-            time.sleep(self.WaitTime) # wait 1 second for starting runtime.lidar
-            if self.WarnedLidarCount >= cfg.Motion.ErrorRange/3:
-                a = subprocess.run(['sudo fuser -k /dev/sllidar'], shell=True, capture_output=True, text=True)
-                logger.error(f"No Lidar Data Recieved! Please Check Lidar Modules! Auto-fixing failed with {a.returncode} after udevadm trigger. Stopping runtime.chassis to prevent damage.")
-                runtime.lidar.stop()
-                raise RuntimeError("No Lidar Data Recieved! Please Check Lidar Modules!")
-            return list(LIDAR_DISABLED_DISTS)
-        else:
-            if self.WarnedLidarCount:
-                self.WarnedLidarCount = 0
-                if Settings.Debug.FullLog:
-                    logger.success("Lidar System Started!Read [Direct] Robot Distance: %s"%self.BoundsDistance)
-            else:
-                pass
+        self.BoundsDistance = list(getter())
         return self.BoundsDistance
 
     def DirectDistanceSnapshot(self):
-        """Return the latest direct lidar distances without retry/sleep side effects."""
-        try:
-            self.BoundsDistance = runtime.lidar.GetDists()
-            return list(self.BoundsDistance)
-        except Exception:
-            return list(LIDAR_DISABLED_DISTS)
+        """Return the latest semantic wall ranges without movement side effects."""
+
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "DirectDistanceSnapshot", None)
+        if callable(getter):
+            self.BoundsDistance = list(getter())
+            return self.BoundsDistance
+        return self.DirectDistance()
 
     def NearbyLidarObjects(self):
-        """Return near-field LDROBOT point clusters in robot coordinates."""
+        """Return native near-field clusters in robot coordinates."""
+
+        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
+        getter = getattr(service, "GetNearbyObjects", None)
+        if not callable(getter):
+            return []
         try:
-            return runtime.lidar.GetNearbyObjects()
+            return getter()
         except Exception:
             return []
 
-    def FieldRobotPose(self, lower: bool | None = False, distance: list | None = None):
-        '''
-        `非阻塞函数`
+    def FieldRobotPose(self):
+        """Return the configured runtime pose, or ``POSE_NOT_FOUND`` when unavailable.
 
-        获取[机器人几何中心]相对于[场地几何中心]的姿态 [x_forward,y_left,yaw]
+        The selected Sensor source owns localization. This query has no retry,
+        motion, process, or sensor recovery side effects.
+        """
 
-        #### Args:
-            lower: `bool`, choose to using lower data
-
-        #### Returns:
-            RobotPose: [x, y, yaw]
-        #### Note:
-            `0xfff` stand for `No Position`
-        '''
-        self._reset_pos2pos_on_pose_change()
         pose = runtime.get_field_pose()
-        if pose is not None:
-            self.LidarPos = pose
-            return self.LidarPos
-
-        _distance = list(distance) if distance is not None else self.DirectDistance()
-        if _distance == LIDAR_DISABLED_DISTS:
-            if distance is None:
-                runtime.chassis.stop()
+        if pose is None:
             return list(POSE_NOT_FOUND)
-        if (_distance[0]+_distance[2]) < (cfg.Bounds.Long)*self.LidarScale*self.BoundsScale:
-            if _distance[0] > _distance[2]:
-                Y = cfg.Bounds.Long*self.LidarScale/2 - _distance[0]
-            else:
-                Y = _distance[2] - cfg.Bounds.Long*self.LidarScale/2
-        else:
-            Y = ((cfg.Bounds.Long*self.LidarScale/2 - _distance[0]) + (_distance[2] - cfg.Bounds.Long*self.LidarScale/2))/2
-        if _distance[1]+_distance[3] < (cfg.Bounds.Short - 50)*self.LidarScale*self.BoundsScale:
-            if _distance[1] > _distance[3]:
-                X = -(cfg.Bounds.Short*self.LidarScale/2 - _distance[1])
-            else:
-                X = -(_distance[3] - cfg.Bounds.Short*self.LidarScale/2)
-        else:
-            X = -((cfg.Bounds.Short*self.LidarScale/2 - _distance[1]) + (_distance[3] - cfg.Bounds.Short*self.LidarScale/2))/2
-        self.LidarPos = [Y/10,X/10,runtime.compass()]
-        # logger.info("[Field] Robot Pose: %s"%self.LidarPos)
-        # 20251216 already changed X_forward,Y_left dimension  [tested]
+        self.LidarPos = list(pose)
         return self.LidarPos
 
     # Documented API: Robot_Chassis_Pos (robot frame)
@@ -1652,10 +1665,12 @@ class Positions:
         ``Pos2Pos`` 调用内被替换，不会把“到达中继点”误报成到达最终目标；
         下一帧会重新检查从中继点到最终目标的路径。
         """
+        self._ensure_motion_runtime()
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
-            runtime.chassis.stop()
-            runtime.Morse("No Position Data!")
+            self._last_pos2pos_command = (0.0, 0.0, 0.0)
+            self._stop_chassis()
+            runtime.play_morse("No Position Data!")
             return False
 
         start = [loc_x, loc_y, loc_yaw]
@@ -1668,21 +1683,60 @@ class Positions:
         dist = math.hypot(err_x, err_y)
         arrival_cm = max(1.0, float(Settings.Motion.ErrorRange) * 0.5)
 
-        if dist <= arrival_cm:
+        # A recovery target can intentionally be inside Pos2Pos's normal
+        # arrival window.  In that case stopping would leave the robot in the
+        # restricted area, so keep translating until the pose itself is safe.
+        recovery_escape_pending = (
+            self.IsPoseInRestrictedArea(start)
+            and not self.IsPoseInRestrictedArea(AimPos)
+        )
+        if dist <= arrival_cm and not recovery_escape_pending:
             if abs(err_yaw) <= float(Settings.Motion.ErrorRange):
-                runtime.chassis.stop()
+                self._last_pos2pos_command = (0.0, 0.0, 0.0)
+                self._stop_chassis()
                 self._reset_pos2pos_pid()
                 return True
             self._reset_pos2pos_pid()
+            self._last_pos2pos_command = (0.0, 0.0, aim_yaw)
             runtime.chassis.FieldTurn(aim_yaw)
             return False
 
         gain = self._resolve_speed_gain(speed_gain)
         self.Position_X_PID.setpoint = float(aim_x)
         self.Position_Y_PID.setpoint = float(aim_y)
-        cmd_x = self.Position_X_PID(float(loc_x)) * gain
-        cmd_y = self.Position_Y_PID(float(loc_y)) * gain
-        runtime.chassis.FieldMoveVector(cmd_x, cmd_y, aim_yaw)
+        pid_x = self.Position_X_PID(float(loc_x)) * gain
+        pid_y = self.Position_Y_PID(float(loc_y)) * gain
+        pid_norm = math.hypot(pid_x, pid_y)
+        command_limit = self._pos2pos_command_limit(dist, arrival_cm)
+        if dist > 1e-6 and pid_norm > 0.0:
+            # Keep the translation direction tied to the target vector. The
+            # two axis PID derivatives can differ when pose packets arrive at
+            # different rates; using their norm for speed but the position
+            # error for direction prevents that noise from bending the path.
+            command_speed = min(pid_norm, command_limit)
+            cmd_x = command_speed * float(err_x) / dist
+            cmd_y = command_speed * float(err_y) / dist
+        else:
+            cmd_x = 0.0
+            cmd_y = 0.0
+        if recovery_escape_pending:
+            # Simulator and some motor controllers have a small planar command
+            # deadzone.  A recovery PID command can fall below it while the
+            # robot is still technically restricted, leaving the guard active
+            # forever.  Keep only this safety escape above the configured
+            # minimum; normal position control should retain its fine approach.
+            cmd_norm = math.hypot(cmd_x, cmd_y)
+            if 0.0 < cmd_norm < POS2POS_MIN_SPEED_MPS:
+                scale = POS2POS_MIN_SPEED_MPS / cmd_norm
+                cmd_x *= scale
+                cmd_y *= scale
+        self._last_pos2pos_command = (float(cmd_x), float(cmd_y), aim_yaw)
+        runtime.chassis.FieldMoveVector(
+            cmd_x,
+            cmd_y,
+            aim_yaw,
+            KpW=self._pos2pos_yaw_kp(err_yaw),
+        )
         return False
 
     def _path_hits_restricted_area(self, start, target, samples: int = 32) -> bool:
@@ -1807,10 +1861,10 @@ class Positions:
         保留这个接口是为了兼容已有策略；``Pos2Pos`` 现在也会执行同样的
         路径检查，避免直接调用 ``Pos2Pos`` 时绕过禁区保护。
         """
+        self._ensure_motion_runtime()
         start = self.FieldRobotPose()
         if start == POSE_NOT_FOUND:
-            runtime.chassis.stop()
-            runtime.Morse("No Position Data!")
+            self._stop_chassis()
             return False
         waypoint = self._navigate_waypoint(start, AimPos)
         return self.Pos2Pos(waypoint, speed_gain)
@@ -1848,7 +1902,7 @@ class Positions:
                     break
 
                 if point_timeout > 0 and time.time() - start_t > point_timeout:
-                    runtime.chassis.stop()
+                    self._stop_chassis()
                     logger.warning(
                         "Move2Path timeout at point {}/{} target={} current={}",
                         idx + 1,
@@ -1868,7 +1922,7 @@ class Positions:
 
         '''
         while 1:
-            if 100 < runtime.lidar.GetDists()[0] <= 500:
+            if 100 < self.DirectDistance()[0] <= 500:
                 return True
             else:
                 pass

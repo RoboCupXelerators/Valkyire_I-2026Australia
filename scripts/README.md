@@ -10,7 +10,6 @@ Hailo 的 `.whl` / `.deb` 安装包保留在本目录中，方便在 Jetson / Ha
 
 ```
 scripts/
-├── build_codegraph_view.py        # 生成 docs/codegraph_view.html
 ├── debug/                         # 调试工具
 │   └── debug_ball_distance.py
 │
@@ -29,35 +28,11 @@ scripts/
 
 ## 使用方法
 
-### Codegraph
-
-```bash
-cd Software
-python scripts/build_codegraph_view.py
-```
-
-输出文件：
-
-```text
-docs/codegraph_view.html
-```
-
 ### 调试
 
 ```bash
 cd Software
 python scripts/debug/debug_ball_distance.py
-```
-
-### 策略测试
-
-```bash
-# Alpha vs Lambda 对打（需要 Unity 仿真器）
-cd Software
-python src/tools/tests/strategy/run_alpha_vs_lambda.py
-
-# Alpha 单机测试
-python src/tools/tests/strategy/test_alpha_single.py
 ```
 
 ### 测试与平台检查

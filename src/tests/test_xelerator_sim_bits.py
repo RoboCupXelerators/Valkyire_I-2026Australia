@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import math
 
 import pytest
 
@@ -51,6 +52,43 @@ def _make_bits_for_possession(
     bits._held_ball_pos_cm = _catch_val()
     bits._wheel_delivery_order = ("LF", "LB", "RF", "RB")
     return bits
+
+
+def _make_bits_for_kick():
+    bits = object.__new__(XeleratorSimBits)
+    bits._status_lock = threading.Lock()
+    bits._flags = 0
+    bits._kick_strength = 4.0
+    bits.kick_power_level = 4
+    return bits
+
+
+@pytest.mark.parametrize("power_level", [1, 2, 3, 4])
+def test_sim_kick_accepts_power_level_and_emits_selected_strength(power_level):
+    bits = _make_bits_for_kick()
+
+    assert bits.SetKickPowerLevel(power_level) == power_level
+    assert bits.Kick() is True
+    assert bits._kick_strength == float(power_level)
+    assert bits._flags & bits.FLAG_KICK
+
+
+@pytest.mark.parametrize("power_level", [0, 5, 1.5, True, None, math.inf])
+def test_sim_kick_rejects_invalid_power_level(power_level):
+    bits = _make_bits_for_kick()
+
+    with pytest.raises(ValueError, match="integer from 1 to 4"):
+        bits.SetKickPowerLevel(power_level)
+
+
+def test_sim_virtual_kick_port_uses_selected_default_level():
+    bits = _make_bits_for_kick()
+    bits.SetKickPowerLevel(2)
+
+    bits.VirtualPorts(3, 0)
+
+    assert bits._kick_strength == 2.0
+    assert bits._flags & bits.FLAG_KICK
 
 
 def _robot_ball_pos_for_observation(observation):

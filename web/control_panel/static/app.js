@@ -37,7 +37,9 @@ const radarZoomState = {
   manualRangeCm: null,
   autoRangeCm: 100,
   lastData: null,
+  previewMode: "point_cloud",
   pointCloud: [],
+  wallSegments: [],
 };
 
 // DOM Elements
@@ -134,6 +136,10 @@ function setupNavigation() {
 function navigateTo(page) {
   const previousPage = state.currentPage;
   state.currentPage = page;
+
+  if (previousPage === "control" && page !== "control") {
+    disableControlForSafety();
+  }
 
   elements.navItems.forEach((item) => {
     item.classList.toggle("active", item.dataset.page === page);
@@ -347,6 +353,8 @@ function stopVisionFeeds() {
     lidarPointCloudInterval = null;
   }
   radarZoomState.pointCloud = [];
+  radarZoomState.wallSegments = [];
+  radarZoomState.previewMode = "point_cloud";
   console.log("[Vision] Stopped vision feeds");
 }
 
@@ -541,8 +549,13 @@ function updateLidarPointCloud() {
       return response.json();
     })
     .then((data) => {
-      radarZoomState.pointCloud = Array.isArray(data.point_cloud_cm)
+      const wallsMode = data.preview_mode === "walls";
+      radarZoomState.previewMode = wallsMode ? "walls" : "point_cloud";
+      radarZoomState.pointCloud = !wallsMode && Array.isArray(data.point_cloud_cm)
         ? data.point_cloud_cm
+        : [];
+      radarZoomState.wallSegments = wallsMode && Array.isArray(data.wall_segments_cm)
+        ? data.wall_segments_cm
         : [];
       if (radarZoomState.lastData) {
         drawRadar(radarZoomState.lastData);
@@ -550,6 +563,7 @@ function updateLidarPointCloud() {
     })
     .catch(() => {
       radarZoomState.pointCloud = [];
+      radarZoomState.wallSegments = [];
     })
     .finally(() => {
       lidarPointCloudRequestInFlight = false;
@@ -849,9 +863,13 @@ function drawRadar(data) {
   }
   maxDist = expandRadarRange(maxDist, data.blue_goal_pos_cm, 1.25);
   maxDist = expandRadarRange(maxDist, data.yellow_goal_pos_cm, 1.25);
-  const lidarPoints = getLidarPointCloud(data);
-  for (const point of lidarPoints) {
+  const lidarPreview = getLidarPreview(data);
+  for (const point of lidarPreview.points) {
     maxDist = expandRadarRange(maxDist, point, 1.0);
+  }
+  for (const segment of lidarPreview.wallSegments) {
+    maxDist = expandRadarRange(maxDist, segment.start, 1.0);
+    maxDist = expandRadarRange(maxDist, segment.end, 1.0);
   }
 
   // 机器人视角里目标可能在整场任意位置，不能只按半场尺寸裁剪
@@ -902,8 +920,7 @@ function drawRadar(data) {
   ctx.fillText("左", 10, cy + 4);
   ctx.fillText("右", w - 20, cy + 4);
 
-  // Lidar points share the radar's coordinate system and scale.
-  drawLidarPoints(ctx, lidarPoints, cx, cy, scale, w, h);
+  drawLidarPreview(ctx, lidarPreview, cx, cy, scale, w, h);
 
   // Ego robot at center
   ctx.fillStyle = "rgba(58,238,159,0.85)";
@@ -992,12 +1009,43 @@ function drawRadar(data) {
 
 }
 
-function getLidarPointCloud(data) {
+function getLidarPreview(data) {
+  if (radarZoomState.previewMode === "walls") {
+    return {
+      points: [],
+      wallSegments: getWallSegments(),
+    };
+  }
+
   const rawPoints = radarZoomState.pointCloud.length > 0
     ? radarZoomState.pointCloud
     : data?.lidar_status?.point_cloud_cm;
-  if (!Array.isArray(rawPoints)) return [];
-  return rawPoints.map(normalizeRadarPoint).filter(Boolean);
+  return {
+    points: Array.isArray(rawPoints)
+      ? rawPoints.map(normalizeRadarPoint).filter(Boolean)
+      : [],
+    wallSegments: [],
+  };
+}
+
+function getWallSegments() {
+  if (!Array.isArray(radarZoomState.wallSegments)) return [];
+  const segments = [];
+  for (const segment of radarZoomState.wallSegments) {
+    if (!Array.isArray(segment) || segment.length < 2) continue;
+    const start = normalizeRadarPoint(segment[0]);
+    const end = normalizeRadarPoint(segment[1]);
+    if (start && end) segments.push({ start, end });
+  }
+  return segments;
+}
+
+function drawLidarPreview(ctx, preview, cx, cy, scale, width, height) {
+  if (preview.wallSegments.length) {
+    drawWallSegments(ctx, preview.wallSegments, cx, cy, scale, width, height);
+    return;
+  }
+  drawLidarPoints(ctx, preview.points, cx, cy, scale, width, height);
 }
 
 function drawLidarPoints(ctx, points, cx, cy, scale, width, height) {
@@ -1020,6 +1068,29 @@ function drawLidarPoints(ctx, points, cx, cy, scale, width, height) {
     ctx.arc(canvasPoint.x, canvasPoint.y, 2, 0, Math.PI * 2);
   }
   ctx.fill();
+}
+
+function drawWallSegments(ctx, segments, cx, cy, scale, width, height) {
+  ctx.save();
+  ctx.strokeStyle = "rgba(76,201,240,0.85)";
+  ctx.lineWidth = 2;
+  for (const { start, end } of segments) {
+    const startCanvas = robotPointToRadarCanvas(start.x, start.y, cx, cy, scale);
+    const endCanvas = robotPointToRadarCanvas(end.x, end.y, cx, cy, scale);
+    if (
+      (startCanvas.x < 0 && endCanvas.x < 0) ||
+      (startCanvas.x > width && endCanvas.x > width) ||
+      (startCanvas.y < 0 && endCanvas.y < 0) ||
+      (startCanvas.y > height && endCanvas.y > height)
+    ) {
+      continue;
+    }
+    ctx.beginPath();
+    ctx.moveTo(startCanvas.x, startCanvas.y);
+    ctx.lineTo(endCanvas.x, endCanvas.y);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // Recording Controls
@@ -3186,6 +3257,9 @@ function populateConfigForm(config) {
   setFieldValue("robot-type", config.RoboInfo?.type);
   setFieldValue("robot-bit", config.RoboInfo?.Bit); // Note: JSON uses "Bit" (capital B)
   setFieldValue("robot-rec", config.RoboInfo?.Rec); // Note: JSON uses "Rec" (capital R)
+  setFieldValue("sensor-source", config.Sensor?.Source);
+  setFieldValue("sensor-ros2-model", config.Sensor?.Ros2Model);
+  setFieldValue("sensor-inverted", config.Sensor?.Inverted, "checkbox");
 
   console.log("[Config] Robot info loaded:", {
     number: config.RoboInfo?.number,
@@ -3493,13 +3567,14 @@ const controlState = {
   enabled: false,
   speed: 0.1,
   turnSpeed: 50,
+  kickPowerLevel: 4,
+  kickPowerMin: 1,
+  kickPowerMax: 4,
+  kickPowerSupported: false,
   dribbleActive: false,
   runtimeInitialized: false,
   chassisAvailable: false,
   peripheralAvailable: false,
-  profile: "normal",
-  telemetryPending: false,
-  leasePending: false,
   currentDirection: null,
   keysPressed: new Set(),
   mouseControlEnabled: false,
@@ -3512,6 +3587,11 @@ const controlState = {
   mouseTurnResetTimer: null,
 };
 
+const CONTROL_HEARTBEAT_INTERVAL_MS = 100;
+let pendingControlVector = null;
+let controlVectorRequestInFlight = false;
+let motionHeartbeatTimer = null;
+
 // 初始化键盘控制页面
 function setupControlPage() {
   // 启用/禁用按钮
@@ -3519,14 +3599,6 @@ function setupControlPage() {
   if (enableBtn) {
     enableBtn.addEventListener("click", toggleControlEnable);
   }
-
-  const profileSelect = document.getElementById("control-profile");
-  if (profileSelect) {
-    profileSelect.addEventListener("change", updateControlProfile);
-  }
-
-  setupReverseHoldButton("reverse-forward-btn", "w");
-  setupReverseHoldButton("reverse-backward-btn", "s");
 
   // 速度滑块
   const speedSlider = document.getElementById("control-speed");
@@ -3550,29 +3622,28 @@ function setupControlPage() {
     });
   }
 
+  // IceLoongBits uses four integer kick-power levels.
+  const kickPowerSlider = document.getElementById("control-kick-power");
+  if (kickPowerSlider) {
+    kickPowerSlider.addEventListener("input", (e) => {
+      controlState.kickPowerLevel = parseInt(e.target.value, 10);
+      updateKickPowerUI();
+    });
+    kickPowerSlider.addEventListener("change", () => {
+      setControlKickPower(controlState.kickPowerLevel);
+    });
+  }
+
   // 键盘事件
   document.addEventListener("keydown", handleKeyDown);
   document.addEventListener("keyup", handleKeyUp);
 
   // 鼠标控制
   setupMouseControl();
+  updateKickPowerUI();
 
   // 定期更新控制状态
   setInterval(updateControlStatus, 500);
-  setInterval(updateControlTelemetry, 500);
-
-  // The backend owns the 30 ms C-board command heartbeat. The browser only
-  // renews its lightweight ownership lease, avoiding overlapping serial
-  // control requests while a WASD key is held.
-  setInterval(() => {
-    if (
-      controlState.enabled &&
-      state.currentPage === "control" &&
-      !document.hidden
-    ) {
-      renewControlLease();
-    }
-  }, 100);
 
   window.addEventListener("blur", releaseControlKeys);
   document.addEventListener("visibilitychange", () => {
@@ -3581,154 +3652,46 @@ function setupControlPage() {
   window.addEventListener("pagehide", disableControlForSafety);
 }
 
-function setupReverseHoldButton(id, key) {
-  const button = document.getElementById(id);
-  if (!button) return;
-  const start = (event) => {
-    event.preventDefault();
-    if (!controlState.enabled) return;
-    if (button.setPointerCapture && event.pointerId !== undefined) {
-      button.setPointerCapture(event.pointerId);
+function hasActiveMotionInput() {
+  const translationActive = ["w", "s", "a", "d"].some((key) =>
+    controlState.keysPressed.has(key),
+  );
+  const rotationActive =
+    controlState.mouseCaptured &&
+    controlState.mouseControlEnabled &&
+    Math.abs(controlState.mouseTurnWz) > 0.1;
+  return translationActive || rotationActive;
+}
+
+function stopMotionHeartbeat() {
+  if (motionHeartbeatTimer !== null) {
+    clearInterval(motionHeartbeatTimer);
+    motionHeartbeatTimer = null;
+  }
+}
+
+function refreshMotionHeartbeat() {
+  if (!controlState.enabled || !hasActiveMotionInput()) {
+    stopMotionHeartbeat();
+    return;
+  }
+  if (motionHeartbeatTimer !== null) return;
+
+  motionHeartbeatTimer = setInterval(() => {
+    if (!controlState.enabled || !hasActiveMotionInput()) {
+      stopMotionHeartbeat();
+      sendControlMoveVector(0, 0, 0);
+      return;
     }
-    controlState.keysPressed.delete(key === "w" ? "s" : "w");
-    controlState.keysPressed.add(key);
     sendCombinedControlVector();
-  };
-  const stop = (event) => {
-    event.preventDefault();
-    controlState.keysPressed.delete(key);
-    if (controlState.enabled) sendCombinedControlVector();
-  };
-  button.addEventListener("pointerdown", start);
-  button.addEventListener("pointerup", stop);
-  button.addEventListener("pointercancel", stop);
-  button.addEventListener("lostpointercapture", stop);
-}
-
-async function renewControlLease() {
-  if (controlState.leasePending) return;
-  controlState.leasePending = true;
-  try {
-    const response = await fetch("/api/control/lease", { method: "POST" });
-    const data = await response.json();
-    if (!data.success && controlState.enabled) {
-      controlState.enabled = false;
-      updateControlUI();
-      setControlStatusMessage("状态: 控制心跳超时，已安全停机", true);
-    }
-  } catch (error) {
-    console.error("Failed to renew control lease:", error);
-  } finally {
-    controlState.leasePending = false;
-  }
-}
-
-async function updateControlProfile() {
-  const select = document.getElementById("control-profile");
-  if (!select || controlState.enabled) return;
-  try {
-    const response = await fetch("/api/control/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: select.value }),
-    });
-    const data = await response.json();
-    if (!data.success) throw new Error(data.error || "模式切换失败");
-    controlState.profile = data.profile;
-  } catch (error) {
-    select.value = controlState.profile;
-    setControlStatusMessage(`状态: ${error.message}`, true);
-  }
-}
-
-function displayMetric(value, suffix = " ms") {
-  return value === null || value === undefined ? "not_measured" : `${value}${suffix}`;
-}
-
-function displayImuVector(values) {
-  if (!Array.isArray(values) || values.length !== 3) return "--";
-  return values.map((value) => value === null ? "--" : Number(value).toFixed(3)).join(" / ");
-}
-
-function updateControlImu(imu) {
-  const fields = {
-    "control-imu-status": !imu?.available ? `不可用${imu?.error ? `: ${imu.error}` : ""}` : (imu.healthy ? "健康" : "异常"),
-    "control-imu-source": imu?.available ? imu.source : "--",
-    "control-imu-age": imu?.available && imu.age_ms !== null ? `${Number(imu.age_ms).toFixed(1)} ms` : "--",
-    "control-imu-attitude": imu?.available ? displayImuVector([
-      imu.attitude_deg?.roll,
-      imu.attitude_deg?.pitch,
-      imu.attitude_deg?.yaw,
-    ]) : "--",
-    "control-imu-accel": imu?.available ? displayImuVector(imu.accel_mps2) : "--",
-    "control-imu-gyro": imu?.available ? displayImuVector(imu.gyro_rad_s) : "--",
-    "control-imu-temperature": imu?.available && imu.temperature_c !== null ? `${Number(imu.temperature_c).toFixed(1)} °C` : "--",
-    "control-imu-flags": imu?.available ? `0x${Number(imu.flags).toString(16)}` : "--",
-  };
-  for (const [id, value] of Object.entries(fields)) {
-    const element = document.getElementById(id);
-    if (element) element.textContent = value;
-  }
-}
-
-async function updateControlTelemetry() {
-  if (state.currentPage !== "control" || controlState.telemetryPending) return;
-  controlState.telemetryPending = true;
-  try {
-    const response = await fetch("/api/control/telemetry");
-    const data = await response.json();
-    if (!data.success) throw new Error(data.error || "反馈不可用");
-    const tbody = document.getElementById("control-motor-telemetry");
-    if (tbody) {
-      tbody.replaceChildren(...data.wheels.map((wheel) => {
-        const row = document.createElement("tr");
-        const values = [
-          wheel.wheel,
-          Number(wheel.target_velocity_rad_s).toFixed(2),
-          wheel.measured_velocity_rad_s === null ? "--" : Number(wheel.measured_velocity_rad_s).toFixed(2),
-          wheel.velocity_error_rad_s === null ? "--" : Number(wheel.velocity_error_rad_s).toFixed(2),
-          !wheel.torque_feedback_supported ? "unsupported" :
-            (wheel.measured_torque_nm === null ? "--" : Number(wheel.measured_torque_nm).toFixed(2)),
-          wheel.motor_temperature_c === null || wheel.motor_temperature_c === undefined ? "--" : Number(wheel.motor_temperature_c).toFixed(0),
-          ["空闲", "制动", "过零", "反向加速", "完成"][wheel.reverse_state] || `状态${wheel.reverse_state}`,
-          ["加速", "减速", "反向制动", "速度饱和"][wheel.limiter_state] || `限幅${wheel.limiter_state}`,
-        ];
-        for (const value of values) {
-          const cell = document.createElement("td");
-          cell.textContent = value;
-          row.appendChild(cell);
-        }
-        return row;
-      }));
-    }
-    const event = data.latest_reverse_event;
-    document.getElementById("reverse-control-period").textContent = `${data.control_period_ms} ms`;
-    document.getElementById("reverse-brake-latency").textContent = event ? displayMetric(event.command_to_brake_latency_ms) : "--";
-    document.getElementById("reverse-zero-time").textContent = event ? displayMetric(event.brake_to_zero_cross_ms) : "--";
-    document.getElementById("reverse-response-time").textContent = event ? displayMetric(event.zero_cross_to_reverse_response_ms) : "--";
-    document.getElementById("reverse-peak-torque").textContent = event ? displayMetric(event.peak_measured_torque_nm, " Nm") : "--";
-    document.getElementById("reverse-fault").textContent = data.runtime_fault ? `0x${data.runtime_fault.toString(16)}` : "无";
-    updateControlImu(data.imu);
-  } catch (error) {
-    const tbody = document.getElementById("control-motor-telemetry");
-    if (tbody) {
-      const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = 8;
-      cell.textContent = error.message;
-      row.appendChild(cell);
-      tbody.replaceChildren(row);
-    }
-    updateControlImu({ available: false, error: error.message });
-  } finally {
-    controlState.telemetryPending = false;
-  }
+  }, CONTROL_HEARTBEAT_INTERVAL_MS);
 }
 
 function releaseControlKeys() {
   controlState.keysPressed.clear();
   controlState.mouseTurnWz = 0;
   if (controlState.enabled) sendControlMoveVector(0, 0, 0);
+  stopMotionHeartbeat();
   updateDirectionDisplayFromVector(0, 0, 0);
   updateDirectionDisplay();
 }
@@ -3736,6 +3699,7 @@ function releaseControlKeys() {
 function disableControlForSafety() {
   if (!controlState.enabled) return;
   releaseControlKeys();
+  stopMotionHeartbeat();
   controlState.enabled = false;
   fetch("/api/control/enable", {
     method: "POST",
@@ -3951,6 +3915,36 @@ async function updateControlSpeed() {
   }
 }
 
+async function setControlKickPower(level) {
+  const slider = document.getElementById("control-kick-power");
+  try {
+    const response = await fetch("/api/control/kick-power", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ power_level: level }),
+    });
+    const data = await response.json();
+
+    if (data.success) {
+      controlState.kickPowerLevel = Number(data.kick_power_level);
+      updateKickPowerUI();
+      setControlStatusMessage(`状态: 弹射力度 ${controlState.kickPowerLevel} 档`);
+    } else {
+      updateKickPowerUI();
+      setControlStatusMessage("状态: " + (data.error || "力度设置失败"), true);
+    }
+  } catch (e) {
+    updateKickPowerUI();
+    console.error("Failed to update kick power:", e);
+    setControlStatusMessage("状态: 弹射力度请求失败", true);
+  } finally {
+    if (slider) {
+      slider.disabled =
+        !controlState.kickPowerSupported && controlState.runtimeInitialized;
+    }
+  }
+}
+
 // 处理键盘按下
 function handleKeyDown(e) {
   // 只在控制页面且启用时响应
@@ -4040,28 +4034,51 @@ function sendCombinedControlVector() {
     sendControlMoveVector(vx, vy, wz);
     updateDirectionDisplayFromVector(vx, vy, wz);
   }
+  refreshMotionHeartbeat();
   updateDirectionDisplay();
 }
 
 // 发送控制向量
-async function sendControlMoveVector(vx, vy, wz) {
+function sendControlMoveVector(vx, vy, wz) {
+  pendingControlVector = { vx, vy, wz };
+  flushControlVectorRequests();
+}
+
+async function flushControlVectorRequests() {
+  if (controlVectorRequestInFlight) return;
+  controlVectorRequestInFlight = true;
+
   try {
-    const response = await fetch("/api/control/move_vector", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ vx, vy, wz }),
-    });
+    while (pendingControlVector !== null) {
+      const vector = pendingControlVector;
+      pendingControlVector = null;
 
-    const data = await response.json();
+      try {
+        const response = await fetch("/api/control/move_vector", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(vector),
+        });
+        if (!response.ok) {
+          throw new Error(`move request failed: ${response.status}`);
+        }
 
-    if (data.success) {
-      controlState.currentVector = { vx, vy, wz };
-    } else {
-      setControlStatusMessage("状态: " + (data.error || "移动失败"), true);
+        const data = await response.json();
+        if (data.success) {
+          controlState.currentVector = vector;
+        } else {
+          setControlStatusMessage("状态: " + (data.error || "移动失败"), true);
+        }
+      } catch (e) {
+        console.error("Failed to send move vector:", e);
+        setControlStatusMessage("状态: 移动请求失败", true);
+      }
     }
-  } catch (e) {
-    console.error("Failed to send move vector:", e);
-    setControlStatusMessage("状态: 移动请求失败", true);
+  } finally {
+    controlVectorRequestInFlight = false;
+    if (pendingControlVector !== null) {
+      flushControlVectorRequests();
+    }
   }
 }
 
@@ -4145,7 +4162,10 @@ async function sendControlKick() {
       // 短暂高亮提示
       const statusEl = document.getElementById("control-status");
       if (statusEl) {
-        statusEl.textContent = "状态: 弹射!";
+        const level = Number.isFinite(Number(data.kick_power_level))
+          ? ` ${Number(data.kick_power_level)} 档`
+          : "";
+        statusEl.textContent = `状态: 弹射${level}`;
         statusEl.style.color = "#22c55e";
         setTimeout(() => {
           statusEl.textContent = controlState.enabled
@@ -4211,9 +4231,6 @@ function updateControlUI() {
     enabledStatusEl.classList.toggle("inactive", !controlState.enabled);
   }
 
-  const profileSelect = document.getElementById("control-profile");
-  if (profileSelect) profileSelect.disabled = controlState.enabled;
-
   updateMouseCaptureUI();
 }
 
@@ -4253,6 +4270,33 @@ function updateDribbleDisplay() {
   }
 }
 
+function updateKickPowerUI() {
+  const slider = document.getElementById("control-kick-power");
+  const valueEl = document.getElementById("control-kick-power-value");
+  const hintEl = document.getElementById("control-kick-power-hint");
+  if (!slider) return;
+
+  const min = Number.isFinite(controlState.kickPowerMin)
+    ? controlState.kickPowerMin
+    : 1;
+  const max = Number.isFinite(controlState.kickPowerMax)
+    ? controlState.kickPowerMax
+    : 4;
+  const level = Math.min(max, Math.max(min, controlState.kickPowerLevel));
+
+  slider.min = min;
+  slider.max = max;
+  slider.value = level;
+  if (valueEl) valueEl.textContent = `${level} 档`;
+  if (hintEl) {
+    hintEl.textContent = controlState.kickPowerSupported
+      ? `IceLoongBits：${min}-${max} 档`
+      : "启动 Bits 后可用";
+  }
+  slider.disabled =
+    !controlState.kickPowerSupported && controlState.runtimeInitialized;
+}
+
 function updateControlDiagnostics() {
   const runtimeEl = document.getElementById("control-runtime-status");
   const chassisEl = document.getElementById("control-chassis-status");
@@ -4290,15 +4334,23 @@ async function updateControlStatus() {
     const response = await fetch("/api/control/status");
     const data = await response.json();
 
-    const wasEnabled = controlState.enabled;
     controlState.enabled = data.enabled;
     controlState.speed = data.speed;
     controlState.turnSpeed = data.turn_speed;
+    controlState.kickPowerLevel = Number.isFinite(Number(data.kick_power_level))
+      ? Number(data.kick_power_level)
+      : controlState.kickPowerLevel;
+    controlState.kickPowerMin = Number.isFinite(Number(data.kick_power_min))
+      ? Number(data.kick_power_min)
+      : 1;
+    controlState.kickPowerMax = Number.isFinite(Number(data.kick_power_max))
+      ? Number(data.kick_power_max)
+      : 4;
+    controlState.kickPowerSupported = data.kick_power_supported === true;
     controlState.dribbleActive = data.dribble_active;
     controlState.runtimeInitialized = !!data.runtime_initialized;
     controlState.chassisAvailable = !!data.chassis_available;
     controlState.peripheralAvailable = !!data.peripheral_available;
-    controlState.profile = data.profile || controlState.profile;
 
     // 更新滑块
     const speedSlider = document.getElementById("control-speed");
@@ -4315,16 +4367,10 @@ async function updateControlStatus() {
       turnSpeedValue.textContent = controlState.turnSpeed;
     }
 
-    const profileSelect = document.getElementById("control-profile");
-    if (profileSelect) profileSelect.value = controlState.profile;
-
     updateControlUI();
     updateDribbleDisplay();
+    updateKickPowerUI();
     updateControlDiagnostics();
-    if (wasEnabled && !data.enabled && data.disable_reason === "lease_expired") {
-      releaseControlKeys();
-      setControlStatusMessage("状态: 控制心跳超时，已安全停机", true);
-    }
     if (data.runtime_error) {
       setControlStatusMessage("状态: " + data.runtime_error, true);
     }
@@ -4459,9 +4505,12 @@ async function saveConfigLegacy() {
     type: getFieldValue("robot-type"),
     Bit: getFieldValue("robot-bit"),
     Rec: getFieldValue("robot-rec"),
-    LidarBackend: config.RoboInfo?.LidarBackend || "ros2",
-    LidarType: config.RoboInfo?.LidarType || "s3",
-    LidarInverted: config.RoboInfo?.LidarInverted ?? false,
+  };
+
+  config.Sensor = {
+    Source: getFieldValue("sensor-source") || "auto",
+    Ros2Model: getFieldValue("sensor-ros2-model") || "s3",
+    Inverted: getFieldValue("sensor-inverted", "checkbox"),
   };
 
   config.Ports = {

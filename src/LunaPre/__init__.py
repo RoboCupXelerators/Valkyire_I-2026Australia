@@ -31,7 +31,7 @@ from .motion.recording_chassis import RecordingCar
 from .position_recorder import RecordingPositions
 from .positions import Positions
 from .referee import RefereeSnapshot
-from .sensor import Lidar
+from .sensor import Lidar, Sensor
 
 cfg = _runtime.cfg
 Beta_Func = _runtime.Beta_Func
@@ -46,6 +46,7 @@ UnitedPosition = RecordingPositions()
 _RUNTIME_NAMES = {
     "Bits",
     "lidar",
+    "sensor",
     "chassis",
     "compass",
     "peripheral",
@@ -103,6 +104,7 @@ class _RuntimeObjectProxy:
 if TYPE_CHECKING:
     Bits: Any
     lidar: Lidar
+    sensor: Sensor
     chassis: RecordingCar
     compass: Callable[[], float]
     peripheral: Peripherals
@@ -114,6 +116,7 @@ if TYPE_CHECKING:
 else:
     Bits = _RuntimeObjectProxy("Bits")
     lidar = _RuntimeObjectProxy("lidar")
+    sensor = _RuntimeObjectProxy("sensor")
     chassis = _RuntimeObjectProxy("chassis")
     compass = _RuntimeObjectProxy("compass")
     peripheral = _RuntimeObjectProxy("peripheral")
@@ -136,6 +139,7 @@ __all__ = [
     "logger",
     "Settings",
     "Lidar",
+    "Sensor",
     "Car",
     "Peripherals",
     "Key",
@@ -151,14 +155,11 @@ __all__ = [
     "Communication",
     "Bits",
     "lidar",
+    "sensor",
     "chassis",
     "compass",
     "peripheral",
     "key",
-    "Odometer",
-    "Morse",
-    "referee",
-    "vision",
     "UnitedPosition",
     "ensure_runtime",
     "shutdown_runtime",

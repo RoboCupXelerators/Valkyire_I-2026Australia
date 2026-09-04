@@ -35,14 +35,16 @@ try:
 except Exception as e:
     raise ImportError(f"SimYoloVision requires OpenCV and NumPy: {e}")
 
+from .merged_settings import Settings
+
 try:
-    from ReasonData import Settings, logger  # type: ignore
+    from ReasonData import logger  # type: ignore
 except Exception:  # pragma: no cover
     try:
-        from src.ReasonData import Settings, logger  # type: ignore
+        from src.ReasonData import logger  # type: ignore
     except Exception:  # pragma: no cover
-        from .merged_settings import Settings  # type: ignore
         import logging
+
         logger = logging.getLogger(__name__)
 
 

@@ -150,7 +150,12 @@ class BlobBased(VisionPreUntil):
 
         PxX = Blob[4]
         BottomY = Blob[1] + Blob[3]
-        PlaneX, PlaneY = self.Pixel2CM(PxX, BottomY, CamIndex)
+        PlaneX, PlaneY = self.Pixel2CM(
+            PxX,
+            BottomY,
+            CamIndex,
+            frame_size=(int(Frame.shape[1]), int(Frame.shape[0])),
+        )
         RobotX, RobotY = self._to_robot_frame_for_blob(PlaneX, PlaneY, CamIndex)
         if RobotX < self.BlobMinForwardCM:
             return None

@@ -6,7 +6,18 @@ from types import SimpleNamespace
 import pytest
 
 from LunaPre import UnitedPosition, runtime
+from LunaPre.motion.chassis import Car
 from ReasonData import Settings
+from LunaPre.positions import (
+    POS2POS_COMMAND_LIMIT_MPS,
+    POS2POS_KD,
+    POS2POS_KI,
+    POS2POS_KP,
+    POS2POS_MAX_YAW_RATE_DEG_S,
+    POS2POS_MIN_SPEED_MPS,
+    POS2POS_NEAR_COMMAND_LIMIT_MPS,
+    POS2POS_YAW_KP,
+)
 from LunaPre.strategy_tools import angle_error_deg
 
 
@@ -40,6 +51,94 @@ def test_pos2pos_arrives_when_negative_target_yaw_matches_wrapped_pose(monkeypat
     assert UnitedPosition.Pos2Pos([10.0, 20.0, -30.0], speed_gain=1.0) is True
 
 
+def test_pos2pos_initializes_runtime_before_first_command(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def stop(self):
+            commands.append("stop")
+
+    monkeypatch.setattr(runtime, "chassis", None)
+    monkeypatch.setattr(runtime, "ensure_runtime", lambda **_kwargs: setattr(runtime, "chassis", FakeChassis()))
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [0xFFF, 0xFFF, 0xFFF])
+
+    assert UnitedPosition.Pos2Pos([10.0, 20.0, 0.0]) is False
+    assert commands == ["stop"]
+
+
+def test_pos2pos_pid_is_hardcoded_as_conservative_pd(monkeypatch):
+    monkeypatch.setattr(runtime, "chassis", SimpleNamespace(stop=lambda: None))
+
+    assert UnitedPosition.Position_X_PID.Kp == POS2POS_KP
+    assert UnitedPosition.Position_X_PID.Ki == POS2POS_KI == 0.0
+    assert UnitedPosition.Position_X_PID.Kd == POS2POS_KD
+    assert UnitedPosition.Position_X_PID.output_limits == (-0.65, 0.65)
+    assert UnitedPosition._pos2pos_command_limit(0.0) == POS2POS_NEAR_COMMAND_LIMIT_MPS
+    assert UnitedPosition._pos2pos_command_limit(100.0) == POS2POS_COMMAND_LIMIT_MPS
+
+
+def test_pos2pos_caps_scaled_command_near_target(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def FieldMoveVector(self, x, y, yaw, **_kwargs):
+            commands.append((x, y, yaw))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [25.0, 0.0, 0.0])
+    UnitedPosition._reset_pos2pos_pid()
+
+    assert UnitedPosition.Pos2Pos([0.0, 0.0, 0.0], speed_gain=6.0) is False
+    assert commands
+    command_norm = (commands[0][0] ** 2 + commands[0][1] ** 2) ** 0.5
+    assert command_norm <= UnitedPosition._pos2pos_command_limit(25.0) + 1e-9
+    assert UnitedPosition._last_pos2pos_command[:2] == pytest.approx(
+        (commands[0][0], commands[0][1])
+    )
+
+
+def test_pos2pos_speed_profile_brakes_from_distance():
+    far = UnitedPosition._pos2pos_command_limit(100.0)
+    middle = UnitedPosition._pos2pos_command_limit(20.0)
+    near = UnitedPosition._pos2pos_command_limit(10.0)
+
+    assert far == POS2POS_COMMAND_LIMIT_MPS
+    assert far > middle > near >= POS2POS_NEAR_COMMAND_LIMIT_MPS
+
+
+def test_pos2pos_uses_bounded_concurrent_heading_gain(monkeypatch):
+    calls = []
+
+    class FakeChassis:
+        def FieldMoveVector(self, x, y, yaw, **kwargs):
+            calls.append((x, y, yaw, kwargs))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [0.0, 0.0, 180.0])
+    UnitedPosition._reset_pos2pos_pid()
+
+    assert UnitedPosition.Pos2Pos([100.0, 0.0, 0.0], speed_gain=1.0) is False
+    assert calls
+    assert calls[0][3]["KpW"] == POS2POS_MAX_YAW_RATE_DEG_S / 180.0
+    assert calls[0][3]["KpW"] < POS2POS_YAW_KP
+
+
+def test_field_move_uses_explicit_heading_gain_in_beta(monkeypatch):
+    outputs = []
+    car = Car(lambda *_args: None, lambda: 90.0)
+    monkeypatch.setattr(car, "RobotMoveVector", lambda x, y, z: outputs.append((x, y, z)))
+    monkeypatch.setattr(Settings.Debug, "Beta", True)
+
+    assert car.FieldMoveVector(0.4, 0.0, 0.0, KpW=0.5) is True
+    assert outputs[0][2] == pytest.approx(-45.0)
+
+
 def test_navigate2_uses_target_when_path_is_clear(monkeypatch):
     targets_seen = []
 
@@ -71,7 +170,7 @@ def test_pos2pos_relay_progresses_to_final_target(monkeypatch):
         def stop(self):
             commands.append(("stop",))
 
-        def FieldMoveVector(self, x, y, yaw):
+        def FieldMoveVector(self, x, y, yaw, **_kwargs):
             commands.append(("move", x, y, yaw))
 
         def FieldTurn(self, yaw):
@@ -95,6 +194,31 @@ def test_pos2pos_relay_progresses_to_final_target(monkeypatch):
     assert UnitedPosition.Position_X_PID.setpoint == 80.0
     assert UnitedPosition.Position_Y_PID.setpoint == -54.0
     assert [item[0] for item in commands] == ["move", "move", "move"]
+
+
+def test_restricted_area_does_not_stop_inside_arrival_slop(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def stop(self):
+            commands.append(("stop",))
+
+        def FieldMoveVector(self, x, y, yaw, **_kwargs):
+            commands.append(("move", x, y, yaw))
+
+        def FieldTurn(self, yaw):
+            commands.append(("turn", yaw))
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [87.0, 0.0, 0.0])
+
+    # With the standard fixture, x=87.0 projects to x=84.0.  The 3 cm
+    # difference is smaller than Pos2Pos's 5 cm arrival window, but the start
+    # pose is still restricted and must receive an escape command above the
+    # simulator's planar deadzone.
+    assert UnitedPosition.RestrictedArea() is False
+    assert commands and commands[0][0] == "move"
+    assert (commands[0][1] ** 2 + commands[0][2] ** 2) ** 0.5 >= POS2POS_MIN_SPEED_MPS
 
 
 def test_recovery_from_outside_boundary_uses_far_edge_route():

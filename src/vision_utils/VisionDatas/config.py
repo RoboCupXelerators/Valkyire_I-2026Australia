@@ -100,16 +100,9 @@ class Preference:
             except Exception:
                 overlay = {}
         else:
-            # Nothing exists yet -> create new overlay file.
-            try:
-                DATA_DIR.mkdir(parents=True, exist_ok=True)
-                with open(CONFIG_FILE, "w") as f:
-                    ujson.dump(default_overlay, f)
-                overlay = dict(default_overlay)
-            except Exception:
-                raise FileNotFoundError(
-                    "Create vision config.json Failed, please check permissions and try again."
-                )
+            # Importing a compatibility module must not create a local config.
+            # Persist defaults only through Preference.write().
+            overlay = dict(default_overlay)
 
         # 3) Ensure overlay has required keys (non-destructive update).
         need_write = False
@@ -122,20 +115,6 @@ class Preference:
                     if k not in overlay[sec]:
                         overlay[sec][k] = v
                         need_write = True
-
-        if need_write:
-            try:
-                # keep a small cache for debug
-                if CONFIG_FILE.exists():
-                    try:
-                        os.replace(CONFIG_FILE, CACHE_FILE)
-                    except Exception:
-                        pass
-                with open(CONFIG_FILE, "w") as f:
-                    ujson.dump(overlay, f)
-            except Exception:
-                # don't crash runtime because of inability to persist
-                pass
 
         # 4) Merge and expose
         self.cfg = _deep_merge(base, overlay)

@@ -63,6 +63,11 @@ class RecordingPositions(Positions):
             err_x = aim_x - loc_x
             err_y = aim_y - loc_y
             err_z = angle_error_deg(loc_z, aim_z)
+            cmd_x, cmd_y, _cmd_yaw = getattr(
+                self,
+                "_last_pos2pos_command",
+                (0.0, 0.0, 0.0),
+            )
             record_dir = self._record_dir()
             record_dir.mkdir(parents=True, exist_ok=True)
             session_id = getattr(cfg.Debug, "RecordSessionId", None) or time.strftime("%Y%m%d_%H%M%S", time.localtime())
@@ -96,8 +101,8 @@ class RecordingPositions(Positions):
                     "err_x": round(err_x, 4),
                     "err_y": round(err_y, 4),
                     "err_z": round(err_z, 4),
-                    "cmd_x": 0.0,
-                    "cmd_y": 0.0,
+                    "cmd_x": round(float(cmd_x), 4),
+                    "cmd_y": round(float(cmd_y), 4),
                     "speed_gain": round(float(speed_gain if speed_gain is not None else 1.0), 4),
                     "pid_kp": getattr(self.Position_X_PID, "Kp", 0.0),
                     "pid_ki": getattr(self.Position_X_PID, "Ki", 0.0),

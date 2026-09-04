@@ -274,12 +274,19 @@ class Car:
         Normaled_Facing =  ( (FacingAngle + 180) % 360 - 180 )
         if not Kp:
             Kp = self.Kp
-        if not KpW:
+        explicit_kpw = KpW is not None
+        if KpW is None:
             KpW = self.KpW
         if Settings.Debug.Beta:
-            # Feed shortest angular error to PID; raw angle PID breaks near +/-180.
-            self.Yaw_PID.setpoint = 0
-            SpeedZ = self.Yaw_PID(-Error)
+            if explicit_kpw:
+                # A caller that translates while turning can request a bounded
+                # proportional heading rate. The old Beta path ignored KpW and
+                # always used the aggressive chassis PID.
+                SpeedZ = Error * float(KpW)
+            else:
+                # Feed shortest angular error to PID; raw angle PID breaks near +/-180.
+                self.Yaw_PID.setpoint = 0
+                SpeedZ = self.Yaw_PID(-Error)
             if getattr(Settings.Debug, "FullLog", False):
                 logger.debug(f"Yaw PID output: {SpeedZ}, Yaw: {Normaled_Yaw}, FacingAngle: {Normaled_Facing}, Error: {Error}")
         else:

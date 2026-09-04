@@ -1,10 +1,11 @@
 import math
 import queue
 
-from ReasonData import Settings
+import pytest
+
 from LunaPre import lidar_driver_ros2
 from LunaPre.lidar_driver_ros2 import ROS2LidarDriver, _ROSLidarParser, _serial_baudrate_for_type
-from LunaPre.lidar_driver_rplidar import RPLidarDriver, _resolve_serial_port
+from legacy.sensors.rplidar.lidar_driver_rplidar import RPLidarDriver, _resolve_serial_port
 from LunaPre.sensor import GetLineDistance, _is_valid_scan_distance, _resolve_backend
 
 
@@ -134,22 +135,20 @@ def test_rplidar_s3_legacy_driver_is_rejected_explicitly():
     assert "official ROS2" in driver.last_error
 
 
-def test_s3_legacy_backend_routes_to_official_ros2_driver(monkeypatch):
-    monkeypatch.setattr(Settings.RoboInfo, "LidarType", "s3")
-    assert _resolve_backend("rplidar") == "ros2"
+def test_direct_rplidar_backend_is_rejected_after_sensor_refactor():
+    with pytest.raises(ValueError, match="Direct RPLidar is no longer"):
+        _resolve_backend("rplidar")
 
 
 def test_rplidar_missing_default_port_uses_unique_serial_alias(monkeypatch):
-    monkeypatch.setattr("LunaPre.lidar_driver_rplidar.os.path.exists", lambda path: path != "/dev/sllidar")
+    monkeypatch.setattr("legacy.sensors.rplidar.lidar_driver_rplidar.os.path.exists", lambda path: path != "/dev/sllidar")
     monkeypatch.setattr(
-        "LunaPre.lidar_driver_rplidar.glob.glob",
+        "legacy.sensors.rplidar.lidar_driver_rplidar.glob.glob",
         lambda pattern: ["/dev/serial/by-id/usb-test"] if "by-id" in pattern else [],
     )
-    monkeypatch.setattr("LunaPre.lidar_driver_rplidar.os.path.realpath", lambda path: "/dev/ttyACM0")
+    monkeypatch.setattr("legacy.sensors.rplidar.lidar_driver_rplidar.os.path.realpath", lambda path: "/dev/ttyACM0")
 
     assert _resolve_serial_port("/dev/sllidar") == "/dev/serial/by-id/usb-test"
-
-
 def test_lidar_facade_raw_count_is_valid_points_not_dense_length():
     ranges = [(0.0, float("inf")), (1.0, 0.0), (2.0, 1.2), (3.0, 0.8), (4.0, float("nan"))]
 

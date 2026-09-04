@@ -1,4 +1,5 @@
 from .PreProcess import Settings, logger, MODEL_DIR, VisionPreUntil, threading, queue, time, cv2, np
+from .modern_calibration import model_bbox_to_raw
 from hailo_platform import VDevice, HailoSchedulingAlgorithm
 
 class ArisuIntelligence(VisionPreUntil):
@@ -533,6 +534,12 @@ class ArisuIntelligence(VisionPreUntil):
             # Goal BBox: [cam, cls, x1, y1, x2, y2, conf], cls: 1=BlueGoal, 2=YellowGoal
             GoalBBoxOutputs = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
             for CameraIndex, Bindings, _CoordinateSpace, SourceFrame in BindingRecords:
+                source_size = None
+                if isinstance(_CoordinateSpace, dict):
+                    source_size = (
+                        int(_CoordinateSpace["source_width"]),
+                        int(_CoordinateSpace["source_height"]),
+                    )
                 OutputBuffer = Bindings.output().get_buffer()
                 if OutputBuffer[0].shape[0] > 0:
                     for _ball in OutputBuffer[0]:
@@ -561,10 +568,15 @@ class ArisuIntelligence(VisionPreUntil):
                             refined_ball_bbox[4],
                         ]
                         
-                        Ball_Y_Min = refined_ball_bbox[1] - 80
-                        Ball_X_Min = refined_ball_bbox[0]
-                        Ball_Y_Max = refined_ball_bbox[3] - 80
-                        Ball_X_Max = refined_ball_bbox[2]
+                        if source_size is not None:
+                            Ball_X_Min, Ball_Y_Min, Ball_X_Max, Ball_Y_Max = model_bbox_to_raw(
+                                refined_ball_bbox[:4], source_size
+                            )
+                        else:
+                            Ball_X_Min = refined_ball_bbox[0]
+                            Ball_Y_Min = refined_ball_bbox[1] - 80
+                            Ball_X_Max = refined_ball_bbox[2]
+                            Ball_Y_Max = refined_ball_bbox[3] - 80
                         Ball_Bottom_Y = Ball_Y_Max
                         Ball_Width = Ball_X_Max - Ball_X_Min
                         Ball_Height = Ball_Y_Max - Ball_Y_Min
@@ -598,21 +610,20 @@ class ArisuIntelligence(VisionPreUntil):
                             overlay_chassis_bbox[4],
                         ]
                         
-                        Chassis_Y_Min = int(chassis[0] * 640) - 80 
-                        Chassis_X_Min = int(chassis[1] * 640)
-                        Chassis_Y_Max = int(chassis[2] * 640) - 80 
-                        Chassis_X_Max = int(chassis[3] * 640)
-                        Chassis_Bottom_Y = Chassis_Y_Max
-                        Chassis_Width = Chassis_X_Max - Chassis_X_Min
-                        Chassis_Height = Chassis_Y_Max - Chassis_Y_Min
-                        Chassis_Center_X = int((Chassis_X_Min + Chassis_X_Max) / 2)
+                        if source_size is not None:
+                            x1, y1, x2, y2 = model_bbox_to_raw(
+                                (raw_x1, raw_y1, raw_x2, raw_y2), source_size
+                            )
+                        else:
+                            x1, y1, x2, y2 = raw_x1, raw_y1 - 80, raw_x2, raw_y2 - 80
                         ChassisOutputs.append([
                             CameraIndex,
-                            Chassis_Center_X,
-                            Chassis_Bottom_Y, 
-                            Chassis_Width, 
-                            Chassis_Height, 
-                            Chassis_Confidence])
+                            int(round((x1 + x2) / 2.0)),
+                            int(round(y2)),
+                            max(0, int(round(x2 - x1))),
+                            max(0, int(round(y2 - y1))),
+                            Chassis_Confidence,
+                        ])
 
                 # Goals: OutputBuffer[1] -> BlueGoal, OutputBuffer[2] -> YellowGoal
                 # Keep top-1 (by conf) for each cam; if both exist, pick higher.
@@ -638,16 +649,8 @@ class ArisuIntelligence(VisionPreUntil):
                             raw_y2 = int(g[2] * 640)
                             raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
-                            # Position calculation (with -80 offset)
-                            y1 = raw_y1 - 80
-                            x1 = raw_x1
-                            y2 = raw_y2 - 80
-                            x2 = raw_x2
-                            cx = int((x1 + x2) / 2)
-                            bottom_y = int(y2)
-                            w = int(x2 - x1)
-                            h = int(y2 - y1)
-                            cand = [CameraIndex, 1, cx, bottom_y, w, h, conf]
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            cand = [CameraIndex, 1, int(round((x1 + x2) / 2.0)), int(round(y2)), max(0, int(round(x2 - x1))), max(0, int(round(y2 - y1))), conf]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
                                 best_goal_cls = 1
@@ -665,16 +668,8 @@ class ArisuIntelligence(VisionPreUntil):
                             raw_y2 = int(g[2] * 640)
                             raw_x2 = int(g[3] * 640)
                             conf = float(g[4])
-                            # Position calculation (with -80 offset)
-                            y1 = raw_y1 - 80
-                            x1 = raw_x1
-                            y2 = raw_y2 - 80
-                            x2 = raw_x2
-                            cx = int((x1 + x2) / 2)
-                            bottom_y = int(y2)
-                            w = int(x2 - x1)
-                            h = int(y2 - y1)
-                            cand = [CameraIndex, 2, cx, bottom_y, w, h, conf]
+                            x1, y1, x2, y2 = model_bbox_to_raw((raw_x1, raw_y1, raw_x2, raw_y2), source_size)
+                            cand = [CameraIndex, 2, int(round((x1 + x2) / 2.0)), int(round(y2)), max(0, int(round(x2 - x1))), max(0, int(round(y2 - y1))), conf]
                             if best_goal is None or conf > best_goal[6]:
                                 best_goal = cand
                                 best_goal_cls = 2

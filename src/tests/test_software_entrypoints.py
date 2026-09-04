@@ -23,7 +23,12 @@ def run_from_src(*args):
 
 
 def test_lunapre_import_works_from_src():
-    result = run_from_src("-c", "from LunaPre import *; print(Car.__name__)")
+    result = run_from_src(
+        "-c",
+        "import LunaPre; assert not LunaPre._runtime._runtime_initialized; "
+        "from LunaPre import *; "
+        "assert not LunaPre._runtime._runtime_initialized; print(Car.__name__)",
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "Car"
 
@@ -32,9 +37,3 @@ def test_mlp_strategy_help_is_hardware_free_from_src():
     result = run_from_src("-m", "MLPStrategy", "--help")
     assert result.returncode == 0, result.stderr
     assert "--config" in result.stdout
-
-
-def test_teleop_module_help_is_hardware_free_from_src():
-    result = run_from_src("-m", "teleop", "--help")
-    assert result.returncode == 0, result.stderr
-    assert "DM-S2325" in result.stdout
