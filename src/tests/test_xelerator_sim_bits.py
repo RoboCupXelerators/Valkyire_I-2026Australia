@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import math
+import time
 
 import pytest
 
@@ -58,18 +59,69 @@ def _make_bits_for_kick():
     bits = object.__new__(XeleratorSimBits)
     bits._status_lock = threading.Lock()
     bits._flags = 0
-    bits._kick_strength = 4.0
+    bits._kick_max_strength = 8.0
+    bits._kick_strength = 8.0
     bits.kick_power_level = 4
     return bits
 
 
-@pytest.mark.parametrize("power_level", [1, 2, 3, 4])
-def test_sim_kick_accepts_power_level_and_emits_selected_strength(power_level):
+def _make_bits_for_pose(status: SimStatus) -> XeleratorSimBits:
+    bits = object.__new__(XeleratorSimBits)
+    bits._status = status
+    bits._status_lock = threading.Lock()
+    bits._unity_to_cm = 100.0
+    bits._origin_x_cm = 0.0
+    bits._origin_y_cm = 0.0
+    bits._pose_scale = 1.0
+    bits._yaw_zero_at_start = False
+    bits._yaw_zero_deg = None
+    bits._yaw_offset_deg = 0.0
+    bits._side_yaw_offset_deg = 0.0
+    bits._pose_max_age_s = 1.0
+    return bits
+
+
+def test_sim_pose_calibrates_origin_from_running_scene():
+    bits = _make_bits_for_pose(SimStatus(ts=time.time(), x_m=4.2, y_m=-1.7, yaw_deg=33.0))
+    bits.robot_id = 1
+    bits._origin_x_cm = 1000.0
+    bits._origin_y_cm = -800.0
+    bits._origin_is_explicit = False
+    bits._scene_origin_calibrated = False
+    bits._scene_origin_next_attempt_ts = 0.0
+    bits._scene_status_snapshot = lambda: {
+        "ok": True,
+        "robots": [{"id": 1, "active": True, "x_cm": 20.0, "y_cm": -30.0, "pose_revision": 7}],
+    }
+
+    bits._calibrate_origin_from_scene(420.0, -170.0)
+
+    assert bits.GetPose() == (20.0, -30.0, 33.0)
+    assert (bits._origin_x_cm, bits._origin_y_cm) == (400.0, -140.0)
+
+
+def test_sim_pose_keeps_explicit_origin_offset():
+    bits = _make_bits_for_pose(SimStatus(ts=time.time(), x_m=4.2, y_m=-1.7, yaw_deg=33.0))
+    bits.robot_id = 1
+    bits._origin_x_cm = 100.0
+    bits._origin_y_cm = -80.0
+    bits._origin_is_explicit = True
+    bits._scene_status_snapshot = lambda: {
+        "ok": True,
+        "robots": [{"id": 1, "active": True, "x_cm": 20.0, "y_cm": -30.0, "pose_revision": 7}],
+    }
+
+    assert bits.GetPose() == (320.0, -90.0, 33.0)
+    assert (bits._origin_x_cm, bits._origin_y_cm) == (100.0, -80.0)
+
+
+@pytest.mark.parametrize("power_level, multiplier", [(1, 0.75), (2, 0.85), (3, 0.95), (4, 1.0)])
+def test_sim_kick_uses_selected_fraction_of_configured_maximum(power_level, multiplier):
     bits = _make_bits_for_kick()
 
     assert bits.SetKickPowerLevel(power_level) == power_level
     assert bits.Kick() is True
-    assert bits._kick_strength == float(power_level)
+    assert bits._kick_strength == 8.0 * multiplier
     assert bits._flags & bits.FLAG_KICK
 
 
@@ -87,7 +139,7 @@ def test_sim_virtual_kick_port_uses_selected_default_level():
 
     bits.VirtualPorts(3, 0)
 
-    assert bits._kick_strength == 2.0
+    assert bits._kick_strength == 6.8
     assert bits._flags & bits.FLAG_KICK
 
 
