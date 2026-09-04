@@ -1,22 +1,7 @@
 from LunaPre import *
-from BasicFuc import lockball
+from BasicFuc import lockball, TurnTo_with_ball
 from LunaPre.strategy_tools import BALL_NOT_FOUND, BALL_HELD
 import time
-
-def TurnTo_With_ball_Strong(angle):
-    if UnitedPosition.RobotBallPos() == BALL_HELD:
-        error = abs(UnitedPosition.FieldRobotPose()[2]- angle)
-        if abs(UnitedPosition.FieldRobotPose()[2]- angle) == cfg.ExpectedVals.ErrorRange:
-            return True
-        else:
-            if error < 0 and error < -100:
-                error = -100
-            elif error > 100:
-                error = 100
-            chassis.RobotTurn(error)
-            return False
-    else:
-        return lockball.slip()
 
 try:
     while True:
@@ -24,24 +9,26 @@ try:
             ball_pos = UnitedPosition.RobotBallPos()
             ball_state = UnitedPosition.BallState(ball_pos)
             if ball_state == "lost":
-                UnitedPosition.Pos2Pos([-15,0,0])
+                UnitedPosition.Pos2Pos([0,0,0])
+                print("ball lost")
             elif ball_state =="held":
                 RoboPos = UnitedPosition.FieldRobotPose()
-                x_target = UnitedPosition.Pos2Pos([RoboPos[0],75,90])#pos2pos
                 if RoboPos[1]>0:
                     k=1
-                elif RoboPos[1]<0:
+                else:
                     k=-1
                 peripheral.Dribble(0.7)
-                TurnTo_With_ball_Strong(90*k)
-                if x_target:
-                    x_goal = UnitedPosition.Pos2Pos([67,75*k,50])
-                    if x_goal:
-                        chassis.TurnTo(40)
+                TurnTo_with_ball(90*k)
+                thershold = [[40, 30*k], [90, 90*k]]
+                if UnitedPosition.PointInShape(RoboPos, thershold):
+                    if abs(RoboPos[2]-50) < 10:
                         peripheral.ShootBall()
+                    else:
+                        chassis.FieldTurn(40*k)
+                else:
+                    UnitedPosition.Pos2Pos([50,75*k,90])
             else:
                 lockball.LockBallSlip()
-                time.sleep(0.03)
 finally:
     chassis.stop()
     peripheral.Dribble(False)
