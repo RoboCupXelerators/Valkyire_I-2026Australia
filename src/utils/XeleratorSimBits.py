@@ -59,6 +59,7 @@ MIN_KICK_POWER_LEVEL = 1
 MAX_KICK_POWER_LEVEL = 4
 DEFAULT_KICK_POWER_LEVEL = 4
 KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
+KICK_POWER_MULTIPLIERS = (0.75, 0.85, 0.95, 1.0)
 SIM_DEFAULT_DRIBBLE_SCALE = 3.0
 SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
 SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
@@ -285,10 +286,13 @@ class XeleratorSimBits:
             "XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)
         )
         try:
-            self.kick_power_level = self._ValidateKickPowerLevel(configured_kick_strength)
-        except ValueError:
-            self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
-        self._kick_strength = float(self.kick_power_level)
+            self._kick_max_strength = float(configured_kick_strength)
+        except (TypeError, ValueError):
+            self._kick_max_strength = SIM_DEFAULT_KICK_STRENGTH
+        if not math.isfinite(self._kick_max_strength) or self._kick_max_strength < 0.0:
+            self._kick_max_strength = SIM_DEFAULT_KICK_STRENGTH
+        self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
+        self._kick_strength = self._kick_max_strength
         self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", str(SIM_DEFAULT_DRIBBLE_SCALE)))
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
@@ -361,10 +365,13 @@ class XeleratorSimBits:
 
         self._unity_to_cm = float(os.environ.get("XEL_UNITY_TO_CM", "100"))
 
-        # origin offset in cm (subtracted from converted pose)
+        # An explicitly configured offset always wins.  Otherwise the static
+        # scene-file estimate below is only a startup fallback: the running
+        # scene reports the authoritative software field coordinates.
         ox = os.environ.get("XEL_ORIGIN_X_CM", "")
         oy = os.environ.get("XEL_ORIGIN_Y_CM", "")
-        if ox.strip() and oy.strip():
+        self._origin_is_explicit = bool(ox.strip() and oy.strip())
+        if self._origin_is_explicit:
             self._origin_x_cm = float(ox)
             self._origin_y_cm = float(oy)
         else:
@@ -374,6 +381,8 @@ class XeleratorSimBits:
 
         # optional additional scale (rare): apply after origin shift
         self._pose_scale = float(os.environ.get("XEL_POSE_SCALE", "1"))
+        self._scene_origin_calibrated = False
+        self._scene_origin_next_attempt_ts = 0.0
 
         # Yaw calibration:
         # Unity reports yaw as transform.eulerAngles.y (deg, 0..360).
@@ -573,20 +582,21 @@ class XeleratorSimBits:
         return level
 
     def SetKickPowerLevel(self, power_level):
-        """设置后续 ``Kick()`` 和虚拟端口弹射使用的默认力度档位。"""
+        """Set the 75%, 85%, 95%, or 100% kick-speed level for future kicks."""
         level = self._ValidateKickPowerLevel(power_level)
         with self._status_lock:
             self.kick_power_level = level
         return level
 
     def Kick(self, power_level=None):
-        """立即按 1 到 4 档力度排队弹射；省略参数时使用默认档位。"""
+        """Queue a kick at 75%, 85%, 95%, or 100% of the configured maximum."""
         if power_level is None:
             with self._status_lock:
                 power_level = self.kick_power_level
         level = self._ValidateKickPowerLevel(power_level)
-        self._kick_strength = float(level)
-        self._flags |= self.FLAG_KICK
+        with self._status_lock:
+            self._kick_strength = self._kick_max_strength * KICK_POWER_MULTIPLIERS[level - 1]
+            self._flags |= self.FLAG_KICK
         return True
 
     def VirtualPorts(self, port, status):
@@ -777,7 +787,7 @@ class XeleratorSimBits:
         ):
             return None
 
-        # apply origin shift + scale outside the lock
+        # Apply origin shift + scale outside the lock.
         x_cm = (x_cm - float(self._origin_x_cm)) * self._pose_scale
         y_cm = (y_cm - float(self._origin_y_cm)) * self._pose_scale
         yaw_deg = float(self.GetYaw())
@@ -890,6 +900,46 @@ class XeleratorSimBits:
             return status
         except Exception:
             return None
+
+    def _calibrate_origin_from_scene(self, raw_x_cm: float, raw_y_cm: float) -> None:
+        """Align UDP's Unity frame with the running scene's field frame."""
+
+        if getattr(self, "_origin_is_explicit", False) or getattr(self, "_scene_origin_calibrated", False):
+            return
+
+        now = time.monotonic()
+        if now < getattr(self, "_scene_origin_next_attempt_ts", 0.0):
+            return
+        # Scene control is optional and may not be running.  Do not retry its
+        # network request for every incoming UDP packet.
+        self._scene_origin_next_attempt_ts = now + 2.0
+
+        status = self._scene_status_snapshot()
+        if not isinstance(status, dict):
+            return
+
+        for robot in status.get("robots") or []:
+            try:
+                if int(robot.get("id", -1)) != int(self.robot_id) or not robot.get("active", False):
+                    continue
+                scene_x_cm = float(robot["x_cm"])
+                scene_y_cm = float(robot["y_cm"])
+                pose_scale = float(self._pose_scale)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+
+            if (
+                not all(math.isfinite(value) for value in (raw_x_cm, raw_y_cm, scene_x_cm, scene_y_cm, pose_scale))
+                or abs(pose_scale) <= 1e-9
+            ):
+                return
+            # GetPose returns (raw - origin) * scale, therefore undo scale
+            # before deriving the raw-frame location of field (0, 0).  Do this
+            # once: placement revisions can reach scene-control before UDP.
+            self._origin_x_cm = raw_x_cm - scene_x_cm / pose_scale
+            self._origin_y_cm = raw_y_cm - scene_y_cm / pose_scale
+            self._scene_origin_calibrated = True
+            return
 
     def _get_scene_ball_pos_fallback(self) -> list[float] | None:
         """Debug-only fallback: synthesize RobotBallPos from scene-control state."""
@@ -1273,6 +1323,7 @@ class XeleratorSimBits:
                 self._status.enemies = enemies
 
             self._rx_count += 1
+            self._calibrate_origin_from_scene(float(x) * self._unity_to_cm, float(y) * self._unity_to_cm)
 
             # Record to database if recording is enabled
             if self._recording_enabled and self._recorder_callback is not None:
