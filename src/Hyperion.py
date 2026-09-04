@@ -82,9 +82,9 @@ def UplaneStep(thershold=[[50, 30], [100, 90]]):
             peripheral.ShootBall()
         else:
             try:
-                TurnTo_with_ball_orbit(-UnitedPosition.ShootWindow()["target_yaw_deg"])
+                TurnTo_with_ball(-UnitedPosition.ShootWindow()["target_yaw_deg"])
             except Exception:
-                TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x, y], [100, 0]) % 360)
+                TurnTo_with_ball(UnitedPosition.Pos2Angle([x, y], [100, 0]) % 360)
     elif abs(y) <= 50:
         if TurnTo_with_ball(90 * angle_k):
             chassis.FieldMoveVector(0, 1, 90 * angle_k)
