@@ -4417,11 +4417,6 @@ async function saveConfigFromTemplate() {
     const result = await response.json();
 
     if (result.success) {
-      if (result.exposure_bias_reset && config.Vision) {
-        config.Vision.ExposureBias = 0;
-        const biasInput = document.getElementById("cfg-Vision-ExposureBias");
-        if (biasInput) biasInput.value = "0";
-      }
       state.config = config;
       updateSystemInfoBar(config);
       alert("配置已保存");

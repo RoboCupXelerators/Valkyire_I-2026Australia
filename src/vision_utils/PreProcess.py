@@ -496,7 +496,6 @@ class VisionPreUntil:
         self.StopRecord = 0
 
         self.Cams = []
-        self._stable_metered_exposure: dict[int, float] = {}
         # Always keep 4 slots, even when cameras are not initialized.
         self.Frames = [None, None, None, None]
         self.Videos = []
@@ -672,32 +671,6 @@ class VisionPreUntil:
         except (TypeError, ValueError):
             return 0
 
-    def _consume_persisted_exposure_bias(self, applied_bias: int) -> None:
-        """Reset a successfully applied startup bias in config.json.
-
-        A bias is an edge-triggered adjustment. Leaving it in persistent
-        configuration would apply it again after the next process start.
-        """
-
-        if not applied_bias:
-            return
-        try:
-            from ReasonData.config import Preference
-
-            preference = Preference()
-            vision = preference.cfg.get("Vision", {})
-            if int(vision.get("ExposureBias", 0)) != int(applied_bias):
-                return
-            preference.write("Vision", "ExposureBias", 0)
-            self.logger.info("Consumed startup ExposureBias and reset it to 0")
-        except Exception as e:
-            self.logger.warning(f"Failed to reset consumed ExposureBias: {e}")
-
-        for section_name in ("Vision", "VisionVals"):
-            section = getattr(self.cfg, section_name, None)
-            if section is not None:
-                setattr(section, "ExposureBias", 0)
-
     def _apply_camera_exposure(
         self,
         cam,
@@ -719,30 +692,25 @@ class VisionPreUntil:
         target_exposure = None
         try:
             if exposure_mode == 1:
-                metered_values = getattr(self, "_stable_metered_exposure", None)
-                if not isinstance(metered_values, dict):
-                    metered_values = {}
-                    self._stable_metered_exposure = metered_values
-                metered_exposure = metered_values.get(int(port))
-                auto_exposure_set = True
-                if metered_exposure is None:
-                    auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
-                    # Feed the sensor enough frames for its auto-exposure loop
-                    # to settle before locking the result. This is the
-                    # programmatic equivalent of changing 0 -> 1 manually.
-                    deadline = time.monotonic() + 3.0
-                    reader = getattr(self, "ReadCamsThread", None)
-                    if reader is not None and reader.is_alive():
-                        # The existing reader supplies frames to the camera
-                        # while auto exposure converges; do not read here.
-                        time.sleep(3.0)
-                    else:
-                        while time.monotonic() < deadline:
-                            ok, _frame = cam.read()
-                            if not ok:
-                                time.sleep(0.02)
-                    metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
-                    metered_values[int(port)] = metered_exposure
+                # Always meter afresh before locking. ExposureBias is a
+                # persistent EV offset relative to the current environment,
+                # rather than an adjustment relative to a prior lock.
+                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
+                # Feed the sensor enough frames for its auto-exposure loop
+                # to settle before locking the result. This is the
+                # programmatic equivalent of changing 0 -> 1 manually.
+                deadline = time.monotonic() + 3.0
+                reader = getattr(self, "ReadCamsThread", None)
+                if reader is not None and reader.is_alive():
+                    # The existing reader supplies frames to the camera while
+                    # auto exposure converges; do not read here.
+                    time.sleep(3.0)
+                else:
+                    while time.monotonic() < deadline:
+                        ok, _frame = cam.read()
+                        if not ok:
+                            time.sleep(0.02)
+                metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
 
                 target_exposure = max(
                     1.0,
@@ -756,7 +724,6 @@ class VisionPreUntil:
             else:
                 auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
                 exposure_set = True
-                getattr(self, "_stable_metered_exposure", {}).pop(int(port), None)
             actual_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
             actual_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
         except Exception as e:
@@ -790,7 +757,6 @@ class VisionPreUntil:
         self,
         exposure_mode: int | None = None,
         exposure_bias: int | None = None,
-        consume_bias: bool = False,
     ) -> list[dict]:
         """Apply exposure settings to active cameras without restarting vision."""
 
@@ -816,7 +782,7 @@ class VisionPreUntil:
             section = getattr(self.cfg, section_name, None)
             if section is not None:
                 setattr(section, "ExposureMode", exposure_mode)
-                setattr(section, "ExposureBias", 0 if consume_bias else exposure_bias)
+                setattr(section, "ExposureBias", exposure_bias)
                 setattr(section, "AutoExposure", 1 if exposure_mode == 1 else 3)
 
         ports = list(getattr(self, "CamPorts", []) or [])
@@ -825,8 +791,6 @@ class VisionPreUntil:
             port = ports[index] if index < len(ports) else index
             result = self._apply_camera_exposure(cam, port, exposure_mode, exposure_bias)
             results.append(result)
-            if consume_bias and exposure_mode == 1 and result.get("success"):
-                self._stable_metered_exposure[int(port)] = float(result["exposure"])
         return results
 
     def _safe_cam_read(self, cam):
@@ -1064,8 +1028,6 @@ class VisionPreUntil:
                     exposure_bias,
                 )
                 exposure_results.append(result)
-                if exposure_mode == 1 and exposure_bias and result.get("success"):
-                    self._stable_metered_exposure[int(Port)] = float(result["exposure"])
                 Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
                 Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
                 Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
@@ -1083,14 +1045,6 @@ class VisionPreUntil:
             else:
                 with cams_lock:
                     self.Cams.append(Cam)
-
-        if (
-            exposure_mode == 1
-            and exposure_bias
-            and exposure_results
-            and all(result.get("success") for result in exposure_results)
-        ):
-            self._consume_persisted_exposure_bias(exposure_bias)
 
     def ReadCams(self):
         FrameCount = 0

@@ -1363,7 +1363,7 @@ class ControlPanelApp:
             ("Vision", "CamPorts"): {"type": "list[int]", "label": "摄像头端口", "description": "按顺序: 后, 左, 前, 右", "item_labels": ["后", "左", "前", "右"], "tab": "vision", "icon": "📷"},
             ("Vision", "ModelName"): {"type": "string", "label": "模型名称", "description": "不含后缀，各推理库自动选择所需格式", "tab": "vision"},
             ("Vision", "ExposureMode"): {"type": "select", "label": "曝光模式", "options": [0, 1], "option_labels": {"0": "灵活（持续自动）", "1": "稳定（自动测光后锁定）"}, "tab": "vision"},
-            ("Vision", "ExposureBias"): {"type": "int", "label": "稳定曝光补偿 (EV)", "description": "0 为自动测光值；负数更暗，正数更亮。-1 约为一半曝光量", "min": -4, "max": 4, "tab": "vision"},
+            ("Vision", "ExposureBias"): {"type": "int", "label": "稳定曝光补偿 (EV)", "description": "基于每次实时自动测光的持久补偿；负数更暗，正数更亮。-1 约为一半曝光量", "min": -4, "max": 4, "tab": "vision"},
             ("Vision", "CalibrationFolder"): {"type": "string", "label": "标定文件夹", "tab": "vision"},
             ("Vision", "BallDiameter"): {"type": "float", "label": "球直径 (CM)", "min": 1.0, "max": 20.0, "step": 0.1, "tab": "vision"},
             ("Vision", "ChassisWidth"): {"type": "float", "label": "底盘宽度 (CM)", "min": 5.0, "max": 30.0, "step": 0.5, "tab": "vision"},
@@ -1492,25 +1492,16 @@ class ControlPanelApp:
             vision_config = config.get("Vision", {}) if isinstance(config, dict) else {}
             mode = vision_config.get("ExposureMode") if isinstance(vision_config, dict) else None
             bias = vision_config.get("ExposureBias") if isinstance(vision_config, dict) else None
-            try:
-                consume_bias = int(mode) == 1 and int(bias) != 0
-            except (TypeError, ValueError):
-                consume_bias = False
-            if consume_bias:
-                # Exposure bias is an edge-triggered adjustment, not a value
-                # to replay whenever cameras are reopened.
-                vision_config["ExposureBias"] = 0
 
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
 
             apply_exposure = getattr(self.vision, "ApplyExposureSettings", None)
             if callable(apply_exposure) and mode is not None:
-                results = apply_exposure(mode, bias, consume_bias=consume_bias)
+                results = apply_exposure(mode, bias)
                 return {
                     "success": True,
                     "exposure_applied": results,
-                    "exposure_bias_reset": consume_bias,
                 }
             return {"success": True}
         except Exception as e:
