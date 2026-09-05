@@ -3927,22 +3927,26 @@ function processGamepadInput(gamepad) {
   const leftX = gamepadAxis(gamepad, 0);
   const leftY = gamepadAxis(gamepad, 1);
   const rightX = gamepadAxis(gamepad, 2);
+  const rightY = gamepadAxis(gamepad, 3);
   const l2Power = gamepadButtonValue(gamepad, 6);
   const r2Power = gamepadButtonValue(gamepad, 7);
   const l1Pressed = gamepadButtonPressed(gamepad, 4);
 
-  updateGamepadInputUI(leftX, leftY, rightX, l2Power, r2Power);
+  updateGamepadInputUI(leftX, leftY, rightX, rightY, l2Power, r2Power);
 
   if (state.currentPage !== "control" || !controlState.enabled) {
     controlState.gamepadL1Pressed = l1Pressed;
     return;
   }
 
+  // Mode 2 / "美国手": left stick is throttle + yaw, right stick is
+  // pitch + roll. Upward throttle gives the right-stick translation its speed.
+  const throttle = Math.max(0, -leftY);
   const nextInput = {
     // Browser axes are positive to the right/down; chassis axes are forward/left.
-    vx: -leftY * controlState.speed,
-    vy: -leftX * controlState.speed,
-    wz: -rightX * controlState.turnSpeed,
+    vx: -rightY * throttle * controlState.speed,
+    vy: -rightX * throttle * controlState.speed,
+    wz: -leftX * controlState.turnSpeed,
   };
   const inputChanged =
     Math.abs(nextInput.vx - controlState.gamepadInput.vx) > 0.001 ||
@@ -4021,7 +4025,7 @@ function releaseGamepadInput() {
     updateDribbleDisplay();
     sendControlDribble(false, 0);
   }
-  updateGamepadInputUI(0, 0, 0, 0, 0);
+  updateGamepadInputUI(0, 0, 0, 0, 0, 0);
 }
 
 function updateGamepadCaptureUI() {
@@ -4068,10 +4072,11 @@ function updateGamepadCaptureUI() {
   }
 }
 
-function updateGamepadInputUI(leftX, leftY, rightX, l2Power, r2Power) {
+function updateGamepadInputUI(leftX, leftY, rightX, rightY, l2Power, r2Power) {
   const inputEl = document.getElementById("gamepad-input");
   if (!inputEl) return;
-  inputEl.textContent = `左 ${(-leftY).toFixed(2)}, ${(-leftX).toFixed(2)} · 右 ${rightX.toFixed(2)} · L2 ${Math.round(l2Power * 100)}% · R2 ${Math.round(r2Power * 100)}%`;
+  const throttle = Math.max(0, -leftY);
+  inputEl.textContent = `油门 ${Math.round(throttle * 100)}% · 航向 ${(-leftX).toFixed(2)} · 方向 ${(-rightY).toFixed(2)}, ${(-rightX).toFixed(2)} · L2 ${Math.round(l2Power * 100)}% · R2 ${Math.round(r2Power * 100)}%`;
 }
 
 function requestPointerLock() {
