@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xelerator 控制面板</title>
-    <link rel="stylesheet" href="static/style.css?v=20260722-1" />
+    <link rel="stylesheet" href="static/style.css?v=20260905-gamepad" />
   </head>
   <body>
     <div class="app">
@@ -1389,10 +1389,10 @@
           </div>
         </div>
 
-        <!-- 键盘控制页面 -->
+        <!-- 手动控制页面 -->
         <div id="page-control" class="page">
           <header class="page-header">
-            <h1>键盘控制</h1>
+            <h1>手动控制</h1>
             <span class="status" id="control-status">状态: 未启用</span>
           </header>
 
@@ -1404,9 +1404,9 @@
                   class="btn btn-primary btn-large"
                   id="control-enable-btn"
                 >
-                  🎮 启用键盘控制
+                  🎮 启用手动控制
                 </button>
-                <p class="hint">启用后，使用键盘控制机器人移动</p>
+                <p class="hint">启用后，可使用键盘、鼠标或网页捕捉的手柄控制机器人</p>
               </div>
 
               <!-- 速度设置 -->
@@ -1450,6 +1450,41 @@
                     <small id="control-kick-power-hint">IceLoongBits：1-4 档</small>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- 网页手柄控制 -->
+            <div class="control-state gamepad-control">
+              <h3>网页手柄</h3>
+              <div class="state-grid">
+                <div class="state-item">
+                  <span class="label">网页捕捉</span>
+                  <button class="btn btn-primary" id="gamepad-capture-btn" type="button">
+                    🎮 连接手柄
+                  </button>
+                </div>
+                <div class="state-item">
+                  <span class="label">手柄状态</span>
+                  <span class="value inactive" id="gamepad-status">未捕捉</span>
+                </div>
+                <div class="state-item">
+                  <span class="label">设备</span>
+                  <span class="value" id="gamepad-name">--</span>
+                </div>
+                <div class="state-item">
+                  <span class="label">实时输入</span>
+                  <span class="value" id="gamepad-input">--</span>
+                </div>
+              </div>
+              <p class="gamepad-hint" id="gamepad-hint">
+                手柄只需连接到打开此网页的电脑；点击连接后按任意按键即可由浏览器捕捉，无需连接到机器人。
+              </p>
+              <div class="gamepad-mapping" aria-label="手柄按键映射">
+                <div class="gamepad-binding"><span>左摇杆</span><small>移动方向</small></div>
+                <div class="gamepad-binding"><span>右摇杆左右</span><small>航向转向</small></div>
+                <div class="gamepad-binding"><span>L2</span><small>弹射力度</small></div>
+                <div class="gamepad-binding"><span>L1</span><small>发射</small></div>
+                <div class="gamepad-binding"><span>R2</span><small>按住盘球，力度随扳机变化</small></div>
               </div>
             </div>
 
@@ -1572,6 +1607,6 @@
       </main>
     </div>
 
-    <script src="static/app.js?v=20260707-2"></script>
+    <script src="static/app.js?v=20260905-gamepad"></script>
   </body>
 </html>

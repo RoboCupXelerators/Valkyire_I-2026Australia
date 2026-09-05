@@ -43,6 +43,7 @@ KICK_POWER_MIN = 1
 KICK_POWER_MAX = 4
 KICK_POWER_DEFAULT = 4
 KICK_POWER_ERROR = "kick power level must be an integer from 1 to 4"
+DRIBBLE_POWER_ERROR = "dribble power must be a finite number from 0 to 1"
 
 
 def _repo_root() -> Path:
@@ -453,6 +454,7 @@ class ControlPanelApp:
         self._control_speed = 0.5  # 默认移动速度，m/s
         self._control_turn_speed = 120.0  # 默认转向速度，deg/s
         self._dribble_active = False  # 盘球状态
+        self._dribble_power = 0.0
         self._control_runtime_error = None
         self._control_last_motion_ts = None
         self._control_watchdog_stop = threading.Event()
@@ -2132,6 +2134,7 @@ class ControlPanelApp:
             self._control_last_motion_ts = None
             try:
                 self._control_stop()
+                self._control_stop_dribble()
             except Exception as e:
                 self._control_runtime_error = str(e)
                 return {"success": False, "enabled": False, "error": str(e)}
@@ -2232,6 +2235,7 @@ class ControlPanelApp:
             "speed": self._control_speed,
             "turn_speed": self._control_turn_speed,
             "dribble_active": self._dribble_active,
+            "dribble_power": getattr(self, "_dribble_power", 0.0),
             "runtime_initialized": self._is_control_runtime_initialized(),
             "chassis_available": bool(chassis),
             "peripheral_available": bool(peripheral),
@@ -2329,6 +2333,15 @@ class ControlPanelApp:
             except Exception as e:
                 print(f"[ControlPanel] Error stopping chassis: {e}")
 
+    def _control_stop_dribble(self):
+        """Release the dribbler whenever manual control is disabled."""
+        self._dribble_active = False
+        self._dribble_power = 0.0
+        _, peripheral = self._get_chassis_and_peripheral()
+        stop_dribble = getattr(peripheral, "Dribble", None) if peripheral else None
+        if callable(stop_dribble):
+            stop_dribble(False)
+
     def control_shutdown(self):
         """Stop active generic manual control when the web process exits."""
         with self._control_lock:
@@ -2341,6 +2354,7 @@ class ControlPanelApp:
         if was_enabled:
             try:
                 self._control_stop()
+                self._control_stop_dribble()
             except Exception as e:
                 print(f"[ControlPanel] Shutdown stop failed: {e}")
         watchdog_thread = getattr(self, "_control_watchdog_thread", None)
@@ -2454,11 +2468,29 @@ class ControlPanelApp:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-    def control_dribble(self, active: bool) -> dict:
-        """控制盘球
+    @staticmethod
+    def _validate_dribble_power(value) -> float:
+        if isinstance(value, bool):
+            raise ValueError(DRIBBLE_POWER_ERROR)
+        try:
+            power = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(DRIBBLE_POWER_ERROR) from exc
+        if not math.isfinite(power) or not 0.0 <= power <= 1.0:
+            raise ValueError(DRIBBLE_POWER_ERROR)
+        return power
 
-        active: True 开启盘球 (PWM 0.2), False 关闭盘球
-        """
+    def control_dribble(self, active: bool, power=None) -> dict:
+        """Control dribble output, optionally with a normalized PWM power."""
+        try:
+            dribble_power = (
+                self._validate_dribble_power(power)
+                if active and power is not None
+                else (0.8 if active else 0.0)
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
         with self._control_lock:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
@@ -2469,11 +2501,16 @@ class ControlPanelApp:
 
             try:
                 if active:
-                    peripheral.Dribble(0.8)  # PWM 0.2
+                    peripheral.Dribble(dribble_power)
                 else:
                     peripheral.Dribble(False)
                 self._dribble_active = active
-                return {"success": True, "dribble_active": active}
+                self._dribble_power = dribble_power
+                return {
+                    "success": True,
+                    "dribble_active": active,
+                    "dribble_power": dribble_power,
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
@@ -3176,7 +3213,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/control/dribble':
             data = self._parse_json_body()
-            result = app.control_dribble(data.get('active', True))
+            result = app.control_dribble(
+                data.get('active', True),
+                power=data.get('power'),
+            )
             self._send_json(result)
             return
 
