@@ -89,6 +89,16 @@ class LockSeries:
         self.pan_y.reset()
         self.pan_w.reset()
 
+    @staticmethod
+    def _chassis_can_move() -> bool:
+        can_move = getattr(chassis, "CanMove", None)
+        if not callable(can_move):
+            return True
+        try:
+            return bool(can_move())
+        except Exception:
+            return False
+
     def _reset_on_pose_change(self):
         bits = getattr(runtime, "Bits", None)
         getter = getattr(bits, "GetPoseRevision", None)
@@ -165,6 +175,13 @@ class LockSeries:
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
         self._reset_on_pose_change()
+        if not self._chassis_can_move():
+            # PID output must not accumulate while referee permission blocks
+            # wheel commands, or it will surge when permission returns.
+            self._reset_lockball_pid()
+            chassis.stop()
+            return False
+
         ball, caught = self._current_or_recent_ball()
         if caught:
             peripheral.Dribble(0.5)

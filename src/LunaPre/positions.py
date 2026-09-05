@@ -278,6 +278,7 @@ class Positions:
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
         self._last_pos2pos_command = (0.0, 0.0, 0.0)
+        self._position_data_loss_reported = False
         self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
@@ -356,6 +357,21 @@ class Positions:
         chassis = runtime.chassis
         if chassis is not None:
             chassis.stop()
+
+    @staticmethod
+    def _chassis_can_move() -> bool:
+        """Use the chassis permission gate when this backend exposes one."""
+
+        chassis = runtime.chassis
+        if chassis is None:
+            return False
+        can_move = getattr(chassis, "CanMove", None)
+        if not callable(can_move):
+            return True
+        try:
+            return bool(can_move())
+        except Exception:
+            return False
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -1665,12 +1681,23 @@ class Positions:
         下一帧会重新检查从中继点到最终目标的路径。
         """
         self._ensure_motion_runtime()
+        if not self._chassis_can_move():
+            self._last_pos2pos_command = (0.0, 0.0, 0.0)
+            self._reset_pos2pos_pid()
+            self._stop_chassis()
+            return False
+
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
             self._last_pos2pos_command = (0.0, 0.0, 0.0)
+            self._reset_pos2pos_pid()
             self._stop_chassis()
-            runtime.play_morse("No Position Data!")
+            if not self._position_data_loss_reported:
+                runtime.play_morse("No Position Data!")
+                self._position_data_loss_reported = True
             return False
+
+        self._position_data_loss_reported = False
 
         start = [loc_x, loc_y, loc_yaw]
         AimPos = self._navigate_waypoint(start, AimPos)
