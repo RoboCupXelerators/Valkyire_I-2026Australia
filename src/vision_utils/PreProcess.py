@@ -699,27 +699,34 @@ class VisionPreUntil:
                 # Feed the sensor enough frames for its auto-exposure loop
                 # to settle before locking the result. This is the
                 # programmatic equivalent of changing 0 -> 1 manually.
-                deadline = time.monotonic() + 3.0
+                # Some UVC devices report their lower bound (5) for several
+                # seconds immediately after enabling auto exposure, so keep
+                # metering beyond the initial warm-up when necessary.
+                warmup_deadline = time.monotonic() + 3.0
+                settle_deadline = warmup_deadline + 7.0
                 reader = getattr(self, "ReadCamsThread", None)
-                if reader is not None and reader.is_alive():
-                    # The existing reader supplies frames to the camera while
-                    # auto exposure converges; do not read here.
-                    time.sleep(3.0)
-                else:
-                    while time.monotonic() < deadline:
+                while True:
+                    if reader is not None and reader.is_alive():
+                        # The existing reader supplies frames to the camera;
+                        # do not read concurrently from this thread.
+                        time.sleep(0.1)
+                    else:
                         ok, _frame = cam.read()
                         if not ok:
                             time.sleep(0.02)
-                metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
-                # This UVC camera reports 5 while its auto-exposure loop is
-                # still initializing. Locking that lower bound produces an
-                # unusably dark image. Keep automatic mode until it reports a
-                # real meter value; no exposure state is persisted or reused.
+                    metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
+                    now = time.monotonic()
+                    if now >= warmup_deadline and metered_exposure > 5.0:
+                        break
+                    if now >= settle_deadline:
+                        break
+
                 if metered_exposure <= 5.0:
                     exposure_set = True
                     self.logger.warning(
                         f"Camera exposure meter not settled: /dev/video{port} "
-                        f"metered={metered_exposure}; keeping auto exposure enabled"
+                        f"metered={metered_exposure}; keeping auto exposure enabled "
+                        f"and not applying bias={exposure_bias}"
                     )
                 else:
                     target_exposure = max(
