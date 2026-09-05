@@ -711,16 +711,26 @@ class VisionPreUntil:
                         if not ok:
                             time.sleep(0.02)
                 metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
-
-                target_exposure = max(
-                    1.0,
-                    round(float(metered_exposure) * (2.0 ** int(exposure_bias))),
-                )
-                exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
-                time.sleep(0.05)
-                exposure_set = bool(
-                    exposure_set and cam.set(cv2.CAP_PROP_EXPOSURE, target_exposure)
-                )
+                # This UVC camera reports 5 while its auto-exposure loop is
+                # still initializing. Locking that lower bound produces an
+                # unusably dark image. Keep automatic mode until it reports a
+                # real meter value; no exposure state is persisted or reused.
+                if metered_exposure <= 5.0:
+                    exposure_set = True
+                    self.logger.warning(
+                        f"Camera exposure meter not settled: /dev/video{port} "
+                        f"metered={metered_exposure}; keeping auto exposure enabled"
+                    )
+                else:
+                    target_exposure = max(
+                        1.0,
+                        round(float(metered_exposure) * (2.0 ** int(exposure_bias))),
+                    )
+                    exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
+                    time.sleep(0.05)
+                    exposure_set = bool(
+                        exposure_set and cam.set(cv2.CAP_PROP_EXPOSURE, target_exposure)
+                    )
             else:
                 auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
                 exposure_set = True
