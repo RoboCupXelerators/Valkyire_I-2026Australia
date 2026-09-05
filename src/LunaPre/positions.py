@@ -706,9 +706,8 @@ class Positions:
                 self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos
-        if getattr(self, "WarnedLidarCount", 0):
-            if Settings.Debug.FullLog:
-                logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
+        if Settings.Debug.FullLog:
+            logger.debug("[Relative] Ball Position: %s" % self.ballPosOut)
         return self.ballPosOut
 
     @staticmethod
