@@ -54,23 +54,29 @@ class LockSeries:
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
         tuning = getattr(Settings.Motion, "LockBallSlip", None)
-        self.forward_kp = float(getattr(tuning, "ForwardKp", 0.023))
-        self.lateral_kp = float(getattr(tuning, "LateralKp", 0.018))
-        self.angular_kp = float(getattr(tuning, "AngularKp", 1.5))
-        self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 1.0)))
-        self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.8)))
-        self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 200.0)))
+        self.forward_kp = float(getattr(tuning, "ForwardKp", 0.020))
+        self.forward_ki = max(0.0, float(getattr(tuning, "ForwardKi", 0.006)))
+        self.forward_kd = max(0.0, float(getattr(tuning, "ForwardKd", 0.005)))
+        self.lateral_kp = float(getattr(tuning, "LateralKp", 0.016))
+        self.lateral_ki = max(0.0, float(getattr(tuning, "LateralKi", 0.0005)))
+        self.lateral_kd = max(0.0, float(getattr(tuning, "LateralKd", 0.005)))
+        self.angular_kp = float(getattr(tuning, "AngularKp", 1.30))
+        self.angular_ki = max(0.0, float(getattr(tuning, "AngularKi", 0.06)))
+        self.angular_kd = max(0.0, float(getattr(tuning, "AngularKd", 0.15)))
+        self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 0.80)))
+        self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.65)))
+        self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 85.0)))
         self.turn_only_angle = max(10.0, float(getattr(tuning, "TurnOnlyAngleDeg", 70.0)))
-        self.turn_only_kp = float(getattr(tuning, "TurnOnlyKp", 1.0))
-        self.turn_only_max = max(0.0, float(getattr(tuning, "TurnOnlyMaxDegS", 75.0)))
+        self.turn_only_kp = float(getattr(tuning, "TurnOnlyKp", 0.75))
+        self.turn_only_max = max(0.0, float(getattr(tuning, "TurnOnlyMaxDegS", 55.0)))
         self.rear_forward_kp = float(getattr(tuning, "RearForwardKp", 0.012))
-        self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.65)))
-        self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.02))
-        self.rear_lateral_max = max(0.0, float(getattr(tuning, "RearLateralMaxMps", 0.85)))
-        self.rear_angular_kp = float(getattr(tuning, "RearAngularKp", 2.2))
-        self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 260.0)))
+        self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.55)))
+        self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.016))
+        self.rear_lateral_max = max(0.0, float(getattr(tuning, "RearLateralMaxMps", 0.65)))
+        self.rear_angular_kp = float(getattr(tuning, "RearAngularKp", 1.80))
+        self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 85.0)))
         self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
-        self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.14)))
+        self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.10)))
         self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
         self.ball_jump_confirm_frames = max(
             1, int(getattr(tuning, "BallJumpConfirmFrames", 2))
@@ -80,9 +86,30 @@ class LockSeries:
         self._lockball_jump_candidate = None
         self._lockball_jump_candidate_frames = 0
         self._pose_revision = None
-        self.pan_x = simple_pid.PID(self.forward_kp, 0.018, 0.01, setpoint=self.catch_x, output_limits=(-self.forward_max, 0), auto_mode=True)
-        self.pan_y = simple_pid.PID(self.lateral_kp, 0.002, 0.01, setpoint=self.catch_y, output_limits=(-self.lateral_max, self.lateral_max), auto_mode=True)
-        self.pan_w = simple_pid.PID(self.angular_kp, 0.2, 0.3, setpoint=0, output_limits=(-self.angular_max, self.angular_max), auto_mode=True)
+        self.pan_x = simple_pid.PID(
+            self.forward_kp,
+            self.forward_ki,
+            self.forward_kd,
+            setpoint=self.catch_x,
+            output_limits=(-self.forward_max, 0),
+            auto_mode=True,
+        )
+        self.pan_y = simple_pid.PID(
+            self.lateral_kp,
+            self.lateral_ki,
+            self.lateral_kd,
+            setpoint=self.catch_y,
+            output_limits=(-self.lateral_max, self.lateral_max),
+            auto_mode=True,
+        )
+        self.pan_w = simple_pid.PID(
+            self.angular_kp,
+            self.angular_ki,
+            self.angular_kd,
+            setpoint=0,
+            output_limits=(-self.angular_max, self.angular_max),
+            auto_mode=True,
+        )
 
     def _reset_lockball_pid(self):
         self.pan_x.reset()
