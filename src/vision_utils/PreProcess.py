@@ -638,7 +638,7 @@ class VisionPreUntil:
 
     def _configured_exposure_mode(
         self,
-        legacy_auto_exposure: float = 3,
+        legacy_auto_exposure: float = 0,
     ) -> int:
         """Return normalized exposure mode from settings."""
 
@@ -695,7 +695,11 @@ class VisionPreUntil:
                 # Always meter afresh before locking. ExposureBias is a
                 # persistent EV offset relative to the current environment,
                 # rather than an adjustment relative to a prior lock.
-                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
+                # This camera's proven auto/manual transition is 0 -> 1.
+                # Value 3 leaves its prior manual exposure influencing the
+                # metering loop, which makes a persistent Bias compound over
+                # later launches.
+                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.0)
                 # Feed the sensor enough frames for its auto-exposure loop
                 # to settle before locking the result. This is the
                 # programmatic equivalent of changing 0 -> 1 manually.
@@ -739,7 +743,7 @@ class VisionPreUntil:
                         exposure_set and cam.set(cv2.CAP_PROP_EXPOSURE, target_exposure)
                     )
             else:
-                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
+                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.0)
                 exposure_set = True
             actual_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
             actual_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
@@ -800,7 +804,7 @@ class VisionPreUntil:
             if section is not None:
                 setattr(section, "ExposureMode", exposure_mode)
                 setattr(section, "ExposureBias", exposure_bias)
-                setattr(section, "AutoExposure", 1 if exposure_mode == 1 else 3)
+                setattr(section, "AutoExposure", 1 if exposure_mode == 1 else 0)
 
         ports = list(getattr(self, "CamPorts", []) or [])
         results = []
@@ -978,7 +982,7 @@ class VisionPreUntil:
             time.sleep(period)
 
 
-    def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
+    def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=0, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
         """Initialize cameras.
 
         Backward compatible behavior:

@@ -72,7 +72,7 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
     vision = config.get("Vision") if isinstance(config.get("Vision"), dict) else {}
     existing = config.get("VisionVals") if isinstance(config.get("VisionVals"), dict) else {}
     legacy_auto_exposure = vision.get(
-        "AutoExposure", existing.get("AutoExposure", existing.get("AutoExpose", 3))
+        "AutoExposure", existing.get("AutoExposure", existing.get("AutoExpose", 0))
     )
     exposure_mode = vision.get("ExposureMode", existing.get("ExposureMode"))
     if exposure_mode is None:
@@ -101,16 +101,16 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
         "RecordFPS": existing.get("RecordFPS", 30),
         "RecordCodec": existing.get("RecordCodec", "mp4v"),
         "RecordExt": existing.get("RecordExt", "mp4"),
-        # 0=flexible auto exposure, 1=stable manual exposure. Preserve the
-        # old V4L2 value for legacy consumers that still read AutoExposure.
+        # The camera uses 0 for continuous auto metering and 1 for manual
+        # lock. Preserve that raw value for legacy consumers.
         "ExposureMode": exposure_mode,
         "ExposureBias": vision.get("ExposureBias", existing.get("ExposureBias", 0)),
-        "AutoExposure": 1 if exposure_mode == 1 else 3,
+        "AutoExposure": 1 if exposure_mode == 1 else 0,
         "Exposure": vision.get(
             "Exposure", existing.get("Exposure", existing.get("ExposeVal", 157))
         ),
         "ExposeVal": existing.get("ExposeVal", vision.get("Exposure", 157)),
-        "AutoExpose": 1 if exposure_mode == 1 else 3,
+        "AutoExpose": 1 if exposure_mode == 1 else 0,
         "CalibrationFolder": vision.get("CalibrationFolder", existing.get("CalibrationFolder", "Calibration")),
         "HailoModelPath": vision.get("HailoModelPath", existing.get("HailoModelPath", "/yoloV8_Weighs/")),
         "TunaModelName": vision.get("ModelPath", existing.get("TunaModelName", "")),
