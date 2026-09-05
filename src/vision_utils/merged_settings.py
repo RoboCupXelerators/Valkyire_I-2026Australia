@@ -71,6 +71,22 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
     """Populate VisionVals from the newer Vision section for legacy vision code."""
     vision = config.get("Vision") if isinstance(config.get("Vision"), dict) else {}
     existing = config.get("VisionVals") if isinstance(config.get("VisionVals"), dict) else {}
+    legacy_auto_exposure = vision.get(
+        "AutoExposure", existing.get("AutoExposure", existing.get("AutoExpose", 3))
+    )
+    exposure_mode = vision.get("ExposureMode", existing.get("ExposureMode"))
+    if exposure_mode is None:
+        # Map pre-ExposureMode configs: V4L2 manual (1) was stable, while
+        # every other legacy value is treated as automatic/flexible.
+        try:
+            exposure_mode = 1 if int(legacy_auto_exposure) == 1 else 0
+        except (TypeError, ValueError):
+            exposure_mode = 0
+    else:
+        try:
+            exposure_mode = 1 if int(exposure_mode) == 1 else 0
+        except (TypeError, ValueError):
+            exposure_mode = 0
     compat = {
         "Back": _camera_port(vision, 0, existing.get("Back", 0)),
         "Left": _camera_port(vision, 1, existing.get("Left", 2)),
@@ -85,15 +101,16 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
         "RecordFPS": existing.get("RecordFPS", 30),
         "RecordCodec": existing.get("RecordCodec", "mp4v"),
         "RecordExt": existing.get("RecordExt", "mp4"),
-        # Prefer the unified Vision settings while retaining legacy overlays.
-        "AutoExposure": vision.get(
-            "AutoExposure", existing.get("AutoExposure", existing.get("AutoExpose", 3))
-        ),
+        # 0=flexible auto exposure, 1=stable manual exposure. Preserve the
+        # old V4L2 value for legacy consumers that still read AutoExposure.
+        "ExposureMode": exposure_mode,
+        "ExposureBias": vision.get("ExposureBias", existing.get("ExposureBias", 0)),
+        "AutoExposure": 1 if exposure_mode == 1 else 3,
         "Exposure": vision.get(
             "Exposure", existing.get("Exposure", existing.get("ExposeVal", 157))
         ),
         "ExposeVal": existing.get("ExposeVal", vision.get("Exposure", 157)),
-        "AutoExpose": existing.get("AutoExpose", vision.get("AutoExposure", 3)),
+        "AutoExpose": 1 if exposure_mode == 1 else 3,
         "CalibrationFolder": vision.get("CalibrationFolder", existing.get("CalibrationFolder", "Calibration")),
         "HailoModelPath": vision.get("HailoModelPath", existing.get("HailoModelPath", "/yoloV8_Weighs/")),
         "TunaModelName": vision.get("ModelPath", existing.get("TunaModelName", "")),

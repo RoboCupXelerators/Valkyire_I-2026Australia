@@ -167,12 +167,12 @@ class LockSeries:
         self._reset_on_pose_change()
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.5)
             # chassis.stop()
             self._reset_lockball_pid()
             return True
         if ball == BALL_NOT_FOUND:
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
             return False
