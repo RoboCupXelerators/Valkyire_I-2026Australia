@@ -1365,7 +1365,7 @@ class ControlPanelApp:
             ("Vision", "CamPorts"): {"type": "list[int]", "label": "摄像头端口", "description": "按顺序: 后, 左, 前, 右", "item_labels": ["后", "左", "前", "右"], "tab": "vision", "icon": "📷"},
             ("Vision", "ModelName"): {"type": "string", "label": "模型名称", "description": "不含后缀，各推理库自动选择所需格式", "tab": "vision"},
             ("Vision", "ExposureMode"): {"type": "select", "label": "曝光模式", "options": [0, 1], "option_labels": {"0": "灵活（持续自动）", "1": "稳定（自动测光后锁定）"}, "tab": "vision"},
-            ("Vision", "ExposureBias"): {"type": "int", "label": "曝光补偿", "description": "-4 至 4 调整相机亮度；-5 至 -8 继续压低高光，不累计。-1 约降低 15%", "min": -8, "max": 4, "tab": "vision"},
+            ("Vision", "ExposureBias"): {"type": "int", "label": "曝光补偿", "description": "持久的绝对亮度补偿；负数更暗，正数更亮。-1 约降低 15%", "min": -4, "max": 4, "tab": "vision"},
             ("Vision", "CalibrationFolder"): {"type": "string", "label": "标定文件夹", "tab": "vision"},
             ("Vision", "BallDiameter"): {"type": "float", "label": "球直径 (CM)", "min": 1.0, "max": 20.0, "step": 0.1, "tab": "vision"},
             ("Vision", "ChassisWidth"): {"type": "float", "label": "底盘宽度 (CM)", "min": 5.0, "max": 30.0, "step": 0.5, "tab": "vision"},

@@ -74,7 +74,7 @@ class Preference:
             "ModelName": "ArisuModel_v1.2s",
             # 0=flexible automatic exposure, 1=auto-meter then lock exposure.
             "ExposureMode": 1,
-            # -4..4 controls camera brightness; -5..-8 additionally compress highlights.
+            # -4..4 controls the camera's physical brightness control.
             "ExposureBias": 0,
             # 标定文件夹
             "CalibrationFolder": "Calibration",

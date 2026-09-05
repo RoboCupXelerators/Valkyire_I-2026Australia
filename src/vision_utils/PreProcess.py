@@ -674,19 +674,9 @@ class VisionPreUntil:
 
         value = getattr(getattr(self.cfg, "VisionVals", object()), "ExposureBias", 0)
         try:
-            return max(-8, min(4, int(value)))
+            return max(-4, min(4, int(value)))
         except (TypeError, ValueError):
             return 0
-
-    @staticmethod
-    def _apply_highlight_compression(frame, strength: int):
-        """Compress highlights while preserving more shadow detail than gain reduction."""
-
-        if frame is None or strength <= 0:
-            return frame
-        values = np.arange(256, dtype=np.float32)
-        curve = values / (1.0 + float(strength) * values / 255.0)
-        return cv2.LUT(frame, np.rint(curve).astype(np.uint8))
 
     def _apply_camera_exposure(
         self,
@@ -1127,10 +1117,6 @@ class VisionPreUntil:
             if len(fail_counts) != len(cams):
                 fail_counts = [0] * len(cams)
 
-            # Bias beyond the camera's physical brightness floor (-4) uses a
-            # deterministic highlight curve. It is derived only from the
-            # saved setting, never from the prior frame or startup state.
-            highlight_compression = max(0, -self._configured_exposure_bias() - 4)
             Frames = []
             any_ok = False
             for idx, Cam in enumerate(cams):
@@ -1144,10 +1130,6 @@ class VisionPreUntil:
                 else:
                     any_ok = True
                     fail_counts[idx] = 0
-                    Frame = self._apply_highlight_compression(
-                        Frame,
-                        highlight_compression,
-                    )
                     Frames.append(Frame)
 
             # Keep a stable 4-slot Frames list for consumers.
