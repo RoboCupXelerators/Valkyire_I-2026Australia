@@ -44,6 +44,7 @@ class Car:
         self._last_vy = 0
         self._last_wz = 0
         self._motor_output_hooks = []
+        self._permission_denied_logged = False
 
     def add_motor_output_hook(self, hook):
         if hook not in self._motor_output_hooks:
@@ -127,10 +128,43 @@ class Car:
         max_rpm = abs(self._chassis_float("MaxWheelRPM", 500))
         return max_rpm / self._rpm_per_degps()
 
+    def CanMove(self) -> bool:
+        """Return whether the referee/backend currently permits motion output."""
+
+        try:
+            permitted = bool(self.Permission())
+        except Exception as error:
+            self.logger.warning(f"Motion permission check failed: {error}")
+            permitted = False
+        if permitted:
+            self._permission_denied_logged = False
+        return permitted
+
+    def _reset_closed_loop_state(self) -> None:
+        """Discard controller state after a command cannot reach the motors."""
+
+        self.Yaw_PID.reset()
+        self._motion_backend.reset_command_filter()
+        self._motion_backend.reset_motor_output()
+        self.speedCache = [0, 0, 0, 0]
+        self._last_vx = 0.0
+        self._last_vy = 0.0
+        self._last_wz = 0.0
+
+    def _deny_motor_output(self) -> bool:
+        """Force a zero command without retaining any stale controller state."""
+
+        self._reset_closed_loop_state()
+        self.SetMotorFunc(0, 0, 0, 0)
+        if not self._permission_denied_logged:
+            self.logger.warning("Permission Denied: Unable to set motor speeds.")
+            self._permission_denied_logged = True
+        return False
+
     def SetMotor(self,speedCache:list[int,int,int,int], immediate=False):
         if self.SetMotorFunc is None:
             raise RuntimeError("wheel-speed output is unavailable for this chassis backend")
-        if self.Permission():
+        if self.CanMove():
             self.speedCache = speedCache
             number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
             ordered = [0,0,0,0]
@@ -154,10 +188,9 @@ class Car:
             self._notify_motor_output(speed)
 
             self.SetMotorFunc(speed[0], speed[1], speed[2], speed[3])
+            return True
         else:
-            self.SetMotorFunc(0,0,0,0)
-            self._motion_backend.reset_motor_output()
-            self.logger.warning("Permission Denied: Unable to set motor speeds.")
+            return self._deny_motor_output()
 
     def SetKp(self,Kp):
         self.Kp = Kp
@@ -226,7 +259,8 @@ class Car:
         if not all(math.isfinite(value) for value in values):
             raise ValueError("chassis twist must be finite")
         self._last_vx, self._last_vy, self._last_wz = values
-        if not self.Permission():
+        if not self.CanMove():
+            self._reset_closed_loop_state()
             values = (0.0, 0.0, 0.0)
             self.logger.warning("Permission Denied: chassis twist forced to zero.")
         if self.SetChassisTwistFunc is not None:
@@ -263,6 +297,12 @@ class Car:
         """
         if not self._field_imu_ready():
             return self._reject_field_motion()
+        if not self.CanMove():
+            # Do not run the yaw PID while the command is being rejected;
+            # otherwise its integral term would be applied on re-enable.
+            self._reset_closed_loop_state()
+            self.stop()
+            return False
         try:
             Yaw = self.GetYaw()
         except (RuntimeError, ValueError):
