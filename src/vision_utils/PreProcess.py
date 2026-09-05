@@ -678,18 +678,32 @@ class VisionPreUntil:
         except (TypeError, ValueError):
             return 0
 
+    def _configured_manual_exposure(self, fallback: float = 68.0) -> float:
+        """Return the fixed, persistent stable-mode UVC exposure value."""
+
+        vision_vals = getattr(self.cfg, "VisionVals", object())
+        value = getattr(vision_vals, "ManualExposure", None)
+        if value is None:
+            value = getattr(vision_vals, "Exposure", fallback)
+        try:
+            return max(10.0, min(500.0, float(value)))
+        except (TypeError, ValueError):
+            return float(fallback)
+
     def _apply_camera_exposure(
         self,
         cam,
         port: int,
         exposure_mode: int,
         exposure_bias: int,
+        manual_exposure: float,
     ) -> dict:
         """Apply one exposure profile to an already-opened V4L2 camera.
 
-        Flexible mode keeps continuous auto exposure. Stable mode meters once
-        and locks the camera without replaying its incomplete exposure value.
-        Bias is an absolute brightness compensation, so it cannot compound.
+        Flexible mode keeps continuous auto exposure. Stable mode gives auto
+        metering time to settle, then locks a configured absolute shutter
+        value. Bias is an absolute brightness compensation, so it cannot
+        compound across restarts.
         """
 
         if cam is None:
@@ -701,12 +715,13 @@ class VisionPreUntil:
             -64.0,
             min(64.0, float(exposure_bias) * _CAMERA_BRIGHTNESS_PER_BIAS),
         )
+        target_manual_exposure = max(10.0, min(500.0, float(manual_exposure)))
+        applied_manual_exposure = None
         try:
             if exposure_mode == 1:
-                # The device's supported stable sequence is auto (3) then
-                # manual (1). Do not write CAP_PROP_EXPOSURE after switching:
-                # auto gain is not represented by that property, so replaying
-                # it makes the next startup progressively darker.
+                # The device accepts stable exposure only after auto (3) has
+                # warmed up, then manual (1).  Never use the auto-reported
+                # exposure as a new target: it excludes the auto gain value.
                 cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, _CAMERA_AUTO_EXPOSURE)
                 deadline = time.monotonic() + 3.0
                 reader = getattr(self, "ReadCamsThread", None)
@@ -727,10 +742,14 @@ class VisionPreUntil:
                 cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, _CAMERA_MANUAL_EXPOSURE)
                 time.sleep(0.05)
                 manual_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
+                cam.set(cv2.CAP_PROP_EXPOSURE, target_manual_exposure)
+                time.sleep(0.05)
+                applied_manual_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
                 cam.set(cv2.CAP_PROP_BRIGHTNESS, target_brightness)
                 applied_brightness = float(cam.get(cv2.CAP_PROP_BRIGHTNESS))
                 exposure_set = bool(
                     abs(manual_auto_exposure - _CAMERA_MANUAL_EXPOSURE) <= 0.25
+                    and abs(applied_manual_exposure - target_manual_exposure) <= 1.0
                     and abs(applied_brightness - target_brightness) <= 1.0
                 )
             else:
@@ -760,6 +779,7 @@ class VisionPreUntil:
                 f"Camera exposure configured: /dev/video{port} "
                 f"mode={exposure_mode} auto={actual_auto_exposure} "
                 f"exposure={actual_exposure} brightness={actual_brightness} "
+                f"manual={target_manual_exposure if exposure_mode == 1 else None} "
                 f"bias={exposure_bias} metered={metered_exposure} "
                 f"meter_auto={metering_auto_exposure}"
             )
@@ -772,6 +792,8 @@ class VisionPreUntil:
             "brightness": actual_brightness,
             "metered_exposure": metered_exposure,
             "metering_auto_exposure": metering_auto_exposure,
+            "manual_exposure": applied_manual_exposure,
+            "target_manual_exposure": target_manual_exposure if exposure_mode == 1 else None,
             "target_brightness": target_brightness,
         }
 
@@ -779,11 +801,13 @@ class VisionPreUntil:
         self,
         exposure_mode: int | None = None,
         exposure_bias: int | None = None,
+        manual_exposure: float | None = None,
     ) -> list[dict]:
         """Apply exposure settings to active cameras without restarting vision."""
 
         configured_mode = self._configured_exposure_mode()
         configured_bias = self._configured_exposure_bias()
+        configured_manual_exposure = self._configured_manual_exposure()
         if exposure_mode is None:
             exposure_mode = configured_mode
         else:
@@ -798,6 +822,13 @@ class VisionPreUntil:
                 exposure_bias = max(-4, min(4, int(exposure_bias)))
             except (TypeError, ValueError):
                 exposure_bias = configured_bias
+        if manual_exposure is None:
+            manual_exposure = configured_manual_exposure
+        else:
+            try:
+                manual_exposure = max(10.0, min(500.0, float(manual_exposure)))
+            except (TypeError, ValueError):
+                manual_exposure = configured_manual_exposure
         # Keep the in-memory singleton coherent with the setting just saved by
         # the control panel, including any later camera reopen.
         for section_name in ("Vision", "VisionVals"):
@@ -805,6 +836,9 @@ class VisionPreUntil:
             if section is not None:
                 setattr(section, "ExposureMode", exposure_mode)
                 setattr(section, "ExposureBias", exposure_bias)
+                setattr(section, "ManualExposure", manual_exposure)
+                setattr(section, "Exposure", manual_exposure)
+                setattr(section, "ExposeVal", manual_exposure)
                 setattr(
                     section,
                     "AutoExposure",
@@ -817,7 +851,13 @@ class VisionPreUntil:
         results = []
         for index, cam in enumerate(self._camera_snapshot()):
             port = ports[index] if index < len(ports) else index
-            result = self._apply_camera_exposure(cam, port, exposure_mode, exposure_bias)
+            result = self._apply_camera_exposure(
+                cam,
+                port,
+                exposure_mode,
+                exposure_bias,
+                manual_exposure,
+            )
             results.append(result)
         return results
 
@@ -1010,6 +1050,7 @@ class VisionPreUntil:
         fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamFps", 30))
         exposure_mode = self._configured_exposure_mode(AutoExposure)
         exposure_bias = self._configured_exposure_bias()
+        manual_exposure = self._configured_manual_exposure(Exposure)
         camera_entries = []
 
         use_gst = False
@@ -1079,6 +1120,7 @@ class VisionPreUntil:
                         port,
                         exposure_mode,
                         exposure_bias,
+                        manual_exposure,
                     ): index
                     for index, port, cam in v4l2_entries
                 }

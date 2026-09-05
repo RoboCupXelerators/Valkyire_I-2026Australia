@@ -76,6 +76,8 @@ class Preference:
             "ExposureMode": 1,
             # -4..4 controls the camera's physical brightness control.
             "ExposureBias": 0,
+            # Stable mode's fixed UVC exposure value (10..500). Lower is darker.
+            "ManualExposure": 68,
             # 标定文件夹
             "CalibrationFolder": "Calibration",
             # Target dimensions (cm) for operator-facing object semantics.

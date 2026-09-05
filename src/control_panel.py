@@ -1365,6 +1365,7 @@ class ControlPanelApp:
             ("Vision", "CamPorts"): {"type": "list[int]", "label": "摄像头端口", "description": "按顺序: 后, 左, 前, 右", "item_labels": ["后", "左", "前", "右"], "tab": "vision", "icon": "📷"},
             ("Vision", "ModelName"): {"type": "string", "label": "模型名称", "description": "不含后缀，各推理库自动选择所需格式", "tab": "vision"},
             ("Vision", "ExposureMode"): {"type": "select", "label": "曝光模式", "options": [0, 1], "option_labels": {"0": "灵活（持续自动）", "1": "稳定（自动测光后锁定）"}, "tab": "vision"},
+            ("Vision", "ManualExposure"): {"type": "int", "label": "稳定手动曝光", "description": "仅稳定模式使用；10-100 为推荐范围，数值越小越暗，68 为当前基准", "min": 10, "max": 500, "tab": "vision"},
             ("Vision", "ExposureBias"): {"type": "int", "label": "曝光补偿", "description": "持久的绝对亮度补偿；负数更暗，正数更亮。-1 约降低 15%", "min": -4, "max": 4, "tab": "vision"},
             ("Vision", "CalibrationFolder"): {"type": "string", "label": "标定文件夹", "tab": "vision"},
             ("Vision", "BallDiameter"): {"type": "float", "label": "球直径 (CM)", "min": 1.0, "max": 20.0, "step": 0.1, "tab": "vision"},
@@ -1494,13 +1495,14 @@ class ControlPanelApp:
             vision_config = config.get("Vision", {}) if isinstance(config, dict) else {}
             mode = vision_config.get("ExposureMode") if isinstance(vision_config, dict) else None
             bias = vision_config.get("ExposureBias") if isinstance(vision_config, dict) else None
+            manual_exposure = vision_config.get("ManualExposure") if isinstance(vision_config, dict) else None
 
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
 
             apply_exposure = getattr(self.vision, "ApplyExposureSettings", None)
             if callable(apply_exposure) and mode is not None:
-                results = apply_exposure(mode, bias)
+                results = apply_exposure(mode, bias, manual_exposure)
                 return {
                     "success": True,
                     "exposure_applied": results,
