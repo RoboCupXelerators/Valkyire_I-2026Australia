@@ -22,6 +22,7 @@ import glob
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -2815,6 +2816,55 @@ class ControlPanelApp:
 
 # ==================== HTTP 请求处理器 ====================
 
+class IdleTimeoutHTTPServer(ThreadingHTTPServer):
+    """Expire explicitly managed panels; ordinary manual launches never expire."""
+
+    def __init__(self, address, handler, *, idle_timeout_seconds=0, clock=time.monotonic):
+        self.idle_timeout_seconds = idle_timeout_seconds
+        self._clock = clock
+        self._activity_lock = threading.RLock()
+        self._last_browser_request = clock()
+        self._active_browser_requests = 0
+        self._shutdown_started = False
+        super().__init__(address, handler)
+
+    def begin_browser_request(self):
+        with self._activity_lock:
+            if self._shutdown_started:
+                return False
+            self._active_browser_requests += 1
+            self._last_browser_request = self._clock()
+            return True
+
+    def end_browser_request(self):
+        with self._activity_lock:
+            self._active_browser_requests -= 1
+            self._last_browser_request = self._clock()
+
+    def lifecycle_status(self):
+        with self._activity_lock:
+            return {
+                "idle_timeout_seconds": self.idle_timeout_seconds,
+                "active_requests": self._active_browser_requests,
+                "idle_seconds": max(0, self._clock() - self._last_browser_request),
+                "shutting_down": self._shutdown_started,
+            }
+
+    def request_shutdown(self):
+        with self._activity_lock:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+        # BaseServer.shutdown must run outside the serve_forever thread.
+        threading.Thread(target=self.shutdown, daemon=True).start()
+
+    def service_actions(self):
+        with self._activity_lock:
+            if (self.idle_timeout_seconds > 0 and not self._active_browser_requests
+                    and self._clock() - self._last_browser_request >= self.idle_timeout_seconds):
+                self.request_shutdown()
+
+
 class ControlPanelHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
 
@@ -2826,10 +2876,25 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
     def handle_one_request(self):
         """Ignore clients that close a polling request before the response ends."""
+        self._idle_request_active = False
         try:
             super().handle_one_request()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
+        finally:
+            if self._idle_request_active:
+                self.server.end_browser_request()
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        # Monitoring must not keep an abandoned panel alive.
+        if isinstance(self.server, IdleTimeoutHTTPServer) and urlparse(self.path).path != '/api/panel/lifecycle':
+            if not self.server.begin_browser_request():
+                self.send_error(503, 'Panel is shutting down')
+                return False
+            self._idle_request_active = True
+        return True
 
     def _send_json(self, data, status=200):
         body = json.dumps(_json_safe(data), ensure_ascii=False).encode('utf-8')
@@ -2902,6 +2967,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         app = self.app
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path == '/api/panel/lifecycle' and isinstance(self.server, IdleTimeoutHTTPServer):
+            self._send_json(self.server.lifecycle_status())
+            return
 
         # Static files
         if path == '/' or path == '/index.html':
@@ -3269,6 +3338,8 @@ def main():
     ap = argparse.ArgumentParser(description="Xelerator Control Panel Server")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--idle-timeout-seconds", type=int, default=0,
+                    help="Exit after this many seconds without browser requests; 0 keeps manual launches running.")
     ap.add_argument("--jpeg-quality", type=int, default=75)
     ap.add_argument(
         "--web-dir",
@@ -3287,9 +3358,12 @@ def main():
         help="Keep control panel vision-only and do not initialize LunaPre runtime/lidar.",
     )
     args = ap.parse_args()
+    if args.idle_timeout_seconds < 0:
+        ap.error("--idle-timeout-seconds must be nonnegative")
 
     bits = None
     vision = None
+    runtime = None
 
     if not args.no_runtime:
         try:
@@ -3366,11 +3440,13 @@ def main():
 
     # Setup HTTP server
     ControlPanelHandler.app = app
-    httpd = ThreadingHTTPServer((args.host, args.port), ControlPanelHandler)
+    httpd = IdleTimeoutHTTPServer((args.host, args.port), ControlPanelHandler,
+                                 idle_timeout_seconds=args.idle_timeout_seconds)
+    previous_sigterm = signal.signal(signal.SIGTERM, lambda *_: httpd.request_shutdown())
 
     print(f"\n{'='*60}")
     print(f"  Xelerator Control Panel")
-    print(f"  http://{args.host}:{args.port}")
+    print(f"  http://{args.host}:{httpd.server_port}")
     print(f"{'='*60}\n")
 
     try:
@@ -3378,7 +3454,9 @@ def main():
     except KeyboardInterrupt:
         print("\n[ControlPanel] Shutting down...")
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         app.control_shutdown()
+        app.stop_recording()
         try:
             app.calib_stop_stream()
         except Exception:
@@ -3400,8 +3478,13 @@ def main():
                 pass
         except Exception as e:
             print(f"[ControlPanel] Vision cleanup failed: {e}")
+        if runtime is not None:
+            try:
+                runtime.shutdown_runtime()
+            except Exception as e:
+                print(f"[ControlPanel] Runtime cleanup failed: {e}")
         try:
-            httpd.shutdown()
+            httpd.server_close()
         except Exception:
             pass
 
