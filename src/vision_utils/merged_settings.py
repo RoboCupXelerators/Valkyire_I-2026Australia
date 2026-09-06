@@ -87,6 +87,18 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
             exposure_mode = 1 if int(exposure_mode) == 1 else 0
         except (TypeError, ValueError):
             exposure_mode = 0
+    # Old installations used ``Exposure`` as their manual setting.  Preserve
+    # that value as the one fixed stable-mode shutter value during migration.
+    manual_exposure = vision.get(
+        "ManualExposure",
+        existing.get(
+            "ManualExposure",
+            vision.get(
+                "Exposure",
+                existing.get("Exposure", existing.get("ExposeVal", 68)),
+            ),
+        ),
+    )
     compat = {
         "Back": _camera_port(vision, 0, existing.get("Back", 0)),
         "Left": _camera_port(vision, 1, existing.get("Left", 2)),
@@ -101,15 +113,14 @@ def _ensure_legacy_vision_vals(config: Dict[str, Any]) -> None:
         "RecordFPS": existing.get("RecordFPS", 30),
         "RecordCodec": existing.get("RecordCodec", "mp4v"),
         "RecordExt": existing.get("RecordExt", "mp4"),
-        # 0=flexible auto exposure, 1=stable manual exposure. Preserve the
-        # old V4L2 value for legacy consumers that still read AutoExposure.
+        # The camera uses 3 for continuous auto metering and 1 for manual
+        # lock. Preserve that raw value for legacy consumers.
         "ExposureMode": exposure_mode,
         "ExposureBias": vision.get("ExposureBias", existing.get("ExposureBias", 0)),
         "AutoExposure": 1 if exposure_mode == 1 else 3,
-        "Exposure": vision.get(
-            "Exposure", existing.get("Exposure", existing.get("ExposeVal", 157))
-        ),
-        "ExposeVal": existing.get("ExposeVal", vision.get("Exposure", 157)),
+        "ManualExposure": manual_exposure,
+        "Exposure": manual_exposure,
+        "ExposeVal": manual_exposure,
         "AutoExpose": 1 if exposure_mode == 1 else 3,
         "CalibrationFolder": vision.get("CalibrationFolder", existing.get("CalibrationFolder", "Calibration")),
         "HailoModelPath": vision.get("HailoModelPath", existing.get("HailoModelPath", "/yoloV8_Weighs/")),

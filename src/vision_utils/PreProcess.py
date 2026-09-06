@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover
 import threading
 import queue
 import time
+from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 import pathlib
@@ -55,6 +56,12 @@ _VISION_LOCAL_DATA_DIR = APP_DIR / "VisionDatas" / "data"
 DATA_DIR = Path(REASON_DATA_DIR) if REASON_DATA_DIR is not None else _VISION_LOCAL_DATA_DIR
 
 MODEL_DIR = APP_DIR / "models"
+
+# Empirically verified UVC controls for the deployed cameras. Auto mode keeps
+# exposure and gain coupled; brightness is the repeatable compensation control.
+_CAMERA_AUTO_EXPOSURE = 3.0
+_CAMERA_MANUAL_EXPOSURE = 1.0
+_CAMERA_BRIGHTNESS_PER_BIAS = 16.0
 
 
 def _norm_rel_folder(folder: str | None, default: str) -> str:
@@ -638,7 +645,7 @@ class VisionPreUntil:
 
     def _configured_exposure_mode(
         self,
-        legacy_auto_exposure: float = 3,
+        legacy_auto_exposure: float = _CAMERA_AUTO_EXPOSURE,
     ) -> int:
         """Return normalized exposure mode from settings."""
 
@@ -663,7 +670,7 @@ class VisionPreUntil:
         return exposure_mode
 
     def _configured_exposure_bias(self) -> int:
-        """Return stable-mode exposure compensation in whole EV stops."""
+        """Return the persistent camera brightness compensation step."""
 
         value = getattr(getattr(self.cfg, "VisionVals", object()), "ExposureBias", 0)
         try:
@@ -671,41 +678,54 @@ class VisionPreUntil:
         except (TypeError, ValueError):
             return 0
 
+    def _configured_manual_exposure(self, fallback: float = 68.0) -> float:
+        """Return the fixed, persistent stable-mode UVC exposure value."""
+
+        vision_vals = getattr(self.cfg, "VisionVals", object())
+        value = getattr(vision_vals, "ManualExposure", None)
+        if value is None:
+            value = getattr(vision_vals, "Exposure", fallback)
+        try:
+            return max(10.0, min(500.0, float(value)))
+        except (TypeError, ValueError):
+            return float(fallback)
+
     def _apply_camera_exposure(
         self,
         cam,
         port: int,
         exposure_mode: int,
         exposure_bias: int,
+        manual_exposure: float,
     ) -> dict:
         """Apply one exposure profile to an already-opened V4L2 camera.
 
-        Flexible mode keeps continuous auto exposure. Stable mode meters once,
-        then locks a compensation-adjusted value derived from that same meter
-        reading. Reapplying a bias cannot compound exposure changes.
+        Flexible mode keeps continuous auto exposure. Stable mode gives auto
+        metering time to settle, then locks a configured absolute shutter
+        value. Bias is an absolute brightness compensation, so it cannot
+        compound across restarts.
         """
 
         if cam is None:
             return {"port": int(port), "success": False, "error": "camera unavailable"}
 
         metered_exposure = None
-        target_exposure = None
+        metering_auto_exposure = None
+        target_brightness = max(
+            -64.0,
+            min(64.0, float(exposure_bias) * _CAMERA_BRIGHTNESS_PER_BIAS),
+        )
+        target_manual_exposure = max(10.0, min(500.0, float(manual_exposure)))
+        applied_manual_exposure = None
         try:
             if exposure_mode == 1:
-                # Always meter afresh before locking. ExposureBias is a
-                # persistent EV offset relative to the current environment,
-                # rather than an adjustment relative to a prior lock.
-                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
-                # Feed the sensor enough frames for its auto-exposure loop
-                # to settle before locking the result. This is the
-                # programmatic equivalent of changing 0 -> 1 manually.
-                # Some UVC devices report their lower bound (5) for several
-                # seconds immediately after enabling auto exposure, so keep
-                # metering beyond the initial warm-up when necessary.
-                warmup_deadline = time.monotonic() + 3.0
-                settle_deadline = warmup_deadline + 7.0
+                # The device accepts stable exposure only after auto (3) has
+                # warmed up, then manual (1).  Never use the auto-reported
+                # exposure as a new target: it excludes the auto gain value.
+                cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, _CAMERA_AUTO_EXPOSURE)
+                deadline = time.monotonic() + 3.0
                 reader = getattr(self, "ReadCamsThread", None)
-                while True:
+                while time.monotonic() < deadline:
                     if reader is not None and reader.is_alive():
                         # The existing reader supplies frames to the camera;
                         # do not read concurrently from this thread.
@@ -714,35 +734,36 @@ class VisionPreUntil:
                         ok, _frame = cam.read()
                         if not ok:
                             time.sleep(0.02)
-                    metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
-                    now = time.monotonic()
-                    if now >= warmup_deadline and metered_exposure > 5.0:
-                        break
-                    if now >= settle_deadline:
-                        break
-
-                if metered_exposure <= 5.0:
-                    exposure_set = True
-                    self.logger.warning(
-                        f"Camera exposure meter not settled: /dev/video{port} "
-                        f"metered={metered_exposure}; keeping auto exposure enabled "
-                        f"and not applying bias={exposure_bias}"
-                    )
-                else:
-                    target_exposure = max(
-                        1.0,
-                        round(float(metered_exposure) * (2.0 ** int(exposure_bias))),
-                    )
-                    exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1.0)
-                    time.sleep(0.05)
-                    exposure_set = bool(
-                        exposure_set and cam.set(cv2.CAP_PROP_EXPOSURE, target_exposure)
-                    )
+                metered_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
+                metering_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
+                auto_exposure_set = bool(
+                    abs(metering_auto_exposure - _CAMERA_AUTO_EXPOSURE) <= 0.25
+                )
+                cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, _CAMERA_MANUAL_EXPOSURE)
+                time.sleep(0.05)
+                manual_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
+                cam.set(cv2.CAP_PROP_EXPOSURE, target_manual_exposure)
+                time.sleep(0.05)
+                applied_manual_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
+                cam.set(cv2.CAP_PROP_BRIGHTNESS, target_brightness)
+                applied_brightness = float(cam.get(cv2.CAP_PROP_BRIGHTNESS))
+                exposure_set = bool(
+                    abs(manual_auto_exposure - _CAMERA_MANUAL_EXPOSURE) <= 0.25
+                    and abs(applied_manual_exposure - target_manual_exposure) <= 1.0
+                    and abs(applied_brightness - target_brightness) <= 1.0
+                )
             else:
-                auto_exposure_set = cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3.0)
-                exposure_set = True
+                cam.set(cv2.CAP_PROP_AUTO_EXPOSURE, _CAMERA_AUTO_EXPOSURE)
+                metering_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
+                auto_exposure_set = bool(
+                    abs(metering_auto_exposure - _CAMERA_AUTO_EXPOSURE) <= 0.25
+                )
+                cam.set(cv2.CAP_PROP_BRIGHTNESS, target_brightness)
+                applied_brightness = float(cam.get(cv2.CAP_PROP_BRIGHTNESS))
+                exposure_set = bool(abs(applied_brightness - target_brightness) <= 1.0)
             actual_auto_exposure = float(cam.get(cv2.CAP_PROP_AUTO_EXPOSURE))
             actual_exposure = float(cam.get(cv2.CAP_PROP_EXPOSURE))
+            actual_brightness = float(cam.get(cv2.CAP_PROP_BRIGHTNESS))
         except Exception as e:
             self.logger.warning(f"Camera exposure apply failed: /dev/video{port}: {e}")
             return {"port": int(port), "success": False, "error": str(e)}
@@ -757,8 +778,10 @@ class VisionPreUntil:
             self.logger.info(
                 f"Camera exposure configured: /dev/video{port} "
                 f"mode={exposure_mode} auto={actual_auto_exposure} "
-                f"exposure={actual_exposure} bias={exposure_bias} "
-                f"metered={metered_exposure}"
+                f"exposure={actual_exposure} brightness={actual_brightness} "
+                f"manual={target_manual_exposure if exposure_mode == 1 else None} "
+                f"bias={exposure_bias} metered={metered_exposure} "
+                f"meter_auto={metering_auto_exposure}"
             )
         return {
             "port": int(port),
@@ -766,19 +789,25 @@ class VisionPreUntil:
             "mode": exposure_mode,
             "auto_exposure": actual_auto_exposure,
             "exposure": actual_exposure,
+            "brightness": actual_brightness,
             "metered_exposure": metered_exposure,
-            "target_exposure": target_exposure,
+            "metering_auto_exposure": metering_auto_exposure,
+            "manual_exposure": applied_manual_exposure,
+            "target_manual_exposure": target_manual_exposure if exposure_mode == 1 else None,
+            "target_brightness": target_brightness,
         }
 
     def ApplyExposureSettings(
         self,
         exposure_mode: int | None = None,
         exposure_bias: int | None = None,
+        manual_exposure: float | None = None,
     ) -> list[dict]:
         """Apply exposure settings to active cameras without restarting vision."""
 
         configured_mode = self._configured_exposure_mode()
         configured_bias = self._configured_exposure_bias()
+        configured_manual_exposure = self._configured_manual_exposure()
         if exposure_mode is None:
             exposure_mode = configured_mode
         else:
@@ -793,6 +822,13 @@ class VisionPreUntil:
                 exposure_bias = max(-4, min(4, int(exposure_bias)))
             except (TypeError, ValueError):
                 exposure_bias = configured_bias
+        if manual_exposure is None:
+            manual_exposure = configured_manual_exposure
+        else:
+            try:
+                manual_exposure = max(10.0, min(500.0, float(manual_exposure)))
+            except (TypeError, ValueError):
+                manual_exposure = configured_manual_exposure
         # Keep the in-memory singleton coherent with the setting just saved by
         # the control panel, including any later camera reopen.
         for section_name in ("Vision", "VisionVals"):
@@ -800,13 +836,28 @@ class VisionPreUntil:
             if section is not None:
                 setattr(section, "ExposureMode", exposure_mode)
                 setattr(section, "ExposureBias", exposure_bias)
-                setattr(section, "AutoExposure", 1 if exposure_mode == 1 else 3)
+                setattr(section, "ManualExposure", manual_exposure)
+                setattr(section, "Exposure", manual_exposure)
+                setattr(section, "ExposeVal", manual_exposure)
+                setattr(
+                    section,
+                    "AutoExposure",
+                    _CAMERA_MANUAL_EXPOSURE
+                    if exposure_mode == 1
+                    else _CAMERA_AUTO_EXPOSURE,
+                )
 
         ports = list(getattr(self, "CamPorts", []) or [])
         results = []
         for index, cam in enumerate(self._camera_snapshot()):
             port = ports[index] if index < len(ports) else index
-            result = self._apply_camera_exposure(cam, port, exposure_mode, exposure_bias)
+            result = self._apply_camera_exposure(
+                cam,
+                port,
+                exposure_mode,
+                exposure_bias,
+                manual_exposure,
+            )
             results.append(result)
         return results
 
@@ -999,7 +1050,8 @@ class VisionPreUntil:
         fps = int(getattr(getattr(self.cfg, "VisionVals", object()), "CamFps", 30))
         exposure_mode = self._configured_exposure_mode(AutoExposure)
         exposure_bias = self._configured_exposure_bias()
-        exposure_results = []
+        manual_exposure = self._configured_manual_exposure(Exposure)
+        camera_entries = []
 
         use_gst = False
         if isinstance(backend, str):
@@ -1013,6 +1065,7 @@ class VisionPreUntil:
 
         for Port in CamPorts:
             Cam = None
+            is_v4l2 = False
 
             # Try gstreamer first (Jetson Nano only by default)
             if use_gst:
@@ -1035,19 +1088,10 @@ class VisionPreUntil:
             # Legacy V4L2 backend
             if Cam is None:
                 Cam = cv2.VideoCapture(Port, cv2.CAP_V4L2)
+                is_v4l2 = True
                 Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
                 Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
                 Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
-                result = self._apply_camera_exposure(
-                    Cam,
-                    Port,
-                    exposure_mode,
-                    exposure_bias,
-                )
-                exposure_results.append(result)
-                Cam.set(cv2.CAP_PROP_BRIGHTNESS, Brightness)
-                Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
-                Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
                 if not Cam.isOpened():
                     self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
                     try:
@@ -1056,6 +1100,43 @@ class VisionPreUntil:
                         pass
                     Cam = None
 
+            camera_entries.append((Port, Cam, is_v4l2))
+
+        # Every V4L2 camera has an independent file descriptor. Metering them
+        # serially made startup take the sum of all warm-up windows; configure
+        # them concurrently while preserving the configured camera order.
+        v4l2_entries = [
+            (index, port, cam)
+            for index, (port, cam, is_v4l2) in enumerate(camera_entries)
+            if is_v4l2 and cam is not None
+        ]
+        if v4l2_entries:
+            workers = min(len(v4l2_entries), 4)
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="CameraExposure") as executor:
+                futures = {
+                    executor.submit(
+                        self._apply_camera_exposure,
+                        cam,
+                        port,
+                        exposure_mode,
+                        exposure_bias,
+                        manual_exposure,
+                    ): index
+                    for index, port, cam in v4l2_entries
+                }
+                for future, index in futures.items():
+                    port = camera_entries[index][0]
+                    try:
+                        future.result()
+                    except Exception as error:
+                        self.logger.warning(
+                            f"Camera exposure worker failed: /dev/video{port}: {error}"
+                        )
+
+        for _port, Cam, is_v4l2 in camera_entries:
+            if Cam is not None and is_v4l2:
+                Cam.set(cv2.CAP_PROP_CONTRAST, Contrast)
+                Cam.set(cv2.CAP_PROP_SATURATION, Saturation)
             cams_lock = getattr(self, "_cams_lock", None)
             if cams_lock is None:
                 self.Cams.append(Cam)

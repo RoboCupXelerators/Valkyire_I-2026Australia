@@ -74,8 +74,10 @@ class Preference:
             "ModelName": "ArisuModel_v1.2s",
             # 0=flexible automatic exposure, 1=auto-meter then lock exposure.
             "ExposureMode": 1,
-            # Exposure compensation in EV stops, used by stable mode.
+            # -4..4 controls the camera's physical brightness control.
             "ExposureBias": 0,
+            # Stable mode's fixed UVC exposure value (10..500). Lower is darker.
+            "ManualExposure": 68,
             # 标定文件夹
             "CalibrationFolder": "Calibration",
             # Target dimensions (cm) for operator-facing object semantics.
@@ -112,23 +114,29 @@ class Preference:
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
             "LockBallSlip": {
-                "ForwardKp": 0.025,
-                "LateralKp": 0.020,
-                "AngularKp": 1.7,
-                "ForwardMaxMps": 1.15,
-                "LateralMaxMps": 0.85,
-                "AngularMaxDegS": 120.0,
+                "ForwardKp": 0.020,
+                "ForwardKi": 0.006,
+                "ForwardKd": 0.005,
+                "LateralKp": 0.016,
+                "LateralKi": 0.0005,
+                "LateralKd": 0.005,
+                "AngularKp": 1.30,
+                "AngularKi": 0.06,
+                "AngularKd": 0.15,
+                "ForwardMaxMps": 0.80,
+                "LateralMaxMps": 0.65,
+                "AngularMaxDegS": 85.0,
                 "TurnOnlyAngleDeg": 70.0,
-                "TurnOnlyKp": 1.0,
-                "TurnOnlyMaxDegS": 75.0,
-                "RearForwardKp": 0.015,
-                "RearForwardMaxMps": 0.80,
-                "RearLateralKp": 0.020,
-                "RearLateralMaxMps": 0.85,
-                "RearAngularKp": 2.35,
-                "RearAngularMaxDegS": 120.0,
+                "TurnOnlyKp": 0.75,
+                "TurnOnlyMaxDegS": 55.0,
+                "RearForwardKp": 0.012,
+                "RearForwardMaxMps": 0.55,
+                "RearLateralKp": 0.016,
+                "RearLateralMaxMps": 0.65,
+                "RearAngularKp": 1.80,
+                "RearAngularMaxDegS": 85.0,
                 "LostHoldSeconds": 0.18,
-                "NearCreepMaxMps": 0.14,
+                "NearCreepMaxMps": 0.10,
                 "BallJumpRejectCm": 45.0,
                 "BallJumpConfirmFrames": 2
             },
