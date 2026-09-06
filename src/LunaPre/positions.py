@@ -1940,18 +1940,18 @@ class Positions:
 
                 time.sleep(tick_s)
 
-    def Cover2Start(self):
-        '''
-        `阻塞函数`
+    # def Cover2Start(self):
+    #     '''
+    #     `阻塞函数`
 
-        直到前方被遮挡后才会返回True
+    #     直到前方被遮挡后才会返回True
 
-        '''
-        while 1:
-            if 100 < self.DirectDistance()[0] <= 500:
-                return True
-            else:
-                pass
+    #     '''
+    #     while 1:
+    #         if 100 < self.DirectDistance()[0] <= 500:
+    #             return True
+    #         else:
+    #             return False
 
     def Referee(self):
         '''
