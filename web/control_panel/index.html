@@ -98,10 +98,6 @@
                   <span class="value" id="robot-pose">--</span>
                 </div>
                 <div class="status-item">
-                  <span class="label">雷达有效点/圈</span>
-                  <span class="value" id="lidar-point-count">-- 点/圈</span>
-                </div>
-                <div class="status-item">
                   <span class="label">持球状态</span>
                   <span class="value" id="has-ball">--</span>
                 </div>
@@ -238,31 +234,22 @@
                   <td id="yellow-goal">--</td>
                 </tr>
                 <tr>
-                  <td>雷达状态</td>
+                  <td>定位状态</td>
                   <td id="lidar-state">--</td>
                 </tr>
                 <tr>
-                  <td>雷达距离</td>
+                  <td>四向墙距</td>
                   <td id="lidar-dists">--</td>
                 </tr>
-                <tr>
-                  <td>一圈有效点数</td>
-                  <td id="lidar-scan-point-count">--</td>
-                </tr>
-                <tr>
-                  <td>单包点数</td>
-                  <td id="lidar-packet-point-count">--</td>
-                </tr>
-                <tr>
-                  <td>近场有效点数</td>
-                  <td id="lidar-normalized-point-count">--</td>
-                </tr>
+
+
+
               </table>
             </div>
-            <!-- 雷达图 -->
+            <!-- Bits 墙距预览 -->
             <div class="radar-panel">
               <div class="radar-header">
-                <div class="panel-header">雷达视图</div>
+                <div class="panel-header">场地墙距</div>
                 <div class="radar-controls" aria-label="雷达缩放控制">
                   <button
                     class="btn btn-icon"
@@ -519,37 +506,8 @@
                 </div>
               </div>
               <div class="settings-section">
-                <h3>传感器</h3>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>定位来源</label>
-                    <select id="sensor-source">
-                      <option value="auto">auto (Bits -&gt; ROS2 -&gt; LD07)</option>
-                      <option value="bits">Bits 坐标</option>
-                      <option value="ros2">ROS2 /scan</option>
-                      <option value="ld07">LD07</option>
-                    </select>
-                  </div>
-                  <div class="setting-item">
-                    <label>ROS2 雷达型号</label>
-                    <select id="sensor-ros2-model">
-                      <option value="s1">SLLidar S1</option>
-                      <option value="s2">SLLidar S2</option>
-                      <option value="s3">SLLidar S3</option>
-                    </select>
-                  </div>
-                  <div class="setting-item checkbox-item">
-                    <label><input type="checkbox" id="sensor-inverted" /> 雷达倒置安装</label>
-                  </div>
-                </div>
-              </div>
-              <div class="settings-section">
                 <h3>端口配置</h3>
                 <div class="setting-row">
-                  <div class="setting-item">
-                    <label>Lidar ID</label>
-                    <input type="number" id="lidar-id" value="31" />
-                  </div>
                   <div class="setting-item">
                     <label>IceLoong Port</label>
                     <input

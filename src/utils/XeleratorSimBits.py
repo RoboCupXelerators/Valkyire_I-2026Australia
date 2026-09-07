@@ -68,8 +68,8 @@ SIM_DEFAULT_VISION_NOISE_SEED = 0
 SIM_DEFAULT_POSE_MAX_AGE_S = 1.0
 
 
-def create_bits_and_lidar(cfg):
-    """Create simulator Bits and lidar providers from project config."""
+def create_bits(cfg):
+    """Create the simulator transport from project config."""
 
     sim_cfg = getattr(cfg, "Sim", None)
     unity_ip = os.environ.get("XEL_UNITY_IP", getattr(sim_cfg, "UnityIP", SIM_DEFAULT_UNITY_IP))
@@ -98,15 +98,7 @@ def create_bits_and_lidar(cfg):
     _apply_sim_env_defaults(cfg, sim_cfg)
 
     bits = XeleratorSimBits(unity_ip=unity_ip, cmd_port=cmd_port, status_port=status_port, robot_id=robot_id, cfg=cfg)
-    lidar = Lidar(
-        bits.GetYaw,
-        get_pose_callable=bits.GetPose,
-        bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260)),
-        bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200)),
-        auto_start=True,
-    )
-
-    return bits, lidar
+    return bits
 
 
 def _apply_sim_env_defaults(cfg, sim_cfg) -> None:
@@ -1411,121 +1403,3 @@ class XeleratorSimBits:
                         })
                     except Exception:
                         pass  # Silently ignore recording errors
-
-
-class Lidar:
-    """Simulator Lidar.
-
-    API subset:
-    - GetDists() -> [front, left, back, right]  (mm)
-    - stop()
-
-    Distances are computed from pose (x_forward_cm, y_left_cm).
-    Field size comes from config (default 260x200 cm).
-    """
-
-    def __init__(
-        self,
-        get_yaw_callable=None,
-        *,
-        get_pose_callable=None,
-        bounds_long_cm: float = 260.0,
-        bounds_short_cm: float = 200.0,
-        auto_start: bool = True,
-    ):
-        self._get_pose = get_pose_callable
-        self._long = float(bounds_long_cm)
-        self._short = float(bounds_short_cm)
-        self._running = bool(auto_start)
-        self.backend = "sim"
-        self.driver = None
-        self.running = self._running
-        self.disabled = not self._running
-        self.last_point_cloud = ()
-        self.last_raw_scan_count = 0
-        self.last_scan_point_count = 0
-        self.last_line_count = 0
-        self._get_yaw = get_yaw_callable
-
-    def stop(self):
-        self._running = False
-        self.running = False
-        self.disabled = True
-
-    def GetDists(self):
-        if not self._running or self._get_pose is None:
-            return [0xFFF, 0xFFF, 0xFFF, 0xFFF]
-
-        try:
-            x_cm, y_cm, yaw_deg = self._get_pose()
-        except Exception:
-            return [0xFFF, 0xFFF, 0xFFF, 0xFFF]
-
-        # Compute distances in *robot frame* directions [front, left, back, right]
-        # by ray-casting against the field rectangle in *field frame*.
-        # Field frame:
-        #   x_forward in [-long/2, +long/2]
-        #   y_left    in [-short/2, +short/2]
-        # Yaw convention:
-        #   yaw=0 => robot forward aligned with +x_forward.
-
-        x = float(x_cm)
-        y = float(y_cm)
-        yaw = float(yaw_deg)
-
-        long2 = self._long / 2.0
-        short2 = self._short / 2.0
-
-        import math
-
-        def _ray_to_rect_dist_cm(px: float, py: float, dx: float, dy: float) -> float:
-            """Distance (cm) from (px,py) to axis-aligned rectangle along direction (dx,dy)."""
-            eps = 1e-9
-            best_t = None
-
-            # x = ±long2
-            if abs(dx) > eps:
-                for xb in (-long2, long2):
-                    t = (xb - px) / dx
-                    if t <= 0:
-                        continue
-                    yy = py + t * dy
-                    if -short2 - 1e-6 <= yy <= short2 + 1e-6:
-                        if best_t is None or t < best_t:
-                            best_t = t
-
-            # y = ±short2
-            if abs(dy) > eps:
-                for yb in (-short2, short2):
-                    t = (yb - py) / dy
-                    if t <= 0:
-                        continue
-                    xx = px + t * dx
-                    if -long2 - 1e-6 <= xx <= long2 + 1e-6:
-                        if best_t is None or t < best_t:
-                            best_t = t
-
-            if best_t is None:
-                # If we're outside the field or direction is degenerate, return 0 (clamped).
-                return 0.0
-            if best_t < 0:
-                return 0.0
-            return float(best_t)
-
-        th = math.radians(yaw)
-        c = math.cos(th)
-        s = math.sin(th)
-
-        # unit vectors in field frame
-        f_dx, f_dy = (c, s)            # forward
-        l_dx, l_dy = (-s, c)           # left
-        b_dx, b_dy = (-c, -s)          # back
-        r_dx, r_dy = (s, -c)           # right
-
-        front_cm = _ray_to_rect_dist_cm(x, y, f_dx, f_dy)
-        left_cm = _ray_to_rect_dist_cm(x, y, l_dx, l_dy)
-        back_cm = _ray_to_rect_dist_cm(x, y, b_dx, b_dy)
-        right_cm = _ray_to_rect_dist_cm(x, y, r_dx, r_dy)
-
-        # Return mm (historical lidar): [front, left, back, right]
-        return [front_cm * 10.0, left_cm * 10.0, back_cm * 10.0, right_cm * 10.0]

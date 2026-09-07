@@ -1,7 +1,7 @@
 """Position, localization, vision, and Pos2Pos facade for LunaPre.
 
-TODO: Split vision subprocess/UDP startup and lidar recovery helpers out of
-this facade. Positions should stay focused on semantic position/ball APIs.
+Positions consumes Bits pose and vision observations from the shared runtime.
+Native scan localization is maintained on the legacy branch.
 """
 
 from __future__ import annotations
@@ -251,9 +251,7 @@ class Positions:
         self.LidarPos = list(POSE_NOT_FOUND)
         self.ballPos = list(BALL_NOT_FOUND)
         # Values for log system
-        self.WarnedLidarCount = 0
         # Values for Adjust the scale of Position System
-        self.LidarScale = 10
         self.BoundsScale = 1
         # Values for timer
         self.WaitTime = 3.5
@@ -788,32 +786,12 @@ class Positions:
         self.BoundsDistance = list(getter())
         return self.BoundsDistance
 
-    def DirectDistanceSnapshot(self):
-        """Return the latest semantic wall ranges without movement side effects."""
-
-        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
-        getter = getattr(service, "DirectDistanceSnapshot", None)
-        if callable(getter):
-            self.BoundsDistance = list(getter())
-            return self.BoundsDistance
-        return self.DirectDistance()
-
-    def NearbyLidarObjects(self):
-        """Return native near-field clusters in robot coordinates."""
-
-        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
-        getter = getattr(service, "GetNearbyObjects", None)
-        if not callable(getter):
-            return []
-        try:
-            return getter()
-        except Exception:
-            return []
+    DirectDistanceSnapshot = DirectDistance
 
     def FieldRobotPose(self):
         """Return the configured runtime pose, or ``POSE_NOT_FOUND`` when unavailable.
 
-        The selected Sensor source owns localization. This query has no retry,
+        Bits supplies the field pose. This query has no retry,
         motion, process, or sensor recovery side effects.
         """
 
@@ -2246,9 +2224,7 @@ class Positions:
         return False
 
     def Stop(self):
-        '''
-        ### Function for stopping the vision data thread
-        '''
+        """Stop motion, dribbling and the position receiver owned by this object."""
         try:
             if runtime.chassis is not None:
                 runtime.chassis.stop()
@@ -2259,17 +2235,6 @@ class Positions:
                 runtime.peripheral.Dribble(False)
         except Exception:
             pass
-        try:
-            if runtime.lidar is not None:
-                runtime.lidar.stop()
-        except Exception:
-            pass
-        try:
-            if runtime.chassis is not None:
-                runtime.chassis.stop()
-        except Exception:
-            pass
-
         self.vision_data_stop_event.set()
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.

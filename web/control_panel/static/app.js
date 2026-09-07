@@ -3257,9 +3257,6 @@ function populateConfigForm(config) {
   setFieldValue("robot-type", config.RoboInfo?.type);
   setFieldValue("robot-bit", config.RoboInfo?.Bit); // Note: JSON uses "Bit" (capital B)
   setFieldValue("robot-rec", config.RoboInfo?.Rec); // Note: JSON uses "Rec" (capital R)
-  setFieldValue("sensor-source", config.Sensor?.Source);
-  setFieldValue("sensor-ros2-model", config.Sensor?.Ros2Model);
-  setFieldValue("sensor-inverted", config.Sensor?.Inverted, "checkbox");
 
   console.log("[Config] Robot info loaded:", {
     number: config.RoboInfo?.number,
@@ -3269,7 +3266,6 @@ function populateConfigForm(config) {
   });
 
   // Ports
-  setFieldValue("lidar-id", config.Ports?.LidarID);
   setFieldValue("iceloong-port", config.Ports?.IceLoongPort);
   setFieldValue("motor-lf", config.Ports?.LeftFront);
   setFieldValue("motor-lb", config.Ports?.LeftBack);
@@ -4912,15 +4908,7 @@ async function saveConfigLegacy() {
     Rec: getFieldValue("robot-rec"),
   };
 
-  config.Sensor = {
-    Source: getFieldValue("sensor-source") || "auto",
-    Ros2Model: getFieldValue("sensor-ros2-model") || "s3",
-    Inverted: getFieldValue("sensor-inverted", "checkbox"),
-  };
-
   config.Ports = {
-    LidarID: getFieldValue("lidar-id"),
-    LidarPort: config.Ports?.LidarPort || "/dev/sllidar",
     IceLoongPort: getFieldValue("iceloong-port"),
     LowTigger: config.Ports?.LowTigger || 0,
     ReferPort: config.Ports?.ReferPort || 1,

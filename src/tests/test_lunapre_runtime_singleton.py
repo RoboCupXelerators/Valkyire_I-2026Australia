@@ -9,6 +9,22 @@ from types import SimpleNamespace
 from LunaPre import runtime
 
 
+def test_runtime_shutdown_closes_serial_referee_provider(monkeypatch):
+    closed = []
+    for name in (
+        "Bits", "lidar", "sensor", "chassis", "compass", "peripheral", "key",
+        "Odometer", "Morse", "referee", "vision", "_field_pose_provider",
+        "_velocity_provider", "_referee_status_provider", "_referee_state_provider",
+        "_referee_serial_provider", "_runtime_initialized",
+    ):
+        monkeypatch.setattr(runtime, name, getattr(runtime, name))
+    monkeypatch.setattr(runtime, "_referee_serial_provider", SimpleNamespace(stop=lambda: closed.append(True)))
+    for name in ("Bits", "vision", "sensor"):
+        monkeypatch.setattr(runtime, name, None)
+    runtime.shutdown_runtime()
+    assert closed == [True]
+
+
 def test_debug_motion_bypasses_only_the_runtime_motion_permission(monkeypatch):
     bits = SimpleNamespace(GetRefereeUnlockPin=lambda: False)
 

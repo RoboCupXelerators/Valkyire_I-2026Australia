@@ -9,5 +9,4 @@ Current calibration workflow:
 - Runtime vision code reads calibration from the ReasonData calibration folder.
 
 The `Calibration_*` datasets predate the DM2325 integration and remain here.
-DM2325 hardware material is archived under `legacy/hardware/dm2325/`; it is
-not part of the active runtime or control-panel surface.
+DM2325 hardware material and its runtime are maintained on the `legacy` branch.

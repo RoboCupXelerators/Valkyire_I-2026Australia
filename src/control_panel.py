@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import math
 import os
@@ -256,31 +255,6 @@ def _json_safe(obj):
     return str(obj)
 
 
-def _serialize_lidar_point_cloud_cm(lidar) -> list[list[float]]:
-    """Serialize the bounded lidar snapshot without touching distance state."""
-    if lidar is None or not getattr(lidar, "running", False) or getattr(lidar, "disabled", False):
-        return []
-
-    result = []
-    try:
-        point_cloud = getattr(lidar, "last_point_cloud", ()) or ()
-        for point in point_cloud:
-            if len(result) >= 360:
-                break
-            try:
-                if len(point) < 2:
-                    continue
-                x = float(point[0])
-                y = float(point[1])
-                if math.isfinite(x) and math.isfinite(y):
-                    result.append([round(x * 100.0, 1), round(y * 100.0, 1)])
-            except (TypeError, ValueError, IndexError):
-                continue
-    except TypeError:
-        return []
-    return result
-
-
 def _wall_segments_from_direct_distance_mm(dist_mm) -> list[list[list[float]]]:
     """Build the four field-wall segments in robot coordinates from direct ranges.
 
@@ -444,7 +418,6 @@ class ControlPanelApp:
         self.bits = bits
         self._kick_power_level = KICK_POWER_DEFAULT
         self._allow_runtime_init = bool(allow_runtime_init)
-        self._last_lidar_status = None
 
         # 检测是否为模拟器环境
         self._is_simulator = self._detect_simulator_mode()
@@ -572,131 +545,36 @@ class ControlPanelApp:
                 pass
         return status
 
-    def get_lidar_status(self, include_point_cloud: bool = False) -> dict:
-        """Return lidar diagnostics without initializing the LunaPre runtime."""
-        status = {
-            "available": False,
-            "runtime_initialized": False,
-            "state": "not_initialized",
-            "backend": None,
-            "driver": None,
-            "running": False,
-            "disabled": None,
-            "dist_mm": list(LIDAR_DISABLED_DISTS),
-            "point_count": 0,
-            "raw_point_count": 0,
-            "scan_point_count": 0,
-            "packet_point_count": 0,
-            "line_count": 0,
-            "point_cloud_cm": [],
-            "last_error": None,
-            "message": "LunaPre runtime not initialized",
-            "preview_mode": self._lidar_preview_mode(),
+    def get_lidar_status(self) -> dict:
+        """Report Bits wall ranges without starting hardware or a runtime."""
+        runtime = self._get_runtime_module()
+        service = getattr(runtime, "sensor", None)
+        distances = list(LIDAR_DISABLED_DISTS)
+        positions = self._get_positions_facade()
+        if positions is not None:
+            distances = list(positions.DirectDistance())
+        elif service is not None:
+            distances = service.DirectDistance()
+        elif self.bits is not None:
+            from LunaPre.sensor import Sensor
+            distances = Sensor(pose_provider=getattr(self.bits, "GetPose", None)).DirectDistance()
+        valid = distances != LIDAR_DISABLED_DISTS
+        return {
+            "available": valid, "runtime_initialized": runtime is not None,
+            "state": "ok" if valid else "no_data", "backend": "bits",
+            "running": valid, "disabled": not valid, "dist_mm": distances,
+            "preview_mode": "walls", "point_cloud_cm": [],
+            "message": "Bits pose available" if valid else "Waiting for Bits pose",
         }
 
-        runtime = sys.modules.get("LunaPre.runtime")
-        if runtime is None:
-            return status
-
-        status["runtime_initialized"] = bool(getattr(runtime, "_runtime_initialized", False))
-        lidar = getattr(runtime, "lidar", None)
-        if lidar is None:
-            if status["runtime_initialized"]:
-                status["state"] = "missing"
-                status["message"] = "Runtime initialized but lidar object is missing"
-            return status
-
-        status["available"] = True
-        status["backend"] = getattr(lidar, "backend", None)
-        status["driver"] = type(getattr(lidar, "driver", None)).__name__ if getattr(lidar, "driver", None) else None
-        status["running"] = bool(getattr(lidar, "running", False))
-        status["disabled"] = bool(getattr(lidar, "disabled", False))
-        status["point_count"] = int(getattr(lidar, "last_scan_point_count", 0) or 0)
-        status["raw_point_count"] = int(getattr(lidar, "last_raw_scan_count", 0) or 0)
-        driver = getattr(lidar, "driver", None)
-        driver_scan_count = getattr(driver, "last_scan_point_count", None)
-        try:
-            driver_scan_count = int(driver_scan_count) if driver_scan_count is not None else 0
-        except (TypeError, ValueError):
-            driver_scan_count = 0
-        # Prefer the driver's one-revolution valid-point counter when present.
-        # Fall back to the sensor facade's valid raw count for older drivers.
-        status["scan_point_count"] = driver_scan_count or status["raw_point_count"] or 0
-        status["packet_point_count"] = int(
-            getattr(driver, "last_packet_point_count", 0) or 0
-        )
-        status["last_error"] = getattr(driver, "last_error", None)
-        status["line_count"] = int(getattr(lidar, "last_line_count", 0) or 0)
-        try:
-            positions = self._get_positions_facade()
-            if positions is not None:
-                snapshot = getattr(positions, "DirectDistanceSnapshot", None)
-                if callable(snapshot):
-                    dists = list(snapshot())
-                else:
-                    direct_distance = getattr(positions, "DirectDistance", None)
-                    if callable(direct_distance):
-                        dists = list(direct_distance())
-                    else:
-                        dists = list(lidar.GetDists())
-            else:
-                dists = list(lidar.GetDists())
-            status["dist_mm"] = dists
-        except Exception as e:
-            status["state"] = "error"
-            status["message"] = str(e)
-            return status
-
-        status["preview_mode"] = self._lidar_preview_mode()
-        if include_point_cloud and status["preview_mode"] == "point_cloud":
-            status["point_cloud_cm"] = _serialize_lidar_point_cloud_cm(lidar)
-
-        if status["disabled"] or status["dist_mm"] == LIDAR_DISABLED_DISTS:
-            status["state"] = "disabled"
-            status["message"] = "Lidar driver is disabled"
-        elif status["dist_mm"] == [0, 0, 0, 0]:
-            status["state"] = "no_data"
-            status["message"] = (
-                status["last_error"]
-                or "Lidar object exists but no scan has been normalized yet"
-            )
-        else:
-            status["state"] = "ok"
-            status["message"] = "Receiving lidar distance data"
-
-        self._last_lidar_status = status
-        return status
-
     def get_lidar_point_cloud(self) -> dict:
-        """Return the current radar preview without initializing LunaPre runtime.
-
-        A Bits runtime owns field pose, so the panel renders the four direct
-        wall ranges instead of showing an unrelated lidar point cloud. Native
-        lidar runtimes continue to expose their bounded point-cloud preview.
-        """
-        status = self.get_lidar_status()
-        if status.get("preview_mode") == "walls":
-            distances = list(status.get("dist_mm", []))
-            if not distances or distances == LIDAR_DISABLED_DISTS:
-                positions = self._get_positions_facade()
-                direct_distance = getattr(positions, "DirectDistance", None)
-                if callable(direct_distance):
-                    try:
-                        distances = list(direct_distance())
-                    except Exception:
-                        distances = []
-            return {
-                "preview_mode": "walls",
-                "point_cloud_cm": [],
-                "wall_segments_cm": _wall_segments_from_direct_distance_mm(distances),
-            }
-
-        runtime = sys.modules.get("LunaPre.runtime")
-        lidar = getattr(runtime, "lidar", None) if runtime is not None else None
+        """Keep the preview endpoint stable while displaying Bits wall ranges."""
         return {
-            "preview_mode": "point_cloud",
-            "point_cloud_cm": _serialize_lidar_point_cloud_cm(lidar),
-            "wall_segments_cm": [],
+            "preview_mode": "walls",
+            "point_cloud_cm": [],
+            "wall_segments_cm": _wall_segments_from_direct_distance_mm(
+                self.get_lidar_status()["dist_mm"]
+            ),
         }
 
     def chassis_range_capture_start(self, known_range_cm) -> dict:
@@ -726,25 +604,6 @@ class ControlPanelApp:
             return {"success": True, "capture": get_status()}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
-
-    def _lidar_preview_mode(self) -> str:
-        """Return the preview matching the configured and active Sensor source."""
-
-        runtime = sys.modules.get("LunaPre.runtime")
-        runtime_bits = getattr(runtime, "Bits", None) if runtime is not None else None
-        if self.bits is not None and runtime_bits is not self.bits:
-            # A vision-only or embedded panel may receive a Bits object without
-            # owning the process-global LunaPre runtime.
-            return "walls"
-        service = getattr(runtime, "sensor", None) if runtime is not None else None
-        source = str(getattr(service, "Source", "")).strip().lower()
-        if source == "bits":
-            return "walls"
-        if source in {"ros2", "ld07"}:
-            return "point_cloud"
-        if source == "auto":
-            return "walls" if getattr(service, "last_source", None) == "bits" else "point_cloud"
-        return "walls" if self.bits is not None else "point_cloud"
 
     def _get_runtime_module(self):
         runtime = sys.modules.get("LunaPre.runtime")
@@ -1007,66 +866,6 @@ class ControlPanelApp:
                         result["perf"][key] = hybrid_perf[key]
         except Exception as e:
             print(f"[ControlPanel] Error getting performance metrics: {e}")
-
-    def scan_lidar_usb(self) -> dict:
-        """Scan common Linux serial device paths for lidar USB diagnostics."""
-        configured_port = None
-        configured_source = None
-        configured_model = None
-        try:
-            config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
-            if config_file.exists():
-                with config_file.open("r", encoding="utf-8") as f:
-                    config = json.load(f)
-                configured_port = config.get("Ports", {}).get("LidarPort")
-                configured_source = config.get("Sensor", {}).get("Source")
-                configured_model = config.get("Sensor", {}).get("Ros2Model")
-        except Exception:
-            pass
-
-        candidates = []
-        patterns = [
-            "/dev/ldlidar",
-            "/dev/ttyCH343USB*",
-            "/dev/sllidar",
-            "/dev/ttyUSB*",
-            "/dev/ttyACM*",
-            "/dev/serial/by-id/*",
-            "/dev/serial/by-path/*",
-        ]
-        seen = set()
-
-        for pattern in patterns:
-            for path_str in sorted(glob.glob(pattern)):
-                if path_str in seen:
-                    continue
-                seen.add(path_str)
-                info = {"path": path_str, "exists": os.path.exists(path_str)}
-                try:
-                    resolved = os.path.realpath(path_str)
-                    info["resolved"] = resolved
-                    info["readable"] = os.access(resolved, os.R_OK)
-                    info["writable"] = os.access(resolved, os.W_OK)
-                except Exception:
-                    info["resolved"] = None
-                    info["readable"] = False
-                    info["writable"] = False
-                candidates.append(info)
-
-        likely = [
-            item for item in candidates
-            if any(token in item["path"].lower() for token in ("sllidar", "silicon", "cp210", "ttych343", "ttyusb", "ttyacm"))
-            or any(token in str(item.get("resolved", "")).lower() for token in ("ttych343", "ttyusb", "ttyacm"))
-        ]
-
-        return {
-            "configured_port": configured_port or "/dev/sllidar",
-            "configured_source": configured_source,
-            "configured_model": configured_model,
-            "candidates": candidates,
-            "likely": likely,
-            "message": "No serial lidar-like devices found" if not likely else f"Found {len(likely)} lidar-like serial path(s)",
-        }
 
     def get_state_dict(self) -> dict:
         """获取视觉状态"""
@@ -1348,12 +1147,7 @@ class ControlPanelApp:
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "IL"], "option_labels": {"SIM": "SIM (模拟器)", "IL": "IL (IceLoong Bits)"}, "tab": "robot"},
             ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
             # Sensor
-            ("Sensor", "Source"): {"type": "select", "label": "定位来源", "options": ["auto", "bits", "ros2", "ld07"], "option_labels": {"auto": "auto (Bits -> ROS2 -> LD07)", "bits": "Bits 坐标", "ros2": "ROS2 /scan", "ld07": "LD07"}, "tab": "robot"},
-            ("Sensor", "Ros2Model"): {"type": "select", "label": "ROS2 雷达型号", "options": ["s1", "s2", "s3"], "option_labels": {"s1": "SLLidar S1", "s2": "SLLidar S2", "s3": "SLLidar S3"}, "tab": "robot"},
-            ("Sensor", "Inverted"): {"type": "bool", "label": "雷达倒置安装", "tab": "robot"},
             # Ports
-            ("Ports", "LidarID"): {"type": "int", "label": "雷达 ID", "min": 1, "max": 255, "tab": "robot"},
-            ("Ports", "LidarPort"): {"type": "string", "label": "雷达端口", "tab": "robot"},
             ("Ports", "IceLoongPort"): {"type": "string", "label": "IceLoong 端口", "tab": "robot"},
             ("Ports", "ElecMagnet"): {"type": "int", "label": "电磁铁端口", "min": 0, "max": 15, "tab": "robot"},
             ("Ports", "Dribble"): {"type": "int", "label": "运球电机端口", "min": 0, "max": 15, "tab": "robot"},
@@ -3008,10 +2802,6 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
             self._send_json(app.get_lidar_point_cloud())
             return
 
-        if path == '/api/lidar/usb':
-            self._send_json(app.scan_lidar_usb())
-            return
-
         if path == '/api/config':
             self._send_json(app.get_config())
             return
@@ -3355,7 +3145,7 @@ def main():
     ap.add_argument(
         "--no-runtime",
         action="store_true",
-        help="Keep control panel vision-only and do not initialize LunaPre runtime/lidar.",
+        help="Keep control panel vision-only and do not initialize LunaPre runtime.",
     )
     args = ap.parse_args()
     if args.idle_timeout_seconds < 0:
@@ -3379,7 +3169,7 @@ def main():
         except Exception as e:
             print(f"[ControlPanel] Could not initialize LunaPre runtime; continuing vision-only: {e}")
     else:
-        print("[ControlPanel] Runtime disabled by --no-runtime; lidar/pose will be unavailable")
+        print("[ControlPanel] Runtime disabled by --no-runtime; Bits pose will be unavailable")
 
     # Initialize app with bits
     app = ControlPanelApp(

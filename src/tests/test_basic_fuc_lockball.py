@@ -82,6 +82,9 @@ def test_lockball_discards_a_single_jump_when_observation_recovers(monkeypatch):
 
 def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
     lock, _ = _lock_with_observations(monkeypatch, ([15.0, 60.0],))
+    lock.turn_only_angle = 70.0
+    lock.turn_only_kp = 0.75
+    lock.turn_only_max = 55.0
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     moves = []
     monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))

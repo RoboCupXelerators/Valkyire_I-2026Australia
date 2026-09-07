@@ -1,34 +1,13 @@
-"""LunaPre
+"""Own SIM/IL providers, initialization and shutdown.
 
-本文件提供上层策略常用的封装：
-- 🤖 Positions：坐标/目标位置计算（机体坐标系 & 场地坐标系）
-- 📡 Communication：队内通信（Wi-Fi / BLE 等）
-
-命名规范（与 SoccerVisonWiki/ProgramingAdvanced.md 对齐）：
-- ✅ 对外方法：PascalCase（大驼峰）
-- ✅ 变量：snake_case（蛇形）
-
-兼容性：为了不一次性炸掉历史代码，旧接口会保留为“别名/包装”。
-
-Runtime owns hardware/provider selection. Positions consumes runtime-level
-semantic providers such as field pose and vision; it should not reach into
-concrete Bits implementations.
+Strategies consume semantic providers through Positions and Sensor. Hardware
+construction stays here; imports alone do not start a runtime.
 """
 
 from __future__ import annotations
 
-import math
-import errno
 import os
-import pickle
-import csv
-import socket
-import subprocess
-import sys
 import threading
-import time
-import simple_pid
-from pathlib import Path
 
 from ReasonData import logger, Settings
 from .referee import IoRefereeProvider, RefereeSnapshot, SerialRefereeProvider
@@ -54,8 +33,8 @@ _referee_serial_provider = None
 _runtime_initialized = False
 _runtime_lock = threading.RLock()
 
-from .sensor import Lidar, Sensor, _resolve_source, coerce_pose
-from .motion.chassis import Car, Peripherals, Key  # Universal-Movement-Standard
+from .sensor import Sensor, coerce_pose
+from .motion.chassis import Peripherals, Key
 from .motion.recording_chassis import RecordingCar
 
 
@@ -65,28 +44,6 @@ def play_morse(message: str) -> None:
     callback = Morse
     if callable(callback):
         callback(message)
-
-
-def _make_chassis(set_motor, get_yaw, *, permission=None, motor_encoder=None,
-                  set_chassis_twist=None, get_chassis_telemetry=None,
-                  shutdown=None, stop=None, disable=None, emergency_stop=None,
-                  is_imu_healthy=None, get_imu_state=None):
-    """Build the motion facade from plain callables, not concrete Bits classes."""
-
-    return RecordingCar(
-        set_motor,
-        get_yaw,
-        permission=permission,
-        motor_encoder=motor_encoder,
-        SetChassisTwistFunc=set_chassis_twist,
-        GetChassisTelemetryFunc=get_chassis_telemetry,
-        ShutdownFunc=shutdown,
-        StopFunc=stop,
-        DisableFunc=disable,
-        EmergencyStopFunc=emergency_stop,
-        IsIMUHealthyFunc=is_imu_healthy,
-        GetIMUStateFunc=get_imu_state,
-    )
 
 
 def get_field_pose():
@@ -244,7 +201,7 @@ def _shutdown_runtime_unlocked() -> None:
     global _referee_state_provider, _referee_serial_provider, _runtime_initialized
 
     _stop_bits_thread_monitor()
-    for resource in (vision, sensor):
+    for resource in (vision, _referee_serial_provider):
         for method_name in ("Close", "close", "stop"):
             method = getattr(resource, method_name, None)
             if callable(method):
@@ -278,15 +235,14 @@ def shutdown_runtime() -> None:
 def _build_sim_backend(*, auto_start_lidar: bool) -> dict:
     """Assemble the Unity adapter without mutating runtime globals."""
 
-    from utils.XeleratorSimBits import create_bits_and_lidar
+    from utils.XeleratorSimBits import create_bits
     from vision_utils.XeleratorVision import XeleratorVision
 
-    bits, raw_lidar = create_bits_and_lidar(cfg)
+    bits = create_bits(cfg)
     return {
         "Bits": bits,
-        "raw_lidar": raw_lidar,
         "vision": XeleratorVision(bits),
-        "chassis": _make_chassis(bits.SetWheelSpeed, bits.GetYaw),
+        "chassis": RecordingCar(bits.SetWheelSpeed, bits.GetYaw),
         "compass": bits.GetYaw,
         "peripheral": Peripherals(bits.VirtualPorts),
         "key": Key(bits.GetKey),
@@ -317,18 +273,10 @@ def _build_iceloong_backend(*, auto_start_lidar: bool) -> dict:
     from utils.IceLoongBits import IceLoongBits
 
     bits = IceLoongBits(port=getattr(cfg.Ports, "IceLoongPort", "/dev/iceloong"))
-    sensor_source = _resolve_source(None)
-    native_backend = sensor_source if sensor_source in {"ros2", "ld07"} else None
     return {
         "Bits": bits,
-        "raw_lidar": Lidar(
-            bits.GetYaw,
-            backend=native_backend,
-            # A Bits-only deployment has no native scan consumer to start.
-            auto_start=bool(auto_start_lidar and sensor_source != "bits"),
-        ),
         "vision": None,
-        "chassis": _make_chassis(
+        "chassis": RecordingCar(
             bits.SetWheelSpeed,
             bits.GetYaw,
             permission=lambda: _motion_permission(bits),
@@ -360,25 +308,8 @@ def _selected_backend_name() -> str:
     return str(getattr(cfg.RoboInfo, "Bit", "")).strip().upper()
 
 
-def _resolve_runtime_sensor_source(backend_name: str) -> str:
-    """Select a sensor source that matches the active transport backend.
-
-    The simulator derives wall distances from the fresh Unity pose packet; it
-    must not inherit a stale hardware-only ``Sensor.Source=ros2`` setting from
-    a robot configuration copied onto a development machine.  An explicit
-    ``XEL_SIM_SENSOR_SOURCE`` remains available for specialized experiments.
-    """
-
-    if backend_name == "SIM":
-        override = os.environ.get("XEL_SIM_SENSOR_SOURCE", "").strip()
-        if override:
-            return _resolve_source(override)
-        return "bits"
-    return _resolve_source(None)
-
-
 def _init_runtime(*, auto_start_lidar: bool = True):
-    """Initialize the selected runtime at most once per Python process."""
+    """Initialize once. auto_start_lidar is retained for older callers only."""
 
     with _runtime_lock:
         return _init_runtime_unlocked(auto_start_lidar=auto_start_lidar)
@@ -415,9 +346,6 @@ def _init_runtime_unlocked(*, auto_start_lidar: bool = True):
         _referee_status_provider = assembly["referee_status_provider"]
         sensor = Sensor(
             pose_provider=bits_pose_provider,
-            yaw_provider=compass,
-            lidar=assembly["raw_lidar"],
-            source=_resolve_runtime_sensor_source(backend_name),
             bounds_long_cm=float(getattr(cfg.Bounds, "Long", 260.0)),
             bounds_short_cm=float(getattr(cfg.Bounds, "Short", 200.0)),
         )
@@ -429,7 +357,7 @@ def _init_runtime_unlocked(*, auto_start_lidar: bool = True):
         if backend_name == "IL":
             _start_bits_thread_monitor(Bits)
         _runtime_initialized = True
-        logger.info(f"LunaPre runtime loaded: backend={backend_name} sensor_source={sensor.Source}")
+        logger.info(f"LunaPre runtime loaded: backend={backend_name}")
     except Exception as e:
         shutdown_runtime()
         logger.error(f"Failed to init runtime: {e}")

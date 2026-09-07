@@ -12,7 +12,6 @@ except ModuleNotFoundError:
     import json as _json
 import os
 from pathlib import Path
-import random
 
 APP_DIR = Path(__file__).parent
 DATA_DIR = Path(os.environ.get("XEL_RUNTIME_DATA_DIR", APP_DIR / "data"))
@@ -46,16 +45,7 @@ class Preference:
             "Bit": "SIM",           # SIM / IL
             "Rec": "XV",            # AI(ArisuIntelligence) / TI(TunaIntelligence) / XV(XeleratorVision) / SY(SimYoloVision) / BB(BlobBased)
         },
-        "Sensor": {
-            # Pose and wall-distance source: auto / bits / ros2 / ld07.
-            "Source": "auto",
-            # SLLidar model used when ROS2 owns /scan.
-            "Ros2Model": "s3",
-            "Inverted": False,
-        },
         "Ports": {
-            "LidarID": random.randrange(1, 99),
-            "LidarPort": "/dev/sllidar",
             "IceLoongPort": "/dev/iceloong",
             "ElecMagnet": 3,
             "Dribble": 4,
@@ -176,6 +166,8 @@ class Preference:
         with open(CONFIG_FILE) as f:
             self.cfg = _json.load(f)
 
+        self._validate_legacy_sensor(self.cfg)
+
         # 检查是否需要迁移旧配置
         if self._needs_migration():
             self._migrate_config()
@@ -190,52 +182,24 @@ class Preference:
         if bit not in {"SIM", "IL"}:
             raise ValueError(
                 "Unsupported RoboInfo.Bit=%r. Active Bits are SIM and IL; "
-                "AB/ArisuBits and DM2325 are archived under legacy/. "
+                "DM2325 is supported on the legacy branch; ArisuBits is retired. "
                 "Select SIM or IL before starting LunaPre." % bit
             )
 
-        source = str(config.get("Sensor", {}).get("Source", "")).strip().lower()
-        if source not in {"auto", "bits", "ros2", "ld07"}:
-            raise ValueError(
-                "Unsupported Sensor.Source=%r. Supported values are auto, bits, ros2, and ld07."
-                % source
-            )
-
     @staticmethod
-    def _migrate_sensor_config(old_cfg: dict) -> dict | None:
-        old_robot = old_cfg.get("RoboInfo", {})
-        if not isinstance(old_robot, dict) or "LidarBackend" not in old_robot:
-            return None
-
-        backend = str(old_robot.get("LidarBackend", "")).strip().lower()
-        lidar_type = str(old_robot.get("LidarType", "")).strip().lower()
-        inverted = old_robot.get("LidarInverted", False)
-
-        if backend == "ros2":
-            return {
-                "Source": "ros2",
-                "Ros2Model": lidar_type or "s3",
-                "Inverted": inverted,
-            }
-        if backend in {"ldlidar", "ld07"} and lidar_type == "ld07":
-            return {"Source": "ld07", "Inverted": inverted}
-        if backend in {"rplidar", "direct"}:
+    def _validate_legacy_sensor(config: dict) -> None:
+        """Reject retired hardware selection before changing its configuration."""
+        source = str(config.get("Sensor", {}).get("Source", "auto")).strip().lower()
+        backend = config.get("RoboInfo", {}).get("LidarBackend")
+        if source not in {"auto", "bits"} or backend is not None:
             raise ValueError(
-                "Direct RPLidar is no longer supported. Configure Sensor.Source=ros2 "
-                "for an existing ROS2 /scan producer, or Sensor.Source=ld07 for LD07."
+                "Native lidar configuration requires the legacy branch "
+                "(ROS2 / LD07 / LD06). Main uses SIM or IL Bits pose."
             )
-        if backend in {"ldlidar", "ld07"}:
-            raise ValueError(
-                "Legacy LidarType=%r cannot migrate to Sensor.Source. Only LD07 is active; "
-                "choose ros2, ld07, bits, or auto explicitly." % lidar_type
-            )
-        raise ValueError(
-            "Unsupported legacy RoboInfo.LidarBackend=%r. Configure Sensor.Source as "
-            "auto, bits, ros2, or ld07 explicitly." % backend
-        )
 
     def _create_default_config(self):
         try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
             with open(CONFIG_FILE, "w") as f:
                 _json.dump(self.DEFAULT_CONFIG, f, indent=2)
         except Exception:
@@ -263,16 +227,10 @@ class Preference:
 
     def _migrate_config(self):
         """迁移旧配置到新格式"""
-        # Validate and derive any legacy lidar mapping before moving the source
-        # config file, so an unsupported backend remains intact for manual repair.
+        # Reject retired sensor selections before changing the source file.
         with open(CONFIG_FILE, "r") as f:
             old_cfg = _json.load(f)
-        legacy_sensor = self._migrate_sensor_config(old_cfg)
-
-        # 备份旧配置
-        if os.path.exists(CACHE_FILE):
-            os.remove(CACHE_FILE)
-        os.rename(CONFIG_FILE, CACHE_FILE)
+        self._validate_legacy_sensor(old_cfg)
 
         # 创建新配置，先保留现有新格式值，再兼容旧字段映射。
         new_cfg = _json.loads(_json.dumps(self.DEFAULT_CONFIG))
@@ -287,8 +245,6 @@ class Preference:
                     dst[key] = value
 
         merge_existing(new_cfg, old_cfg)
-        if legacy_sensor:
-            new_cfg["Sensor"].update(legacy_sensor)
         
         # 迁移映射表
         migrations = {
@@ -326,27 +282,19 @@ class Preference:
             except Exception:
                 continue
 
-        # 特殊处理: CamPorts 从 Front/Right/Back/Left 迁移
-        try:
-            vv = old_cfg.get("VisionVals", {})
+        # Only legacy camera mappings override the current Vision.CamPorts.
+        vv = old_cfg.get("VisionVals")
+        if isinstance(vv, dict):
             cam_ports = [
-                vv.get("Back", 0),
-                vv.get("Left", 2),
-                vv.get("Front", 4),
-                vv.get("Right", 6),
+                vv.get("Back", 0), vv.get("Left", 2),
+                vv.get("Front", 4), vv.get("Right", 6),
             ]
-            # 去重保持顺序
-            seen = set()
-            unique_ports = []
-            for p in cam_ports:
-                if p not in seen:
-                    seen.add(p)
-                    unique_ports.append(p)
-            new_cfg["Vision"]["CamPorts"] = unique_ports
-        except Exception:
-            pass
+            new_cfg["Vision"]["CamPorts"] = list(dict.fromkeys(cam_ports))
 
         self._validate_active_config(new_cfg)
+
+        # Keep the original only after the complete migrated config validates.
+        os.replace(CONFIG_FILE, CACHE_FILE)
 
         # 写入新配置
         with open(CONFIG_FILE, "w") as f:
@@ -354,7 +302,6 @@ class Preference:
 
         # 更新内存中的配置
         self.cfg = new_cfg
-        os.remove(CACHE_FILE)
 
     def write(self, section: str, option: str, value) -> None:
         self.cfg[section][option] = value

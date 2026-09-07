@@ -53,64 +53,11 @@
         }
       }
     },
-    "Sensor": {
-      "label": "传感器",
-      "tab": "robot",
-      "icon": "📡",
-      "fields": {
-        "Source": {
-          "type": "select",
-          "label": "定位来源",
-          "options": ["auto", "bits", "ros2", "ld07"],
-          "option_labels": {
-            "auto": "auto (Bits -> ROS2 -> LD07)",
-            "bits": "Bits 坐标",
-            "ros2": "ROS2 /scan",
-            "ld07": "LD07"
-          },
-          "default": "auto",
-          "order": 1
-        },
-        "Ros2Model": {
-          "type": "select",
-          "label": "ROS2 雷达型号",
-          "options": ["s1", "s2", "s3"],
-          "option_labels": {
-            "s1": "SLLidar S1",
-            "s2": "SLLidar S2",
-            "s3": "SLLidar S3"
-          },
-          "default": "s3",
-          "order": 2
-        },
-        "Inverted": {
-          "type": "bool",
-          "label": "雷达倒置安装",
-          "default": false,
-          "order": 3
-        }
-      }
-    },
     "Ports": {
       "label": "端口配置",
       "tab": "robot",
       "icon": "🔌",
       "fields": {
-        "LidarID": {
-          "type": "int",
-          "label": "雷达 ID",
-          "min": 1,
-          "max": 255,
-          "default": 21,
-          "order": 1
-        },
-        "LidarPort": {
-          "type": "string",
-          "label": "雷达端口",
-          "default": "/dev/sllidar",
-          "placeholder": "/dev/sllidar or /dev/ttyACM0",
-          "order": 2
-        },
         "IceLoongPort": {
           "type": "string",
           "label": "IceLoong 端口",
