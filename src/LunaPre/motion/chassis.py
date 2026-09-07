@@ -44,6 +44,7 @@ class Car:
         self._last_vy = 0
         self._last_wz = 0
         self._motor_output_hooks = []
+        self._permission_denied_logged = False
 
     def add_motor_output_hook(self, hook):
         if hook not in self._motor_output_hooks:
@@ -61,58 +62,11 @@ class Car:
                 if self.cfg.Debug.FullLog:
                     self.logger.debug(f"[Car] motor output hook failed: {e}")
 
-    def _motion_bool(self, name, default):
-        return self._motion_backend._motion_bool(name, default)
-
-    def _motion_float(self, name, default):
-        return self._motion_backend._motion_float(name, default)
-
-    def _motion_str(self, name, default):
-        return self._motion_backend._motion_str(name, default)
-
-    def _chassis_float(self, name, default):
-        return self._motion_backend._chassis_float(name, default)
-
-    @staticmethod
-    def _clamp(value, lower, upper):
-        return MotionBackend.clamp(value, lower, upper)
-
-    @staticmethod
-    def _angle_error_deg(current, target):
-        return MotionBackend.angle_error_deg(current, target)
-
-    @staticmethod
-    def _max_abs(values):
-        return MotionBackend.max_abs(values)
-
-    def _clamp_motor_vector(self, values):
-        return self._motion_backend.clamp_motor_vector(values)
-
-    @staticmethod
-    def _slew_value(current, target, max_delta):
-        return MotionBackend.slew_value(current, target, max_delta)
-
-    def _apply_wheel_slew_limit(self, values, immediate=False):
-        return self._motion_backend.apply_wheel_slew_limit(values, immediate=immediate)
-
-    def _filter_chassis_command(self, speed_x, speed_y, speed_z):
-        return self._motion_backend.filter_chassis_command(speed_x, speed_y, speed_z)
-
-    def _turn_translation_scale(self, speed_z):
-        return self._motion_backend.turn_translation_scale(speed_z)
-
-    def _max_scale_to_fit(self, base, scaled, max_speed):
-        """Return the largest 0..1 scale for scaled so base + scaled*alpha fits."""
-        return self._motion_backend.max_scale_to_fit(base, scaled, max_speed)
-
-    def _allocate_wheel_mix(self, planar, turn, speed_z):
-        return self._motion_backend.allocate_wheel_mix(planar, turn, speed_z)
-
     def _wheel_radius_m(self):
-        return max(1e-6, self._chassis_float("WheelRadiusM", 0.029))
+        return max(1e-6, self._motion_backend._chassis_float("WheelRadiusM", 0.029))
 
     def _robot_radius_m(self):
-        return max(1e-6, self._chassis_float("RobotRadiusM", 0.09))
+        return max(1e-6, self._motion_backend._chassis_float("RobotRadiusM", 0.09))
 
     def _rpm_per_mps(self):
         return 60.0 / (2.0 * math.pi * self._wheel_radius_m())
@@ -124,20 +78,53 @@ class Car:
         return self._rpm_per_radps() * math.pi / 180.0
 
     def _max_physical_wz_degps(self):
-        max_rpm = abs(self._chassis_float("MaxWheelRPM", 500))
+        max_rpm = abs(self._motion_backend._chassis_float("MaxWheelRPM", 500))
         return max_rpm / self._rpm_per_degps()
+
+    def CanMove(self) -> bool:
+        """Return whether the referee/backend currently permits motion output."""
+
+        try:
+            permitted = bool(self.Permission())
+        except Exception as error:
+            self.logger.warning(f"Motion permission check failed: {error}")
+            permitted = False
+        if permitted:
+            self._permission_denied_logged = False
+        return permitted
+
+    def _reset_closed_loop_state(self) -> None:
+        """Discard controller state after a command cannot reach the motors."""
+
+        self.Yaw_PID.reset()
+        self._motion_backend.reset_command_filter()
+        self._motion_backend.reset_motor_output()
+        self.speedCache = [0, 0, 0, 0]
+        self._last_vx = 0.0
+        self._last_vy = 0.0
+        self._last_wz = 0.0
+
+    def _deny_motor_output(self) -> bool:
+        """Force a zero command without retaining any stale controller state."""
+
+        self._reset_closed_loop_state()
+        self.SetMotorFunc(0, 0, 0, 0)
+        if not self._permission_denied_logged:
+            self.logger.warning("Permission Denied: Unable to set motor speeds.")
+            self._permission_denied_logged = True
+        return False
 
     def SetMotor(self,speedCache:list[int,int,int,int], immediate=False):
         if self.SetMotorFunc is None:
             raise RuntimeError("wheel-speed output is unavailable for this chassis backend")
-        if self.Permission():
+        if self.CanMove():
             self.speedCache = speedCache
             number = [self.cfg.Ports.LeftFront,self.cfg.Ports.LeftBack,self.cfg.Ports.RightFront,self.cfg.Ports.RightBack]
             ordered = [0,0,0,0]
             for n in range(4):
                 ordered[n] = float(speedCache[number[n]-1])
-            speed = self._clamp_motor_vector(ordered)
-            speed = self._apply_wheel_slew_limit(speed, immediate=immediate)
+            speed = self._motion_backend.clamp_motor_vector(ordered)
+            speed = self._motion_backend.apply_wheel_slew_limit(speed, immediate=immediate)
             speed = [int(round(v)) for v in speed]
             if self.cfg.Debug.FullLog:
                 if self.MotorEncoder:
@@ -154,10 +141,9 @@ class Car:
             self._notify_motor_output(speed)
 
             self.SetMotorFunc(speed[0], speed[1], speed[2], speed[3])
+            return True
         else:
-            self.SetMotorFunc(0,0,0,0)
-            self._motion_backend.reset_motor_output()
-            self.logger.warning("Permission Denied: Unable to set motor speeds.")
+            return self._deny_motor_output()
 
     def SetKp(self,Kp):
         self.Kp = Kp
@@ -198,7 +184,7 @@ class Car:
                 math.radians(float(SpeedZ)),
             )
         # 缓存速度用于记录
-        SpeedX, SpeedY, SpeedZ = self._filter_chassis_command(SpeedX, SpeedY, SpeedZ)
+        SpeedX, SpeedY, SpeedZ = self._motion_backend.filter_chassis_command(SpeedX, SpeedY, SpeedZ)
         self._last_vx = SpeedX
         self._last_vy = SpeedY
         self._last_wz = SpeedZ
@@ -217,7 +203,7 @@ class Car:
             SpeedZ * rpm_per_degps,
             SpeedZ * rpm_per_degps,
         ]
-        output = self._allocate_wheel_mix(planar, turn, SpeedZ)
+        output = self._motion_backend.allocate_wheel_mix(planar, turn, SpeedZ)
         self.SetMotor(output)
 
     def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
@@ -226,7 +212,8 @@ class Car:
         if not all(math.isfinite(value) for value in values):
             raise ValueError("chassis twist must be finite")
         self._last_vx, self._last_vy, self._last_wz = values
-        if not self.Permission():
+        if not self.CanMove():
+            self._reset_closed_loop_state()
             values = (0.0, 0.0, 0.0)
             self.logger.warning("Permission Denied: chassis twist forced to zero.")
         if self.SetChassisTwistFunc is not None:
@@ -263,13 +250,19 @@ class Car:
         """
         if not self._field_imu_ready():
             return self._reject_field_motion()
+        if not self.CanMove():
+            # Do not run the yaw PID while the command is being rejected;
+            # otherwise its integral term would be applied on re-enable.
+            self._reset_closed_loop_state()
+            self.stop()
+            return False
         try:
             Yaw = self.GetYaw()
         except (RuntimeError, ValueError):
             return self._reject_field_motion()
         # TODO change facing
         # FacingAngle = 360 - FacingAngle
-        Error = self._angle_error_deg(Yaw, FacingAngle)
+        Error = MotionBackend.angle_error_deg(Yaw, FacingAngle)
         Normaled_Yaw =  ( (Yaw + 180) % 360 - 180 )
         Normaled_Facing =  ( (FacingAngle + 180) % 360 - 180 )
         if not Kp:

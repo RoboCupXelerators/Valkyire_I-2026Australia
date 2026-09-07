@@ -31,14 +31,12 @@ from .motion.recording_chassis import RecordingCar
 from .position_recorder import RecordingPositions
 from .positions import Positions
 from .referee import RefereeSnapshot
-from .sensor import Lidar, Sensor
+from .sensor import Sensor
 
 cfg = _runtime.cfg
 Beta_Func = _runtime.Beta_Func
 SendstatusThreadFuncStarted = _runtime.SendstatusThreadFuncStarted
 PeerstatusThreadFuncStarted = _runtime.PeerstatusThreadFuncStarted
-chassis = _runtime.chassis
-peripheral = _runtime.peripheral
 
 
 UnitedPosition = RecordingPositions()
@@ -67,7 +65,7 @@ class _RuntimeObjectProxy:
 
     def _resolve(self):
         """确保 runtime 已初始化，并返回真实对象。"""
-        _ensure_runtime()
+        _runtime.ensure_runtime()
         return getattr(_runtime, self._runtime_name)
 
     def __getattr__(self, name: str):
@@ -103,7 +101,7 @@ class _RuntimeObjectProxy:
 
 if TYPE_CHECKING:
     Bits: Any
-    lidar: Lidar
+    lidar: Sensor
     sensor: Sensor
     chassis: RecordingCar
     compass: Callable[[], float]
@@ -138,7 +136,6 @@ __all__ = [
     "simple_pid",
     "logger",
     "Settings",
-    "Lidar",
     "Sensor",
     "Car",
     "Peripherals",
@@ -166,46 +163,15 @@ __all__ = [
 ]
 
 
-def _sync_runtime_globals() -> None:
-    """把 runtime 模块里的真实对象同步回 LunaPre 顶层命名空间。"""
-    for name in _RUNTIME_NAMES:
-        globals()[name] = getattr(_runtime, name)
-
-
-def _ensure_runtime() -> None:
-    """确保 runtime 初始化完成，并保证 UnitedPosition 存在。"""
-    if not getattr(_runtime, "_runtime_initialized", False):
-        _runtime._init_runtime(auto_start_lidar=True)
-    _sync_runtime_globals()
-    if "UnitedPosition" not in globals():
-        globals()["UnitedPosition"] = RecordingPositions()
-
-
-def _init_runtime(*, auto_start_lidar: bool = True):
-    """显式初始化 runtime，并同步顶层兼容对象。"""
-    result = _runtime._init_runtime(auto_start_lidar=auto_start_lidar)
-    _sync_runtime_globals()
-    return result
-
-
-def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
-    """Initialize LunaPre providers before reading semantic observations."""
-
-    if not getattr(_runtime, "_runtime_initialized", False):
-        _runtime._init_runtime(auto_start_lidar=auto_start_lidar)
-    _sync_runtime_globals()
-
-
-def shutdown_runtime() -> None:
-    """Close the active runtime and release simulator or hardware resources."""
-
-    _runtime.shutdown_runtime()
-    _sync_runtime_globals()
+# Stable proxies keep previously imported objects valid across runtime restarts.
+ensure_runtime = _runtime.ensure_runtime
+_init_runtime = ensure_runtime
+shutdown_runtime = _runtime.shutdown_runtime
 
 
 def __getattr__(name: str):
-    """按需解析历史顶层 runtime 名称。"""
-    if name in _RUNTIME_NAMES or name == "UnitedPosition":
-        _ensure_runtime()
-        return globals()[name]
+    """Resolve optional runtime objects only when explicitly requested."""
+    if name in _RUNTIME_NAMES:
+        _runtime.ensure_runtime()
+        return getattr(_runtime, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

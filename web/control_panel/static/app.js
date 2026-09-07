@@ -3257,9 +3257,6 @@ function populateConfigForm(config) {
   setFieldValue("robot-type", config.RoboInfo?.type);
   setFieldValue("robot-bit", config.RoboInfo?.Bit); // Note: JSON uses "Bit" (capital B)
   setFieldValue("robot-rec", config.RoboInfo?.Rec); // Note: JSON uses "Rec" (capital R)
-  setFieldValue("sensor-source", config.Sensor?.Source);
-  setFieldValue("sensor-ros2-model", config.Sensor?.Ros2Model);
-  setFieldValue("sensor-inverted", config.Sensor?.Inverted, "checkbox");
 
   console.log("[Config] Robot info loaded:", {
     number: config.RoboInfo?.number,
@@ -3269,7 +3266,6 @@ function populateConfigForm(config) {
   });
 
   // Ports
-  setFieldValue("lidar-id", config.Ports?.LidarID);
   setFieldValue("iceloong-port", config.Ports?.IceLoongPort);
   setFieldValue("motor-lf", config.Ports?.LeftFront);
   setFieldValue("motor-lb", config.Ports?.LeftBack);
@@ -3572,6 +3568,7 @@ const controlState = {
   kickPowerMax: 4,
   kickPowerSupported: false,
   dribbleActive: false,
+  dribblePower: 0,
   runtimeInitialized: false,
   chassisAvailable: false,
   peripheralAvailable: false,
@@ -3585,12 +3582,28 @@ const controlState = {
   lastMouseMoveTime: 0,
   mouseTurnWz: 0,
   mouseTurnResetTimer: null,
+  gamepadCaptureEnabled: false,
+  gamepadConnected: false,
+  gamepadIndex: null,
+  gamepadName: "",
+  gamepadInput: { vx: 0, vy: 0, wz: 0 },
+  gamepadL1Pressed: false,
+  gamepadKickPowerLevel: null,
+  gamepadDribbleActive: false,
+  gamepadDribblePower: 0,
+  gamepadLastSentDribblePower: null,
+  gamepadAnimationFrame: null,
 };
 
 const CONTROL_HEARTBEAT_INTERVAL_MS = 100;
+const GAMEPAD_DEADZONE = 0.15;
+const GAMEPAD_TRIGGER_DEADZONE = 0.05;
+const GAMEPAD_DRIBBLE_POWER_STEP = 0.03;
 let pendingControlVector = null;
 let controlVectorRequestInFlight = false;
 let motionHeartbeatTimer = null;
+let pendingControlDribble = null;
+let controlDribbleRequestInFlight = false;
 
 // 初始化键盘控制页面
 function setupControlPage() {
@@ -3640,12 +3653,16 @@ function setupControlPage() {
 
   // 鼠标控制
   setupMouseControl();
+  setupGamepadControl();
   updateKickPowerUI();
 
   // 定期更新控制状态
   setInterval(updateControlStatus, 500);
 
-  window.addEventListener("blur", releaseControlKeys);
+  window.addEventListener("blur", () => {
+    releaseControlKeys();
+    releaseGamepadInput();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) disableControlForSafety();
   });
@@ -3660,7 +3677,13 @@ function hasActiveMotionInput() {
     controlState.mouseCaptured &&
     controlState.mouseControlEnabled &&
     Math.abs(controlState.mouseTurnWz) > 0.1;
-  return translationActive || rotationActive;
+  const gamepadInput = controlState.gamepadInput;
+  const gamepadMotionActive =
+    controlState.gamepadCaptureEnabled &&
+    (Math.abs(gamepadInput.vx) > 0.001 ||
+      Math.abs(gamepadInput.vy) > 0.001 ||
+      Math.abs(gamepadInput.wz) > 0.1);
+  return translationActive || rotationActive || gamepadMotionActive;
 }
 
 function stopMotionHeartbeat() {
@@ -3699,6 +3722,7 @@ function releaseControlKeys() {
 function disableControlForSafety() {
   if (!controlState.enabled) return;
   releaseControlKeys();
+  releaseGamepadInput();
   stopMotionHeartbeat();
   controlState.enabled = false;
   fetch("/api/control/enable", {
@@ -3747,6 +3771,305 @@ function setupMouseControl() {
 
   document.addEventListener("pointerlockchange", handlePointerLockChange);
   document.addEventListener("mousemove", handleMouseMove);
+}
+
+function setupGamepadControl() {
+  const captureBtn = document.getElementById("gamepad-capture-btn");
+  if (captureBtn) {
+    captureBtn.addEventListener("click", toggleGamepadCapture);
+  }
+
+  window.addEventListener("gamepadconnected", handleGamepadConnected);
+  window.addEventListener("gamepaddisconnected", handleGamepadDisconnected);
+  updateGamepadCaptureUI();
+}
+
+function supportsGamepadCapture() {
+  return typeof navigator !== "undefined" &&
+    typeof navigator.getGamepads === "function";
+}
+
+function toggleGamepadCapture() {
+  if (!supportsGamepadCapture()) {
+    setControlStatusMessage("状态: 当前浏览器不支持手柄捕捉", true);
+    return;
+  }
+
+  if (controlState.gamepadCaptureEnabled) {
+    stopGamepadCapture();
+  } else {
+    startGamepadCapture();
+  }
+}
+
+function startGamepadCapture() {
+  controlState.gamepadCaptureEnabled = true;
+  const gamepad = findConnectedGamepad();
+  if (gamepad) {
+    connectGamepad(gamepad);
+  }
+  pollGamepad();
+  updateGamepadCaptureUI();
+}
+
+function stopGamepadCapture() {
+  controlState.gamepadCaptureEnabled = false;
+  if (controlState.gamepadAnimationFrame !== null) {
+    cancelAnimationFrame(controlState.gamepadAnimationFrame);
+    controlState.gamepadAnimationFrame = null;
+  }
+  releaseGamepadInput();
+  controlState.gamepadConnected = false;
+  controlState.gamepadIndex = null;
+  controlState.gamepadName = "";
+  updateGamepadCaptureUI();
+}
+
+function findConnectedGamepad() {
+  if (!supportsGamepadCapture()) return null;
+  const gamepads = navigator.getGamepads();
+  for (const gamepad of gamepads) {
+    if (gamepad && gamepad.connected) return gamepad;
+  }
+  return null;
+}
+
+function getCapturedGamepad() {
+  if (!supportsGamepadCapture()) return null;
+  const gamepads = navigator.getGamepads();
+  const captured =
+    controlState.gamepadIndex === null
+      ? null
+      : gamepads[controlState.gamepadIndex];
+  if (captured && captured.connected) return captured;
+  return findConnectedGamepad();
+}
+
+function handleGamepadConnected(event) {
+  if (!controlState.gamepadCaptureEnabled) {
+    updateGamepadCaptureUI();
+    return;
+  }
+  if (controlState.gamepadIndex === null) {
+    connectGamepad(event.gamepad);
+  }
+}
+
+function handleGamepadDisconnected(event) {
+  if (event.gamepad.index !== controlState.gamepadIndex) return;
+  releaseGamepadInput();
+  controlState.gamepadConnected = false;
+  controlState.gamepadIndex = null;
+  controlState.gamepadName = "";
+  updateGamepadCaptureUI();
+}
+
+function connectGamepad(gamepad) {
+  if (!gamepad) return;
+  controlState.gamepadConnected = true;
+  controlState.gamepadIndex = gamepad.index;
+  controlState.gamepadName = gamepad.id || `手柄 ${gamepad.index + 1}`;
+  updateGamepadCaptureUI();
+}
+
+function pollGamepad() {
+  if (!controlState.gamepadCaptureEnabled) {
+    controlState.gamepadAnimationFrame = null;
+    return;
+  }
+
+  const gamepad = getCapturedGamepad();
+  if (gamepad) {
+    if (gamepad.index !== controlState.gamepadIndex) {
+      connectGamepad(gamepad);
+    }
+    processGamepadInput(gamepad);
+  } else if (controlState.gamepadConnected) {
+    releaseGamepadInput();
+    controlState.gamepadConnected = false;
+    controlState.gamepadIndex = null;
+    controlState.gamepadName = "";
+    updateGamepadCaptureUI();
+  }
+
+  controlState.gamepadAnimationFrame = requestAnimationFrame(pollGamepad);
+}
+
+function applyGamepadDeadzone(value) {
+  const numeric = Number.isFinite(Number(value)) ? Number(value) : 0;
+  const magnitude = Math.abs(numeric);
+  if (magnitude <= GAMEPAD_DEADZONE) return 0;
+  return Math.sign(numeric) * (magnitude - GAMEPAD_DEADZONE) / (1 - GAMEPAD_DEADZONE);
+}
+
+function gamepadAxis(gamepad, index) {
+  return applyGamepadDeadzone(gamepad.axes[index] || 0);
+}
+
+function gamepadButtonValue(gamepad, index) {
+  const button = gamepad.buttons[index];
+  if (!button) return 0;
+  const value = Number(button.value);
+  if (Number.isFinite(value)) return Math.min(1, Math.max(0, value));
+  return button.pressed ? 1 : 0;
+}
+
+function gamepadButtonPressed(gamepad, index) {
+  const button = gamepad.buttons[index];
+  return Boolean(button && (button.pressed || gamepadButtonValue(gamepad, index) > 0.5));
+}
+
+function processGamepadInput(gamepad) {
+  const leftX = gamepadAxis(gamepad, 0);
+  const rightX = gamepadAxis(gamepad, 2);
+  const rightY = gamepadAxis(gamepad, 3);
+  const l2Power = gamepadButtonValue(gamepad, 6);
+  const r2Power = gamepadButtonValue(gamepad, 7);
+  const l1Pressed = gamepadButtonPressed(gamepad, 4);
+
+  updateGamepadInputUI(leftX, rightX, rightY, l2Power, r2Power);
+
+  if (state.currentPage !== "control" || !controlState.enabled) {
+    controlState.gamepadL1Pressed = l1Pressed;
+    return;
+  }
+
+  // The right stick directly controls planar speed; left/right on the left
+  // stick remains the Mode 2 yaw control without a throttle dependency.
+  const nextInput = {
+    // Browser axes are positive to the right/down; chassis axes are forward/left.
+    vx: -rightY * controlState.speed,
+    vy: -rightX * controlState.speed,
+    wz: -leftX * controlState.turnSpeed,
+  };
+  const inputChanged =
+    Math.abs(nextInput.vx - controlState.gamepadInput.vx) > 0.001 ||
+    Math.abs(nextInput.vy - controlState.gamepadInput.vy) > 0.001 ||
+    Math.abs(nextInput.wz - controlState.gamepadInput.wz) > 0.1;
+  controlState.gamepadInput = nextInput;
+
+  if (inputChanged) {
+    sendCombinedControlVector();
+  } else {
+    refreshMotionHeartbeat();
+  }
+
+  const kickPowerLevel = gamepadKickPowerLevel(l2Power);
+  if (kickPowerLevel !== controlState.gamepadKickPowerLevel) {
+    controlState.gamepadKickPowerLevel = kickPowerLevel;
+    controlState.kickPowerLevel = kickPowerLevel;
+    updateKickPowerUI();
+    setControlKickPower(kickPowerLevel);
+  }
+
+  if (l1Pressed && !controlState.gamepadL1Pressed) {
+    sendControlKick();
+  }
+  controlState.gamepadL1Pressed = l1Pressed;
+
+  const dribbleActive = r2Power > GAMEPAD_TRIGGER_DEADZONE;
+  const dribblePower = dribbleActive ? Math.round(r2Power * 100) / 100 : 0;
+  const shouldSendDribble =
+    dribbleActive !== controlState.gamepadDribbleActive ||
+    Math.abs(dribblePower - (controlState.gamepadLastSentDribblePower || 0)) >=
+      GAMEPAD_DRIBBLE_POWER_STEP;
+  controlState.gamepadDribbleActive = dribbleActive;
+  controlState.gamepadDribblePower = dribblePower;
+
+  if (shouldSendDribble) {
+    controlState.gamepadLastSentDribblePower = dribblePower;
+    controlState.dribbleActive = dribbleActive;
+    controlState.dribblePower = dribblePower;
+    updateDribbleDisplay();
+    sendControlDribble(dribbleActive, dribblePower);
+  }
+}
+
+function gamepadKickPowerLevel(triggerValue) {
+  const min = Number.isFinite(controlState.kickPowerMin)
+    ? controlState.kickPowerMin
+    : 1;
+  const max = Number.isFinite(controlState.kickPowerMax)
+    ? controlState.kickPowerMax
+    : 4;
+  return Math.round(min + triggerValue * (max - min));
+}
+
+function releaseGamepadInput() {
+  const gamepadInput = controlState.gamepadInput;
+  const hadMotion =
+    Math.abs(gamepadInput.vx) > 0.001 ||
+    Math.abs(gamepadInput.vy) > 0.001 ||
+    Math.abs(gamepadInput.wz) > 0.1;
+  const wasDribbling = controlState.gamepadDribbleActive;
+
+  controlState.gamepadInput = { vx: 0, vy: 0, wz: 0 };
+  controlState.gamepadL1Pressed = false;
+  controlState.gamepadKickPowerLevel = null;
+  controlState.gamepadDribbleActive = false;
+  controlState.gamepadDribblePower = 0;
+  controlState.gamepadLastSentDribblePower = 0;
+
+  if (controlState.enabled && hadMotion) {
+    sendCombinedControlVector();
+  }
+  if (controlState.enabled && wasDribbling) {
+    controlState.dribbleActive = false;
+    controlState.dribblePower = 0;
+    updateDribbleDisplay();
+    sendControlDribble(false, 0);
+  }
+  updateGamepadInputUI(0, 0, 0, 0, 0);
+}
+
+function updateGamepadCaptureUI() {
+  const captureBtn = document.getElementById("gamepad-capture-btn");
+  const statusEl = document.getElementById("gamepad-status");
+  const nameEl = document.getElementById("gamepad-name");
+  const hintEl = document.getElementById("gamepad-hint");
+  const supported = supportsGamepadCapture();
+
+  if (captureBtn) {
+    captureBtn.disabled = !supported;
+    captureBtn.textContent = controlState.gamepadCaptureEnabled
+      ? "停止网页捕捉"
+      : "🎮 连接手柄";
+    captureBtn.classList.toggle("btn-danger", controlState.gamepadCaptureEnabled);
+    captureBtn.classList.toggle("btn-primary", !controlState.gamepadCaptureEnabled);
+  }
+
+  if (statusEl) {
+    const status = !supported
+      ? "浏览器不支持"
+      : controlState.gamepadConnected
+        ? "已连接"
+        : controlState.gamepadCaptureEnabled
+          ? "等待连接"
+          : "未捕捉";
+    statusEl.textContent = status;
+    statusEl.classList.toggle("active", controlState.gamepadConnected);
+    statusEl.classList.toggle("inactive", !controlState.gamepadConnected);
+  }
+
+  if (nameEl) {
+    nameEl.textContent = controlState.gamepadConnected
+      ? controlState.gamepadName
+      : "--";
+  }
+
+  if (hintEl) {
+    hintEl.textContent = !supported
+      ? "当前浏览器不支持网页手柄捕捉。"
+      : controlState.gamepadCaptureEnabled
+        ? "请将手柄连接到打开本页的电脑，然后按任意按键让浏览器识别。手柄无需连接到机器人。"
+        : "手柄只需连接到打开此网页的电脑；点击连接后按任意按键即可由浏览器捕捉，无需连接到机器人。";
+  }
+}
+
+function updateGamepadInputUI(leftX, rightX, rightY, l2Power, r2Power) {
+  const inputEl = document.getElementById("gamepad-input");
+  if (!inputEl) return;
+  inputEl.textContent = `航向 ${(-leftX).toFixed(2)} · 方向 ${(-rightY).toFixed(2)}, ${(-rightX).toFixed(2)} · L2 ${Math.round(l2Power * 100)}% · R2 ${Math.round(r2Power * 100)}%`;
 }
 
 function requestPointerLock() {
@@ -3878,6 +4201,10 @@ async function toggleControlEnable() {
   const btn = document.getElementById("control-enable-btn");
 
   try {
+    if (controlState.enabled) {
+      releaseControlKeys();
+      releaseGamepadInput();
+    }
     const response = await fetch("/api/control/enable", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4012,6 +4339,13 @@ function sendCombinedControlVector() {
   if (keys.has("a")) vy += speed;
   if (keys.has("d")) vy -= speed;
 
+  // Add browser-captured gamepad translation before normalizing the final
+  // combined vector, so keyboard and gamepad inputs cannot exceed the set speed.
+  if (controlState.gamepadCaptureEnabled) {
+    vx += controlState.gamepadInput.vx;
+    vy += controlState.gamepadInput.vy;
+  }
+
   // Keep diagonal translation at the selected resultant speed instead of
   // making W+A/W+D sqrt(2) times faster than a single-axis command.
   const linearMagnitude = Math.hypot(vx, vy);
@@ -4026,6 +4360,10 @@ function sendCombinedControlVector() {
     controlState.mouseCaptured && controlState.mouseControlEnabled
       ? controlState.mouseTurnWz
       : 0;
+  if (controlState.gamepadCaptureEnabled) {
+    wz += controlState.gamepadInput.wz;
+  }
+  wz = Math.min(controlState.turnSpeed, Math.max(-controlState.turnSpeed, wz));
 
   if (vx === 0 && vy === 0 && wz === 0) {
     sendControlMoveVector(0, 0, 0);
@@ -4194,6 +4532,11 @@ async function toggleDribble() {
 
     if (data.success) {
       controlState.dribbleActive = data.dribble_active;
+      controlState.dribblePower = Number.isFinite(Number(data.dribble_power))
+        ? Number(data.dribble_power)
+        : controlState.dribbleActive
+          ? 0.8
+          : 0;
       updateDribbleDisplay();
     } else {
       setControlStatusMessage("状态: " + (data.error || "盘球失败"), true);
@@ -4201,6 +4544,57 @@ async function toggleDribble() {
   } catch (e) {
     console.error("Failed to toggle dribble:", e);
     setControlStatusMessage("状态: 盘球请求失败", true);
+  }
+}
+
+// R2 uses a direct, non-latching dribble command. Keep only the newest value
+// while a previous request is in flight so browser polling never queues stale PWM.
+function sendControlDribble(active, power) {
+  pendingControlDribble = { active: Boolean(active), power };
+  flushControlDribbleRequests();
+}
+
+async function flushControlDribbleRequests() {
+  if (controlDribbleRequestInFlight) return;
+  controlDribbleRequestInFlight = true;
+
+  try {
+    while (pendingControlDribble !== null) {
+      const command = pendingControlDribble;
+      pendingControlDribble = null;
+
+      try {
+        const response = await fetch("/api/control/dribble", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(command),
+        });
+        if (!response.ok) {
+          throw new Error(`dribble request failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        if (data.success) {
+          controlState.dribbleActive = data.dribble_active;
+          controlState.dribblePower = Number.isFinite(Number(data.dribble_power))
+            ? Number(data.dribble_power)
+            : command.active
+              ? command.power
+              : 0;
+          updateDribbleDisplay();
+        } else {
+          setControlStatusMessage("状态: " + (data.error || "盘球失败"), true);
+        }
+      } catch (e) {
+        console.error("Failed to send dribble command:", e);
+        setControlStatusMessage("状态: 盘球请求失败", true);
+      }
+    }
+  } finally {
+    controlDribbleRequestInFlight = false;
+    if (pendingControlDribble !== null) {
+      flushControlDribbleRequests();
+    }
   }
 }
 
@@ -4212,8 +4606,8 @@ function updateControlUI() {
 
   if (btn) {
     btn.textContent = controlState.enabled
-      ? "🛑 禁用键盘控制"
-      : "🎮 启用键盘控制";
+      ? "🛑 禁用手动控制"
+      : "🎮 启用手动控制";
     btn.classList.toggle("btn-danger", controlState.enabled);
     btn.classList.toggle("btn-primary", !controlState.enabled);
   }
@@ -4232,6 +4626,7 @@ function updateControlUI() {
   }
 
   updateMouseCaptureUI();
+  updateGamepadCaptureUI();
 }
 
 // 更新方向显示
@@ -4259,7 +4654,10 @@ function updateDribbleDisplay() {
   const el = document.getElementById("control-dribble-status");
   if (!el) return;
 
-  el.textContent = controlState.dribbleActive ? "开启" : "关闭";
+  const power = Math.min(1, Math.max(0, Number(controlState.dribblePower) || 0));
+  el.textContent = controlState.dribbleActive
+    ? `开启 ${Math.round(power * 100)}%`
+    : "关闭";
   el.classList.toggle("active", controlState.dribbleActive);
   el.classList.toggle("inactive", !controlState.dribbleActive);
 
@@ -4348,6 +4746,9 @@ async function updateControlStatus() {
       : 4;
     controlState.kickPowerSupported = data.kick_power_supported === true;
     controlState.dribbleActive = data.dribble_active;
+    controlState.dribblePower = Number.isFinite(Number(data.dribble_power))
+      ? Number(data.dribble_power)
+      : controlState.dribblePower;
     controlState.runtimeInitialized = !!data.runtime_initialized;
     controlState.chassisAvailable = !!data.chassis_available;
     controlState.peripheralAvailable = !!data.peripheral_available;
@@ -4507,15 +4908,7 @@ async function saveConfigLegacy() {
     Rec: getFieldValue("robot-rec"),
   };
 
-  config.Sensor = {
-    Source: getFieldValue("sensor-source") || "auto",
-    Ros2Model: getFieldValue("sensor-ros2-model") || "s3",
-    Inverted: getFieldValue("sensor-inverted", "checkbox"),
-  };
-
   config.Ports = {
-    LidarID: getFieldValue("lidar-id"),
-    LidarPort: config.Ports?.LidarPort || "/dev/sllidar",
     IceLoongPort: getFieldValue("iceloong-port"),
     LowTigger: config.Ports?.LowTigger || 0,
     ReferPort: config.Ports?.ReferPort || 1,

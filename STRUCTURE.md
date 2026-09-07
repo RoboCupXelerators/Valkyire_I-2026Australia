@@ -9,12 +9,10 @@ Software/
 ├── src/                    # 机器人运行代码、策略、视觉、数据和测试
 ├── docs/                   # 当前维护文档
 ├── scripts/                # 可重复运行的部署、调试、模型脚本
-├── legacy/                 # 已归档的硬件实现、现场脚本和历史证据
 ├── web/control_panel/      # control_panel.py 使用的前端资源
 ├── Tools/                  # 历史标定数据、归档说明和许可
-├── Calibration_2605/       # 标定数据
 ├── Records/                # 本地运行/采样记录，默认不作为代码入口
-├── logs/                   # 本地训练/运行日志
+├── log/                    # 本地运行日志
 ├── requirements*.txt       # Python 依赖
 ├── packages_config.json    # 外部 packages 仓库配置
 ├── pytest.ini              # 测试配置
@@ -26,7 +24,7 @@ Software/
 
 ```bash
 # 跑当前保留的自动化测试
-../venv/bin/python3 -m pytest
+venv/bin/python -m pytest
 
 # 启动控制面板
 python3 src/control_panel.py
@@ -58,8 +56,7 @@ src/LunaPre/
 ├── runtime.py              # 具体硬件/模拟器装配层
 ├── positions.py            # 语义位置、球、路径和 Pos2Pos API
 ├── position_recorder.py    # Positions 记录包装
-├── sensor.py               # Lidar facade
-├── lidar_driver_ros2.py    # ROS2 /scan 驱动
+├── sensor.py               # Bits 位姿校验和统一墙距计算
 ├── strategy_tools.py       # 策略复用工具
 └── motion/
     ├── chassis.py          # 底盘/外设/按键 facade
@@ -73,7 +70,9 @@ src/LunaPre/
 - `runtime.py` 负责选择 `IceLoongBits` / `XeleratorSimBits`。
 - `chassis.py` 不直接导入具体 Bits，只接收 runtime 注入的 callable。
 - `positions.py` 消费 runtime 提供的语义接口，不直接碰具体 Bits。
-- `sensor.py` 只负责 Sensor.Source（`auto` / `bits` / `ros2` / `ld07`）和数据源选择，不消费 vision。
+- `sensor.py` 只消费 Bits 位姿，提供四向墙距，不创建线程或扫描驱动。
+- `runtime.lidar` 仅为 `runtime.sensor` 的旧名称，不再有第二个雷达对象。
+- `Car` 直接调用 `MotionBackend` 混控，记录层通过输出 hook 记录，不重复实现运动。
 
 ### vision_utils/
 
@@ -119,11 +118,10 @@ docs/
 
 已过期的流水账、草稿报告、一次性提示词和临时脚本不再放在 `docs/`。
 
-## legacy/
+## legacy 分支
 
-`legacy/` 不属于活动运行时、默认依赖或 pytest 测试范围。它保留已归档的
-ArisuBits、DM2325 和直连 RPLidar 实现、现场脚本、测试及硬件记录，供历史
-排查而非新部署使用。
+ROS2、LD07/LD06、DM2325 驱动及相关测试、现场工具保留在 `legacy` 分支。
+main 不再携带这些驱动和 ArisuBits 归档。结构精简仅在 main 维护。
 
 ## scripts/
 
@@ -134,11 +132,8 @@ scripts/
 ├── setup_venv_jetson_orin_nano.sh
 ├── install_cuda.sh
 ├── install_system_service.sh
-├── jetpack_test.sh
 ├── udev-gen.sh
-├── run_tests.sh
 ├── run_lockball_pid.py
-├── run_sim_lockball_pid_sweep.py
 ├── debug/
 └── hailort*.whl / hailort*.deb
 ```

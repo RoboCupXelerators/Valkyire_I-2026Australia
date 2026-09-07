@@ -75,4 +75,4 @@ echo
 echo "Driver installed. Reconnect the adapter and check:"
 echo "  lsusb"
 echo "  ls -l /dev/ttyCH343USB* /dev/ttyACM* 2>/dev/null"
-echo "Configure LD06 to the channel carrying its data, for example /dev/ttyCH343USB3."
+echo "Configure the device to use its corresponding serial channel."

@@ -1,4 +1,48 @@
-# 🤖 机器人足球-快速上手指南
+# Xelerators Software
+
+机器人足球运行时、策略、视觉和控制面板。
+
+## 分支与硬件
+
+| 分支 | 支持范围 |
+| --- | --- |
+| `main` | IceLoong (`IL`)、Unity 模拟器 (`SIM`)，定位统一来自 Bits |
+| `legacy` | 保留 ROS2 /scan、LD07/LD06 和 DM2325 兼容运行时 |
+
+ArisuBits 已从 main 删除；ArisuIntelligence/Hailo 视觉后端仍保留。
+main 不再安装、探测或启动 ROS2，也不提供原生串口雷达驱动。
+
+已有配置的 `Sensor.Source=auto/bits` 会迁移到 Bits 定位，原配置保留为
+`cfg.cache.json`。明确使用 ROS2/LD07 的机器人应切换 `legacy`。
+main 的 `Sensor`、`Ports.LidarID/LidarPort` 已移除；PID、场地尺寸和相机映射继续保留。
+
+## 安装与运行
+
+```bash
+python3 -m venv venv
+venv/bin/python -m pip install -r requirements.txt
+venv/bin/python src/control_panel.py
+```
+
+硬件视觉按 [scripts/README.md](scripts/README.md) 安装对应平台依赖。
+配置在 `src/ReasonData/data/config.json`，可用 `XEL_RUNTIME_DATA_DIR` 指定独立目录。
+`RoboInfo.Bit` 选择 `IL` 或 `SIM`；`ROBOCUPX_BITS` 可覆盖运行时后端。
+Unity 模拟器需单独启动；串口裁判和手动控制保持现有接口。
+
+```bash
+venv/bin/python -m pytest
+```
+
+默认测试跳过 camera 标记；缺少 PyTorch 时跳过模型测试。本地 UDP/HTTP
+测试需要允许端口绑定。物理硬件及真实 Unity 比赛验收需在对应环境执行。
+
+## 代码结构
+
+运行时装配、Sensor 观测、Positions 策略语义和 MotionBackend 混控各负责一层；
+SIM/IL 共用墙距计算。详见 [STRUCTURE.md](STRUCTURE.md) 和
+[本次审计](docs/ARCHITECTURE_AUDIT.md)。
+
+## 策略快速上手
 
 > 🌟 **新手入门？请先阅读 [GETTING_STARTED.md](./GETTING_STARTED.md) - 专为初学者编写的友好指南！**
 
@@ -107,11 +151,11 @@ if UnitedPosition.BallState(ball_pos) == "free":
 
 ## 🧪 真实场景调试
 
-`src/tests/sim_robot_role_runner.py` 可以在 Unity 场景里直接跑单个角色，并输出 JSONL trace：
+`src/tools/tests/sim_robot_role_runner.py` 可以在 Unity 场景里直接跑单个角色，并输出 JSONL trace：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 XEL_SIM_BALL_STATUS_FALLBACK=1 \
-../venv/bin/python src/tests/sim_robot_role_runner.py \
+venv/bin/python src/tools/tests/sim_robot_role_runner.py \
   --robot-id 1 --role offence --duration 8 \
   --trace Records/sim_runs/offence_real.jsonl \
   --summary Records/sim_runs/offence_real.summary.json \

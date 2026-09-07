@@ -22,43 +22,41 @@ def _load_config_module(tmp_path, monkeypatch):
     return module
 
 
-def test_legacy_ros2_config_migrates_to_sensor_section(tmp_path, monkeypatch):
+@pytest.mark.parametrize("source", ["ros2", "ld07", "ld06", "rplidar"])
+def test_native_sensor_config_requires_legacy_without_rewriting(tmp_path, monkeypatch, source):
     module = _load_config_module(tmp_path, monkeypatch)
-    old_config = {
-        "RoboInfo": {
-            "Bit": "SIM",
-            "LidarBackend": "ros2",
-            "LidarType": "s1",
-            "LidarInverted": True,
-        }
-    }
-    module.CONFIG_FILE.write_text(json.dumps(old_config), encoding="utf-8")
-
-    config = module.Preference().cfg
-
-    assert config["Sensor"] == {
-        "Source": "ros2",
-        "Ros2Model": "s1",
-        "Inverted": True,
-    }
-    persisted = json.loads(module.CONFIG_FILE.read_text(encoding="utf-8"))
-    assert "LidarBackend" not in persisted["RoboInfo"]
-    assert "DM2325Port" not in persisted["Ports"]
-
-
-def test_direct_rplidar_config_fails_without_rewriting_the_old_config(tmp_path, monkeypatch):
-    module = _load_config_module(tmp_path, monkeypatch)
-    old_config = {
-        "RoboInfo": {"Bit": "SIM", "LidarBackend": "rplidar", "LidarType": "s3"}
-    }
-    serialized = json.dumps(old_config)
+    serialized = json.dumps({"RoboInfo": {"Bit": "IL"}, "Sensor": {"Source": source}})
     module.CONFIG_FILE.write_text(serialized, encoding="utf-8")
-
-    with pytest.raises(ValueError, match="Direct RPLidar is no longer supported"):
+    with pytest.raises(ValueError, match="legacy branch"):
         module.Preference()
-
     assert module.CONFIG_FILE.read_text(encoding="utf-8") == serialized
     assert not module.CACHE_FILE.exists()
+
+
+def test_old_native_backend_requires_legacy_without_rewriting(tmp_path, monkeypatch):
+    module = _load_config_module(tmp_path, monkeypatch)
+    serialized = json.dumps({"RoboInfo": {"Bit": "SIM", "LidarBackend": "ros2"}})
+    module.CONFIG_FILE.write_text(serialized, encoding="utf-8")
+    with pytest.raises(ValueError, match="legacy branch"):
+        module.Preference()
+    assert module.CONFIG_FILE.read_text(encoding="utf-8") == serialized
+
+
+@pytest.mark.parametrize("source", ["auto", "bits"])
+def test_bits_config_removes_obsolete_scan_settings_preserving_tuning(tmp_path, monkeypatch, source):
+    module = _load_config_module(tmp_path, monkeypatch)
+    old = json.loads(json.dumps(module.Preference.DEFAULT_CONFIG))
+    old["Sensor"] = {"Source": source, "Ros2Model": "s3", "Inverted": True}
+    old["Ports"]["LidarPort"] = "/dev/sllidar"
+    old["Vision"]["CamPorts"] = [6, 4, 2, 0]
+    old["Motion"]["LockBallSlip"]["TurnOnlyMaxDegS"] = 75
+    module.CONFIG_FILE.write_text(json.dumps(old), encoding="utf-8")
+    config = module.Preference().cfg
+    assert config["Vision"]["CamPorts"] == [6, 4, 2, 0]
+    assert "Sensor" not in config
+    assert "LidarPort" not in config["Ports"]
+    assert config["Motion"]["LockBallSlip"]["TurnOnlyMaxDegS"] == 75
+    assert json.loads(module.CACHE_FILE.read_text()) == old
 
 
 @pytest.mark.parametrize("legacy_bit", ["AB", "DM2325"])

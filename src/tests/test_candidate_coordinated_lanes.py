@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,12 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import candidate_coordinated_lanes as candidate  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolate_candidate_clock(monkeypatch):
+    """Strategy time mocks must not alter live transport/vision threads."""
+    monkeypatch.setattr(candidate, "time", SimpleNamespace(**vars(candidate.time)))
 
 
 @pytest.fixture(autouse=True)

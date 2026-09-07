@@ -18,10 +18,10 @@
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import math
 import os
+import signal
 import sys
 import threading
 import time
@@ -43,6 +43,7 @@ KICK_POWER_MIN = 1
 KICK_POWER_MAX = 4
 KICK_POWER_DEFAULT = 4
 KICK_POWER_ERROR = "kick power level must be an integer from 1 to 4"
+DRIBBLE_POWER_ERROR = "dribble power must be a finite number from 0 to 1"
 
 
 def _repo_root() -> Path:
@@ -254,31 +255,6 @@ def _json_safe(obj):
     return str(obj)
 
 
-def _serialize_lidar_point_cloud_cm(lidar) -> list[list[float]]:
-    """Serialize the bounded lidar snapshot without touching distance state."""
-    if lidar is None or not getattr(lidar, "running", False) or getattr(lidar, "disabled", False):
-        return []
-
-    result = []
-    try:
-        point_cloud = getattr(lidar, "last_point_cloud", ()) or ()
-        for point in point_cloud:
-            if len(result) >= 360:
-                break
-            try:
-                if len(point) < 2:
-                    continue
-                x = float(point[0])
-                y = float(point[1])
-                if math.isfinite(x) and math.isfinite(y):
-                    result.append([round(x * 100.0, 1), round(y * 100.0, 1)])
-            except (TypeError, ValueError, IndexError):
-                continue
-    except TypeError:
-        return []
-    return result
-
-
 def _wall_segments_from_direct_distance_mm(dist_mm) -> list[list[list[float]]]:
     """Build the four field-wall segments in robot coordinates from direct ranges.
 
@@ -442,7 +418,6 @@ class ControlPanelApp:
         self.bits = bits
         self._kick_power_level = KICK_POWER_DEFAULT
         self._allow_runtime_init = bool(allow_runtime_init)
-        self._last_lidar_status = None
 
         # 检测是否为模拟器环境
         self._is_simulator = self._detect_simulator_mode()
@@ -453,6 +428,7 @@ class ControlPanelApp:
         self._control_speed = 0.5  # 默认移动速度，m/s
         self._control_turn_speed = 120.0  # 默认转向速度，deg/s
         self._dribble_active = False  # 盘球状态
+        self._dribble_power = 0.0
         self._control_runtime_error = None
         self._control_last_motion_ts = None
         self._control_watchdog_stop = threading.Event()
@@ -569,131 +545,36 @@ class ControlPanelApp:
                 pass
         return status
 
-    def get_lidar_status(self, include_point_cloud: bool = False) -> dict:
-        """Return lidar diagnostics without initializing the LunaPre runtime."""
-        status = {
-            "available": False,
-            "runtime_initialized": False,
-            "state": "not_initialized",
-            "backend": None,
-            "driver": None,
-            "running": False,
-            "disabled": None,
-            "dist_mm": list(LIDAR_DISABLED_DISTS),
-            "point_count": 0,
-            "raw_point_count": 0,
-            "scan_point_count": 0,
-            "packet_point_count": 0,
-            "line_count": 0,
-            "point_cloud_cm": [],
-            "last_error": None,
-            "message": "LunaPre runtime not initialized",
-            "preview_mode": self._lidar_preview_mode(),
+    def get_lidar_status(self) -> dict:
+        """Report Bits wall ranges without starting hardware or a runtime."""
+        runtime = self._get_runtime_module()
+        service = getattr(runtime, "sensor", None)
+        distances = list(LIDAR_DISABLED_DISTS)
+        positions = self._get_positions_facade()
+        if positions is not None:
+            distances = list(positions.DirectDistance())
+        elif service is not None:
+            distances = service.DirectDistance()
+        elif self.bits is not None:
+            from LunaPre.sensor import Sensor
+            distances = Sensor(pose_provider=getattr(self.bits, "GetPose", None)).DirectDistance()
+        valid = distances != LIDAR_DISABLED_DISTS
+        return {
+            "available": valid, "runtime_initialized": runtime is not None,
+            "state": "ok" if valid else "no_data", "backend": "bits",
+            "running": valid, "disabled": not valid, "dist_mm": distances,
+            "preview_mode": "walls", "point_cloud_cm": [],
+            "message": "Bits pose available" if valid else "Waiting for Bits pose",
         }
 
-        runtime = sys.modules.get("LunaPre.runtime")
-        if runtime is None:
-            return status
-
-        status["runtime_initialized"] = bool(getattr(runtime, "_runtime_initialized", False))
-        lidar = getattr(runtime, "lidar", None)
-        if lidar is None:
-            if status["runtime_initialized"]:
-                status["state"] = "missing"
-                status["message"] = "Runtime initialized but lidar object is missing"
-            return status
-
-        status["available"] = True
-        status["backend"] = getattr(lidar, "backend", None)
-        status["driver"] = type(getattr(lidar, "driver", None)).__name__ if getattr(lidar, "driver", None) else None
-        status["running"] = bool(getattr(lidar, "running", False))
-        status["disabled"] = bool(getattr(lidar, "disabled", False))
-        status["point_count"] = int(getattr(lidar, "last_scan_point_count", 0) or 0)
-        status["raw_point_count"] = int(getattr(lidar, "last_raw_scan_count", 0) or 0)
-        driver = getattr(lidar, "driver", None)
-        driver_scan_count = getattr(driver, "last_scan_point_count", None)
-        try:
-            driver_scan_count = int(driver_scan_count) if driver_scan_count is not None else 0
-        except (TypeError, ValueError):
-            driver_scan_count = 0
-        # Prefer the driver's one-revolution valid-point counter when present.
-        # Fall back to the sensor facade's valid raw count for older drivers.
-        status["scan_point_count"] = driver_scan_count or status["raw_point_count"] or 0
-        status["packet_point_count"] = int(
-            getattr(driver, "last_packet_point_count", 0) or 0
-        )
-        status["last_error"] = getattr(driver, "last_error", None)
-        status["line_count"] = int(getattr(lidar, "last_line_count", 0) or 0)
-        try:
-            positions = self._get_positions_facade()
-            if positions is not None:
-                snapshot = getattr(positions, "DirectDistanceSnapshot", None)
-                if callable(snapshot):
-                    dists = list(snapshot())
-                else:
-                    direct_distance = getattr(positions, "DirectDistance", None)
-                    if callable(direct_distance):
-                        dists = list(direct_distance())
-                    else:
-                        dists = list(lidar.GetDists())
-            else:
-                dists = list(lidar.GetDists())
-            status["dist_mm"] = dists
-        except Exception as e:
-            status["state"] = "error"
-            status["message"] = str(e)
-            return status
-
-        status["preview_mode"] = self._lidar_preview_mode()
-        if include_point_cloud and status["preview_mode"] == "point_cloud":
-            status["point_cloud_cm"] = _serialize_lidar_point_cloud_cm(lidar)
-
-        if status["disabled"] or status["dist_mm"] == LIDAR_DISABLED_DISTS:
-            status["state"] = "disabled"
-            status["message"] = "Lidar driver is disabled"
-        elif status["dist_mm"] == [0, 0, 0, 0]:
-            status["state"] = "no_data"
-            status["message"] = (
-                status["last_error"]
-                or "Lidar object exists but no scan has been normalized yet"
-            )
-        else:
-            status["state"] = "ok"
-            status["message"] = "Receiving lidar distance data"
-
-        self._last_lidar_status = status
-        return status
-
     def get_lidar_point_cloud(self) -> dict:
-        """Return the current radar preview without initializing LunaPre runtime.
-
-        A Bits runtime owns field pose, so the panel renders the four direct
-        wall ranges instead of showing an unrelated lidar point cloud. Native
-        lidar runtimes continue to expose their bounded point-cloud preview.
-        """
-        status = self.get_lidar_status()
-        if status.get("preview_mode") == "walls":
-            distances = list(status.get("dist_mm", []))
-            if not distances or distances == LIDAR_DISABLED_DISTS:
-                positions = self._get_positions_facade()
-                direct_distance = getattr(positions, "DirectDistance", None)
-                if callable(direct_distance):
-                    try:
-                        distances = list(direct_distance())
-                    except Exception:
-                        distances = []
-            return {
-                "preview_mode": "walls",
-                "point_cloud_cm": [],
-                "wall_segments_cm": _wall_segments_from_direct_distance_mm(distances),
-            }
-
-        runtime = sys.modules.get("LunaPre.runtime")
-        lidar = getattr(runtime, "lidar", None) if runtime is not None else None
+        """Keep the preview endpoint stable while displaying Bits wall ranges."""
         return {
-            "preview_mode": "point_cloud",
-            "point_cloud_cm": _serialize_lidar_point_cloud_cm(lidar),
-            "wall_segments_cm": [],
+            "preview_mode": "walls",
+            "point_cloud_cm": [],
+            "wall_segments_cm": _wall_segments_from_direct_distance_mm(
+                self.get_lidar_status()["dist_mm"]
+            ),
         }
 
     def chassis_range_capture_start(self, known_range_cm) -> dict:
@@ -723,25 +604,6 @@ class ControlPanelApp:
             return {"success": True, "capture": get_status()}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
-
-    def _lidar_preview_mode(self) -> str:
-        """Return the preview matching the configured and active Sensor source."""
-
-        runtime = sys.modules.get("LunaPre.runtime")
-        runtime_bits = getattr(runtime, "Bits", None) if runtime is not None else None
-        if self.bits is not None and runtime_bits is not self.bits:
-            # A vision-only or embedded panel may receive a Bits object without
-            # owning the process-global LunaPre runtime.
-            return "walls"
-        service = getattr(runtime, "sensor", None) if runtime is not None else None
-        source = str(getattr(service, "Source", "")).strip().lower()
-        if source == "bits":
-            return "walls"
-        if source in {"ros2", "ld07"}:
-            return "point_cloud"
-        if source == "auto":
-            return "walls" if getattr(service, "last_source", None) == "bits" else "point_cloud"
-        return "walls" if self.bits is not None else "point_cloud"
 
     def _get_runtime_module(self):
         runtime = sys.modules.get("LunaPre.runtime")
@@ -1004,66 +866,6 @@ class ControlPanelApp:
                         result["perf"][key] = hybrid_perf[key]
         except Exception as e:
             print(f"[ControlPanel] Error getting performance metrics: {e}")
-
-    def scan_lidar_usb(self) -> dict:
-        """Scan common Linux serial device paths for lidar USB diagnostics."""
-        configured_port = None
-        configured_source = None
-        configured_model = None
-        try:
-            config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
-            if config_file.exists():
-                with config_file.open("r", encoding="utf-8") as f:
-                    config = json.load(f)
-                configured_port = config.get("Ports", {}).get("LidarPort")
-                configured_source = config.get("Sensor", {}).get("Source")
-                configured_model = config.get("Sensor", {}).get("Ros2Model")
-        except Exception:
-            pass
-
-        candidates = []
-        patterns = [
-            "/dev/ldlidar",
-            "/dev/ttyCH343USB*",
-            "/dev/sllidar",
-            "/dev/ttyUSB*",
-            "/dev/ttyACM*",
-            "/dev/serial/by-id/*",
-            "/dev/serial/by-path/*",
-        ]
-        seen = set()
-
-        for pattern in patterns:
-            for path_str in sorted(glob.glob(pattern)):
-                if path_str in seen:
-                    continue
-                seen.add(path_str)
-                info = {"path": path_str, "exists": os.path.exists(path_str)}
-                try:
-                    resolved = os.path.realpath(path_str)
-                    info["resolved"] = resolved
-                    info["readable"] = os.access(resolved, os.R_OK)
-                    info["writable"] = os.access(resolved, os.W_OK)
-                except Exception:
-                    info["resolved"] = None
-                    info["readable"] = False
-                    info["writable"] = False
-                candidates.append(info)
-
-        likely = [
-            item for item in candidates
-            if any(token in item["path"].lower() for token in ("sllidar", "silicon", "cp210", "ttych343", "ttyusb", "ttyacm"))
-            or any(token in str(item.get("resolved", "")).lower() for token in ("ttych343", "ttyusb", "ttyacm"))
-        ]
-
-        return {
-            "configured_port": configured_port or "/dev/sllidar",
-            "configured_source": configured_source,
-            "configured_model": configured_model,
-            "candidates": candidates,
-            "likely": likely,
-            "message": "No serial lidar-like devices found" if not likely else f"Found {len(likely)} lidar-like serial path(s)",
-        }
 
     def get_state_dict(self) -> dict:
         """获取视觉状态"""
@@ -1345,12 +1147,7 @@ class ControlPanelApp:
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "IL"], "option_labels": {"SIM": "SIM (模拟器)", "IL": "IL (IceLoong Bits)"}, "tab": "robot"},
             ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
             # Sensor
-            ("Sensor", "Source"): {"type": "select", "label": "定位来源", "options": ["auto", "bits", "ros2", "ld07"], "option_labels": {"auto": "auto (Bits -> ROS2 -> LD07)", "bits": "Bits 坐标", "ros2": "ROS2 /scan", "ld07": "LD07"}, "tab": "robot"},
-            ("Sensor", "Ros2Model"): {"type": "select", "label": "ROS2 雷达型号", "options": ["s1", "s2", "s3"], "option_labels": {"s1": "SLLidar S1", "s2": "SLLidar S2", "s3": "SLLidar S3"}, "tab": "robot"},
-            ("Sensor", "Inverted"): {"type": "bool", "label": "雷达倒置安装", "tab": "robot"},
             # Ports
-            ("Ports", "LidarID"): {"type": "int", "label": "雷达 ID", "min": 1, "max": 255, "tab": "robot"},
-            ("Ports", "LidarPort"): {"type": "string", "label": "雷达端口", "tab": "robot"},
             ("Ports", "IceLoongPort"): {"type": "string", "label": "IceLoong 端口", "tab": "robot"},
             ("Ports", "ElecMagnet"): {"type": "int", "label": "电磁铁端口", "min": 0, "max": 15, "tab": "robot"},
             ("Ports", "Dribble"): {"type": "int", "label": "运球电机端口", "min": 0, "max": 15, "tab": "robot"},
@@ -1362,8 +1159,9 @@ class ControlPanelApp:
             # Vision
             ("Vision", "CamPorts"): {"type": "list[int]", "label": "摄像头端口", "description": "按顺序: 后, 左, 前, 右", "item_labels": ["后", "左", "前", "右"], "tab": "vision", "icon": "📷"},
             ("Vision", "ModelName"): {"type": "string", "label": "模型名称", "description": "不含后缀，各推理库自动选择所需格式", "tab": "vision"},
-            ("Vision", "AutoExposure"): {"type": "select", "label": "自动曝光", "options": [1, 3], "option_labels": {"1": "手动", "3": "自动"}, "tab": "vision"},
-            ("Vision", "Exposure"): {"type": "int", "label": "快门曝光 (100 us)", "description": "手动曝光时有效；78 约为 7.8 ms（比 157 少约 1 EV）", "min": 1, "max": 10000, "tab": "vision"},
+            ("Vision", "ExposureMode"): {"type": "select", "label": "曝光模式", "options": [0, 1], "option_labels": {"0": "灵活（持续自动）", "1": "稳定（自动测光后锁定）"}, "tab": "vision"},
+            ("Vision", "ManualExposure"): {"type": "int", "label": "稳定手动曝光", "description": "仅稳定模式使用；10-100 为推荐范围，数值越小越暗，68 为当前基准", "min": 10, "max": 500, "tab": "vision"},
+            ("Vision", "ExposureBias"): {"type": "int", "label": "曝光补偿", "description": "持久的绝对亮度补偿；负数更暗，正数更亮。-1 约降低 15%", "min": -4, "max": 4, "tab": "vision"},
             ("Vision", "CalibrationFolder"): {"type": "string", "label": "标定文件夹", "tab": "vision"},
             ("Vision", "BallDiameter"): {"type": "float", "label": "球直径 (CM)", "min": 1.0, "max": 20.0, "step": 0.1, "tab": "vision"},
             ("Vision", "ChassisWidth"): {"type": "float", "label": "底盘宽度 (CM)", "min": 5.0, "max": 30.0, "step": 0.5, "tab": "vision"},
@@ -1489,8 +1287,21 @@ class ControlPanelApp:
         try:
             config_file = _repo_root() / "src" / "ReasonData" / "data" / "config.json"
             config_file.parent.mkdir(parents=True, exist_ok=True)
+            vision_config = config.get("Vision", {}) if isinstance(config, dict) else {}
+            mode = vision_config.get("ExposureMode") if isinstance(vision_config, dict) else None
+            bias = vision_config.get("ExposureBias") if isinstance(vision_config, dict) else None
+            manual_exposure = vision_config.get("ManualExposure") if isinstance(vision_config, dict) else None
+
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=4)
+
+            apply_exposure = getattr(self.vision, "ApplyExposureSettings", None)
+            if callable(apply_exposure) and mode is not None:
+                results = apply_exposure(mode, bias, manual_exposure)
+                return {
+                    "success": True,
+                    "exposure_applied": results,
+                }
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -2132,6 +1943,7 @@ class ControlPanelApp:
             self._control_last_motion_ts = None
             try:
                 self._control_stop()
+                self._control_stop_dribble()
             except Exception as e:
                 self._control_runtime_error = str(e)
                 return {"success": False, "enabled": False, "error": str(e)}
@@ -2232,6 +2044,7 @@ class ControlPanelApp:
             "speed": self._control_speed,
             "turn_speed": self._control_turn_speed,
             "dribble_active": self._dribble_active,
+            "dribble_power": getattr(self, "_dribble_power", 0.0),
             "runtime_initialized": self._is_control_runtime_initialized(),
             "chassis_available": bool(chassis),
             "peripheral_available": bool(peripheral),
@@ -2329,6 +2142,15 @@ class ControlPanelApp:
             except Exception as e:
                 print(f"[ControlPanel] Error stopping chassis: {e}")
 
+    def _control_stop_dribble(self):
+        """Release the dribbler whenever manual control is disabled."""
+        self._dribble_active = False
+        self._dribble_power = 0.0
+        _, peripheral = self._get_chassis_and_peripheral()
+        stop_dribble = getattr(peripheral, "Dribble", None) if peripheral else None
+        if callable(stop_dribble):
+            stop_dribble(False)
+
     def control_shutdown(self):
         """Stop active generic manual control when the web process exits."""
         with self._control_lock:
@@ -2341,6 +2163,7 @@ class ControlPanelApp:
         if was_enabled:
             try:
                 self._control_stop()
+                self._control_stop_dribble()
             except Exception as e:
                 print(f"[ControlPanel] Shutdown stop failed: {e}")
         watchdog_thread = getattr(self, "_control_watchdog_thread", None)
@@ -2454,11 +2277,29 @@ class ControlPanelApp:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-    def control_dribble(self, active: bool) -> dict:
-        """控制盘球
+    @staticmethod
+    def _validate_dribble_power(value) -> float:
+        if isinstance(value, bool):
+            raise ValueError(DRIBBLE_POWER_ERROR)
+        try:
+            power = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(DRIBBLE_POWER_ERROR) from exc
+        if not math.isfinite(power) or not 0.0 <= power <= 1.0:
+            raise ValueError(DRIBBLE_POWER_ERROR)
+        return power
 
-        active: True 开启盘球 (PWM 0.2), False 关闭盘球
-        """
+    def control_dribble(self, active: bool, power=None) -> dict:
+        """Control dribble output, optionally with a normalized PWM power."""
+        try:
+            dribble_power = (
+                self._validate_dribble_power(power)
+                if active and power is not None
+                else (0.8 if active else 0.0)
+            )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
         with self._control_lock:
             if not self._control_enabled:
                 return {"success": False, "error": "Control not enabled"}
@@ -2469,11 +2310,16 @@ class ControlPanelApp:
 
             try:
                 if active:
-                    peripheral.Dribble(0.8)  # PWM 0.2
+                    peripheral.Dribble(dribble_power)
                 else:
                     peripheral.Dribble(False)
                 self._dribble_active = active
-                return {"success": True, "dribble_active": active}
+                self._dribble_power = dribble_power
+                return {
+                    "success": True,
+                    "dribble_active": active,
+                    "dribble_power": dribble_power,
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
@@ -2764,6 +2610,55 @@ class ControlPanelApp:
 
 # ==================== HTTP 请求处理器 ====================
 
+class IdleTimeoutHTTPServer(ThreadingHTTPServer):
+    """Expire explicitly managed panels; ordinary manual launches never expire."""
+
+    def __init__(self, address, handler, *, idle_timeout_seconds=0, clock=time.monotonic):
+        self.idle_timeout_seconds = idle_timeout_seconds
+        self._clock = clock
+        self._activity_lock = threading.RLock()
+        self._last_browser_request = clock()
+        self._active_browser_requests = 0
+        self._shutdown_started = False
+        super().__init__(address, handler)
+
+    def begin_browser_request(self):
+        with self._activity_lock:
+            if self._shutdown_started:
+                return False
+            self._active_browser_requests += 1
+            self._last_browser_request = self._clock()
+            return True
+
+    def end_browser_request(self):
+        with self._activity_lock:
+            self._active_browser_requests -= 1
+            self._last_browser_request = self._clock()
+
+    def lifecycle_status(self):
+        with self._activity_lock:
+            return {
+                "idle_timeout_seconds": self.idle_timeout_seconds,
+                "active_requests": self._active_browser_requests,
+                "idle_seconds": max(0, self._clock() - self._last_browser_request),
+                "shutting_down": self._shutdown_started,
+            }
+
+    def request_shutdown(self):
+        with self._activity_lock:
+            if self._shutdown_started:
+                return
+            self._shutdown_started = True
+        # BaseServer.shutdown must run outside the serve_forever thread.
+        threading.Thread(target=self.shutdown, daemon=True).start()
+
+    def service_actions(self):
+        with self._activity_lock:
+            if (self.idle_timeout_seconds > 0 and not self._active_browser_requests
+                    and self._clock() - self._last_browser_request >= self.idle_timeout_seconds):
+                self.request_shutdown()
+
+
 class ControlPanelHandler(BaseHTTPRequestHandler):
     """HTTP 请求处理器"""
 
@@ -2775,10 +2670,25 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
     def handle_one_request(self):
         """Ignore clients that close a polling request before the response ends."""
+        self._idle_request_active = False
         try:
             super().handle_one_request()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
+        finally:
+            if self._idle_request_active:
+                self.server.end_browser_request()
+
+    def parse_request(self):
+        if not super().parse_request():
+            return False
+        # Monitoring must not keep an abandoned panel alive.
+        if isinstance(self.server, IdleTimeoutHTTPServer) and urlparse(self.path).path != '/api/panel/lifecycle':
+            if not self.server.begin_browser_request():
+                self.send_error(503, 'Panel is shutting down')
+                return False
+            self._idle_request_active = True
+        return True
 
     def _send_json(self, data, status=200):
         body = json.dumps(_json_safe(data), ensure_ascii=False).encode('utf-8')
@@ -2852,6 +2762,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == '/api/panel/lifecycle' and isinstance(self.server, IdleTimeoutHTTPServer):
+            self._send_json(self.server.lifecycle_status())
+            return
+
         # Static files
         if path == '/' or path == '/index.html':
             self._send_file(app.web_dir / 'index.html')
@@ -2886,10 +2800,6 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/lidar/point-cloud':
             self._send_json(app.get_lidar_point_cloud())
-            return
-
-        if path == '/api/lidar/usb':
-            self._send_json(app.scan_lidar_usb())
             return
 
         if path == '/api/config':
@@ -3176,7 +3086,10 @@ class ControlPanelHandler(BaseHTTPRequestHandler):
 
         if path == '/api/control/dribble':
             data = self._parse_json_body()
-            result = app.control_dribble(data.get('active', True))
+            result = app.control_dribble(
+                data.get('active', True),
+                power=data.get('power'),
+            )
             self._send_json(result)
             return
 
@@ -3215,6 +3128,8 @@ def main():
     ap = argparse.ArgumentParser(description="Xelerator Control Panel Server")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--idle-timeout-seconds", type=int, default=0,
+                    help="Exit after this many seconds without browser requests; 0 keeps manual launches running.")
     ap.add_argument("--jpeg-quality", type=int, default=75)
     ap.add_argument(
         "--web-dir",
@@ -3230,12 +3145,15 @@ def main():
     ap.add_argument(
         "--no-runtime",
         action="store_true",
-        help="Keep control panel vision-only and do not initialize LunaPre runtime/lidar.",
+        help="Keep control panel vision-only and do not initialize LunaPre runtime.",
     )
     args = ap.parse_args()
+    if args.idle_timeout_seconds < 0:
+        ap.error("--idle-timeout-seconds must be nonnegative")
 
     bits = None
     vision = None
+    runtime = None
 
     if not args.no_runtime:
         try:
@@ -3251,7 +3169,7 @@ def main():
         except Exception as e:
             print(f"[ControlPanel] Could not initialize LunaPre runtime; continuing vision-only: {e}")
     else:
-        print("[ControlPanel] Runtime disabled by --no-runtime; lidar/pose will be unavailable")
+        print("[ControlPanel] Runtime disabled by --no-runtime; Bits pose will be unavailable")
 
     # Initialize app with bits
     app = ControlPanelApp(
@@ -3312,11 +3230,13 @@ def main():
 
     # Setup HTTP server
     ControlPanelHandler.app = app
-    httpd = ThreadingHTTPServer((args.host, args.port), ControlPanelHandler)
+    httpd = IdleTimeoutHTTPServer((args.host, args.port), ControlPanelHandler,
+                                 idle_timeout_seconds=args.idle_timeout_seconds)
+    previous_sigterm = signal.signal(signal.SIGTERM, lambda *_: httpd.request_shutdown())
 
     print(f"\n{'='*60}")
     print(f"  Xelerator Control Panel")
-    print(f"  http://{args.host}:{args.port}")
+    print(f"  http://{args.host}:{httpd.server_port}")
     print(f"{'='*60}\n")
 
     try:
@@ -3324,7 +3244,9 @@ def main():
     except KeyboardInterrupt:
         print("\n[ControlPanel] Shutting down...")
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         app.control_shutdown()
+        app.stop_recording()
         try:
             app.calib_stop_stream()
         except Exception:
@@ -3346,8 +3268,13 @@ def main():
                 pass
         except Exception as e:
             print(f"[ControlPanel] Vision cleanup failed: {e}")
+        if runtime is not None:
+            try:
+                runtime.shutdown_runtime()
+            except Exception as e:
+                print(f"[ControlPanel] Runtime cleanup failed: {e}")
         try:
-            httpd.shutdown()
+            httpd.server_close()
         except Exception:
             pass
 

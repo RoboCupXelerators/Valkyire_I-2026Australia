@@ -1,7 +1,7 @@
 """Position, localization, vision, and Pos2Pos facade for LunaPre.
 
-TODO: Split vision subprocess/UDP startup and lidar recovery helpers out of
-this facade. Positions should stay focused on semantic position/ball APIs.
+Positions consumes Bits pose and vision observations from the shared runtime.
+Native scan localization is maintained on the legacy branch.
 """
 
 from __future__ import annotations
@@ -251,9 +251,7 @@ class Positions:
         self.LidarPos = list(POSE_NOT_FOUND)
         self.ballPos = list(BALL_NOT_FOUND)
         # Values for log system
-        self.WarnedLidarCount = 0
         # Values for Adjust the scale of Position System
-        self.LidarScale = 10
         self.BoundsScale = 1
         # Values for timer
         self.WaitTime = 3.5
@@ -278,6 +276,7 @@ class Positions:
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
         self._last_pos2pos_command = (0.0, 0.0, 0.0)
+        self._position_data_loss_reported = False
         self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
@@ -356,6 +355,21 @@ class Positions:
         chassis = runtime.chassis
         if chassis is not None:
             chassis.stop()
+
+    @staticmethod
+    def _chassis_can_move() -> bool:
+        """Use the chassis permission gate when this backend exposes one."""
+
+        chassis = runtime.chassis
+        if chassis is None:
+            return False
+        can_move = getattr(chassis, "CanMove", None)
+        if not callable(can_move):
+            return True
+        try:
+            return bool(can_move())
+        except Exception:
+            return False
 
     def StartVision(self) -> bool:
         """Start UDP receiver + Vision subprocess lazily.
@@ -706,9 +720,8 @@ class Positions:
                 self.ballPosOut = BALL_HELD
             else:
                 self.ballPosOut = self.ballPos
-        if getattr(self, "WarnedLidarCount", 0):
-            if Settings.Debug.FullLog:
-                logger.debug("[Relative] Ball Position: %s"%self.ballPosOut)
+        if Settings.Debug.FullLog:
+            logger.debug("[Relative] Ball Position: %s" % self.ballPosOut)
         return self.ballPosOut
 
     @staticmethod
@@ -773,32 +786,12 @@ class Positions:
         self.BoundsDistance = list(getter())
         return self.BoundsDistance
 
-    def DirectDistanceSnapshot(self):
-        """Return the latest semantic wall ranges without movement side effects."""
-
-        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
-        getter = getattr(service, "DirectDistanceSnapshot", None)
-        if callable(getter):
-            self.BoundsDistance = list(getter())
-            return self.BoundsDistance
-        return self.DirectDistance()
-
-    def NearbyLidarObjects(self):
-        """Return native near-field clusters in robot coordinates."""
-
-        service = getattr(runtime, "sensor", None) or getattr(runtime, "lidar", None)
-        getter = getattr(service, "GetNearbyObjects", None)
-        if not callable(getter):
-            return []
-        try:
-            return getter()
-        except Exception:
-            return []
+    DirectDistanceSnapshot = DirectDistance
 
     def FieldRobotPose(self):
         """Return the configured runtime pose, or ``POSE_NOT_FOUND`` when unavailable.
 
-        The selected Sensor source owns localization. This query has no retry,
+        Bits supplies the field pose. This query has no retry,
         motion, process, or sensor recovery side effects.
         """
 
@@ -1666,12 +1659,23 @@ class Positions:
         下一帧会重新检查从中继点到最终目标的路径。
         """
         self._ensure_motion_runtime()
+        if not self._chassis_can_move():
+            self._last_pos2pos_command = (0.0, 0.0, 0.0)
+            self._reset_pos2pos_pid()
+            self._stop_chassis()
+            return False
+
         loc_x, loc_y, loc_yaw = self.FieldRobotPose()
         if [loc_x, loc_y, loc_yaw] == POSE_NOT_FOUND:
             self._last_pos2pos_command = (0.0, 0.0, 0.0)
+            self._reset_pos2pos_pid()
             self._stop_chassis()
-            runtime.play_morse("No Position Data!")
+            if not self._position_data_loss_reported:
+                runtime.play_morse("No Position Data!")
+                self._position_data_loss_reported = True
             return False
+
+        self._position_data_loss_reported = False
 
         start = [loc_x, loc_y, loc_yaw]
         AimPos = self._navigate_waypoint(start, AimPos)
@@ -1914,18 +1918,18 @@ class Positions:
 
                 time.sleep(tick_s)
 
-    def Cover2Start(self):
-        '''
-        `阻塞函数`
+    # def Cover2Start(self):
+    #     '''
+    #     `阻塞函数`
 
-        直到前方被遮挡后才会返回True
+    #     直到前方被遮挡后才会返回True
 
-        '''
-        while 1:
-            if 100 < self.DirectDistance()[0] <= 500:
-                return True
-            else:
-                pass
+    #     '''
+    #     while 1:
+    #         if 100 < self.DirectDistance()[0] <= 500:
+    #             return True
+    #         else:
+    #             return False
 
     def Referee(self):
         '''
@@ -2220,9 +2224,7 @@ class Positions:
         return False
 
     def Stop(self):
-        '''
-        ### Function for stopping the vision data thread
-        '''
+        """Stop motion, dribbling and the position receiver owned by this object."""
         try:
             if runtime.chassis is not None:
                 runtime.chassis.stop()
@@ -2233,17 +2235,6 @@ class Positions:
                 runtime.peripheral.Dribble(False)
         except Exception:
             pass
-        try:
-            if runtime.lidar is not None:
-                runtime.lidar.stop()
-        except Exception:
-            pass
-        try:
-            if runtime.chassis is not None:
-                runtime.chassis.stop()
-        except Exception:
-            pass
-
         self.vision_data_stop_event.set()
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.

@@ -14,6 +14,7 @@ def _app(chassis, *, bits=None):
     app._control_speed = 0.5
     app._control_turn_speed = 120.0
     app._dribble_active = False
+    app._dribble_power = 0.0
     app._control_runtime_error = None
     app._get_chassis_and_peripheral = lambda initialize=False: (chassis, object())
     app._is_control_runtime_initialized = lambda: True
@@ -32,6 +33,22 @@ def test_enable_and_disable_use_generic_chassis_surface_without_arm_or_profile()
     assert app.control_enable(True) == {"success": True, "enabled": True}
     assert app.control_enable(False) == {"success": True, "enabled": False}
     assert calls == ["stop"]
+
+
+def test_disabling_manual_control_releases_an_active_dribbler():
+    calls = []
+    chassis = SimpleNamespace(stop=lambda: calls.append("stop"))
+    peripheral = SimpleNamespace(Dribble=lambda value: calls.append(("dribble", value)))
+    app = _app(chassis)
+    app._control_enabled = True
+    app._dribble_active = True
+    app._dribble_power = 0.6
+    app._get_chassis_and_peripheral = lambda initialize=False: (chassis, peripheral)
+
+    assert app.control_enable(False) == {"success": True, "enabled": False}
+    assert calls == ["stop", ("dribble", False)]
+    assert app._dribble_active is False
+    assert app._dribble_power == 0.0
 
 
 def test_manual_vector_uses_common_twist_interface_and_clamps_speed():
@@ -125,3 +142,38 @@ def test_kick_power_setting_rejects_non_integer_or_out_of_range_levels():
         }
 
     setter.assert_not_called()
+
+
+def test_manual_dribble_accepts_normalized_power_and_releases_cleanly():
+    calls = []
+    peripheral = SimpleNamespace(Dribble=lambda value: calls.append(value))
+    app = _app(SimpleNamespace())
+    app._control_enabled = True
+    app._get_chassis_and_peripheral = lambda initialize=False: (object(), peripheral)
+
+    assert app.control_dribble(True, power=0.37) == {
+        "success": True,
+        "dribble_active": True,
+        "dribble_power": 0.37,
+    }
+    assert app.control_dribble(False) == {
+        "success": True,
+        "dribble_active": False,
+        "dribble_power": 0.0,
+    }
+    assert calls == [0.37, False]
+
+
+def test_manual_dribble_rejects_invalid_power_without_touching_peripheral():
+    peripheral = SimpleNamespace(Dribble=Mock())
+    app = _app(SimpleNamespace())
+    app._control_enabled = True
+    app._get_chassis_and_peripheral = lambda initialize=False: (object(), peripheral)
+
+    for power in (-0.1, 1.1, float("nan"), True, "fast"):
+        assert app.control_dribble(True, power=power) == {
+            "success": False,
+            "error": "dribble power must be a finite number from 0 to 1",
+        }
+
+    peripheral.Dribble.assert_not_called()

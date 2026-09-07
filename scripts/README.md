@@ -37,10 +37,19 @@ python scripts/debug/debug_ball_distance.py
 
 ### 测试与平台检查
 运行通用测试：src/tools/tests/run_tests.sh
-运行 LD06 探测：python src/tools/tests/test_ld06.py --port /dev/ttyCH343USB3
-运行 LD07 探测：python src/tools/tests/test_ld07.py --port /dev/ttyACM0
+ROS2、LD06/LD07 探测和 DM2325 工具请切换到 `legacy` 分支。
 安装 CH344 驱动：bash scripts/install_ch344_driver.sh
 运行 JetPack 检查：src/tools/tests/jetpack_test.sh
+### 开机服务
+
+从仓库根目录显式指定需要启动的策略，例如：
+
+```bash
+bash scripts/install_system_service.sh src/Hyperion.py
+```
+
+安装器使用本仓库 `venv/bin/python`，不依赖 ROS 环境。
+
 ### 虚拟裁判串口
 
 ```bash

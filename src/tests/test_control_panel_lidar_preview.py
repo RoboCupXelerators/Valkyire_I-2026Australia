@@ -27,40 +27,22 @@ def test_bits_preview_returns_robot_frame_wall_segments_from_direct_distances():
     }
 
 
-def test_non_bits_preview_returns_native_point_cloud_and_no_walls(monkeypatch):
-    lidar = SimpleNamespace(running=True, disabled=False, last_point_cloud=[(1.25, -0.5)])
-    monkeypatch.setitem(
-        control_panel.sys.modules,
-        "LunaPre.runtime",
-        SimpleNamespace(lidar=lidar),
-    )
+def test_missing_bits_pose_returns_empty_preview_without_starting_runtime(monkeypatch):
+    monkeypatch.delitem(control_panel.sys.modules, "LunaPre.runtime", raising=False)
     app = _app(bits=None, positions=None)
-
     assert app.get_lidar_point_cloud() == {
-        "preview_mode": "point_cloud",
-        "point_cloud_cm": [[125.0, -50.0]],
-        "wall_segments_cm": [],
+        "preview_mode": "walls", "point_cloud_cm": [], "wall_segments_cm": [],
     }
+    assert app.get_lidar_status()["state"] == "no_data"
 
 
-def test_explicit_ros2_source_keeps_point_preview_with_bits_runtime(monkeypatch):
-    lidar = SimpleNamespace(running=True, disabled=False, last_point_cloud=[(1.25, -0.5)])
-    monkeypatch.setitem(
-        control_panel.sys.modules,
-        "LunaPre.runtime",
-        SimpleNamespace(
-            sensor=SimpleNamespace(Source="ros2", last_source="ros2"),
-            lidar=lidar,
-        ),
-    )
-    app = _app(bits=object(), positions=None)
-    monkeypatch.setattr(app, "get_lidar_status", lambda: {"preview_mode": "point_cloud"})
-
-    assert app.get_lidar_point_cloud() == {
-        "preview_mode": "point_cloud",
-        "point_cloud_cm": [[125.0, -50.0]],
-        "wall_segments_cm": [],
-    }
+def test_embedded_bits_panel_uses_its_pose_without_global_runtime(monkeypatch):
+    monkeypatch.delitem(control_panel.sys.modules, "LunaPre.runtime", raising=False)
+    app = _app(bits=SimpleNamespace(GetPose=lambda: (0, 0, 0)), positions=None)
+    status = app.get_lidar_status()
+    assert status["state"] == "ok"
+    assert status["runtime_initialized"] is False
+    assert len(app.get_lidar_point_cloud()["wall_segments_cm"]) == 4
 
 
 def test_wall_segments_reject_disabled_or_incomplete_distance_data():

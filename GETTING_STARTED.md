@@ -1,5 +1,9 @@
 # 🚀 Xelerators 机器人足球系统 - 新手入门指南
 
+当前 `main` 支持 IceLoong (`IL`) 和 Unity (`SIM`)，统一使用 Bits 位姿。
+ROS2、LD07/LD06 和 DM2325 请使用 `legacy` 分支；ArisuBits 已退出主线。
+安装、测试和配置迁移请参阅 [README.md](README.md)。
+
 > 写给第一次接触这套系统的同学们。如果你觉得其他文档太复杂，从这里开始就对了！
 
 ---
