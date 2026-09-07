@@ -6,6 +6,9 @@ import os
 import sys
 import threading
 import math
+import queue
+import socket
+import struct
 import time
 
 import pytest
@@ -157,53 +160,33 @@ def _robot_ball_pos_for_observation(observation):
         runtime.vision = vision
 
 
-def test_sim_bits_returns_catch_window_coords_when_dribbler_covers_ball():
-    catch_x, catch_y = _catch_val()
-    bits = _make_bits_for_possession(catch_x / 100.0, catch_y / 100.0, dribble=0.7)
-
-    assert bits.HasBall() is True
-    observation = bits.GetBallPos()
-    assert observation == [catch_x, catch_y]
-    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(observation)
-    assert robot_ball_pos == BALL_HELD
-    assert ball_state == "held"
-
-
-def test_sim_bits_synthesizes_catch_window_coords_when_status_has_ball_without_extension():
-    bits = _make_bits_for_possession(None, None, dribble=0.0, has_ball=True)
+@pytest.mark.parametrize("ball,dribble,has_ball", [
+    pytest.param(tuple(v / 100 for v in _catch_val()), 0.7, False, id="inferred-contact"),
+    pytest.param((None, None), 0.0, True, id="status-without-ball-extension"),
+    pytest.param((0.0987, 0.004), 0.7, True, id="shifted-contact"),
+])
+def test_sim_possession_reaches_lunapre_as_held(ball, dribble, has_ball):
+    bits = _make_bits_for_possession(*ball, dribble=dribble, has_ball=has_ball)
 
     assert bits.HasBall() is True
     observation = bits.GetBallPos()
     assert observation == _catch_val()
-    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(observation)
-    assert robot_ball_pos == BALL_HELD
-    assert ball_state == "held"
+    assert _robot_ball_pos_for_observation(observation) == (BALL_HELD, "held")
 
 
-def test_sim_bits_canonicalizes_shifted_contact_coords_when_status_has_ball():
-    bits = _make_bits_for_possession(0.0987, 0.004, dribble=0.7, has_ball=True)
-
-    observation = bits.GetBallPos()
-    assert observation == _catch_val()
-    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(observation)
-    assert robot_ball_pos == BALL_HELD
-    assert ball_state == "held"
-
-
-def test_robot_ball_pos_classifies_catch_val_coords_as_held():
-    robot_ball_pos, ball_state = _robot_ball_pos_for_observation(_catch_val())
-
-    assert robot_ball_pos == BALL_HELD
-    assert ball_state == "held"
-
-
-def test_sim_provider_keeps_nearby_free_ball_out_of_held_state(monkeypatch):
+@pytest.mark.parametrize("observation,has_ball,expected,state", [
+    ([9.5, 0.0], False, [9.5, 0.0], "free"),
+    ([12.0, 1.0], True, BALL_HELD, "held"),
+])
+def test_sim_provider_possession_controls_lunapre_ball_state(
+    monkeypatch, observation, has_ball, expected, state,
+):
     class FakeVision:
         def get_ball_pos(self):
-            return [9.5, 0.0]
+            return observation
 
         def has_ball(self):
-            return False
+            return has_ball
 
     position = object.__new__(Positions)
     position._robot_ball_out_of_bounds = lambda ball_pos: False
@@ -211,26 +194,8 @@ def test_sim_provider_keeps_nearby_free_ball_out_of_held_state(monkeypatch):
     position.ballPosOut = None
     monkeypatch.setattr(runtime, "vision", FakeVision())
 
-    assert Positions.RobotBallPos(position) == [9.5, 0.0]
-    assert Positions.BallState(position) == "free"
-
-
-def test_sim_provider_explicit_possession_is_held(monkeypatch):
-    class FakeVision:
-        def get_ball_pos(self):
-            return [12.0, 1.0]
-
-        def has_ball(self):
-            return True
-
-    position = object.__new__(Positions)
-    position._robot_ball_out_of_bounds = lambda ball_pos: False
-    position.ballPos = None
-    position.ballPosOut = None
-    monkeypatch.setattr(runtime, "vision", FakeVision())
-
-    assert Positions.RobotBallPos(position) == BALL_HELD
-    assert Positions.BallState(position) == "held"
+    assert Positions.RobotBallPos(position) == expected
+    assert Positions.BallState(position) == state
 
 
 def test_sim_bits_reconstructs_pure_strafe_from_default_wheel_order():
@@ -249,15 +214,9 @@ def test_sim_bits_reconstructs_pure_strafe_from_default_wheel_order():
     assert bits._wz == 0.0
 
 
-def test_sim_bits_keeps_free_ball_when_only_in_recovery_window():
-    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.7)
-
-    assert bits.HasBall() is False
-    assert bits.GetBallPos() == [12.0, 1.0]
-
-
-def test_sim_bits_keeps_free_ball_when_dribbler_is_off():
-    bits = _make_bits_for_possession(0.12, 0.01, dribble=0.0)
+@pytest.mark.parametrize("dribble", [0.7, 0.0], ids=["recovery-window", "dribbler-off"])
+def test_sim_bits_keeps_free_ball_outside_catch_window(dribble):
+    bits = _make_bits_for_possession(0.12, 0.01, dribble=dribble)
 
     assert bits.HasBall() is False
     assert bits.GetBallPos() == [12.0, 1.0]
@@ -333,3 +292,88 @@ def test_xelerator_vision_normalizes_upstream_sentinels_to_empty_observation(mon
         assert vision.get_ball_pos() == [12.5, -3.0]
     finally:
         vision.close(join_timeout=0.1)
+
+
+def _make_message_bits(robot_id, command_port):
+    bits = object.__new__(XeleratorSimBits)
+    bits.robot_id = robot_id
+    bits.unity_ip = "127.0.0.1"
+    bits.cmd_port = command_port
+    bits._tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    bits._rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    bits._rx.bind(("127.0.0.1", 0))
+    bits._rx.settimeout(0.05)
+    bits.status_port = bits._rx.getsockname()[1]
+    bits._running = True
+    bits._messages = queue.Queue(maxsize=256)
+    bits._rx_thread = threading.Thread(target=bits._rx_loop, daemon=True)
+    bits._rx_thread.start()
+    return bits
+
+
+def test_bidirectional_udp_envelope_and_opaque_payload():
+    # A socket stands in for Unity to inspect the wire envelope and forward it unchanged.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as relay:
+        relay.bind(("127.0.0.1", 0))
+        relay.settimeout(1)
+        a = _make_message_bits(1, relay.getsockname()[1])
+        b = _make_message_bits(2, relay.getsockname()[1])
+        try:
+            for sender, target, payload in [(a, b, bytes(range(256))),
+                                            (b, a, "你好\x00#B\n"),
+                                            (a, b, b""), (b, a, b"x" * 4096)]:
+                raw = payload.encode("utf-8") if isinstance(payload, str) else payload
+                assert sender.SendMessage(target.robot_id, payload) == len(raw)
+                packet, _ = relay.recvfrom(65535)
+                assert packet[:8] == struct.pack("<BBBBHH",
+                    1, 3, sender.robot_id, target.robot_id, sender.status_port, len(raw))
+                assert packet[8:] == raw
+                relay.sendto(packet, ("127.0.0.1", target.status_port))
+                assert target.ReceiveMessage(timeout=1) == (sender.robot_id, raw)
+            # Exercise LunaPre framing over the same real sockets, without a fake transport.
+            from LunaPre.communication import Communication
+            sending = Communication(bits=a, peer_id=2)
+            receiving = Communication(bits=b, peer_id=1)
+            payload = sending.BuildFrame(identity_id=1, status=1, x_pos=7, y_neg=9)
+            assert sending.Send(payload)
+            packet, _ = relay.recvfrom(65535)
+            relay.sendto(packet, ("127.0.0.1", b.status_port))
+            parsed = None
+            deadline = time.monotonic() + 1
+            while parsed is None and time.monotonic() < deadline:
+                parsed = receiving.Receive()
+                if parsed is None:
+                    time.sleep(0.005)
+            assert parsed is not None
+            assert parsed["signed_xy"] == [7, -9]
+            receiving.Close()
+            assert b._running  # Communication does not own the shared Bits lifecycle.
+            assert a.ReceiveMessage() is None
+            with pytest.raises(ValueError):
+                a.SendMessage(2, b"x" * 4097)
+            with pytest.raises(ValueError):
+                a.SendMessage(0, b"x")
+        finally:
+            for bits in (a, b):
+                bits.Close()
+                bits._rx_thread.join(1)
+                assert not bits._rx_thread.is_alive()
+        with pytest.raises(OSError):
+            a.SendMessage(2, b"closed")
+
+
+def test_invalid_packets_and_bounded_queue():
+    bits = object.__new__(XeleratorSimBits)
+    bits.robot_id = 2
+    bits._messages = queue.Queue(maxsize=256)
+    header = bits.MESSAGE_HEADER
+    for data in [b"", b"\x01\x03", header.pack(1, 3, 1, 3, 123, 1) + b"x",
+                 header.pack(1, 3, 1, 2, 123, 2) + b"x",
+                 header.pack(2, 3, 1, 2, 123, 1) + b"x",
+                 header.pack(1, 3, 0, 2, 123, 1) + b"x"]:
+        bits._receive_message_packet(data)
+    assert bits.ReceiveMessage() is None
+    for i in range(257):
+        bits._receive_message_packet(header.pack(1, 3, 1, 2, 123, 2) + i.to_bytes(2, "little"))
+    assert bits._messages.qsize() == 256
+    assert bits.ReceiveMessage() == (1, b"\x01\x00")

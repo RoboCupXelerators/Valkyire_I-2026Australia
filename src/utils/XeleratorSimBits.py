@@ -36,6 +36,7 @@ import struct
 import threading
 import time
 import re
+import queue
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -185,6 +186,9 @@ class XeleratorSimBits:
     VERSION = 1
     TYPE_COMMAND = 1
     TYPE_STATUS = 2
+    TYPE_MESSAGE = 3
+    MESSAGE_HEADER = struct.Struct("<BBBBHH")
+    MAX_MESSAGE_BYTES = 4096
 
     CMD_STRUCT = struct.Struct("<BBHBBH9f")  # 44 bytes
     ST_STRUCT = struct.Struct("<BBHBBH6f")  # 32 bytes
@@ -271,6 +275,7 @@ class XeleratorSimBits:
         self._running = True
         self._status = SimStatus(robot_id=self.robot_id)
         self._status_lock = threading.Lock()
+        self._messages = queue.Queue(maxsize=256)
         self._pose_max_age_s = max(
             0.05,
             float(os.environ.get("XEL_SIM_POSE_MAX_AGE_S", str(SIM_DEFAULT_POSE_MAX_AGE_S))),
@@ -1167,6 +1172,50 @@ class XeleratorSimBits:
         except Exception:
             pass
 
+    def SendMessage(self, peer_id: int, payload: bytes | str) -> int:
+        """Send opaque bytes via Unity. Strings use UTF-8; no LunaPre framing is added."""
+        if not isinstance(peer_id, int) or not 1 <= peer_id <= 255:
+            raise ValueError("peer_id must be from 1 to 255")
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        if not isinstance(payload, (bytes, bytearray)):
+            raise TypeError("payload must be bytes, bytearray or str")
+        if len(payload) > self.MAX_MESSAGE_BYTES:
+            raise ValueError("message exceeds 4096 bytes")
+        if not self._running:
+            raise OSError("Bits is closed")
+        packet = self.MESSAGE_HEADER.pack(
+            self.VERSION, self.TYPE_MESSAGE, self.robot_id, peer_id,
+            self.status_port, len(payload),
+        ) + payload
+        self._tx.sendto(packet, (self.unity_ip, self.cmd_port))
+        return len(payload)
+
+    def ReceiveMessage(self, timeout: float = 0.0):
+        """Return (sender_id, bytes), or None on timeout. Oldest queued data is dropped on overflow."""
+        try:
+            return self._messages.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _receive_message_packet(self, data: bytes) -> None:
+        if len(data) < self.MESSAGE_HEADER.size:
+            return
+        ver, typ, sender, recipient, _, size = self.MESSAGE_HEADER.unpack_from(data)
+        if (ver != self.VERSION or typ != self.TYPE_MESSAGE or sender == 0
+                or recipient != self.robot_id or size > self.MAX_MESSAGE_BYTES
+                or len(data) != self.MESSAGE_HEADER.size + size):
+            return
+        message = (sender, data[self.MESSAGE_HEADER.size:])
+        try:
+            self._messages.put_nowait(message)
+        except queue.Full:
+            try:
+                self._messages.get_nowait()
+            except queue.Empty:
+                pass
+            self._messages.put_nowait(message)
+
     def Close(self):
         self._running = False
         try:
@@ -1237,12 +1286,16 @@ class XeleratorSimBits:
     def _rx_loop(self):
         while self._running:
             try:
-                data, _ = self._rx.recvfrom(256)
+                data, _ = self._rx.recvfrom(65535)
             except socket.timeout:
                 continue
             except OSError:
                 break
             except Exception:
+                continue
+
+            if len(data) >= 2 and data[1] == self.TYPE_MESSAGE:
+                self._receive_message_packet(data)
                 continue
 
             if not data or len(data) < self.ST_STRUCT.size:

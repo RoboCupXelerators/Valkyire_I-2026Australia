@@ -43,8 +43,17 @@ class Communication:
     STATUS_AVOIDING = 0xEE
     STATUS_NO_BALL = 0xFF
 
-    def __init__(self):
-        if cfg.Transimission.Method == "WIFI":
+    def __init__(self, *, bits=None, peer_id: int | None = None):
+        """Pass simulator Bits and peer_id to carry LunaPre frames through Unity."""
+        if (bits is None) != (peer_id is None):
+            raise ValueError("bits and peer_id must be provided together")
+        if peer_id is not None and (not isinstance(peer_id, int) or not 1 <= peer_id <= 255):
+            raise ValueError("peer_id must be from 1 to 255")
+        self._bits = bits
+        self._peer_id = peer_id
+        if bits is not None:
+            self.transimission = None
+        elif cfg.Transimission.Method == "WIFI":
             from utils.ReasonBeacon import MisakaNetwork
             self.transimission = MisakaNetwork()
         elif cfg.Transimission.Method == "BLE":
@@ -191,7 +200,9 @@ class Communication:
             payload = self.PackSelfStatus()
 
         try:
-            if hasattr(self.transimission, "send") and callable(getattr(self.transimission, "send")):
+            if self._bits is not None:
+                self._bits.SendMessage(self._peer_id, bytes(payload))
+            elif hasattr(self.transimission, "send") and callable(getattr(self.transimission, "send")):
                 self.transimission.send(payload)
             elif hasattr(self.transimission, "sendall") and callable(getattr(self.transimission, "sendall")):
                 self.transimission.sendall(payload)
@@ -209,7 +220,12 @@ class Communication:
         """尝试接收一帧并解析。"""
         try:
             raw = None
-            if hasattr(self.transimission, "recv") and callable(getattr(self.transimission, "recv")):
+            if self._bits is not None:
+                message = self._bits.ReceiveMessage()
+                if message is None or message[0] != self._peer_id:
+                    return None
+                raw = message[1]
+            elif hasattr(self.transimission, "recv") and callable(getattr(self.transimission, "recv")):
                 raw = self.transimission.recv(self.FRAME_LENGTH)
             elif hasattr(self.transimission, "read") and callable(getattr(self.transimission, "read")):
                 raw = self.transimission.read(self.FRAME_LENGTH)
