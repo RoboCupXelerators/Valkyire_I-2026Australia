@@ -60,7 +60,7 @@ MIN_KICK_POWER_LEVEL = 1
 MAX_KICK_POWER_LEVEL = 4
 DEFAULT_KICK_POWER_LEVEL = 4
 KICK_POWER_LEVEL_ERROR = "kick power level must be an integer from 1 to 4"
-KICK_POWER_MULTIPLIERS = (0.75, 0.85, 0.95, 1.0)
+KICK_POWER_MULTIPLIERS = (0.5, 2.0 / 3.0, 5.0 / 6.0, 1.0)
 SIM_DEFAULT_DRIBBLE_SCALE = 3.0
 SIM_DEFAULT_PLANAR_MOVE_SCALE = 1.0
 SIM_DEFAULT_VISION_NOISE_LEVEL = 0.0
@@ -279,17 +279,10 @@ class XeleratorSimBits:
         self._vy = 0.0
         self._wz = 0.0
         self._w = (0.0, 0.0, 0.0, 0.0)
-        configured_kick_strength = os.environ.get(
-            "XEL_SIM_KICK_STRENGTH", str(SIM_DEFAULT_KICK_STRENGTH)
-        )
-        try:
-            self._kick_max_strength = float(configured_kick_strength)
-        except (TypeError, ValueError):
-            self._kick_max_strength = SIM_DEFAULT_KICK_STRENGTH
-        if not math.isfinite(self._kick_max_strength) or self._kick_max_strength < 0.0:
-            self._kick_max_strength = SIM_DEFAULT_KICK_STRENGTH
         self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
-        self._kick_strength = self._kick_max_strength
+        # Unity's per-robot kick_speed_m_s is the only speed ceiling. Legacy
+        # KickStrength / XEL_SIM_KICK_STRENGTH must not multiply it a second time.
+        self._kick_strength = 1.0
         self._dribble_scale = float(os.environ.get("XEL_SIM_DRIBBLE_SCALE", str(SIM_DEFAULT_DRIBBLE_SCALE)))
         self._dribble_scale = max(0.0, self._dribble_scale)
         self._dribble_strength = 0.0
@@ -579,20 +572,20 @@ class XeleratorSimBits:
         return level
 
     def SetKickPowerLevel(self, power_level):
-        """Set the 75%, 85%, 95%, or 100% kick-speed level for future kicks."""
+        """Select 50%, 2/3, 5/6, or 100% of Unity's configured kick speed."""
         level = self._ValidateKickPowerLevel(power_level)
         with self._status_lock:
             self.kick_power_level = level
         return level
 
     def Kick(self, power_level=None):
-        """Queue a kick at 75%, 85%, 95%, or 100% of the configured maximum."""
+        """Queue a normalized speed fraction; Unity owns the maximum speed."""
         if power_level is None:
             with self._status_lock:
                 power_level = self.kick_power_level
         level = self._ValidateKickPowerLevel(power_level)
         with self._status_lock:
-            self._kick_strength = self._kick_max_strength * KICK_POWER_MULTIPLIERS[level - 1]
+            self._kick_strength = KICK_POWER_MULTIPLIERS[level - 1]
             self._flags |= self.FLAG_KICK
         return True
 

@@ -118,13 +118,15 @@ def test_sim_pose_keeps_explicit_origin_offset():
     assert (bits._origin_x_cm, bits._origin_y_cm) == (100.0, -80.0)
 
 
-@pytest.mark.parametrize("power_level, multiplier", [(1, 0.75), (2, 0.85), (3, 0.95), (4, 1.0)])
+@pytest.mark.parametrize("power_level, multiplier", [(1, 0.5), (2, 2 / 3), (3, 5 / 6), (4, 1.0)])
 def test_sim_kick_uses_selected_fraction_of_configured_maximum(power_level, multiplier):
     bits = _make_bits_for_kick()
 
     assert bits.SetKickPowerLevel(power_level) == power_level
     assert bits.Kick() is True
-    assert bits._kick_strength == 8.0 * multiplier
+    # A legacy sender multiplier must not multiply Unity's configured maximum.
+    assert bits._kick_strength == pytest.approx(multiplier)
+    assert bits._kick_strength * 6.0 == pytest.approx(power_level + 2.0)
     assert bits._flags & bits.FLAG_KICK
 
 
@@ -142,7 +144,7 @@ def test_sim_virtual_kick_port_uses_selected_default_level():
 
     bits.VirtualPorts(3, 0)
 
-    assert bits._kick_strength == 6.8
+    assert bits._kick_strength == pytest.approx(2 / 3)
     assert bits._flags & bits.FLAG_KICK
 
 

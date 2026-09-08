@@ -173,6 +173,14 @@ venv/bin/python src/tools/tests/sim_robot_role_runner.py \
 
 分层约定：`offence.py` 只写比赛策略和动作选择；Unity 状态包缺字段、持球漏报、敌人过滤、坐标兜底这类仿真适配问题放在 `src/utils/XeleratorSimBits.py` 或测试 runner 里处理。
 
+## 模拟器四档弹射
+
+SIM 模式下，`Bits.Kick(1)` 至 `Bits.Kick(4)` 分别使用 Unity 机器人配置
+`kick_speed_m_s` 的 1/2、2/3、5/6、1。配置 6 m/s 时就是 3、4、5、6 m/s。
+`SetKickPowerLevel(level)` 设置后续默认档位；省略档位时仍使用该默认值。
+适配器发送归一化比例，旧 `Sim.KickStrength` / `XEL_SIM_KICK_STRENGTH`
+不再重复放大 Unity 的速度设置。请与支持该语义的模拟器版本一起更新。
+
 ## ⚠️ 重要提示
 - **坐标系约定**：
     - **机体坐标系**：$x$ 为前， $y$ 为左。
