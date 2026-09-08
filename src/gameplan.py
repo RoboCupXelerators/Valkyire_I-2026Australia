@@ -97,9 +97,9 @@ def UplaneStep(thershold = [[50,30],[100,90]]):
             peripheral.ShootBall()
         else:#不在就转向射门角度
             try:
-                TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))#计算射门角度并转向
+                TurnTo_with_ball((-UnitedPosition.ShootWindow()["target_yaw_deg"]))#计算射门角度并转向
             except:
-                TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle([x,y],[100,0])%360)#算不出来直接转向特定角度球门
+                TurnTo_with_ball(UnitedPosition.Pos2Angle([x,y],[100,0])%360)#算不出来直接转向特定角度球门
     elif not abs(y) > 50:#不在射门区域内但在中线附近
         if TurnTo_with_ball(90*angle_k):
             chassis.FieldMoveVector(0,1,90*angle_k)
@@ -132,9 +132,9 @@ def logic_step():#射门策略选择
                         peripheral.ShootBall()
                     else:
                         try:
-                            TurnTo_with_ball_orbit((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
+                            TurnTo_with_ball((-UnitedPosition.ShootWindow()["target_yaw_deg"]))
                         except:
-                            TurnTo_with_ball_orbit(UnitedPosition.Pos2Angle(pose,[100,0])%360)
+                            TurnTo_with_ball(UnitedPosition.Pos2Angle(pose,[100,0])%360)
                 elif max(scores) == uplane_score:#上平面射门评分最高
                     if lockball.slip():
                         UplaneStep()
