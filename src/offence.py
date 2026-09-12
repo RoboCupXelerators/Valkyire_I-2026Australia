@@ -19,10 +19,22 @@ QUICK_CAPTURE_FORWARD_MIN_CM = -1.5
 QUICK_CAPTURE_FORWARD_MAX_CM = 12.5
 QUICK_CAPTURE_LATERAL_CM = 8.0
 
+# When the camera loses the ball, keep the last field-frame observation long
+# enough to decide whether an opponent has carried it away.  The chassis
+# detector reports robot centres, so the possession radius includes the ball
+# and the front of the opponent robot.
+OPPONENT_BALL_MEMORY_S = 1.20
+OPPONENT_HELD_DISTANCE_CM = 32.0
+OPPONENT_BLOCK_STANDOFF_CM = 42.0
+OPPONENT_BLOCK_SPEED_GAIN = 1.65
+OPPONENT_BLOCK_MAX_Y_CM = 58.0
+
 state = "boot"
 last_decision = {}
 _last_free_ball = None
 _last_free_ball_ts = 0.0
+_last_field_ball = None
+_last_field_ball_ts = 0.0
 _shot_release_until = 0.0
 _held_since = None
 _last_shot_ts = -999999.0
@@ -40,7 +52,15 @@ def _decision_phase(action) -> str:
         return "acquire_ball"
     if action in {"own_half_carry", "advance_lane", "corner_recover", "sideline_drive"}:
         return "advance_lane"
-    if action in {"direct_shot", "back_shot", "sideline_shot", "quick_shot", "shot_guard_hold"}:
+    if action == "opponent_shot_block":
+        return "defend"
+    if action in {
+        "direct_shot",
+        "back_shot",
+        "sideline_shot",
+        "quick_shot",
+        "shot_guard_hold",
+    }:
         return "shoot"
     if action in {"post_goal_reset_hold", "shot_release"}:
         return "recover_lane"
@@ -176,6 +196,194 @@ def _valid_free_ball(ball) -> bool:
     if abs(bx) > ROBOT_BALL_MAX_ABS_X_CM or abs(by) > ROBOT_BALL_MAX_ABS_Y_CM:
         return False
     return math.hypot(bx, by) <= ROBOT_BALL_MAX_DISTANCE_CM
+
+
+def _valid_field_ball(ball) -> bool:
+    """Return whether a field-frame ball point is usable for interception."""
+    if ball in [BALL_NOT_FOUND, BALL_HELD] or not ball or len(ball) < 2:
+        return False
+    try:
+        bx = float(ball[0])
+        by = float(ball[1])
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(bx) or not math.isfinite(by):
+        return False
+    field_long = float(getattr(Settings.Bounds, "Long", 260.0))
+    field_short = float(getattr(Settings.Bounds, "Short", 200.0))
+    return abs(bx) <= field_long * 0.5 + 20.0 and abs(by) <= field_short * 0.5 + 20.0
+
+
+def _remember_field_ball(field_ball) -> None:
+    """Remember the last absolute ball position before it becomes occluded."""
+    global _last_field_ball, _last_field_ball_ts
+    if not _valid_field_ball(field_ball):
+        return
+    _last_field_ball = [float(field_ball[0]), float(field_ball[1])]
+    _last_field_ball_ts = time.monotonic()
+
+
+def _recent_field_ball():
+    if _last_field_ball is None:
+        return None
+    if time.monotonic() - _last_field_ball_ts > OPPONENT_BALL_MEMORY_S:
+        return None
+    return list(_last_field_ball)
+
+
+def _field_ball_for_tracking(ball):
+    """Get a current field ball point, or the short-lived occlusion estimate."""
+    if ball != BALL_NOT_FOUND and ball != BALL_HELD and _valid_free_ball(ball):
+        try:
+            field_ball = UnitedPosition.FieldBallPos()
+        except Exception:
+            field_ball = None
+        if _valid_field_ball(field_ball):
+            _remember_field_ball(field_ball)
+            return [float(field_ball[0]), float(field_ball[1])]
+    return _recent_field_ball()
+
+
+def _field_enemies() -> list[list[float]]:
+    """Read valid opponent chassis positions in the field frame."""
+    try:
+        enemies = UnitedPosition.FieldChassisPos()
+    except Exception:
+        return []
+    if not isinstance(enemies, list):
+        return []
+
+    result = []
+    for enemy in enemies:
+        if not enemy or len(enemy) < 2:
+            continue
+        try:
+            x = float(enemy[0])
+            y = float(enemy[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            result.append([x, y])
+    return result
+
+
+def _opponent_ball_observation(ball) -> dict:
+    """Estimate the ball state when our attacker no longer has possession.
+
+    A chassis close to the last known ball is treated as the carrier only after
+    our own ball observation is lost.  A visible free ball remains a challenge
+    target, not an opponent-held ball, so the attacker keeps trying to capture
+    it instead of abandoning it for a defensive retreat.
+    """
+    field_ball = _field_ball_for_tracking(ball)
+    enemies = _field_enemies()
+    nearest = None
+    nearest_distance = math.inf
+    if field_ball:
+        for enemy in enemies:
+            distance = math.hypot(enemy[0] - field_ball[0], enemy[1] - field_ball[1])
+            if distance < nearest_distance:
+                nearest = enemy
+                nearest_distance = distance
+
+    if ball == BALL_NOT_FOUND and field_ball and nearest is not None:
+        if nearest_distance <= OPPONENT_HELD_DISTANCE_CM:
+            return {
+                "state": "opponent_held",
+                "field_ball": field_ball,
+                "carrier": nearest,
+                "carrier_distance": nearest_distance,
+                "enemies": enemies,
+            }
+
+    if field_ball and nearest is not None and nearest_distance <= OPPONENT_HELD_DISTANCE_CM:
+        state_name = "contested_free"
+    elif field_ball:
+        state_name = "free"
+    else:
+        state_name = "lost"
+    return {
+        "state": state_name,
+        "field_ball": field_ball,
+        "carrier": nearest,
+        "carrier_distance": nearest_distance if nearest is not None else None,
+        "enemies": enemies,
+    }
+
+
+def _opponent_block_target(field_ball) -> list[float]:
+    """Return a legal point between an opponent carrier and our own goal."""
+    bx = float(field_ball[0])
+    by = float(field_ball[1])
+    field_long = float(getattr(Settings.Bounds, "Long", 260.0))
+    field_short = float(getattr(Settings.Bounds, "Short", 200.0))
+    own_goal_x = -ATTACK_DIR * field_long * 0.5
+
+    dx = own_goal_x - bx
+    dy = -by
+    route_length = math.hypot(dx, dy)
+    if route_length <= 1e-6:
+        target_x = bx - ATTACK_DIR * OPPONENT_BLOCK_STANDOFF_CM
+        target_y = by
+    else:
+        ratio = min(OPPONENT_BLOCK_STANDOFF_CM / route_length, 0.75)
+        target_x = bx + dx * ratio
+        target_y = by + dy * ratio
+
+    # Do not enter the own goal box while blocking.  The point remains on the
+    # goal side of the carrier, but is capped at a legal central guard line.
+    max_progress = min(62.0, field_long * 0.5 - 38.0)
+    target_progress = min(ATTACK_DIR * target_x, max_progress)
+    target_x = ATTACK_DIR * target_progress
+    max_y = min(OPPONENT_BLOCK_MAX_Y_CM, field_short * 0.5 - 24.0)
+    target_y = clamp(target_y, -max_y, max_y)
+    target_yaw = 0.0 if ATTACK_DIR > 0 else 180.0
+    return [target_x, target_y, target_yaw]
+
+
+def _block_opponent_shot(observation) -> str:
+    """Move to the estimated opponent shot lane and publish the trace state."""
+    field_ball = observation.get("field_ball")
+    if not _valid_field_ball(field_ball):
+        return "search_ball"
+
+    target = _opponent_block_target(field_ball)
+    peripheral.Dribble(False)
+    UnitedPosition.Pos2Pos(target, OPPONENT_BLOCK_SPEED_GAIN)
+    carrier = observation.get("carrier")
+    _set_decision(
+        action="opponent_shot_block",
+        mode="opponent_held",
+        ball_state="opponent_held",
+        ball_field=[round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)],
+        carrier=None if carrier is None else [round(float(carrier[0]), 3), round(float(carrier[1]), 3)],
+        carrier_distance=(
+            None
+            if observation.get("carrier_distance") is None
+            else round(float(observation["carrier_distance"]), 3)
+        ),
+        target=[round(float(value), 3) for value in target],
+    )
+    return "opponent_shot_block"
+
+
+def _attach_ball_observation(observation) -> None:
+    """Add the perception result to the current strategy trace."""
+    if not last_decision:
+        return
+    last_decision["ball_state"] = observation.get("state")
+    field_ball = observation.get("field_ball")
+    last_decision["ball_field"] = (
+        None
+        if not _valid_field_ball(field_ball)
+        else [round(float(field_ball[0]), 3), round(float(field_ball[1]), 3)]
+    )
+    carrier = observation.get("carrier")
+    last_decision["opponent_carrier"] = (
+        None
+        if carrier is None
+        else [round(float(carrier[0]), 3), round(float(carrier[1]), 3)]
+    )
 
 
 def _remember_free_ball(ball) -> None:
@@ -410,19 +618,36 @@ def OffenceStep():
         state = _shot_release_step()
         return state
 
+    # This branch is deliberately before ordinary search/chase.  Once the
+    # ball disappears, a nearby opponent at the last ball point is the best
+    # available indication that the opponent has possession and may shoot.
+    if ball != BALL_HELD:
+        ball_observation = _opponent_ball_observation(ball)
+        if ball_observation["state"] == "opponent_held":
+            state = _block_opponent_shot(ball_observation)
+            return state
+
     if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
         recent_ball = _recent_free_ball()
         if recent_ball is not None:
             state = _direct_chase_ball(recent_ball, stale=True)
+            _attach_ball_observation(ball_observation)
             return state
         peripheral.Dribble(0.7)
         UnitedPosition.Pos2Pos(search_home, SEARCH_SPEED_GAIN)
-        _set_decision(action="search_ball", target=search_home, speed_gain=round(float(SEARCH_SPEED_GAIN), 3))
+        _set_decision(
+            action="search_ball",
+            target=search_home,
+            speed_gain=round(float(SEARCH_SPEED_GAIN), 3),
+            ball_state=ball_observation["state"],
+            ball_field=ball_observation["field_ball"],
+        )
         state = "search_ball"
         return state
 
     if ball != BALL_HELD:
         state = _lock_or_chase_free_ball(ball)
+        _attach_ball_observation(ball_observation)
         return state
 
     try:
