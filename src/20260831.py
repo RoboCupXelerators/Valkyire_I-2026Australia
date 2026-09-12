@@ -49,28 +49,19 @@ def back_kick():
                     defence_points = UnitedPosition.FieldChassisPos()
                     if defence_points:
                         point = defence_points[0]
-                        UnitedPosition.Pos2Pos(
-                            [point[0] - 20 * side, point[1] - 20 * side, 0]
-                        )
+                        UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
                 elif ball_state == "held":
                     peripheral.Dribble(0.7)
                     back_point = 80
                     if robot_pos[0] > back_point:
                         aim = [121.5, -30 * side]
-                        goal = math.degrees(
-                            math.atan2(
-                                aim[1] - robot_pos[1],
-                                aim[0] - robot_pos[0],
-                            )
-                        ) % 360
+                        goal = math.degrees(math.atan2(aim[1] - robot_pos[1],aim[0] - robot_pos[0],)) % 360
                         if abs(robot_pos[2] - goal) > 8:
                             TurnTo_with_ball(goal)
                         else:
                             peripheral.ShootBall()
                     else:
-                        UnitedPosition.Pos2Pos(
-                            [back_point, robot_pos[1], robot_pos[2]]
-                        )
+                        UnitedPosition.Pos2Pos([back_point, robot_pos[1], robot_pos[2]])
                 else:
                     lockball.LockBallSlip()
     finally:
@@ -133,9 +124,7 @@ def defence():
                             peripheral.ShootBall()
                     else:
                         peripheral.Dribble(0.7)
-                        if UnitedPosition.PointInShape(
-                            robot_pos, [[-80, 75], [-90, -75]]
-                        ):
+                        if UnitedPosition.PointInShape(robot_pos, [[-80, 75], [-90, -75]]):
                             chassis.FieldTurn(150 * side)
                             peripheral.ShootBall()
                         else:
