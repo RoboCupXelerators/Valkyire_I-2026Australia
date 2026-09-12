@@ -29,6 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from utils.XeleratorSimPorts import resolve_camera_port
+
 try:
     import cv2  # type: ignore
     import numpy as np
@@ -99,7 +101,7 @@ class SimYoloVision:
         # Camera configuration
         self._robot_id = robot_id
         self._camera_slots = camera_slots or self._get_default_camera_slots()
-        self._server_port = server_port or int(os.environ.get("XEL_CAM_SERVER_PORT", "20801"))
+        self._server_port = server_port or resolve_camera_port()
         self._host = host or os.environ.get("XEL_CAM_HOST", "127.0.0.1")
 
         # Frames storage (4 camera slots)
