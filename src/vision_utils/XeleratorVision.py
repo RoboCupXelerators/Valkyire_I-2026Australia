@@ -27,6 +27,8 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from utils.XeleratorSimPorts import resolve_camera_port
+
 try:
     from vision_utils.merged_settings import Settings  # type: ignore
 except Exception:  # pragma: no cover
@@ -183,7 +185,7 @@ class XeleratorVision:
                 robot_id = 1
 
         if server_port is None:
-            server_port = int(os.environ.get("XEL_CAM_SERVER_PORT", "20801"))
+            server_port = resolve_camera_port()
         if host is None:
             host = os.environ.get("XEL_CAM_HOST", "127.0.0.1")
 
@@ -435,7 +437,7 @@ class XeleratorVision:
                 pass
 
         camera_slots = list(getattr(self, "CamPorts", None) or self._camera_slot_defaults())
-        server_port = int(os.environ.get("XEL_CAM_SERVER_PORT", "20801"))
+        server_port = resolve_camera_port()
         host = os.environ.get("XEL_CAM_HOST", "127.0.0.1")
 
         # Build URLs for each camera
