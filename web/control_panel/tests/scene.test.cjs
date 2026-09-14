@@ -1,0 +1,10 @@
+const fs=require('fs'), vm=require('vm'), assert=require('assert');
+const code=fs.readFileSync(require('path').join(__dirname,'../static/app.js'),'utf8');
+const sandbox={document:{addEventListener(){},getElementById(){return null}},console,setInterval(){},setTimeout(){},window:{addEventListener(){}},navigator:{}};
+vm.createContext(sandbox); vm.runInContext(code,sandbox);
+const point=vm.runInContext('sceneFieldPoint([100,0], {x:10,y:20,yaw:90})',sandbox);
+assert(Math.abs(point.x-10)<1e-8); assert(Math.abs(point.y-120)<1e-8);
+assert.equal(vm.runInContext('scenePose({robot_pose_valid:false,robot_x_cm:0,robot_y_cm:0,robot_yaw_deg:0})',sandbox),null);
+assert.equal(vm.runInContext('getFreeBallCoords([0xFFF,0xFFF])',sandbox),null);
+assert.equal(vm.runInContext('getFreeBallCoords([0xDDD,0xDDD])',sandbox),null);
+console.log('PASS: coordinate rotation, invalid pose, lost/held ball sentinels');

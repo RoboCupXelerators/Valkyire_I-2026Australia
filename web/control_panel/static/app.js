@@ -51,7 +51,7 @@ document.addEventListener("DOMContentLoaded", init);
 function init() {
   cacheElements();
   setupNavigation();
-  setupRecordingControls();
+
   setupReplayControls();
   setupVisionControls();
   setupRadarControls();
@@ -60,7 +60,6 @@ function init() {
   setupOTAControls();
   loadConfig();
   startPolling();
-  loadSessions();
   initFieldCanvas();
 
   // 初始化时设置为离线状态，直到成功连接到后端
@@ -282,6 +281,7 @@ function startVisionFeeds() {
 
   // Refresh all four camera feeds periodically with latency tracking
   function refresh() {
+    if (document.hidden) return;
     const t = Date.now();
     for (let i = 0; i < 4; i++) {
       const camIdx = CAM_INDICES[i];
@@ -333,7 +333,7 @@ function startVisionFeeds() {
   visionFeedInterval = setInterval(refresh, 120); // ~8 FPS
 
   // Start state polling for radar and info
-  visionStateInterval = setInterval(updateVisionState, 100);
+  visionStateInterval = setInterval(() => { if (!document.hidden) updateVisionState(); }, 200);
   updateLidarPointCloud();
   lidarPointCloudInterval = setInterval(updateLidarPointCloud, 200);
 }
@@ -468,7 +468,7 @@ let perfState = {
 function updateVisionState() {
   if (visionStateRequestInFlight) return;
   visionStateRequestInFlight = true;
-  fetch("/api/state")
+  fetch("/api/state", { signal: AbortSignal.timeout(3000) })
     .then((r) => {
       if (!r.ok) throw new Error(`State request failed: ${r.status}`);
       return r.json();
@@ -541,9 +541,9 @@ function updateVisionState() {
 }
 
 function updateLidarPointCloud() {
-  if (lidarPointCloudRequestInFlight) return;
+  if (document.hidden || lidarPointCloudRequestInFlight) return;
   lidarPointCloudRequestInFlight = true;
-  fetch("/api/lidar/point-cloud")
+  fetch("/api/lidar/point-cloud", { signal: AbortSignal.timeout(3000) })
     .then((response) => {
       if (!response.ok) throw new Error(`Point cloud request failed: ${response.status}`);
       return response.json();
@@ -835,9 +835,11 @@ function drawBboxOnCanvas(
 
 function drawRadar(data) {
   const canvas = document.getElementById("radar");
-  if (!canvas) return;
+  if (!canvas || state.currentPage !== "overview" || document.hidden) return;
 
   radarZoomState.lastData = data;
+  if (drawFieldRadar(canvas, data)) return;
+  document.getElementById("radar-frame-label").textContent = "相对视角 · 自身居中 · 定位无效，未投影到场地";
 
   const ctx = canvas.getContext("2d");
   const w = canvas.width,
@@ -1466,12 +1468,23 @@ function drawField(frame) {
 
 // Polling
 function startPolling() {
-  setInterval(updateOverview, CONFIG.updateInterval);
+  updateOverview();
+  setInterval(updateOverview, 200);
+  setInterval(() => {
+    if (!document.hidden && state.currentPage === "overview") updateLidarPointCloud();
+    const age = state.lastOnlineTime ? (Date.now() - state.lastOnlineTime) / 1000 : Infinity;
+    const el = document.getElementById("overview-freshness");
+    if (el) el.textContent = Number.isFinite(age) ? `数据距今 ${age.toFixed(1)} s` : "尚未收到数据";
+    if (age > 3) updateOnlineStatus(false);
+  }, 500);
 }
 
 // 更新系统在线状态指示器
 function updateOnlineStatus(isOnline) {
   state.isOnline = isOnline;
+  const health = document.getElementById("overview-connection");
+  if (health) { health.textContent = isOnline ? "已连接" : "离线 / 数据过期"; health.dataset.online = String(isOnline); }
+  document.getElementById("radar")?.classList.toggle("stale", !isOnline);
   if (isOnline) {
     state.lastOnlineTime = Date.now();
   }
@@ -1508,14 +1521,20 @@ function updateOnlineStatus(isOnline) {
 async function updateOverview() {
   // The vision page owns the live state poll while its camera/radar streams run.
   // Avoid a second /api/state request competing with those camera requests.
-  if (state.currentPage === "vision") return;
+  if (document.hidden) return;
   if (overviewRequestInFlight) return;
   overviewRequestInFlight = true;
 
   try {
     // Fetch vision state
-    const visionResponse = await fetch("/api/state");
+    const visionResponse = await fetch("/api/state", { signal: AbortSignal.timeout(3000) });
+    if (!visionResponse.ok) throw new Error(`State HTTP ${visionResponse.status}`);
     const visionData = await visionResponse.json();
+    if (state.currentPage === "overview") {
+      drawRadar(visionData);
+      updateLidarPanel(visionData.lidar_status);
+      updateSceneSummary(visionData);
+    }
 
     // 更新系统在线状态
     updateOnlineStatus(true);
@@ -1529,19 +1548,6 @@ async function updateOverview() {
       : headingAvailable
         ? toFiniteNumber(visionData.robot_heading_candidate_deg)
         : NaN;
-    if (
-      poseValid &&
-      (!Number.isFinite(poseX) || !Number.isFinite(poseY)) &&
-      visionData.chassis_list_cm &&
-      visionData.chassis_list_cm.length > 0
-    ) {
-      // Fallback: chassis_list_cm is a list of detections, use first one
-      const firstChassis = visionData.chassis_list_cm[0];
-      if (firstChassis && firstChassis.length >= 2) {
-        poseX = toFiniteNumber(firstChassis[0]);
-        poseY = toFiniteNumber(firstChassis[1]);
-      }
-    }
 
     if (elements.robotPose) {
       elements.robotPose.textContent = formatPose(poseX, poseY, poseYaw);
@@ -1721,23 +1727,7 @@ async function updateOverview() {
       }
     }
 
-    // Fetch recording state
-    try {
-      const recResponse = await fetch("/api/recording/status");
-      const recData = await recResponse.json();
 
-      state.isRecording = recData.is_recording;
-      state.recordingSessionId = recData.session_id;
-      state.recordingFrameCount = recData.frame_count || 0;
-
-      updateRecordingUI(state.isRecording);
-      elements.recFrames.textContent = state.recordingFrameCount + " 帧";
-      elements.recStatus.textContent = state.isRecording
-        ? `记录中: ${state.recordingSessionId}`
-        : "未记录";
-    } catch (e) {
-      // Recording API not available
-    }
   } catch (e) {
     console.error("Polling error:", e);
     // 更新系统在线状态为离线
@@ -3015,6 +3005,7 @@ function renderSection(sectionKey, sectionInfo, config) {
   const ungrouped = [];
 
   for (const [fieldKey, fieldInfo] of sortedFields) {
+    if (/record/i.test(fieldKey)) continue;
     if (fieldInfo.group) {
       if (!groups[fieldInfo.group]) {
         groups[fieldInfo.group] = {
@@ -3328,14 +3319,6 @@ function populateConfigForm(config) {
   setFieldValue("wifi-pwd", config.WIFI?.PWD);
 
   // Data/Recording
-  setFieldValue("rec-record", config.VisionVals?.Record, "checkbox");
-  setFieldValue("rec-dir", config.VisionVals?.RecordDir);
-  setFieldValue("rec-width", config.VisionVals?.RecordWidth);
-  setFieldValue("rec-height", config.VisionVals?.RecordHeight);
-  setFieldValue("rec-fps", config.VisionVals?.RecordFPS);
-  setFieldValue("rec-segment", config.VisionVals?.RecordSegmentSeconds);
-  setFieldValue("rec-codec", config.VisionVals?.RecordCodec);
-  setFieldValue("rec-ext", config.VisionVals?.RecordExt);
 
   // Field
   setFieldValue("field-short", config.Bounds?.Short);
@@ -3354,9 +3337,6 @@ function populateConfigForm(config) {
   setFieldValue("debug-beta", config.Debug?.Beta, "checkbox");
 
   // Motion recording (for replay)
-  setFieldValue("debug-record-motion", config.Debug?.RecordMotion, "checkbox");
-  setFieldValue("debug-record-interval", config.Debug?.RecordInterval);
-  setFieldValue("debug-record-session", config.Debug?.RecordSessionId);
 }
 
 function setFieldValue(id, value, type = "input") {
@@ -4801,6 +4781,10 @@ async function saveConfigFromTemplate() {
     for (const [fieldKey, fieldInfo] of Object.entries(
       sectionInfo.fields || {},
     )) {
+      if (/record/i.test(fieldKey)) {
+        if (state.config?.[sectionKey]?.[fieldKey] !== undefined) config[sectionKey][fieldKey] = state.config[sectionKey][fieldKey];
+        continue;
+      }
       const value = collectFieldValue(sectionKey, fieldKey, fieldInfo);
       config[sectionKey][fieldKey] = value;
     }
@@ -4969,14 +4953,6 @@ async function saveConfigLegacy() {
     "vision-bbox-dist",
     "checkbox",
   );
-  config.VisionVals.Record = getFieldValue("rec-record", "checkbox");
-  config.VisionVals.RecordDir = getFieldValue("rec-dir");
-  config.VisionVals.RecordWidth = getFieldValue("rec-width");
-  config.VisionVals.RecordHeight = getFieldValue("rec-height");
-  config.VisionVals.RecordFPS = getFieldValue("rec-fps");
-  config.VisionVals.RecordSegmentSeconds = getFieldValue("rec-segment");
-  config.VisionVals.RecordCodec = getFieldValue("rec-codec");
-  config.VisionVals.RecordExt = getFieldValue("rec-ext");
 
   config.Transimission = {
     Type: getFieldValue("trans-type"),
@@ -5010,11 +4986,9 @@ async function saveConfigLegacy() {
   };
 
   config.Debug = {
+    ...(state.config?.Debug || {}),
     FullLog: getFieldValue("debug-full-log", "checkbox"),
     Beta: getFieldValue("debug-beta", "checkbox"),
-    RecordMotion: getFieldValue("debug-record-motion", "checkbox"),
-    RecordInterval: getFieldValue("debug-record-interval"),
-    RecordSessionId: getFieldValue("debug-record-session") || null,
   };
 
   try {
@@ -5037,4 +5011,74 @@ async function saveConfigLegacy() {
     console.error("Failed to save config:", e);
     alert("保存失败: " + e.message);
   }
+}
+
+// Same robot-to-field rotation as Positions.FieldChassisPos.
+function sceneFieldPoint(point, pose) {
+  const p = normalizeRadarPoint(point);
+  if (!p) return null;
+  const angle = pose.yaw * Math.PI / 180;
+  return { x: pose.x + p.x * Math.cos(angle) - p.y * Math.sin(angle),
+    y: pose.y + p.x * Math.sin(angle) + p.y * Math.cos(angle) };
+}
+function scenePose(data) {
+  const pose = { x: toFiniteNumber(data.robot_x_cm), y: toFiniteNumber(data.robot_y_cm), yaw: toFiniteNumber(data.robot_yaw_deg) };
+  return data.robot_pose_valid === true && Object.values(pose).every(Number.isFinite) ? pose : null;
+}
+function updateSceneSummary(data) {
+  document.getElementById('scene-targets').textContent = `${(data.chassis_list_cm || []).length} 个`;
+  document.getElementById('scene-localization').textContent = scenePose(data) ? '场地定位有效' : '定位不可用 · 相对视角';
+  document.getElementById('scene-walls').textContent = document.getElementById('lidar-dists').textContent;
+}
+function drawFieldRadar(canvas, data) {
+  const pose = scenePose(data);
+  if (!pose) return false;
+  const ctx = canvas.getContext('2d'), w = canvas.width, h = canvas.height;
+  const field = state.config?.Field || {};
+  const length = Number(field.Long) > 0 ? Number(field.Long) : 260;
+  const width = Number(field.Short) > 0 ? Number(field.Short) : 200;
+  radarZoomState.autoRangeCm = Math.ceil(Math.max(length, width) / 2 + 20);
+  updateRadarZoomControls();
+  const scale = Math.min(w - 100, h - 100) / (2 * (radarZoomState.manualRangeCm ?? radarZoomState.autoRangeCm));
+  const project = p => ({ x: w / 2 - p.y * scale, y: h / 2 - p.x * scale });
+  ctx.fillStyle = '#0b201e'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#3b7265'; ctx.lineWidth = 2;
+  const corner = project({ x: length / 2, y: width / 2 });
+  ctx.strokeRect(corner.x, corner.y, width * scale, length * scale);
+  ctx.beginPath(); ctx.moveTo(corner.x, h / 2); ctx.lineTo(corner.x + width * scale, h / 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(w / 2, h / 2, 30 * scale, 0, Math.PI * 2); ctx.stroke();
+  const preview = getLidarPreview(data);
+  ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 3;
+  for (const segment of preview.wallSegments) {
+    const a = project(sceneFieldPoint(segment.start, pose)), b = project(sceneFieldPoint(segment.end, pose));
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.fillStyle = '#a78bfa';
+  for (const point of preview.points) {
+    const p = project(sceneFieldPoint(point, pose)); ctx.fillRect(p.x-1, p.y-1, 2, 2);
+  }
+  function marker(point, color, label, shape = 'circle') {
+    if (!point) return;
+    const p = project(point);
+    if (p.x < 12 || p.x > w-12 || p.y < 12 || p.y > h-12) return;
+    ctx.fillStyle = color;
+    if (shape === 'bar') ctx.fillRect(p.x-16, p.y-4, 32, 8);
+    else if (shape === 'box') ctx.fillRect(p.x-9, p.y-9, 18, 18);
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI*2); ctx.fill(); }
+    ctx.font = '15px sans-serif'; ctx.textAlign = p.x > w-150 ? 'right' : 'left';
+    ctx.fillText(label, p.x > w-150 ? p.x-14 : p.x+14, p.y-12); ctx.textAlign = 'left';
+  }
+  marker(pose, '#63e6be', '自身');
+  const origin = project(pose), angle = pose.yaw * Math.PI / 180;
+  ctx.strokeStyle = '#e8fff5'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(origin.x, origin.y);
+  ctx.lineTo(origin.x - Math.sin(angle)*30, origin.y - Math.cos(angle)*30); ctx.stroke();
+  const ball = getFreeBallCoords(data.ball_pos_cm);
+  if (ball) marker(sceneFieldPoint(ball, pose), '#fb923c', '球');
+  marker(sceneFieldPoint(data.blue_goal_pos_cm, pose), '#60a5fa', '蓝门观测', 'bar');
+  marker(sceneFieldPoint(data.yellow_goal_pos_cm, pose), '#facc15', '黄门观测', 'bar');
+  for (const chassis of data.chassis_list_cm || []) marker(sceneFieldPoint(chassis, pose), '#22d3ee', '底盘', 'box');
+  ctx.fillStyle = '#9eacba'; ctx.font = '14px sans-serif';
+  ctx.fillText('场地 +X ↑   +Y ←   单位 cm', 20, 26);
+  document.getElementById('radar-frame-label').textContent = `场地视角 · ${length} × ${width} cm · 静态边界 / 实测墙距分层显示`;
+  return true;
 }

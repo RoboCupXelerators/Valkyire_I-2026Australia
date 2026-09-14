@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Xelerator 控制面板</title>
-    <link rel="stylesheet" href="static/style.css?v=20260905-gamepad" />
+    <link rel="stylesheet" href="static/style.css?v=20260910-integrated-radar" />
   </head>
   <body>
     <div class="app">
       <!-- 侧边导航 -->
       <nav class="sidebar">
         <div class="logo">
-          <h2>🤖 Xelerator</h2>
+          <img src="static/assets/logo.webp" width="150" height="56" alt="Xelerator" />
         </div>
         <ul class="nav-menu">
           <li class="nav-item active" data-page="overview">
@@ -22,18 +22,15 @@
             <span class="icon">👁️</span>
             <span class="label">视觉</span>
           </li>
-          <li class="nav-item" data-page="recording">
-            <span class="icon">🎥</span>
-            <span class="label">记录</span>
-          </li>
-          <li class="nav-item" data-page="replay">
-            <span class="icon">▶️</span>
-            <span class="label">回放</span>
-          </li>
           <li class="nav-item" data-page="settings">
             <span class="icon">⚙️</span>
             <span class="label">设置</span>
           </li>
+<li class="nav-item" data-page="replay">
+            <span class="icon">▶️</span>
+            <span class="label">回放</span>
+          </li>
+
           <li class="nav-item" data-page="tools">
             <span class="icon">🔧</span>
             <span class="label">工具</span>
@@ -52,16 +49,47 @@
       </nav>
 
       <!-- 主内容区 -->
-      <main class="main-content">
-        <!-- 概览页面 -->
-        <div id="page-overview" class="page active">
-          <header class="page-header">
-            <h1>系统概览</h1>
-            <span class="uptime">运行时间: <span id="uptime">--</span></span>
-          </header>
-
-          <!-- 系统信息卡片 -->
-          <div class="system-info-bar">
+      <main class="main-content"><div id="page-overview" class="page active">
+<header class="page-header"><div><p class="eyebrow">FIELD OVERVIEW</p><h1>现场总览</h1></div><span class="uptime">运行 <span id="uptime">--</span></span></header>
+<div class="overview-health"><strong id="overview-connection">等待连接</strong><span id="overview-freshness">尚未收到数据</span><span>定位与检测同图展示</span></div>
+<div class="overview-layout"><div class="radar-panel">
+              <div class="radar-header">
+                <div class="panel-header">整合雷达</div>
+                <div class="radar-controls" aria-label="雷达缩放控制">
+                  <button
+                    class="btn btn-icon"
+                    id="radar-zoom-out"
+                    type="button"
+                    title="缩小"
+                    aria-label="缩小"
+                  >−</button>
+                  <span id="radar-zoom-label" class="radar-zoom-label">自动</span>
+                  <button
+                    class="btn btn-icon"
+                    id="radar-zoom-in"
+                    type="button"
+                    title="放大"
+                    aria-label="放大"
+                  >+</button>
+                  <button
+                    class="btn btn-small btn-secondary"
+                    id="radar-zoom-auto"
+                    type="button"
+                    title="恢复动态缩放"
+                  >自动</button>
+                </div>
+              </div>
+              <p id="radar-frame-label" class="radar-caption">等待定位数据</p><canvas id="radar" width="1000" height="720" role="img" aria-label="机器人姿态、球、球门、底盘目标与墙距"></canvas><div class="map-legend"><span>● 自身 / 航向</span><span>● 球</span><span>▰ 蓝门 / 黄门</span><span>□ 其他底盘</span><span>─ 实测墙距</span></div>
+            </div><aside class="scene-summary card"><h3>现场摘要</h3>
+<div class="scene-row"><span>自身姿态 · 场地坐标 cm / °</span><strong id="robot-pose">--</strong></div>
+<div class="scene-row"><span>持球</span><strong id="has-ball">--</strong></div>
+<div class="scene-row"><span>球位置 · 机器人坐标</span><strong><span id="ball-x">--</span> / <span id="ball-y">--</span></strong></div>
+<div class="scene-row"><span>其他底盘目标</span><strong id="scene-targets">--</strong></div>
+<div class="scene-row"><span>定位状态</span><strong id="scene-localization">--</strong></div>
+<div class="scene-row"><span>四向墙距 · 前 / 左 / 后 / 右</span><strong id="scene-walls">--</strong></div>
+<button class="btn btn-primary" onclick="navigateTo('vision')">视觉与诊断 →</button>
+<button class="btn btn-secondary" onclick="navigateTo('settings')">机器人设置 →</button>
+</aside></div><div class="system-info-bar">
             <div class="info-badge">
               <span class="icon">🌐</span>
               <span class="label">本机 IP</span>
@@ -87,47 +115,17 @@
               <span class="label">识别系统</span>
               <span class="value" id="rec-type-display">--</span>
             </div>
-          </div>
+          </div></div>
+        <!-- 概览页面 -->
 
-          <div class="dashboard-grid">
-            <div class="card">
-              <h3>机器人状态</h3>
-              <div class="status-grid" id="robot-status">
-                <div class="status-item status-item-wide">
-                  <span class="label">当前姿态</span>
-                  <span class="value" id="robot-pose">--</span>
-                </div>
-                <div class="status-item">
-                  <span class="label">持球状态</span>
-                  <span class="value" id="has-ball">--</span>
-                </div>
-              </div>
-            </div>
-            <div class="card">
-              <h3>球位置</h3>
-              <div class="ball-info" id="ball-info">
-                <div class="coord-display">
-                  <span class="axis">X</span>
-                  <span class="value" id="ball-x">-- cm</span>
-                </div>
-                <div class="coord-display">
-                  <span class="axis">Y</span>
-                  <span class="value" id="ball-y">-- cm</span>
-                </div>
-              </div>
-            </div>
-            <div class="card">
-              <h3>记录状态</h3>
-              <div class="recording-mini">
-                <span class="rec-indicator" id="rec-indicator"></span>
-                <span id="rec-status">未记录</span>
-                <span class="rec-frames" id="rec-frames">0 帧</span>
-              </div>
-              <button class="btn btn-primary" id="quick-record-btn">
-                开始记录
-              </button>
-            </div>
-            <div class="card">
+
+        <!-- 视觉页面 -->
+        <div id="page-vision" class="page">
+          <header class="page-header">
+            <h1>视觉监控</h1>
+            <span class="status" id="vision-status">状态: 加载中...</span>
+          </header>
+          <div class="vision-grid">            <div class="card">
               <h3>性能指标</h3>
               <div class="metrics">
                 <div class="metric">
@@ -164,16 +162,6 @@
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-
-        <!-- 视觉页面 -->
-        <div id="page-vision" class="page">
-          <header class="page-header">
-            <h1>视觉监控</h1>
-            <span class="status" id="vision-status">状态: 加载中...</span>
-          </header>
-          <div class="vision-grid">
             <!-- 四摄像头网格显示 -->
             <div class="cam-grid">
               <div class="cam-panel">
@@ -247,35 +235,7 @@
               </table>
             </div>
             <!-- Bits 墙距预览 -->
-            <div class="radar-panel">
-              <div class="radar-header">
-                <div class="panel-header">场地墙距</div>
-                <div class="radar-controls" aria-label="雷达缩放控制">
-                  <button
-                    class="btn btn-icon"
-                    id="radar-zoom-out"
-                    type="button"
-                    title="缩小"
-                    aria-label="缩小"
-                  >−</button>
-                  <span id="radar-zoom-label" class="radar-zoom-label">自动</span>
-                  <button
-                    class="btn btn-icon"
-                    id="radar-zoom-in"
-                    type="button"
-                    title="放大"
-                    aria-label="放大"
-                  >+</button>
-                  <button
-                    class="btn btn-small btn-secondary"
-                    id="radar-zoom-auto"
-                    type="button"
-                    title="恢复动态缩放"
-                  >自动</button>
-                </div>
-              </div>
-              <canvas id="radar" width="600" height="600"></canvas>
-            </div>
+
             <!-- 延时面板 -->
             <div class="latency-panel">
               <div class="panel-header">摄像头延时</div>
@@ -306,59 +266,7 @@
         </div>
 
         <!-- 记录页面 -->
-        <div id="page-recording" class="page">
-          <header class="page-header">
-            <h1>比赛记录</h1>
-          </header>
-          <div class="recording-controls">
-            <div class="control-group">
-              <label>会话 ID</label>
-              <input type="text" id="session-id" placeholder="自动生成" />
-            </div>
-            <div class="control-group">
-              <label>记录频率 (每 N 帧)</label>
-              <input
-                type="number"
-                id="record-freq"
-                value="5"
-                min="1"
-                max="100"
-              />
-            </div>
-            <div class="control-group">
-              <label>描述</label>
-              <input type="text" id="session-desc" placeholder="比赛描述" />
-            </div>
-            <div class="button-group">
-              <button class="btn btn-primary" id="start-record-btn">
-                ▶ 开始记录
-              </button>
-              <button class="btn btn-danger" id="stop-record-btn" disabled>
-                ⏹ 停止记录
-              </button>
-            </div>
-          </div>
-          <div class="sessions-list">
-            <h3>历史会话</h3>
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>会话 ID</th>
-                  <th>开始时间</th>
-                  <th>时长</th>
-                  <th>帧数</th>
-                  <th>描述</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="sessions-tbody">
-                <tr>
-                  <td colspan="6">加载中...</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+
 
         <!-- 回放页面 -->
         <div id="page-replay" class="page">
@@ -455,6 +363,7 @@
             </button>
           </header>
 
+          <details class="card hardware-reference"><summary>机器人结构参考</summary><img loading="lazy" src="static/assets/robot-structure.webp" width="240" height="270" alt="机器人模块爆炸结构图" /></details>
           <!-- 设置标签页 -->
           <div class="settings-tabs">
             <button class="tab-btn active" data-tab="robot">机器人</button>
@@ -928,64 +837,7 @@
 
             <!-- 数据管理 -->
             <div id="tab-data" class="tab-content">
-              <div class="settings-section">
-                <h3>录像配置</h3>
-                <div class="setting-item checkbox-item">
-                  <label>
-                    <input type="checkbox" id="rec-record" />
-                    启用录像
-                  </label>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>录像目录</label>
-                    <input type="text" id="rec-dir" value="./Records" />
-                  </div>
-                  <div class="setting-item">
-                    <label>录制摄像头</label>
-                    <input
-                      type="text"
-                      id="rec-cams"
-                      value="0,1,2,3"
-                      placeholder="0,1,2,3"
-                    />
-                  </div>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>分辨率宽度</label>
-                    <input type="number" id="rec-width" value="320" />
-                  </div>
-                  <div class="setting-item">
-                    <label>分辨率高度</label>
-                    <input type="number" id="rec-height" value="320" />
-                  </div>
-                  <div class="setting-item">
-                    <label>FPS</label>
-                    <input type="number" id="rec-fps" value="30" />
-                  </div>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>分段时长 (秒)</label>
-                    <input type="number" id="rec-segment" value="60" />
-                  </div>
-                  <div class="setting-item">
-                    <label>编码器</label>
-                    <select id="rec-codec">
-                      <option value="mp4v">mp4v</option>
-                      <option value="h264">h264</option>
-                    </select>
-                  </div>
-                  <div class="setting-item">
-                    <label>格式</label>
-                    <select id="rec-ext">
-                      <option value="mp4">mp4</option>
-                      <option value="avi">avi</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
+
               <div class="settings-section">
                 <h3>场地参数</h3>
                 <div class="setting-row">
@@ -1026,37 +878,7 @@
                   </div>
                 </div>
               </div>
-              <div class="settings-section">
-                <h3>动作记录 (比赛回放)</h3>
-                <div class="setting-row">
-                  <div class="setting-item checkbox-item">
-                    <label>
-                      <input type="checkbox" id="debug-record-motion" />
-                      启用动作记录
-                    </label>
-                  </div>
-                  <div class="setting-item">
-                    <label>记录间隔 (帧)</label>
-                    <input
-                      type="number"
-                      id="debug-record-interval"
-                      value="1"
-                      min="1"
-                      max="100"
-                    />
-                  </div>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>会话 ID (可选)</label>
-                    <input
-                      type="text"
-                      id="debug-record-session"
-                      placeholder="留空自动生成"
-                    />
-                  </div>
-                </div>
-              </div>
+
               <div class="settings-section">
                 <h3>调试</h3>
                 <div class="setting-row">
@@ -1565,6 +1387,6 @@
       </main>
     </div>
 
-    <script src="static/app.js?v=20260905-gamepad"></script>
+    <script src="static/app.js?v=20260910-integrated-radar"></script>
   </body>
 </html>
