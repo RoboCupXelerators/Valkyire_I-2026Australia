@@ -19,6 +19,8 @@ def _clean_state(monkeypatch):
     monkeypatch.setattr(offence, "_shot_release_until", 0.0)
     monkeypatch.setattr(offence, "_last_free_ball", None)
     monkeypatch.setattr(offence, "_last_free_ball_ts", 0.0)
+    monkeypatch.setattr(offence, "_last_field_ball", None)
+    monkeypatch.setattr(offence, "_last_field_ball_ts", 0.0)
     monkeypatch.setattr(offence, "_held_since", None)
     monkeypatch.setattr(offence, "_last_shot_ts", -999999.0)
     monkeypatch.setattr(offence, "HELD_DEBOUNCE_S", 0.0)
@@ -48,6 +50,42 @@ def test_free_ball_uses_lockball_slip(monkeypatch):
     calls = []
 
     monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [22, -8])
+    monkeypatch.setattr(offence.lockball, "LockBallSlip", lambda: calls.append("lock") or False)
+
+    assert offence.OffenceStep() == "lockballslip_chase"
+    assert calls == ["lock"]
+
+
+def test_lost_ball_near_opponent_blocks_shot_lane(monkeypatch):
+    calls = {}
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: BALL_NOT_FOUND)
+    monkeypatch.setattr(offence, "_last_field_ball", [52.0, 18.0])
+    monkeypatch.setattr(offence, "_last_field_ball_ts", offence.time.monotonic())
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[55.0, 20.0]])
+    monkeypatch.setattr(
+        offence.UnitedPosition,
+        "Pos2Pos",
+        lambda target, speed_gain=None: calls.update(target=target, speed_gain=speed_gain) or False,
+    )
+    monkeypatch.setattr(offence.peripheral, "Dribble", lambda value: calls.update(dribble=value))
+
+    assert offence.OffenceStep() == "opponent_shot_block"
+    assert calls["dribble"] is False
+    assert calls["speed_gain"] == offence.OPPONENT_BLOCK_SPEED_GAIN
+    assert calls["target"][0] > -62.0
+    assert abs(calls["target"][1]) < 20.0
+    assert offence.last_decision["ball_state"] == "opponent_held"
+    assert offence.last_decision["ball_field"] == [52.0, 18.0]
+    assert offence.last_decision["opponent_carrier"] == [55.0, 20.0]
+
+
+def test_visible_free_ball_near_opponent_still_chases(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(offence.UnitedPosition, "RobotBallPos", lambda: [24.0, 0.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldBallPos", lambda: [24.0, 0.0])
+    monkeypatch.setattr(offence.UnitedPosition, "FieldChassisPos", lambda: [[27.0, 0.0]])
     monkeypatch.setattr(offence.lockball, "LockBallSlip", lambda: calls.append("lock") or False)
 
     assert offence.OffenceStep() == "lockballslip_chase"

@@ -1,59 +1,174 @@
 from LunaPre import *
 from BasicFuc import lockball, TurnTo_with_ball
-from LunaPre.strategy_tools import BALL_NOT_FOUND, BALL_HELD
-import time
+import math
 
-def wall_kick():
+
+def _read_state():
+    """Read a fresh robot pose and ball state for the current control cycle."""
+    robot_pos = UnitedPosition.FieldRobotPose()
+    ball_pos = UnitedPosition.RobotBallPos()
+    ball_state = UnitedPosition.BallState(ball_pos)
+    side = 1 if robot_pos[1] > 0 else -1
+    return robot_pos, ball_state, side
+
+
+def Macon_kick():
     try:
         while True:
+            robot_pos, ball_state, side = _read_state()
             if UnitedPosition.RestrictedArea():
-                ball_pos = UnitedPosition.RobotBallPos()
-                ball_state = UnitedPosition.BallState(ball_pos)
                 if ball_state == "lost":
-                    UnitedPosition.Pos2Pos([-15,0,0])
-                    print("ball lost")
+                    defence_points = UnitedPosition.FieldChassisPos()
+                    if defence_points:
+                        point = defence_points[0]
+                        UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
                 elif ball_state == "held":
-                    RoboPos = UnitedPosition.FieldRobotPose()
-                    if RoboPos[1]>0:
-                        k=1
-                    else:
-                        k=-1
                     peripheral.Dribble(0.7)
-                    TurnTo_with_ball(90*k)
-                    thershold = [[40, 30*k], [90, 90*k]]
-                    if UnitedPosition.PointInShape(RoboPos, thershold):
-                        if abs(RoboPos[2]-50) < 10:
+                    TurnTo_with_ball(90 * side)
+                    threshold = [[40, 30 * side], [90, 90 * side]]
+                    if UnitedPosition.PointInShape(robot_pos, threshold):
+                        if abs(robot_pos[2] - 50) < 10:
                             peripheral.ShootBall()
                         else:
-                            chassis.FieldTurn(40*k)
+                            chassis.FieldTurn(40 * side)
                     else:
-                        UnitedPosition.Pos2Pos([50,75*k,90])
+                        UnitedPosition.Pos2Pos([56, 75 * side, 90])
                 else:
                     lockball.LockBallSlip()
     finally:
         chassis.stop()
         peripheral.Dribble(False)
         UnitedPosition.Stop()
-def defence():
+
+def back_kick():
     try:
         while True:
+            robot_pos, ball_state, side = _read_state()
             if UnitedPosition.RestrictedArea():
-                ball_pos = UnitedPosition.RobotBallPos()
-                ball_state = UnitedPosition.BallState(ball_pos)
                 if ball_state == "lost":
-                    UnitedPostion.Pos2Pos([-90,0,0])
+                    defence_points = UnitedPosition.FieldChassisPos()
+                    if defence_points:
+                        point = defence_points[0]
+                        UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
                 elif ball_state == "held":
-                    DefenceRoboPos = UnitedPosition.FieldRobotPose()
-                    if DefenceRoboPos[1]>0:
-                        a=1
-                    else:
-                        a=-1
                     peripheral.Dribble(0.7)
-                    chassis.FieldTurn(0)
-                    if UnitedPosition.PointInShape(DefenceRoboPos, [[-80, 75], [-90, -75]]):
-                        chassis.FieldTurn(150*a)
-                        peripheral.ShootBall()
+                    back_point = 80
+                    if robot_pos[0] > back_point:
+                        aim = [121.5, -30 * side]
+                        goal = math.degrees(math.atan2(aim[1] - robot_pos[1],aim[0] - robot_pos[0],)) % 360
+                        if abs(robot_pos[2] - goal) > 8:
+                            TurnTo_with_ball(goal)
+                        else:
+                            peripheral.ShootBall()
                     else:
-                        
+                        UnitedPosition.Pos2Pos([back_point, robot_pos[1], robot_pos[2]])
+                else:
+                    lockball.LockBallSlip()
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
+        UnitedPosition.Stop()
 
-                        
+def IsOpenGoal():
+    window = UnitedPosition.ShootWindow(
+        target="opponent",
+        use_estimated_goal=False,
+        blocker_margin_deg=3.0,
+    )
+    return (
+        window["goal_key"] is not None
+        and window["window_open"]
+        and len(window["blockers"]) == 0
+    )
+
+def OpenGoalShoot():
+    robot_pos = UnitedPosition.FieldRobotPose()
+    window = UnitedPosition.ShootWindow(
+        target="opponent",
+        use_estimated_goal=False,
+        current_yaw_deg=robot_pos[2],
+    )
+
+    if not IsOpenGoal():
+        target_yaw = window.get("target_yaw_deg")
+        if target_yaw is not None:
+            TurnTo_with_ball(target_yaw)
+        return False
+
+    if window["can_shoot_now"]:
+        peripheral.ShootBall()
+        return True
+
+    target_yaw = window.get("target_yaw_deg")
+    if target_yaw is not None:
+        TurnTo_with_ball(target_yaw)
+    return False
+
+def siu():
+    try:
+        while True:
+            robot_pos, ball_state, side = _read_state()
+            if UnitedPosition.RestrictedArea():
+                if ball_state == "lost":
+                    defence_points = UnitedPosition.FieldChassisPos()
+                    if defence_points:
+                        point = defence_points[0]
+                        UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
+                elif ball_state == "held":
+                    OpenGoalShoot()
+                else:
+                    lockball.LockBallSlip()
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
+        UnitedPosition.Stop()
+
+
+def defence():#防守机
+    try:
+        while True:
+            robot_pos, ball_state, side = _read_state()
+            if UnitedPosition.RestrictedArea():
+                if ball_state == "lost":
+                    UnitedPosition.Pos2Pos([-90, 0, 0])
+                elif ball_state == "held":
+                    if robot_pos[2] < 90 or robot_pos[2] > 270:
+                        chassis_positions = UnitedPosition.FieldChassisPos()
+                        if chassis_positions and chassis_positions[0][1] < robot_pos[1]:
+                            peripheral.Dribble(0.7)
+                            peripheral.ShootBall()
+                        else:
+                            peripheral.Dribble(0.7)
+                            TurnTo_with_ball(0)
+                            peripheral.ShootBall()
+                    else:
+                        peripheral.Dribble(0.7)
+                        if UnitedPosition.PointInShape(robot_pos, [[-80, 75], [-90, -75]]):
+                            chassis.FieldTurn(150 * side)
+                            peripheral.ShootBall()
+                        else:
+                            chassis.FieldTurn(0)
+                            peripheral.ShootBall()
+                else:
+                    UnitedPosition.PredictBallLanding()
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
+        UnitedPosition.Stop()
+
+
+if __name__ == "__main__":
+    try:
+        while True:
+            robot_pos = UnitedPosition.FieldRobotPose()
+            if robot_pos[0] < 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
+                Macon_kick()
+            elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
+                back_kick()
+            elif 0 < robot_pos[0] < 95 and -50 < robot_pos[1] < 50:
+                siu()
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
+        UnitedPosition.Stop()
+
