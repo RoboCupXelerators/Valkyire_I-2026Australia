@@ -77,6 +77,14 @@ class LockSeries:
         self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 85.0)))
         self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
         self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.10)))
+        # Docking: a fast approach carries too much momentum for the low-power
+        # dribbler to hold, so the ball gets punched back out right before it
+        # seats. The forward speed is capped on a continuous constant-deceleration
+        # braking curve v = sqrt(2 a d) once the required stopping distance is
+        # reached, so the far field still runs at its configured limit while the
+        # last centimetres slow down smoothly instead of stepping at a fixed
+        # range. A lower deceleration brakes earlier and docks more gently.
+        self.near_dock_decel = max(0.0, float(getattr(tuning, "NearDockDecelMps2", 0.6)))
         self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
         self.ball_jump_confirm_frames = max(
             1, int(getattr(tuning, "BallJumpConfirmFrames", 2))
@@ -211,15 +219,17 @@ class LockSeries:
 
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(0.5)
-            # chassis.stop()
-            self._reset_lockball_pid()
-            return True
-        if ball == BALL_NOT_FOUND:
             peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
+            return True
+        elif ball == BALL_NOT_FOUND:
+            peripheral.Dribble(0.2)
+            chassis.stop()
+            self._reset_lockball_pid()
             return False
+        else:
+            peripheral.Dribble(0.3)
 
         ball_x, ball_y = ball[0], ball[1]
         if ball_x == 0 and ball_y == 0:
@@ -238,7 +248,7 @@ class LockSeries:
                 -self.turn_only_max,
                 min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
             )
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.RobotMoveVector(0.0, 0.0, speed_w)
             return False
 
@@ -250,7 +260,7 @@ class LockSeries:
             speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
             speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
             speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
 
@@ -265,7 +275,22 @@ class LockSeries:
             creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
             speed_x = max(float(speed_x), creep)
 
-        peripheral.Dribble(True)
+        # Gentle final dock: cap the forward speed on a continuous v = sqrt(2 a d)
+        # braking curve so the robot does not punch a low-power-held ball back out
+        # on contact while still approaching at full speed from far away. The
+        # cruise limit comes from the live pan_x output limit so tuning one knob
+        # (ForwardMaxMps) automatically moves where braking starts.
+        if self.near_dock_decel > 0.0:
+            cruise = abs(float(self.pan_x.output_limits[0]))
+            remaining_m = max(0.0, float(ball_x) - self.catch_x) / 100.0
+            brake_start_m = (cruise * cruise) / (2.0 * self.near_dock_decel)
+            if cruise > 0.0 and remaining_m < brake_start_m:
+                speed_x = min(
+                    float(speed_x),
+                    math.sqrt(2.0 * self.near_dock_decel * remaining_m),
+                )
+
+        peripheral.Dribble(0.3)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
@@ -291,7 +316,7 @@ def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
     ball = UnitedPosition.RobotBallPos()
     Aim_Angle = Aim_Angle%360
     if lockball.LockBallSlip() == True:
-        peripheral.Dribble(True)
+        peripheral.Dribble(0.2)
         # Robot-frame ball angle (0=forward)
         iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
         Error = angle_error_deg(Aim_Angle, yaw)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -42,6 +43,17 @@ def test_lockball_loads_all_pid_terms_and_output_limits(monkeypatch):
     assert lock.pan_w.output_limits == (-85.0, 85.0)
 
 
+def test_lockball_loads_near_dock_envelope(monkeypatch):
+    tuning = SimpleNamespace(
+        NearDockDecelMps2=0.6,
+    )
+    monkeypatch.setattr(basic.Settings.Motion, "LockBallSlip", tuning)
+
+    lock = basic.LockSeries()
+
+    assert lock.near_dock_decel == 0.6
+
+
 def _lock_with_observations(monkeypatch, observations):
     values = iter(observations)
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(values))
@@ -78,6 +90,57 @@ def test_lockball_discards_a_single_jump_when_observation_recovers(monkeypatch):
     assert accepted == [[20.0, 0.0], [20.0, 0.0], [21.0, 1.0]]
     assert lock._lockball_last_seen == [21.0, 1.0]
     assert resets == []
+
+
+def _capture_move(monkeypatch, ball_xy):
+    lock, _ = _lock_with_observations(monkeypatch, (ball_xy,))
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    moves = []
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
+    return lock, moves
+
+
+def test_lockball_brakes_on_curve_close_to_ball(monkeypatch):
+    lock, moves = _capture_move(monkeypatch, (12.0, 0.0))
+    lock.pan_x.setpoint = 6.0
+    lock.pan_x.tunings = (0.1, 0.0, 0.0)
+    lock.pan_x.output_limits = (-0.8, 0.8)
+    lock.near_dock_decel = 0.2
+
+    assert lock.LockBallSlip() is False
+    # 0.1 * (12 - 6) = 0.6 would be commanded without the braking curve;
+    # the curve caps it at sqrt(2*0.2*0.06) ~= 0.155.
+    assert moves[-1][0] <= math.sqrt(2.0 * 0.2 * 0.06) + 1e-9
+
+
+def test_lockball_braking_curve_fades_with_distance(monkeypatch):
+    ball = [20.0, 0.0]
+    monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: list(ball))
+    lock = basic.LockSeries()
+    lock.pan_x.setpoint = 6.0
+    lock.pan_x.tunings = (0.025, 0.0, 0.0)
+    lock.pan_x.output_limits = (-0.8, 0.8)
+    lock.pan_x.sample_time = None
+    lock.near_dock_decel = 0.5
+    lock.ball_jump_reject_cm = 1000.0
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    moves = []
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
+
+    # 12cm: inside the brake zone (starts at 0.8^2/(2*0.5) = 64cm).
+    ball[0] = 12.0
+    assert lock.LockBallSlip() is False
+    near_speed = moves[-1][0]
+
+    # 60cm: near the edge of the brake zone, so it runs much faster.
+    ball[0] = 60.0
+    lock.pan_x.reset()
+    assert lock.LockBallSlip() is False
+    far_speed = moves[-1][0]
+
+    assert far_speed > near_speed
 
 
 def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
