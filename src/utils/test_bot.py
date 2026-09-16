@@ -1,16 +1,28 @@
-# test_bot.py
+"""Small hardware smoke test for the IceLoong serial protocol."""
 
-import time
+import argparse
 import logging
+import os
+import time
+
 from IceLoongBits import IceLoongBits, Commands
 
+
 def main():
-    # 根据实际设备修改端口（Linux通常为/dev/ttyUSB0，Windows为COM3等）
-    PORT = "/dev/ttyTHS1"
-    # PORT = "/dev/iceloong"
-    # PORT = "/dev/ttyUSB0"
-    
-    with IceLoongBits(port=PORT,testing=True) as bot:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--port",
+        default=os.environ.get("ICELOONG_PORT", "/dev/ttyTHS1"),
+        help="STM32 host UART (default: ICELOONG_PORT or /dev/ttyTHS1)",
+    )
+    parser.add_argument(
+        "--send-hex",
+        default="",
+        help="optional LINK_SEND payload, encoded as hexadecimal",
+    )
+    args = parser.parse_args()
+
+    with IceLoongBits(port=args.port, testing=True) as bot:
 
         # 测试1：单命令 - 握手
         print("\n=== 测试1: 单命令 (HAND_SHAKE) ===")
@@ -29,6 +41,16 @@ def main():
             # (Commands.MORSE_PLAY, "Hello")
         ])
         print("响应:", resp2)
+
+        if args.send_hex:
+            payload = bytes.fromhex(args.send_hex)
+            print(f"\n=== 测试3: LINK_SEND ({len(payload)} bytes) ===")
+            response = bot.ExecuteCommands([(Commands.LINK_SEND, payload)])
+            print("响应:", response)
+
+        print("\n=== 测试4: LINK_GET (variable payload) ===")
+        response = bot.ExecuteCommands([(Commands.LINK_GET,)])
+        print("响应:", response)
 
 if __name__ == "__main__":
     try:

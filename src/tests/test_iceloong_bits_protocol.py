@@ -16,6 +16,8 @@ def test_command_table_matches_motion_controller_firmware():
         ("SET_DRIBBLE_SPEED", 0x06),
         ("GET_REFEREE_UNLOCK_PIN", 0x07),
         ("MORSE_PLAY", 0x08),
+        ("LINK_SEND", 0x09),
+        ("LINK_GET", 0x0A),
     ]
     assert COMMAND_RESPONSE_LENGTHS == {
         Commands.HAND_SHAKE: 1,
@@ -26,7 +28,48 @@ def test_command_table_matches_motion_controller_firmware():
         Commands.SET_DRIBBLE_SPEED: 1,
         Commands.GET_REFEREE_UNLOCK_PIN: 2,
         Commands.MORSE_PLAY: 1,
+        Commands.LINK_SEND: 1,
+        Commands.LINK_GET: None,
     }
+
+
+def test_link_send_encodes_u16_length_and_payload():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    payload = bytes(range(32))
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, payload)]) == [(0x89,)]
+    assert sent == [(
+        b"\x09" + struct.pack("<H", len(payload)) + payload,
+        True,
+        1,
+        0.05,
+    )]
+
+
+def test_link_get_reads_variable_length_response():
+    bits = IceLoongBits(testing=True)
+    payload = bytes(range(37))
+    sent = []
+
+    def send_variable(data, response_timeout):
+        sent.append((data, response_timeout))
+        return b"\x8a" + struct.pack("<H", len(payload)) + payload
+
+    bits._SendVariableHex = send_variable
+
+    response = bits.ExecuteCommands([(Commands.LINK_GET,)])
+    bits._ApplyResponses(response)
+
+    assert sent == [(b"\x0a", 0.05)]
+    assert response == [(0x8A, payload)]
+    assert bits.GetLinkData() == payload
 
 
 def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():

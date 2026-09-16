@@ -23,6 +23,8 @@ class Commands(IntEnum):
     SET_DRIBBLE_SPEED      = 0x06
     GET_REFEREE_UNLOCK_PIN = 0x07
     MORSE_PLAY             = 0x08
+    LINK_SEND              = 0x09
+    LINK_GET               = 0x0A
 
 
 COMMAND_RESPONSE_LENGTHS = {
@@ -34,6 +36,8 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.SET_DRIBBLE_SPEED:      1,
     Commands.GET_REFEREE_UNLOCK_PIN: 1 + 1,
     Commands.MORSE_PLAY:             1,
+    Commands.LINK_SEND:              1,
+    Commands.LINK_GET:               None,
 }
 
 MAX_DRIBBLE_INPUT = 1.0
@@ -45,6 +49,8 @@ ROOM_SIZE_ERROR = (
     "room size must be positive finite millimetres in horizontal, vertical order"
 )
 MM_PER_CM = 10.0
+MAX_LINK_PAYLOAD = 224
+LINK_GET_HEADER_LENGTH = 3
 
 
 class IceLoongBits:
@@ -76,7 +82,8 @@ class IceLoongBits:
             'SET_WHEELS_SPEED': (0,0,0,0),
             'SET_DRIBBLE_SPEED': 0.0,
             'GET_REFEREE_UNLOCK_PIN': True,
-            'MORSE_PLAY': None
+            'MORSE_PLAY': None,
+            'LINK_SEND': None,
         }
 
         self.yaw = 0.0
@@ -85,6 +92,7 @@ class IceLoongBits:
         self.position_mm = None
         self.pose = None
         self.referee_key = False
+        self.link_data = None
         self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例）
@@ -214,8 +222,10 @@ class IceLoongBits:
                 "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
                 "SET_DRIBBLE_SPEED": self.CommandLine["SET_DRIBBLE_SPEED"],
                 "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
+                "LINK_SEND": self.CommandLine["LINK_SEND"],
             }
             self.CommandLine["MORSE_PLAY"] = None
+            self.CommandLine["LINK_SEND"] = None
         return snapshot
 
     def _SendUnitedCommandOnce(self):
@@ -230,6 +240,9 @@ class IceLoongBits:
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
 
+        if snapshot["LINK_SEND"] is not None:
+            self.ExecuteCommands([(Commands.LINK_SEND, snapshot["LINK_SEND"])])
+
         _CommandList = []
         if snapshot["HAND_SHAKE"]:
             _CommandList.append((Commands.HAND_SHAKE,))
@@ -239,6 +252,9 @@ class IceLoongBits:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
 
         response = self.ExecuteCommands(_CommandList)
+        self._ApplyResponses(response)
+
+        response = self.ExecuteCommands([(Commands.LINK_GET,)])
         self._ApplyResponses(response)
 
     def _ApplyResponses(self, response):
@@ -274,6 +290,8 @@ class IceLoongBits:
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     _, referee_key = i
                     self.referee_key = bool(referee_key)
+                case Commands.LINK_GET:
+                    self.link_data = bytes(i[1])
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -366,6 +384,65 @@ class IceLoongBits:
                 if response_timeout is not None:
                     self.ser.timeout = old_timeout
 
+    def _SendVariableHex(self, data: bytes, response_timeout: float = 0.05) -> bytes:
+        """发送命令并读取 ``response-id + u16 length + payload`` 响应。"""
+        with self._io_lock:
+            if serial is None:
+                raise RuntimeError("pyserial 未安装，请运行: pip install pyserial")
+            if not self.ser or not getattr(self.ser, "is_open", False):
+                self.OpenPort()
+
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+
+            try:
+                self.ser.write(data)
+                self.ser.flush()
+            except SerialException:
+                raise
+            except OSError as e:
+                raise SerialException(f"Serial write failed: {e}") from e
+
+            old_timeout = getattr(self.ser, "timeout", None)
+            self.ser.timeout = response_timeout
+            try:
+                header = self.ser.read(LINK_GET_HEADER_LENGTH)
+                if len(header) != LINK_GET_HEADER_LENGTH:
+                    return b""
+                payload_len = struct.unpack("<H", header[1:3])[0]
+                if header[0] != (Commands.LINK_GET | 0x80) or payload_len > MAX_LINK_PAYLOAD:
+                    return b""
+                payload = self.ser.read(payload_len)
+                if len(payload) != payload_len:
+                    return b""
+                return header + payload
+            except SerialException:
+                raise
+            except OSError as e:
+                raise SerialException(f"Serial read failed: {e}") from e
+            finally:
+                self.ser.timeout = old_timeout
+
+    def _ExecuteLinkGet(self) -> list[tuple]:
+        try:
+            response = self._SendVariableHex(bytes([Commands.LINK_GET]), 0.05)
+        except SerialException as e:
+            self.logger.warning(f"LINK_GET failed due to serial error: {e}")
+            self._HandleSerialError(e)
+            return []
+        except Exception as e:
+            self.logger.exception(f"LINK_GET failed with unexpected error: {e}")
+            return []
+
+        if len(response) < LINK_GET_HEADER_LENGTH or response[0] != (Commands.LINK_GET | 0x80):
+            return []
+        payload_len = struct.unpack("<H", response[1:3])[0]
+        if len(response) != LINK_GET_HEADER_LENGTH + payload_len:
+            return []
+        return [(response[0], bytes(response[3:]))]
+
     def __enter__(self):
         self.OpenPort()
         return self
@@ -385,6 +462,11 @@ class IceLoongBits:
         Note:
             此方法会捕获串口异常并尝试重连，不会向调用者抛出异常。
         """
+        if any(cmd[0] == Commands.LINK_GET for cmd in commands):
+            if len(commands) != 1:
+                raise ValueError("LINK_GET must be sent as a standalone command")
+            return self._ExecuteLinkGet()
+
         if len(commands) > 1:
             tx_bytes, resp_len = bytes([0x00]), 1
         else:
@@ -424,9 +506,16 @@ class IceLoongBits:
                         raw += b'\x00'
                     length = len(raw)
                     tx_bytes += bytes([cmd[0], length]) + raw
+                case Commands.LINK_SEND:
+                    if len(cmd) != 2:
+                        raise ValueError("LINK_SEND requires one bytes-like payload")
+                    payload = self._NormalizeLinkPayload(cmd[1])
+                    tx_bytes += bytes([cmd[0]]) + struct.pack("<H", len(payload)) + payload
                 case _:
                     continue
-            resp_len += COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
+            response_length = COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
+            if response_length is not None:
+                resp_len += response_length
 
         if len(commands) > 1:
             tx_bytes += bytes([0])
@@ -467,9 +556,12 @@ class IceLoongBits:
                         rx_data.append((resp[i], resp[i+1]))
                     case Commands.MORSE_PLAY:
                         rx_data.append((resp[i],))
+                    case Commands.LINK_SEND:
+                        rx_data.append((resp[i],))
                     case _:
                         break
-                i += COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
+                response_length = COMMAND_RESPONSE_LENGTHS.get(resp[i] ^ 0x80, 1)
+                i += response_length if response_length is not None else 1
         return rx_data
 
     def GetYaw(self) -> float:
@@ -606,6 +698,37 @@ class IceLoongBits:
         response = self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, speed)])
         self._ApplyResponses(response)
         return response
+
+    @staticmethod
+    def _NormalizeLinkPayload(value) -> bytes:
+        if isinstance(value, memoryview):
+            value = value.tobytes()
+        elif isinstance(value, bytearray):
+            value = bytes(value)
+        elif isinstance(value, bytes):
+            pass
+        else:
+            raise ValueError("LINK payload must be bytes-like")
+        if not value or len(value) > MAX_LINK_PAYLOAD:
+            raise ValueError(
+                f"LINK payload length must be from 1 to {MAX_LINK_PAYLOAD} bytes"
+            )
+        return value
+
+    def SendLinkData(self, payload) -> bool:
+        """保存一份待发送的最新链路 Payload。"""
+        payload = self._NormalizeLinkPayload(payload)
+        with self._command_lock:
+            self.CommandLine["LINK_SEND"] = payload
+        return True
+
+    def GetLinkData(self):
+        """返回最近一次从另一台机器收到的 Payload。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            response = self.ExecuteCommands([(Commands.LINK_GET,)])
+            self._ApplyResponses(response)
+        return self.link_data
 
     def SetWheelSpeed(self, Speed1, Speed2, Speed3, Speed4):
         """设置轮子速度"""
