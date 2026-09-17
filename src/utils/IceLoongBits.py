@@ -25,6 +25,8 @@ class Commands(IntEnum):
     MORSE_PLAY             = 0x08
     LINK_SEND              = 0x09
     LINK_GET               = 0x0A
+    GET_DRIBBLE_CURRENT    = 0x0B
+    GET_BATTERY_VOLTAGE    = 0x0C
 
 
 COMMAND_RESPONSE_LENGTHS = {
@@ -38,6 +40,8 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.MORSE_PLAY:             1,
     Commands.LINK_SEND:              1,
     Commands.LINK_GET:               None,
+    Commands.GET_DRIBBLE_CURRENT:    1 + 4,
+    Commands.GET_BATTERY_VOLTAGE:    1 + 4,
 }
 
 MAX_DRIBBLE_INPUT = 1.0
@@ -82,6 +86,8 @@ class IceLoongBits:
             'SET_WHEELS_SPEED': (0,0,0,0),
             'SET_DRIBBLE_SPEED': 0.0,
             'GET_REFEREE_UNLOCK_PIN': True,
+            'GET_DRIBBLE_CURRENT': True,
+            'GET_BATTERY_VOLTAGE': True,
             'MORSE_PLAY': None,
             'LINK_SEND': None,
         }
@@ -92,6 +98,8 @@ class IceLoongBits:
         self.position_mm = None
         self.pose = None
         self.referee_key = False
+        self.dribble_current = None
+        self.battery_voltage = None
         self.link_data = None
         self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
@@ -219,6 +227,8 @@ class IceLoongBits:
                 "HAND_SHAKE": self.CommandLine["HAND_SHAKE"],
                 "GET_POSE": self.CommandLine["GET_POSE"],
                 "GET_REFEREE_UNLOCK_PIN": self.CommandLine["GET_REFEREE_UNLOCK_PIN"],
+                "GET_DRIBBLE_CURRENT": self.CommandLine["GET_DRIBBLE_CURRENT"],
+                "GET_BATTERY_VOLTAGE": self.CommandLine["GET_BATTERY_VOLTAGE"],
                 "SET_WHEELS_SPEED": tuple(self.CommandLine["SET_WHEELS_SPEED"]),
                 "SET_DRIBBLE_SPEED": self.CommandLine["SET_DRIBBLE_SPEED"],
                 "MORSE_PLAY": self.CommandLine["MORSE_PLAY"],
@@ -250,6 +260,10 @@ class IceLoongBits:
             _CommandList.append((Commands.GET_POSE,))
         if snapshot["GET_REFEREE_UNLOCK_PIN"]:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
+        if snapshot["GET_DRIBBLE_CURRENT"]:
+            _CommandList.append((Commands.GET_DRIBBLE_CURRENT,))
+        if snapshot["GET_BATTERY_VOLTAGE"]:
+            _CommandList.append((Commands.GET_BATTERY_VOLTAGE,))
 
         response = self.ExecuteCommands(_CommandList)
         self._ApplyResponses(response)
@@ -290,6 +304,12 @@ class IceLoongBits:
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     _, referee_key = i
                     self.referee_key = bool(referee_key)
+                case Commands.GET_DRIBBLE_CURRENT:
+                    _, dribble_current = i
+                    self.dribble_current = dribble_current
+                case Commands.GET_BATTERY_VOLTAGE:
+                    _, battery_voltage = i
+                    self.battery_voltage = battery_voltage
                 case Commands.LINK_GET:
                     self.link_data = bytes(i[1])
 
@@ -499,6 +519,10 @@ class IceLoongBits:
                     )
                 case Commands.GET_REFEREE_UNLOCK_PIN:
                     tx_bytes += bytes([cmd[0]])
+                case Commands.GET_DRIBBLE_CURRENT:
+                    tx_bytes += bytes([cmd[0]])
+                case Commands.GET_BATTERY_VOLTAGE:
+                    tx_bytes += bytes([cmd[0]])
                 case Commands.MORSE_PLAY:
                     msg = str(cmd[1]) if len(cmd) > 1 else ""
                     raw = msg.encode('ascii', errors='replace')[:23]
@@ -554,6 +578,10 @@ class IceLoongBits:
                         rx_data.append((resp[i],))
                     case Commands.GET_REFEREE_UNLOCK_PIN:
                         rx_data.append((resp[i], resp[i+1]))
+                    case Commands.GET_DRIBBLE_CURRENT:
+                        rx_data.append((resp[i], *struct.unpack('<f', resp[i+1:i+5])))
+                    case Commands.GET_BATTERY_VOLTAGE:
+                        rx_data.append((resp[i], *struct.unpack('<f', resp[i+1:i+5])))
                     case Commands.MORSE_PLAY:
                         rx_data.append((resp[i],))
                     case Commands.LINK_SEND:
@@ -744,6 +772,36 @@ class IceLoongBits:
         """获取裁判解锁状态"""
         with self._command_lock:
             return self.referee_key
+
+    def _RefreshDribbleCurrent(self):
+        response = self.ExecuteCommands([(Commands.GET_DRIBBLE_CURRENT,)])
+        self._ApplyResponses(response)
+        return self.dribble_current
+
+    def GetDribbleCurrent(self):
+        """获取盘球电流（安培），尚未读到有效值时返回 ``None``。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            try:
+                self._RefreshDribbleCurrent()
+            except Exception as e:
+                self.logger.debug(f"Refresh dribble current failed: {e}")
+        return self.dribble_current
+
+    def _RefreshBatteryVoltage(self):
+        response = self.ExecuteCommands([(Commands.GET_BATTERY_VOLTAGE,)])
+        self._ApplyResponses(response)
+        return self.battery_voltage
+
+    def GetBatteryVoltage(self):
+        """获取电池电压（伏特），尚未读到有效值时返回 ``None``。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            try:
+                self._RefreshBatteryVoltage()
+            except Exception as e:
+                self.logger.debug(f"Refresh battery voltage failed: {e}")
+        return self.battery_voltage
 
     def Shutdown(self):
         """安全关闭串口和后台线程。"""

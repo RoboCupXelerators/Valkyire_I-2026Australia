@@ -52,6 +52,11 @@ def main():
         response = bot.ExecuteCommands([(Commands.LINK_GET,)])
         print("响应:", response)
 
+        # 测试5：盘球电流与电池电压
+        print("\n=== 测试5: 盘球电流 / 电池电压 ===")
+        print("盘球电流(A):", bot.GetDribbleCurrent())
+        print("电池电压(V):", bot.GetBatteryVoltage())
+
 if __name__ == "__main__":
     try:
         main()

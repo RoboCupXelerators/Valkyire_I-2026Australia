@@ -18,6 +18,8 @@ def test_command_table_matches_motion_controller_firmware():
         ("MORSE_PLAY", 0x08),
         ("LINK_SEND", 0x09),
         ("LINK_GET", 0x0A),
+        ("GET_DRIBBLE_CURRENT", 0x0B),
+        ("GET_BATTERY_VOLTAGE", 0x0C),
     ]
     assert COMMAND_RESPONSE_LENGTHS == {
         Commands.HAND_SHAKE: 1,
@@ -30,6 +32,8 @@ def test_command_table_matches_motion_controller_firmware():
         Commands.MORSE_PLAY: 1,
         Commands.LINK_SEND: 1,
         Commands.LINK_GET: None,
+        Commands.GET_DRIBBLE_CURRENT: 5,
+        Commands.GET_BATTERY_VOLTAGE: 5,
     }
 
 
@@ -267,3 +271,68 @@ def test_referee_unlock_state_tracks_both_pin_levels():
 
     bits._ApplyResponses([(0x87, 0)])
     assert bits.GetRefereeUnlockPin() is False
+
+
+def test_get_dribble_current_decodes_float_amperes():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return bytes([0x8B]) + struct.pack("<f", 6.25)
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([(Commands.GET_DRIBBLE_CURRENT,)])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x0b", True, 5, 0.05)]
+    assert decoded == [(0x8B, 6.25)]
+    assert bits.GetDribbleCurrent() == pytest.approx(6.25)
+
+
+def test_get_battery_voltage_decodes_float_volts():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return bytes([0x8C]) + struct.pack("<f", 11.875)
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([(Commands.GET_BATTERY_VOLTAGE,)])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x0c", True, 5, 0.05)]
+    assert decoded == [(0x8C, 11.875)]
+    assert bits.GetBatteryVoltage() == pytest.approx(11.875)
+
+
+def test_composite_command_reads_dribble_current_and_battery_voltage():
+    bits = IceLoongBits(testing=True)
+    response = (
+        b"\x80\x8B"
+        + struct.pack("<f", 1.5)
+        + b"\x8C"
+        + struct.pack("<f", 12.125)
+        + b"\x80"
+    )
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, response_length))
+        return response
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([
+        (Commands.GET_DRIBBLE_CURRENT,),
+        (Commands.GET_BATTERY_VOLTAGE,),
+    ])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x00\x0b\x0c\x00", 12)]
+    assert decoded == [(0x8B, 1.5), (0x8C, 12.125)]
+    assert bits.dribble_current == pytest.approx(1.5)
+    assert bits.battery_voltage == pytest.approx(12.125)
