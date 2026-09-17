@@ -175,3 +175,76 @@ def test_lockball_confirm_frame_setting_is_respected(monkeypatch, confirm_frames
     }[confirm_frames]
     assert accepted[confirm_frames] == expected_target
     assert len(resets) == 1
+
+
+def _turn_harness(monkeypatch, yaw, holding=True):
+    calls = []
+    monkeypatch.setattr(basic.lockball, "LockBallSlip", lambda: holding)
+    monkeypatch.setattr(basic.chassis, "GetYaw", lambda: yaw)
+    monkeypatch.setattr(
+        basic.chassis,
+        "RobotMoveTwist",
+        lambda vx, vy, wz: calls.append(("twist", vx, vy, wz)),
+    )
+    monkeypatch.setattr(
+        basic.chassis,
+        "RobotMoveVector",
+        lambda vx, vy, wz: calls.append(("vector", vx, vy, wz)),
+    )
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: calls.append(("stop",)))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    return calls
+
+
+def test_turn_with_ball_keeps_chasing_when_not_holding(monkeypatch):
+    calls = _turn_harness(monkeypatch, 0.0, holding=False)
+
+    # Must not report success or command an orbit before the ball is held.
+    assert basic.TurnTo_with_ball(90) is False
+    assert calls == []
+
+
+def test_turn_with_ball_stops_when_aligned(monkeypatch):
+    calls = _turn_harness(monkeypatch, 90.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is True
+    assert calls == [("stop",)]
+
+
+def test_turn_with_ball_stop_uses_normalized_angle(monkeypatch):
+    # Raw abs(355 - 2) = 353 looks far, but the normalized error is 7 degrees.
+    calls = _turn_harness(monkeypatch, 2.0, holding=True)
+
+    assert basic.TurnTo_with_ball(355) is True
+    assert calls == [("stop",)]
+
+
+def test_turn_with_ball_orbits_toward_aim(monkeypatch):
+    calls = _turn_harness(monkeypatch, 0.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is False
+    kind, vx, vy, wz = calls[-1]
+    assert kind == "twist"
+    assert wz > 0  # counter-clockwise toward +90
+    # Historical wheel mix for a -90 degree error.
+    assert (round(vx, 3), round(vy, 3), round(wz, 3)) == (0.03, -0.27, 2.5)
+
+
+def test_turn_with_ball_orbits_the_other_way(monkeypatch):
+    calls = _turn_harness(monkeypatch, 180.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is False
+    _, _vx, _vy, wz = calls[-1]
+    assert wz < 0
+
+
+def test_turn_with_ball_speedk_scales_orbit(monkeypatch):
+    base = _turn_harness(monkeypatch, 0.0, holding=True)
+    assert basic.TurnTo_with_ball(90, 1.0) is False
+    base_wz = base[-1][3]
+
+    fast = _turn_harness(monkeypatch, 0.0, holding=True)
+    assert basic.TurnTo_with_ball(90, 2.0) is False
+    fast_wz = fast[-1][3]
+
+    assert fast_wz > base_wz

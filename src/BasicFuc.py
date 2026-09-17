@@ -303,36 +303,50 @@ lockball = LockSeries()
 def Circle(r, k = 1,d = 1):
     chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
 
-def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
+# TurnTo_with_ball tuning. The orbit radius matches the historical wheel mix;
+# the align tolerance is the heading band inside which the skill reports done.
+TURN_ORBIT_RADIUS = 0.6
+TURN_ALIGN_TOLERANCE_DEG = 15.0
+
+
+def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     """带球绕球转向到目标角度。
 
     这个函数不是普通原地转向。它故意用四轮差速让机器人围着已控住的球转，
     真实机器上比直接 FieldTurn/RobotTurn 更稳；模拟器物理不准时可能表现很差。
 
+    语义：未持球时只做追球并返回 False；持球后绕球转向，直到航向进入
+    ``TURN_ALIGN_TOLERANCE_DEG`` 才返回 True（此时会主动停车）。``SpeedK``
+    缩放绕球速度（None 等价 1.0），增益会被限制在 [-1, 1] 之内。
+
     TODO: 后续把轮速常量、角度误差和速度倍率整理成可读参数，并单独记录
     真机/模拟器差异。不要在未真机验证前改成普通旋转。
     """
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.RobotBallPos()
-    Aim_Angle = Aim_Angle%360
-    if lockball.LockBallSlip() == True:
-        peripheral.Dribble(0.2)
-        # Robot-frame ball angle (0=forward)
-        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
-        Error = angle_error_deg(Aim_Angle, yaw)
-        if Error < 180:
-            iDirectionFactor = -1
-        elif Error >= 180:
-            iDirectionFactor = 1
-        Error = LinearMap(Error,[-180,180],[-1,1])
-        if abs(Aim_Angle-yaw) >= 15:
-            # Intentional raw wheel mix: orbit around the held ball while turning.
-            Circle(0.6,Error,iDirectionFactor)
-            return False
-        else:
-            return True
-    else:
-        return lockball.LockBallSlip()
+    Aim_Angle = Aim_Angle % 360
+
+    # Not holding the ball yet: keep chasing this tick and report "not done".
+    # The old code called LockBallSlip() twice and returned the second result,
+    # which could report success without ever aligning.
+    if not lockball.LockBallSlip():
+        return False
+    peripheral.Dribble(0.2)
+
+    # Shortest signed heading error to the aim, normalized to [-180, 180).
+    error = angle_error_deg(Aim_Angle, yaw)
+    if abs(error) < TURN_ALIGN_TOLERANCE_DEG:
+        # Aligned: stop rather than let the previous orbit command keep turning.
+        chassis.stop()
+        return True
+
+    # Intentional raw wheel mix: orbit around the held ball while turning.
+    # LinearMap(error) gives the signed gain in [-1, 1]; the fixed d=-1 keeps
+    # the historical sign convention (positive error turns counter-clockwise).
+    speed_k = 1.0 if SpeedK is None else float(SpeedK)
+    gain = LinearMap(error, [-180, 180], [-1, 1]) * speed_k
+    gain = max(-1.0, min(1.0, gain))
+    Circle(TURN_ORBIT_RADIUS, gain, -1)
+    return False
 
 
 def Slipsideshot(attack_dir=1): #溜边
