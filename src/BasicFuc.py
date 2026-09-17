@@ -300,13 +300,75 @@ class LockSeries:
 
 lockball = LockSeries()
 
+# Historical orbit wheel mix: forward = 0.1*r, lateral = -0.9*r, yaw = 3/r.
+# The lateral term is large; during big turns it flings the ball sideways out
+# of a low-power gripper. TURN_ORBIT_LATERAL scales that term for the carry
+# skill (Circle keeps the historical 0.9 for other callers).
+def _orbit_twist(r, k=1, d=1, lateral=0.9):
+    """Raw wheel mix for :func:`Circle`; returned so callers can add a trim."""
+    return (0.1 * r * d * k, -lateral * r * d * k, 3 / r * d * k)
+
+
 def Circle(r, k = 1,d = 1):
-    chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
+    chassis.RobotMoveTwist(*_orbit_twist(r, k, d))
 
 # TurnTo_with_ball tuning. The orbit radius matches the historical wheel mix;
 # the align tolerance is the heading band inside which the skill reports done.
 TURN_ORBIT_RADIUS = 0.6
 TURN_ALIGN_TOLERANCE_DEG = 15.0
+# Carry orbit lateral scaling. 0.9 is the historical wheel mix and the value
+# validated on hardware; lower values were tested to cut the sideways fling on
+# big turns but measured worse (slower, and one ball loss), so keep 0.9.
+TURN_ORBIT_LATERAL = 0.9
+# Ball-hold envelope on the raw robot-frame ball coordinate. While carrying,
+# RobotBallPos() collapses to the BALL_HELD sentinel, but UnitedPosition.ballPos
+# keeps the raw vision reading, which is stable to ~0.1cm on hardware. Inside
+# the envelope the carry skill runs its own closed loop on that coordinate;
+# outside it hands back to LockBallSlip to re-seat the ball.
+TURN_HOLD_X_MIN_CM = 3.0
+TURN_HOLD_X_MAX_CM = 12.0
+TURN_HOLD_Y_ABS_CM = 4.0
+# Closed-loop hold gains: robot-frame velocity (m/s) per cm of ball offset from
+# CatchVal, layered on top of the orbit. +x drives forward, +y drives left, so a
+# ball ahead/left gets a positive correction (same sign as LockBallSlip's PIDs).
+TURN_HOLD_X_MPS_PER_CM = 0.0
+TURN_HOLD_Y_MPS_PER_CM = 0.0
+TURN_HOLD_MAX_MPS = 0.20
+
+
+def _clamp(value: float, limit: float) -> float:
+    return max(-limit, min(limit, value))
+
+
+def _raw_held_ball_xy():
+    """Return the raw robot-frame ball coordinate while held, or None.
+
+    ``RobotBallPos()`` returns the BALL_HELD sentinel once the ball is caught,
+    so callers that need the actual position must read ``UnitedPosition.ballPos``
+    (the raw reading populated as a side effect of the last RobotBallPos call).
+    Returns None when the reading is missing or still a sentinel.
+    """
+    raw = getattr(UnitedPosition, "ballPos", None)
+    if raw is None:
+        return None
+    try:
+        if len(raw) < 2:
+            return None
+        bx = float(raw[0])
+        by = float(raw[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    sentinel = {float(BALL_NOT_FOUND[0]), float(BALL_HELD[0]), 0.0}
+    if bx in sentinel or by in sentinel:
+        return None
+    return bx, by
+
+
+def _ball_seated(bx: float, by: float) -> bool:
+    """Whether a raw ball reading is still inside the carrying envelope."""
+    if bx < TURN_HOLD_X_MIN_CM or bx > TURN_HOLD_X_MAX_CM:
+        return False
+    return abs(by - lockball.catch_y) <= TURN_HOLD_Y_ABS_CM
 
 
 def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
@@ -319,17 +381,30 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     ``TURN_ALIGN_TOLERANCE_DEG`` 才返回 True（此时会主动停车）。``SpeedK``
     缩放绕球速度（None 等价 1.0），增益会被限制在 [-1, 1] 之内。
 
+    持球闭环：用 ``UnitedPosition.ballPos``（原始机体系坐标）作为持球反馈。
+    只要坐标还在持球包络内就持续绕球，不会因为 ``RobotBallPos`` 的持球语义
+    抖动而中断（旧实现每拍先跑 LockBallSlip，语义闪一下就会打断绕球）；按
+    ``TURN_HOLD_X/Y_MPS_PER_CM`` 叠加位置修正保持球贴合 ``CatchVal``。坐标一旦
+    离开包络就交回 ``LockBallSlip`` 重新吃球，避免把球甩丢。
+
     TODO: 后续把轮速常量、角度误差和速度倍率整理成可读参数，并单独记录
     真机/模拟器差异。不要在未真机验证前改成普通旋转。
     """
     yaw = chassis.GetYaw()
     Aim_Angle = Aim_Angle % 360
 
-    # Not holding the ball yet: keep chasing this tick and report "not done".
-    # The old code called LockBallSlip() twice and returned the second result,
-    # which could report success without ever aligning.
-    if not lockball.LockBallSlip():
+    # Refresh the raw reading (side effect of RobotBallPos) and decide whether
+    # we already hold the ball. This is deliberately checked BEFORE LockBallSlip
+    # so a momentary semantic dropout cannot interrupt an in-progress carry.
+    UnitedPosition.RobotBallPos()
+    ball = _raw_held_ball_xy()
+    if ball is None or not _ball_seated(ball[0], ball[1]):
+        # Not measurably seated: let LockBallSlip chase/capture and report
+        # "not done". Do NOT forward its return value: a semantic "caught" with
+        # an out-of-envelope raw reading must not be reported as an aligned turn.
+        lockball.LockBallSlip()
         return False
+
     peripheral.Dribble(0.2)
 
     # Shortest signed heading error to the aim, normalized to [-180, 180).
@@ -345,7 +420,17 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     speed_k = 1.0 if SpeedK is None else float(SpeedK)
     gain = LinearMap(error, [-180, 180], [-1, 1]) * speed_k
     gain = max(-1.0, min(1.0, gain))
-    Circle(TURN_ORBIT_RADIUS, gain, -1)
+    vx, vy, wz = _orbit_twist(TURN_ORBIT_RADIUS, gain, -1, TURN_ORBIT_LATERAL)
+
+    # Position hold on top of the orbit. A ball ahead (ex>0) or left (ey>0) of
+    # CatchVal gets a positive (forward/left) correction, matching the sign of
+    # LockBallSlip's pan_x / pan_y loops.
+    ex = ball[0] - lockball.catch_x
+    ey = ball[1] - lockball.catch_y
+    vx += _clamp(TURN_HOLD_X_MPS_PER_CM * ex, TURN_HOLD_MAX_MPS)
+    vy += _clamp(TURN_HOLD_Y_MPS_PER_CM * ey, TURN_HOLD_MAX_MPS)
+
+    chassis.RobotMoveTwist(vx, vy, wz)
     return False
 
 
