@@ -16,6 +16,10 @@ def test_command_table_matches_motion_controller_firmware():
         ("SET_DRIBBLE_SPEED", 0x06),
         ("GET_REFEREE_UNLOCK_PIN", 0x07),
         ("MORSE_PLAY", 0x08),
+        ("LINK_SEND", 0x09),
+        ("LINK_GET", 0x0A),
+        ("GET_DRIBBLE_CURRENT", 0x0B),
+        ("GET_BATTERY_VOLTAGE", 0x0C),
     ]
     assert COMMAND_RESPONSE_LENGTHS == {
         Commands.HAND_SHAKE: 1,
@@ -26,7 +30,196 @@ def test_command_table_matches_motion_controller_firmware():
         Commands.SET_DRIBBLE_SPEED: 1,
         Commands.GET_REFEREE_UNLOCK_PIN: 2,
         Commands.MORSE_PLAY: 1,
+        Commands.LINK_SEND: 1,
+        Commands.LINK_GET: None,
+        Commands.GET_DRIBBLE_CURRENT: 5,
+        Commands.GET_BATTERY_VOLTAGE: 5,
     }
+
+
+def test_link_send_encodes_flags_u16_length_and_payload():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    payload = bytes(range(32))
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, payload)]) == [(0x89,)]
+    assert sent == [(
+        b"\x09\x00" + struct.pack("<H", len(payload)) + payload,
+        True,
+        1,
+        0.05,
+    )]
+
+
+def test_link_send_with_pose_marks_the_flag_byte_and_keeps_one_byte_payloads():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"\x2a", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x01\x00\x2a"]
+
+
+def test_link_send_payload_limits_follow_the_pose_flag():
+    bits = IceLoongBits(testing=True)
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(221))]) == [(0x89,)]
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(199), True)]) == [(0x89,)]
+
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222))])
+
+    with pytest.raises(ValueError, match="from 0 to 199 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(200), True)])
+
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"")])
+
+    with pytest.raises(ValueError, match="must be bytes-like"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, "strategy", True)])
+
+
+def test_link_send_accepts_a_pose_only_message():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x00\x00"]
+    assert bits.SendLinkData(b"", include_pose=True) is True
+    assert bits.CommandLine["LINK_SEND"] == (b"", True)
+
+
+def test_link_send_requires_a_payload_and_an_optional_pose_flag():
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="optional include_pose flag"):
+        bits.ExecuteCommands([(Commands.LINK_SEND,)])
+
+    with pytest.raises(ValueError, match="optional include_pose flag"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"\x01", True, 0)])
+
+
+def test_send_link_data_queues_one_message_with_the_pose_flag():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x80" * response_length
+
+    bits.SendHex = send_hex
+    bits._ExecuteLinkGet = lambda: []
+
+    assert bits.SendLinkData(b"strategy", include_pose=True) is True
+    bits._SendUnitedCommandOnce()
+
+    assert b"\x09\x01" + struct.pack("<H", 8) + b"strategy" in sent
+    assert bits.CommandLine["LINK_SEND"] is None
+
+
+def test_link_get_reads_variable_length_response():
+    bits = IceLoongBits(testing=True)
+    payload = b"\x00" + bytes(range(37))
+    sent = []
+
+    def send_variable(data, response_timeout):
+        sent.append((data, response_timeout))
+        return b"\x8a" + struct.pack("<H", len(payload)) + payload
+
+    bits._SendVariableHex = send_variable
+
+    response = bits.ExecuteCommands([(Commands.LINK_GET,)])
+    bits._ApplyResponses(response)
+
+    assert sent == [(b"\x0a", 0.05)]
+    assert response == [(0x8A, payload)]
+    assert bits.GetLinkData() == bytes(range(37))
+
+
+def test_link_get_exposes_the_peer_pose_and_strips_the_payload_header():
+    bits = IceLoongBits(testing=True)
+    payload = (
+        b"\x01"
+        + struct.pack("<ffffff", 30.0, 1.0, -2.0, 100.0, -200.0, 0.0)
+        + b"strategy"
+    )
+
+    bits._ApplyResponses([(0x8A, payload)])
+
+    assert bits.GetLinkData() == b"strategy"
+    assert bits.peer_position_mm == (100.0, -200.0, 0.0)
+    assert bits.GetPeerPose() == pytest.approx((10.0, -20.0, 30.0))
+    assert bits.GetPeerYaw() == pytest.approx(30.0)
+
+
+def test_link_get_without_a_pose_flag_only_exposes_the_payload():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"\x00strategy")])
+
+    assert bits.GetLinkData() == b"strategy"
+    assert bits.GetPeerPose() is None
+    assert bits.GetPeerYaw() is None
+    assert bits.peer_position_mm is None
+
+
+def test_link_get_without_application_data_reports_no_link_data():
+    bits = IceLoongBits(testing=True)
+    payload = b"\x01" + struct.pack("<ffffff", 30.0, 1.0, -2.0, 100.0, -200.0, 0.0)
+
+    bits._ApplyResponses([(0x8A, payload)])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() == pytest.approx((10.0, -20.0, 30.0))
+
+    bits._ApplyResponses([(0x8A, b"\x00")])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+
+def test_link_get_without_a_message_exposes_nothing():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"")])
+
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+
+def test_link_payload_with_a_broken_pose_is_ignored():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"\x01" + bytes(10))])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+    bits._ApplyResponses([(0x8A, b"\x00strategy")])
+    bits._ApplyResponses([
+        (0x8A, b"\x01" + struct.pack("<ffffff", math.inf, 0.0, 0.0, 1.0, 2.0, 0.0) + b"x")
+    ])
+    assert bits.GetLinkData() == b"x"
+    assert bits.GetPeerPose() is None
 
 
 def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():
@@ -224,3 +417,68 @@ def test_referee_unlock_state_tracks_both_pin_levels():
 
     bits._ApplyResponses([(0x87, 0)])
     assert bits.GetRefereeUnlockPin() is False
+
+
+def test_get_dribble_current_decodes_float_amperes():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return bytes([0x8B]) + struct.pack("<f", 6.25)
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([(Commands.GET_DRIBBLE_CURRENT,)])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x0b", True, 5, 0.05)]
+    assert decoded == [(0x8B, 6.25)]
+    assert bits.GetDribbleCurrent() == pytest.approx(6.25)
+
+
+def test_get_battery_voltage_decodes_float_volts():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, read_response, response_length, response_timeout))
+        return bytes([0x8C]) + struct.pack("<f", 11.875)
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([(Commands.GET_BATTERY_VOLTAGE,)])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x0c", True, 5, 0.05)]
+    assert decoded == [(0x8C, 11.875)]
+    assert bits.GetBatteryVoltage() == pytest.approx(11.875)
+
+
+def test_composite_command_reads_dribble_current_and_battery_voltage():
+    bits = IceLoongBits(testing=True)
+    response = (
+        b"\x80\x8B"
+        + struct.pack("<f", 1.5)
+        + b"\x8C"
+        + struct.pack("<f", 12.125)
+        + b"\x80"
+    )
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append((data, response_length))
+        return response
+
+    bits.SendHex = send_hex
+
+    decoded = bits.ExecuteCommands([
+        (Commands.GET_DRIBBLE_CURRENT,),
+        (Commands.GET_BATTERY_VOLTAGE,),
+    ])
+    bits._ApplyResponses(decoded)
+
+    assert sent == [(b"\x00\x0b\x0c\x00", 12)]
+    assert decoded == [(0x8B, 1.5), (0x8C, 12.125)]
+    assert bits.dribble_current == pytest.approx(1.5)
+    assert bits.battery_voltage == pytest.approx(12.125)

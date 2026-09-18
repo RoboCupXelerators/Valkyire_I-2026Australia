@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -42,6 +43,17 @@ def test_lockball_loads_all_pid_terms_and_output_limits(monkeypatch):
     assert lock.pan_w.output_limits == (-85.0, 85.0)
 
 
+def test_lockball_loads_near_dock_envelope(monkeypatch):
+    tuning = SimpleNamespace(
+        NearDockDecelMps2=0.6,
+    )
+    monkeypatch.setattr(basic.Settings.Motion, "LockBallSlip", tuning)
+
+    lock = basic.LockSeries()
+
+    assert lock.near_dock_decel == 0.6
+
+
 def _lock_with_observations(monkeypatch, observations):
     values = iter(observations)
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(values))
@@ -80,6 +92,57 @@ def test_lockball_discards_a_single_jump_when_observation_recovers(monkeypatch):
     assert resets == []
 
 
+def _capture_move(monkeypatch, ball_xy):
+    lock, _ = _lock_with_observations(monkeypatch, (ball_xy,))
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    moves = []
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
+    return lock, moves
+
+
+def test_lockball_brakes_on_curve_close_to_ball(monkeypatch):
+    lock, moves = _capture_move(monkeypatch, (12.0, 0.0))
+    lock.pan_x.setpoint = 6.0
+    lock.pan_x.tunings = (0.1, 0.0, 0.0)
+    lock.pan_x.output_limits = (-0.8, 0.8)
+    lock.near_dock_decel = 0.2
+
+    assert lock.LockBallSlip() is False
+    # 0.1 * (12 - 6) = 0.6 would be commanded without the braking curve;
+    # the curve caps it at sqrt(2*0.2*0.06) ~= 0.155.
+    assert moves[-1][0] <= math.sqrt(2.0 * 0.2 * 0.06) + 1e-9
+
+
+def test_lockball_braking_curve_fades_with_distance(monkeypatch):
+    ball = [20.0, 0.0]
+    monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: list(ball))
+    lock = basic.LockSeries()
+    lock.pan_x.setpoint = 6.0
+    lock.pan_x.tunings = (0.025, 0.0, 0.0)
+    lock.pan_x.output_limits = (-0.8, 0.8)
+    lock.pan_x.sample_time = None
+    lock.near_dock_decel = 0.5
+    lock.ball_jump_reject_cm = 1000.0
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    moves = []
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
+
+    # 12cm: inside the brake zone (starts at 0.8^2/(2*0.5) = 64cm).
+    ball[0] = 12.0
+    assert lock.LockBallSlip() is False
+    near_speed = moves[-1][0]
+
+    # 60cm: near the edge of the brake zone, so it runs much faster.
+    ball[0] = 60.0
+    lock.pan_x.reset()
+    assert lock.LockBallSlip() is False
+    far_speed = moves[-1][0]
+
+    assert far_speed > near_speed
+
+
 def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
     lock, _ = _lock_with_observations(monkeypatch, ([15.0, 60.0],))
     lock.turn_only_angle = 70.0
@@ -112,3 +175,76 @@ def test_lockball_confirm_frame_setting_is_respected(monkeypatch, confirm_frames
     }[confirm_frames]
     assert accepted[confirm_frames] == expected_target
     assert len(resets) == 1
+
+
+def _turn_harness(monkeypatch, yaw, holding=True):
+    calls = []
+    monkeypatch.setattr(basic.lockball, "LockBallSlip", lambda: holding)
+    monkeypatch.setattr(basic.chassis, "GetYaw", lambda: yaw)
+    monkeypatch.setattr(
+        basic.chassis,
+        "RobotMoveTwist",
+        lambda vx, vy, wz: calls.append(("twist", vx, vy, wz)),
+    )
+    monkeypatch.setattr(
+        basic.chassis,
+        "RobotMoveVector",
+        lambda vx, vy, wz: calls.append(("vector", vx, vy, wz)),
+    )
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: calls.append(("stop",)))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    return calls
+
+
+def test_turn_with_ball_keeps_chasing_when_not_holding(monkeypatch):
+    calls = _turn_harness(monkeypatch, 0.0, holding=False)
+
+    # Must not report success or command an orbit before the ball is held.
+    assert basic.TurnTo_with_ball(90) is False
+    assert calls == []
+
+
+def test_turn_with_ball_stops_when_aligned(monkeypatch):
+    calls = _turn_harness(monkeypatch, 90.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is True
+    assert calls == [("stop",)]
+
+
+def test_turn_with_ball_stop_uses_normalized_angle(monkeypatch):
+    # Raw abs(355 - 2) = 353 looks far, but the normalized error is 7 degrees.
+    calls = _turn_harness(monkeypatch, 2.0, holding=True)
+
+    assert basic.TurnTo_with_ball(355) is True
+    assert calls == [("stop",)]
+
+
+def test_turn_with_ball_orbits_toward_aim(monkeypatch):
+    calls = _turn_harness(monkeypatch, 0.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is False
+    kind, vx, vy, wz = calls[-1]
+    assert kind == "twist"
+    assert wz > 0  # counter-clockwise toward +90
+    # Historical wheel mix for a -90 degree error.
+    assert (round(vx, 3), round(vy, 3), round(wz, 3)) == (0.03, -0.27, 2.5)
+
+
+def test_turn_with_ball_orbits_the_other_way(monkeypatch):
+    calls = _turn_harness(monkeypatch, 180.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is False
+    _, _vx, _vy, wz = calls[-1]
+    assert wz < 0
+
+
+def test_turn_with_ball_speedk_scales_orbit(monkeypatch):
+    base = _turn_harness(monkeypatch, 0.0, holding=True)
+    assert basic.TurnTo_with_ball(90, 1.0) is False
+    base_wz = base[-1][3]
+
+    fast = _turn_harness(monkeypatch, 0.0, holding=True)
+    assert basic.TurnTo_with_ball(90, 2.0) is False
+    fast_wz = fast[-1][3]
+
+    assert fast_wz > base_wz

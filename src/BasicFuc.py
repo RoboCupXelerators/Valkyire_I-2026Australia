@@ -77,6 +77,14 @@ class LockSeries:
         self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 85.0)))
         self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
         self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.10)))
+        # Docking: a fast approach carries too much momentum for the low-power
+        # dribbler to hold, so the ball gets punched back out right before it
+        # seats. The forward speed is capped on a continuous constant-deceleration
+        # braking curve v = sqrt(2 a d) once the required stopping distance is
+        # reached, so the far field still runs at its configured limit while the
+        # last centimetres slow down smoothly instead of stepping at a fixed
+        # range. A lower deceleration brakes earlier and docks more gently.
+        self.near_dock_decel = max(0.0, float(getattr(tuning, "NearDockDecelMps2", 0.6)))
         self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
         self.ball_jump_confirm_frames = max(
             1, int(getattr(tuning, "BallJumpConfirmFrames", 2))
@@ -211,15 +219,17 @@ class LockSeries:
 
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(0.5)
-            # chassis.stop()
-            self._reset_lockball_pid()
-            return True
-        if ball == BALL_NOT_FOUND:
             peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
+            return True
+        elif ball == BALL_NOT_FOUND:
+            peripheral.Dribble(0.2)
+            chassis.stop()
+            self._reset_lockball_pid()
             return False
+        else:
+            peripheral.Dribble(0.3)
 
         ball_x, ball_y = ball[0], ball[1]
         if ball_x == 0 and ball_y == 0:
@@ -238,7 +248,7 @@ class LockSeries:
                 -self.turn_only_max,
                 min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
             )
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.RobotMoveVector(0.0, 0.0, speed_w)
             return False
 
@@ -250,7 +260,7 @@ class LockSeries:
             speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
             speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
             speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
 
@@ -265,7 +275,22 @@ class LockSeries:
             creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
             speed_x = max(float(speed_x), creep)
 
-        peripheral.Dribble(True)
+        # Gentle final dock: cap the forward speed on a continuous v = sqrt(2 a d)
+        # braking curve so the robot does not punch a low-power-held ball back out
+        # on contact while still approaching at full speed from far away. The
+        # cruise limit comes from the live pan_x output limit so tuning one knob
+        # (ForwardMaxMps) automatically moves where braking starts.
+        if self.near_dock_decel > 0.0:
+            cruise = abs(float(self.pan_x.output_limits[0]))
+            remaining_m = max(0.0, float(ball_x) - self.catch_x) / 100.0
+            brake_start_m = (cruise * cruise) / (2.0 * self.near_dock_decel)
+            if cruise > 0.0 and remaining_m < brake_start_m:
+                speed_x = min(
+                    float(speed_x),
+                    math.sqrt(2.0 * self.near_dock_decel * remaining_m),
+                )
+
+        peripheral.Dribble(0.3)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
@@ -278,36 +303,50 @@ lockball = LockSeries()
 def Circle(r, k = 1,d = 1):
     chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
 
-def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
+# TurnTo_with_ball tuning. The orbit radius matches the historical wheel mix;
+# the align tolerance is the heading band inside which the skill reports done.
+TURN_ORBIT_RADIUS = 0.6
+TURN_ALIGN_TOLERANCE_DEG = 15.0
+
+
+def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     """带球绕球转向到目标角度。
 
     这个函数不是普通原地转向。它故意用四轮差速让机器人围着已控住的球转，
     真实机器上比直接 FieldTurn/RobotTurn 更稳；模拟器物理不准时可能表现很差。
 
+    语义：未持球时只做追球并返回 False；持球后绕球转向，直到航向进入
+    ``TURN_ALIGN_TOLERANCE_DEG`` 才返回 True（此时会主动停车）。``SpeedK``
+    缩放绕球速度（None 等价 1.0），增益会被限制在 [-1, 1] 之内。
+
     TODO: 后续把轮速常量、角度误差和速度倍率整理成可读参数，并单独记录
     真机/模拟器差异。不要在未真机验证前改成普通旋转。
     """
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.RobotBallPos()
-    Aim_Angle = Aim_Angle%360
-    if lockball.LockBallSlip() == True:
-        peripheral.Dribble(True)
-        # Robot-frame ball angle (0=forward)
-        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
-        Error = angle_error_deg(Aim_Angle, yaw)
-        if Error < 180:
-            iDirectionFactor = -1
-        elif Error >= 180:
-            iDirectionFactor = 1
-        Error = LinearMap(Error,[-180,180],[-1,1])
-        if abs(Aim_Angle-yaw) >= 15:
-            # Intentional raw wheel mix: orbit around the held ball while turning.
-            Circle(0.6,Error,iDirectionFactor)
-            return False
-        else:
-            return True
-    else:
-        return lockball.LockBallSlip()
+    Aim_Angle = Aim_Angle % 360
+
+    # Not holding the ball yet: keep chasing this tick and report "not done".
+    # The old code called LockBallSlip() twice and returned the second result,
+    # which could report success without ever aligning.
+    if not lockball.LockBallSlip():
+        return False
+    peripheral.Dribble(0.2)
+
+    # Shortest signed heading error to the aim, normalized to [-180, 180).
+    error = angle_error_deg(Aim_Angle, yaw)
+    if abs(error) < TURN_ALIGN_TOLERANCE_DEG:
+        # Aligned: stop rather than let the previous orbit command keep turning.
+        chassis.stop()
+        return True
+
+    # Intentional raw wheel mix: orbit around the held ball while turning.
+    # LinearMap(error) gives the signed gain in [-1, 1]; the fixed d=-1 keeps
+    # the historical sign convention (positive error turns counter-clockwise).
+    speed_k = 1.0 if SpeedK is None else float(SpeedK)
+    gain = LinearMap(error, [-180, 180], [-1, 1]) * speed_k
+    gain = max(-1.0, min(1.0, gain))
+    Circle(TURN_ORBIT_RADIUS, gain, -1)
+    return False
 
 
 def Slipsideshot(attack_dir=1): #溜边
