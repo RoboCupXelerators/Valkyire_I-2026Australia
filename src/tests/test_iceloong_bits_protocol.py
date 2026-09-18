@@ -85,11 +85,30 @@ def test_link_send_payload_limits_follow_the_pose_flag():
     with pytest.raises(ValueError, match="from 1 to 221 bytes"):
         bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222))])
 
-    with pytest.raises(ValueError, match="from 1 to 199 bytes"):
+    with pytest.raises(ValueError, match="from 0 to 199 bytes"):
         bits.ExecuteCommands([(Commands.LINK_SEND, bytes(200), True)])
+
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"")])
 
     with pytest.raises(ValueError, match="must be bytes-like"):
         bits.ExecuteCommands([(Commands.LINK_SEND, "strategy", True)])
+
+
+def test_link_send_accepts_a_pose_only_message():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x00\x00"]
+    assert bits.SendLinkData(b"", include_pose=True) is True
+    assert bits.CommandLine["LINK_SEND"] == (b"", True)
 
 
 def test_link_send_requires_a_payload_and_an_optional_pose_flag():

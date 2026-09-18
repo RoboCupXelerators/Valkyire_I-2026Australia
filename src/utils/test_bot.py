@@ -23,7 +23,7 @@ def main():
     parser.add_argument(
         "--pose",
         action="store_true",
-        help="prepend the local pose to the LINK_SEND message",
+        help="prepend the local pose to the LINK_SEND message; without --send-hex this sends a pose-only message",
     )
     args = parser.parse_args()
 
@@ -47,7 +47,7 @@ def main():
         ])
         print("响应:", resp2)
 
-        if args.send_hex:
+        if args.send_hex or args.pose:
             payload = bytes.fromhex(args.send_hex)
             print(f"\n=== 测试3: LINK_SEND ({len(payload)} bytes, 附带位姿={args.pose}) ===")
             response = bot.ExecuteCommands([(Commands.LINK_SEND, payload, args.pose)])

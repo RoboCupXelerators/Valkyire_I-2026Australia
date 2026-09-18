@@ -753,9 +753,10 @@ class IceLoongBits:
         else:
             raise ValueError("LINK payload must be bytes-like")
         limit = MAX_LINK_POSE_PAYLOAD if include_pose else MAX_LINK_SEND_PAYLOAD
-        if not value or len(value) > limit:
+        minimum = 0 if include_pose else 1
+        if len(value) < minimum or len(value) > limit:
             raise ValueError(
-                f"LINK payload length must be from 1 to {limit} bytes"
+                f"LINK payload length must be from {minimum} to {limit} bytes"
             )
         return value
 
@@ -767,7 +768,7 @@ class IceLoongBits:
         return pending, False
 
     def SendLinkData(self, payload, include_pose: bool = False) -> bool:
-        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿。"""
+        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿并允许空 Payload。"""
         payload = self._NormalizeLinkPayload(payload, include_pose)
         with self._command_lock:
             self.CommandLine["LINK_SEND"] = (payload, bool(include_pose))
