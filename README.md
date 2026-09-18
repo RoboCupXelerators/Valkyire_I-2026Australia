@@ -1,5 +1,22 @@
 # Xelerators Software
 
+> **从这里开始**：机器人现场运行时与策略主仓库。它负责 Bits 通信、LunaPre、运动控制、视觉接入、策略和控制面板；模拟器、训练与硬件固件分别在独立仓库维护。
+
+## 快速导航
+
+| 目标 | 入口 |
+| --- | --- |
+| 第一次配置和运行 | `GETTING_STARTED.md` |
+| 首次部署环境 | `bash scripts/setup_env_auto.sh` |
+| 启动控制面板 | `source venv/bin/activate` 后运行 `python src/control_panel.py` |
+| 策略/运动/裁判运行时 | `src/LunaPre/`、`src/offence.py`、`src/defence.py` |
+| MLP 推理契约 | `src/mlp/README.md` |
+| 本地配置与回放数据 | `src/ReasonData/`（不提交本机运行数据） |
+| 验证改动 | `venv/bin/python -m pytest` |
+| 查目录职责 | `STRUCTURE.md` |
+
+`main` 面向 IceLoong 与 Unity/Bits；需要 ROS2、LD07/LD06 或旧 DM2325 兼容运行时，请使用 `legacy` 并按分支文档配置。新人请先阅读 [新人成员连接与运行指南](./新人成员连接与运行指南.md)。
+
 机器人足球运行时、策略、视觉和控制面板。
 
 ## 分支与硬件
@@ -19,9 +36,12 @@ main 的 `Sensor`、`Ports.LidarID/LidarPort` 已移除；PID、场地尺寸和�
 ## 安装与运行
 
 ```bash
-python3 -m venv venv
-venv/bin/python -m pip install -r requirements.txt
-venv/bin/python src/control_panel.py
+# 首次部署：自动识别 Jetson/Pi 并准备运行环境
+bash scripts/setup_env_auto.sh
+
+# 日常启动
+source venv/bin/activate
+python src/control_panel.py
 ```
 
 硬件视觉按 [scripts/README.md](scripts/README.md) 安装对应平台依赖。
