@@ -17,7 +17,7 @@ def Macon_kick():
     if ball_state == "held":
         peripheral.Dribble(0.7)
         TurnTo_with_ball(90 * side)
-        threshold = [[40, 30 * side], [90, 90 * side]]
+        threshold = [[40, 30 * side], [90, 80 * side]]
         if UnitedPosition.PointInShape(robot_pos, threshold):
             if abs(robot_pos[2] - 50) < 10:
                 peripheral.ShootBall()
