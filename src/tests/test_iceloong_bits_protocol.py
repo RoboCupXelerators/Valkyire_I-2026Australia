@@ -185,6 +185,19 @@ def test_link_get_without_a_pose_flag_only_exposes_the_payload():
     assert bits.peer_position_mm is None
 
 
+def test_link_get_without_application_data_reports_no_link_data():
+    bits = IceLoongBits(testing=True)
+    payload = b"\x01" + struct.pack("<ffffff", 30.0, 1.0, -2.0, 100.0, -200.0, 0.0)
+
+    bits._ApplyResponses([(0x8A, payload)])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() == pytest.approx((10.0, -20.0, 30.0))
+
+    bits._ApplyResponses([(0x8A, b"\x00")])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+
 def test_link_get_without_a_message_exposes_nothing():
     bits = IceLoongBits(testing=True)
 
