@@ -20,6 +20,11 @@ def main():
         default="",
         help="optional LINK_SEND payload, encoded as hexadecimal",
     )
+    parser.add_argument(
+        "--pose",
+        action="store_true",
+        help="prepend the local pose to the LINK_SEND message",
+    )
     args = parser.parse_args()
 
     with IceLoongBits(port=args.port, testing=True) as bot:
@@ -44,13 +49,13 @@ def main():
 
         if args.send_hex:
             payload = bytes.fromhex(args.send_hex)
-            print(f"\n=== 测试3: LINK_SEND ({len(payload)} bytes) ===")
-            response = bot.ExecuteCommands([(Commands.LINK_SEND, payload)])
+            print(f"\n=== 测试3: LINK_SEND ({len(payload)} bytes, 附带位姿={args.pose}) ===")
+            response = bot.ExecuteCommands([(Commands.LINK_SEND, payload, args.pose)])
             print("响应:", response)
 
         print("\n=== 测试4: LINK_GET (variable payload) ===")
-        response = bot.ExecuteCommands([(Commands.LINK_GET,)])
-        print("响应:", response)
+        print("对方数据:", bot.GetLinkData())
+        print("对方位姿:", bot.GetPeerPose())
 
         # 测试5：盘球电流与电池电压
         print("\n=== 测试5: 盘球电流 / 电池电压 ===")

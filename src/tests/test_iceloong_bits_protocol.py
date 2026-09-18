@@ -37,7 +37,7 @@ def test_command_table_matches_motion_controller_firmware():
     }
 
 
-def test_link_send_encodes_u16_length_and_payload():
+def test_link_send_encodes_flags_u16_length_and_payload():
     bits = IceLoongBits(testing=True)
     sent = []
 
@@ -50,16 +50,79 @@ def test_link_send_encodes_u16_length_and_payload():
     payload = bytes(range(32))
     assert bits.ExecuteCommands([(Commands.LINK_SEND, payload)]) == [(0x89,)]
     assert sent == [(
-        b"\x09" + struct.pack("<H", len(payload)) + payload,
+        b"\x09\x00" + struct.pack("<H", len(payload)) + payload,
         True,
         1,
         0.05,
     )]
 
 
+def test_link_send_with_pose_marks_the_flag_byte_and_keeps_one_byte_payloads():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"\x2a", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x01\x00\x2a"]
+
+
+def test_link_send_payload_limits_follow_the_pose_flag():
+    bits = IceLoongBits(testing=True)
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(221))]) == [(0x89,)]
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(199), True)]) == [(0x89,)]
+
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222))])
+
+    with pytest.raises(ValueError, match="from 1 to 199 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(200), True)])
+
+    with pytest.raises(ValueError, match="must be bytes-like"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, "strategy", True)])
+
+
+def test_link_send_requires_a_payload_and_an_optional_pose_flag():
+    bits = IceLoongBits(testing=True)
+
+    with pytest.raises(ValueError, match="optional include_pose flag"):
+        bits.ExecuteCommands([(Commands.LINK_SEND,)])
+
+    with pytest.raises(ValueError, match="optional include_pose flag"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"\x01", True, 0)])
+
+
+def test_send_link_data_queues_one_message_with_the_pose_flag():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x80" * response_length
+
+    bits.SendHex = send_hex
+    bits._ExecuteLinkGet = lambda: []
+
+    assert bits.SendLinkData(b"strategy", include_pose=True) is True
+    bits._SendUnitedCommandOnce()
+
+    assert b"\x09\x01" + struct.pack("<H", 8) + b"strategy" in sent
+    assert bits.CommandLine["LINK_SEND"] is None
+
+
 def test_link_get_reads_variable_length_response():
     bits = IceLoongBits(testing=True)
-    payload = bytes(range(37))
+    payload = b"\x00" + bytes(range(37))
     sent = []
 
     def send_variable(data, response_timeout):
@@ -73,7 +136,58 @@ def test_link_get_reads_variable_length_response():
 
     assert sent == [(b"\x0a", 0.05)]
     assert response == [(0x8A, payload)]
-    assert bits.GetLinkData() == payload
+    assert bits.GetLinkData() == bytes(range(37))
+
+
+def test_link_get_exposes_the_peer_pose_and_strips_the_payload_header():
+    bits = IceLoongBits(testing=True)
+    payload = (
+        b"\x01"
+        + struct.pack("<ffffff", 30.0, 1.0, -2.0, 100.0, -200.0, 0.0)
+        + b"strategy"
+    )
+
+    bits._ApplyResponses([(0x8A, payload)])
+
+    assert bits.GetLinkData() == b"strategy"
+    assert bits.peer_position_mm == (100.0, -200.0, 0.0)
+    assert bits.GetPeerPose() == pytest.approx((10.0, -20.0, 30.0))
+    assert bits.GetPeerYaw() == pytest.approx(30.0)
+
+
+def test_link_get_without_a_pose_flag_only_exposes_the_payload():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"\x00strategy")])
+
+    assert bits.GetLinkData() == b"strategy"
+    assert bits.GetPeerPose() is None
+    assert bits.GetPeerYaw() is None
+    assert bits.peer_position_mm is None
+
+
+def test_link_get_without_a_message_exposes_nothing():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"")])
+
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+
+def test_link_payload_with_a_broken_pose_is_ignored():
+    bits = IceLoongBits(testing=True)
+
+    bits._ApplyResponses([(0x8A, b"\x01" + bytes(10))])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
+
+    bits._ApplyResponses([(0x8A, b"\x00strategy")])
+    bits._ApplyResponses([
+        (0x8A, b"\x01" + struct.pack("<ffffff", math.inf, 0.0, 0.0, 1.0, 2.0, 0.0) + b"x")
+    ])
+    assert bits.GetLinkData() == b"x"
+    assert bits.GetPeerPose() is None
 
 
 def test_get_pose_command_decodes_all_six_floats_and_updates_public_pose():
