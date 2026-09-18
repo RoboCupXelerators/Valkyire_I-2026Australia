@@ -55,6 +55,15 @@ ROOM_SIZE_ERROR = (
 MM_PER_CM = 10.0
 MAX_LINK_PAYLOAD = 224
 LINK_GET_HEADER_LENGTH = 3
+LINK_PAYLOAD_HEADER_LENGTH = 1
+LINK_SEND_HEADER_LENGTH = 3
+LINK_PAYLOAD_FLAG_POSE = 0x01
+LINK_POSE_LENGTH = 6 * 4
+MAX_LINK_SEND_PAYLOAD = MAX_LINK_PAYLOAD - LINK_SEND_HEADER_LENGTH
+MAX_LINK_POSE_PAYLOAD = MAX_LINK_PAYLOAD - LINK_PAYLOAD_HEADER_LENGTH - LINK_POSE_LENGTH
+LINK_SEND_ARGUMENT_ERROR = (
+    "LINK_SEND requires one bytes-like payload and an optional include_pose flag"
+)
 
 
 class IceLoongBits:
@@ -101,6 +110,8 @@ class IceLoongBits:
         self.dribble_current = None
         self.battery_voltage = None
         self.link_data = None
+        self.peer_pose = None
+        self.peer_position_mm = None
         self.kick_power_level = DEFAULT_KICK_POWER_LEVEL
         self.motor_speed_k = 1.3
         # 串口句柄（运行时为 serial.Serial 实例）
@@ -251,7 +262,8 @@ class IceLoongBits:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
 
         if snapshot["LINK_SEND"] is not None:
-            self.ExecuteCommands([(Commands.LINK_SEND, snapshot["LINK_SEND"])])
+            payload, include_pose = self._ParseLinkSend(snapshot["LINK_SEND"])
+            self.ExecuteCommands([(Commands.LINK_SEND, payload, include_pose)])
 
         _CommandList = []
         if snapshot["HAND_SHAKE"]:
@@ -311,7 +323,7 @@ class IceLoongBits:
                     _, battery_voltage = i
                     self.battery_voltage = battery_voltage
                 case Commands.LINK_GET:
-                    self.link_data = bytes(i[1])
+                    self._ApplyLinkPayload(i[1])
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
@@ -531,10 +543,13 @@ class IceLoongBits:
                     length = len(raw)
                     tx_bytes += bytes([cmd[0], length]) + raw
                 case Commands.LINK_SEND:
-                    if len(cmd) != 2:
-                        raise ValueError("LINK_SEND requires one bytes-like payload")
-                    payload = self._NormalizeLinkPayload(cmd[1])
-                    tx_bytes += bytes([cmd[0]]) + struct.pack("<H", len(payload)) + payload
+                    if len(cmd) not in (2, 3):
+                        raise ValueError(LINK_SEND_ARGUMENT_ERROR)
+                    include_pose = bool(cmd[2]) if len(cmd) == 3 else False
+                    payload = self._NormalizeLinkPayload(cmd[1], include_pose)
+                    tx_bytes += bytes([
+                        cmd[0], LINK_PAYLOAD_FLAG_POSE if include_pose else 0
+                    ]) + struct.pack("<H", len(payload)) + payload
                 case _:
                     continue
             response_length = COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
@@ -728,7 +743,7 @@ class IceLoongBits:
         return response
 
     @staticmethod
-    def _NormalizeLinkPayload(value) -> bytes:
+    def _NormalizeLinkPayload(value, include_pose: bool = False) -> bytes:
         if isinstance(value, memoryview):
             value = value.tobytes()
         elif isinstance(value, bytearray):
@@ -737,17 +752,25 @@ class IceLoongBits:
             pass
         else:
             raise ValueError("LINK payload must be bytes-like")
-        if not value or len(value) > MAX_LINK_PAYLOAD:
+        limit = MAX_LINK_POSE_PAYLOAD if include_pose else MAX_LINK_SEND_PAYLOAD
+        if not value or len(value) > limit:
             raise ValueError(
-                f"LINK payload length must be from 1 to {MAX_LINK_PAYLOAD} bytes"
+                f"LINK payload length must be from 1 to {limit} bytes"
             )
         return value
 
-    def SendLinkData(self, payload) -> bool:
-        """保存一份待发送的最新链路 Payload。"""
-        payload = self._NormalizeLinkPayload(payload)
+    @staticmethod
+    def _ParseLinkSend(pending):
+        if isinstance(pending, tuple):
+            payload, include_pose = pending
+            return payload, bool(include_pose)
+        return pending, False
+
+    def SendLinkData(self, payload, include_pose: bool = False) -> bool:
+        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿。"""
+        payload = self._NormalizeLinkPayload(payload, include_pose)
         with self._command_lock:
-            self.CommandLine["LINK_SEND"] = payload
+            self.CommandLine["LINK_SEND"] = (payload, bool(include_pose))
         return True
 
     def GetLinkData(self):
@@ -757,6 +780,39 @@ class IceLoongBits:
             response = self.ExecuteCommands([(Commands.LINK_GET,)])
             self._ApplyResponses(response)
         return self.link_data
+
+    def GetPeerPose(self):
+        """返回对方机器人位姿 ``(x_cm, y_cm, yaw_deg)``，最近一条消息未附带位姿时返回 ``None``。"""
+        thread = getattr(self, "SendUnitedCommandThread", None)
+        if thread is None or not thread.is_alive():
+            response = self.ExecuteCommands([(Commands.LINK_GET,)])
+            self._ApplyResponses(response)
+        return self.peer_pose
+
+    def GetPeerYaw(self):
+        """返回对方机器人偏航角（度），最近一条消息未附带位姿时返回 ``None``。"""
+        pose = self.GetPeerPose()
+        return None if pose is None else pose[2]
+
+    def _ApplyLinkPayload(self, raw) -> None:
+        raw = bytes(raw)
+        self.link_data = None
+        self.peer_pose = None
+        self.peer_position_mm = None
+        if not raw:
+            return
+        offset = LINK_PAYLOAD_HEADER_LENGTH
+        if raw[0] & LINK_PAYLOAD_FLAG_POSE:
+            if len(raw) < offset + LINK_POSE_LENGTH:
+                return
+            yaw, pitch, roll, x_mm, y_mm, z_mm = struct.unpack_from(
+                '<ffffff', raw, offset
+            )
+            offset += LINK_POSE_LENGTH
+            if all(math.isfinite(v) for v in (yaw, pitch, roll, x_mm, y_mm, z_mm)):
+                self.peer_pose = (x_mm / MM_PER_CM, y_mm / MM_PER_CM, yaw % 360)
+                self.peer_position_mm = (x_mm, y_mm, z_mm)
+        self.link_data = raw[offset:]
 
     def SetWheelSpeed(self, Speed1, Speed2, Speed3, Speed4):
         """设置轮子速度"""
