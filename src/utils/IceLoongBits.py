@@ -775,7 +775,7 @@ class IceLoongBits:
         return True
 
     def GetLinkData(self):
-        """返回最近一次从另一台机器收到的 Payload。"""
+        """返回最近一次从另一台机器收到的 Payload，对方只发了位姿或尚未收到时返回 ``None``。"""
         thread = getattr(self, "SendUnitedCommandThread", None)
         if thread is None or not thread.is_alive():
             response = self.ExecuteCommands([(Commands.LINK_GET,)])
@@ -813,7 +813,7 @@ class IceLoongBits:
             if all(math.isfinite(v) for v in (yaw, pitch, roll, x_mm, y_mm, z_mm)):
                 self.peer_pose = (x_mm / MM_PER_CM, y_mm / MM_PER_CM, yaw % 360)
                 self.peer_position_mm = (x_mm, y_mm, z_mm)
-        self.link_data = raw[offset:]
+        self.link_data = raw[offset:] or None
 
     def SetWheelSpeed(self, Speed1, Speed2, Speed3, Speed4):
         """设置轮子速度"""
