@@ -625,6 +625,7 @@ def OffenceStep():
         ball_observation = _opponent_ball_observation(ball)
         if ball_observation["state"] == "opponent_held":
             state = _block_opponent_shot(ball_observation)
+            _attach_ball_observation(ball_observation)
             return state
 
     if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
