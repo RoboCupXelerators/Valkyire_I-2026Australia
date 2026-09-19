@@ -67,6 +67,19 @@ def test_lunapre_autostart_vision_opt_in_from_src():
     assert on.stdout.strip().splitlines()[-1] == "on"
 
 
+def test_lunapre_registers_exit_cleanup_from_src():
+    # Importing LunaPre must register an atexit handler that stops the
+    # chassis and reaps the vision subprocess when the interpreter exits
+    # (e.g. closing IDLE must not leave an orphan vision process).
+    result = run_from_src(
+        "-c",
+        "import atexit, LunaPre; "
+        "assert atexit._ncallbacks() >= 1; print('registered')",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "registered"
+
+
 def test_mlp_strategy_help_is_hardware_free_from_src():
     result = run_from_src("-m", "MLPStrategy", "--help")
     assert result.returncode == 0, result.stderr

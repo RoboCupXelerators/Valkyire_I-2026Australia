@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import atexit
 import csv
 import errno
 import math
@@ -81,6 +82,35 @@ def _maybe_autostart_vision() -> None:
 
 
 _maybe_autostart_vision()
+
+
+def _register_exit_cleanup() -> None:
+    """解释器退出时兜底停车并回收 vision 子进程（IDLE/REPL 防孤儿与溜车）。"""
+    def _lunapre_exit_cleanup():
+        # At interpreter shutdown the log sinks (e.g. pytest capture files)
+        # may already be closed; drop them first so late log writes cannot
+        # crash the cleanup itself.
+        try:
+            remove = getattr(logger, "remove", None)
+            if callable(remove):
+                remove()
+        except Exception:
+            pass
+        try:
+            chassis_obj = globals().get("chassis")
+            if chassis_obj is not None:
+                chassis_obj.stop()
+        except Exception:
+            pass
+        try:
+            UnitedPosition.Stop()
+        except Exception:
+            pass
+
+    atexit.register(_lunapre_exit_cleanup)
+
+
+_register_exit_cleanup()
 
 
 def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
