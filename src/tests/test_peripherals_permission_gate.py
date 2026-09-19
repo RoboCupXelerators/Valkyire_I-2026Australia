@@ -66,3 +66,35 @@ def test_dribble_denied_updates_status_cache():
     p.Dribble(0.3)
     assert io_log[-1] == (4, 0.0)
     assert p.DribbleStatus is False
+    p.stop_watchdog()
+
+
+def test_watchdog_forces_off_without_any_caller():
+    # The watchdog must catch the referee on->off edge even when nothing
+    # polls CanMove() (IDLE/REPL or control-panel debugging).
+    import time
+
+    io_log = []
+    p = _make_peripheral(io_log)
+    try:
+        p.Dribble(0.3)
+        assert p.DribbleStatus == 0.3
+        io_log.clear()
+
+        p.Permission = lambda: False
+        deadline = time.time() + 2.0
+        while p.DribbleStatus is not False and time.time() < deadline:
+            time.sleep(0.02)
+        assert p.DribbleStatus is False
+        assert (4, 0.0) in io_log
+        assert (3, 1) in io_log
+
+        # Permission returns: cache is re-armed, next Dribble re-sends.
+        p.Permission = lambda: True
+        deadline = time.time() + 2.0
+        while p.DribbleStatus is not False and time.time() < deadline:
+            time.sleep(0.02)
+        p.Dribble(0.3)
+        assert io_log[-1] == (4, 0.3)
+    finally:
+        p.stop_watchdog()

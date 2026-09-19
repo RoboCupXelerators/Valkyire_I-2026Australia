@@ -201,6 +201,12 @@ def _shutdown_runtime_unlocked() -> None:
     global _referee_state_provider, _referee_serial_provider, _runtime_initialized
 
     _stop_bits_thread_monitor()
+    stop_watchdog = getattr(peripheral, "stop_watchdog", None)
+    if callable(stop_watchdog):
+        try:
+            stop_watchdog()
+        except Exception:
+            pass
     for resource in (vision, _referee_serial_provider):
         for method_name in ("Close", "close", "stop"):
             method = getattr(resource, method_name, None)
