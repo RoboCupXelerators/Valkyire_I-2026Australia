@@ -48,10 +48,13 @@ ROS2、LD07/LD06 和 DM2325 请使用 `legacy` 分支；ArisuBits 已退出主�
 
 ```bash
 # 1. 进入项目目录
-cd Software
+cd ~/Software/
 
-# 2. 安装依赖
-pip install -r requirements.txt
+# 2. 一键部署对应机器的运行环境
+bash scripts/setup_env_auto.sh
+
+# 3. 每次重新登录后激活环境
+source venv/bin/activate
 
 # 完成！
 ```

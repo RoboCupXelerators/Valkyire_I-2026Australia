@@ -50,7 +50,7 @@ def test_link_send_encodes_flags_u16_length_and_payload():
     payload = bytes(range(32))
     assert bits.ExecuteCommands([(Commands.LINK_SEND, payload)]) == [(0x89,)]
     assert sent == [(
-        b"\x09\x00" + struct.pack("<H", len(payload)) + payload,
+        b"\x09\x00" + bytes([len(payload)]) + payload,
         True,
         1,
         0.05,
@@ -68,7 +68,7 @@ def test_link_send_with_pose_marks_the_flag_byte_and_keeps_one_byte_payloads():
     bits.SendHex = send_hex
 
     assert bits.ExecuteCommands([(Commands.LINK_SEND, b"\x2a", True)]) == [(0x89,)]
-    assert sent == [b"\x09\x01\x01\x00\x2a"]
+    assert sent == [b"\x09\x01\x01\x2a"]
 
 
 def test_link_send_payload_limits_follow_the_pose_flag():
@@ -106,7 +106,7 @@ def test_link_send_accepts_a_pose_only_message():
     bits.SendHex = send_hex
 
     assert bits.ExecuteCommands([(Commands.LINK_SEND, b"", True)]) == [(0x89,)]
-    assert sent == [b"\x09\x01\x00\x00"]
+    assert sent == [b"\x09\x01\x00"]
     assert bits.SendLinkData(b"", include_pose=True) is True
     assert bits.CommandLine["LINK_SEND"] == (b"", True)
 
@@ -135,7 +135,7 @@ def test_send_link_data_queues_one_message_with_the_pose_flag():
     assert bits.SendLinkData(b"strategy", include_pose=True) is True
     bits._SendUnitedCommandOnce()
 
-    assert b"\x09\x01" + struct.pack("<H", 8) + b"strategy" in sent
+    assert b"\x09\x01\x08" + b"strategy" in sent
     assert bits.CommandLine["LINK_SEND"] is None
 
 
@@ -146,7 +146,7 @@ def test_link_get_reads_variable_length_response():
 
     def send_variable(data, response_timeout):
         sent.append((data, response_timeout))
-        return b"\x8a" + struct.pack("<H", len(payload)) + payload
+        return b"\x8a" + bytes([len(payload)]) + payload
 
     bits._SendVariableHex = send_variable
 
