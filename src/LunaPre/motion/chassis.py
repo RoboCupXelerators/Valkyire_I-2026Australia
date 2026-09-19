@@ -45,6 +45,12 @@ class Car:
         self._last_wz = 0
         self._motor_output_hooks = []
         self._permission_denied_logged = False
+        self.peripherals = None
+        self._last_permission = None
+
+    def attach_peripherals(self, peripherals) -> None:
+        """Register the peripheral IO owner so permission loss can zero it."""
+        self.peripherals = peripherals
 
     def add_motor_output_hook(self, hook):
         if hook not in self._motor_output_hooks:
@@ -91,7 +97,26 @@ class Car:
             permitted = False
         if permitted:
             self._permission_denied_logged = False
+        if self._last_permission is True and not permitted:
+            self._on_permission_lost()
+        self._last_permission = permitted
         return permitted
+
+    def _on_permission_lost(self) -> None:
+        """Referee gate closed: zero peripheral IO so nothing keeps running.
+
+        The lower board latches the last IO state; without this edge the
+        dribbler would keep spinning after the referee module shuts down,
+        because strategy code stops calling Dribble() once motion is denied.
+        """
+        peripherals = self.peripherals
+        if peripherals is not None:
+            force_off = getattr(peripherals, "force_off", None)
+            if callable(force_off):
+                try:
+                    force_off()
+                except Exception as error:
+                    self.logger.warning(f"Peripheral force-off failed: {error}")
 
     def _reset_closed_loop_state(self) -> None:
         """Discard controller state after a command cannot reach the motors."""
@@ -378,6 +403,24 @@ class Peripherals:
         else:
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
+    def force_off(self):
+        """Referee gate lost: stop the dribbler and reset the IO cache.
+
+        The lower board latches the last IO state, so the dribbler would keep
+        spinning after the referee module shuts down if no new command is
+        sent. Resetting DribbleStatus also makes the next Dribble() call
+        re-send once permission returns.
+        """
+        try:
+            self.SetIO(self.cfg.Ports.Dribble, 0.0)
+        except Exception as error:
+            self.logger.warning(f"Dribble force-off failed: {error}")
+        try:
+            self.SetIO(self.cfg.Ports.ElecMagnet, 1)
+        except Exception as error:
+            self.logger.warning(f"Electromagnet reset failed: {error}")
+        self.DribbleStatus = False
+
     def Dribble(self,Status):
         if self.Permission():
             if not self.DribbleStatus == Status:
@@ -388,10 +431,14 @@ class Peripherals:
                 else:
                     self.SetIO(self.cfg.Ports.Dribble,Status)
                 self.DribbleStatus = Status
-                self.logger.info("Dribble set to %s" % str(Status))
+                self.logger.debug("Dribble set to %s" % str(Status))
             # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
         else:
             self.SetIO(self.cfg.Ports.Dribble,0.0)
+            # The hardware actually received a dribble-off; record it so the
+            # next Dribble() call after permission returns re-sends the value
+            # instead of hitting a stale cache entry.
+            self.DribbleStatus = False
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
 class Key:

@@ -353,6 +353,11 @@ def _init_runtime_unlocked(*, auto_start_lidar: bool = True):
         # ``lidar`` stays as a compatibility global, but is now the semantic
         # Sensor facade instead of a second localization owner.
         lidar = sensor
+        # Let the chassis zero peripheral IO when the referee gate closes;
+        # without this the dribbler keeps its latched state after shutdown.
+        attach_peripherals = getattr(chassis, "attach_peripherals", None)
+        if callable(attach_peripherals):
+            attach_peripherals(peripheral)
         _configure_referee_provider()
         if backend_name == "IL":
             _start_bits_thread_monitor(Bits)
