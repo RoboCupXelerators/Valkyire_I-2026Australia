@@ -123,6 +123,16 @@ class IceLoongBits:
         self._max_consecutive_errors = 5
         self._reconnect_delay = 0.3  # 重连间隔秒数
         self._thread_restart_count = 0
+
+        # 命令循环节拍与降频轮询（2026-09-19 实机诊断后引入）：
+        # - command_period_s: 设计控制周期 50Hz；
+        # - 慢变量（盘球电流/电池电压）每 slow_poll_interval_s 随 GET 组查一次；
+        # - LINK_GET 当前无消费者，按 link_poll_interval_s 降频。
+        self.command_period_s = 0.02
+        self.slow_poll_interval_s = 1.0
+        self.link_poll_interval_s = 0.5
+        self._last_slow_poll_t = 0.0
+        self._last_link_poll_t = 0.0
         
         self.logger = logging.getLogger(self.__class__.__name__)
         if not self.logger.handlers:
@@ -140,6 +150,7 @@ class IceLoongBits:
     def _SendUnitedCommandLoop(self):
         """后台线程主循环，包含异常恢复机制。"""
         while not self._stop_thread.is_set():
+            cycle_start = time.monotonic()
             try:
                 self._SendUnitedCommandOnce()
                 # 成功执行后重置错误计数
@@ -154,7 +165,11 @@ class IceLoongBits:
                 self._HandleSerialError(e)
             except Exception as e:
                 self.logger.exception(f"IceLoongBits command loop failed: {e}")
-            time.sleep(0.02)
+            # 自适应节拍：事务耗时不与固定 sleep 叠加。实测固件对每条命令
+            # 的应答约 11-20ms，若每周期固定再睡 20ms，会把 50Hz 设计节拍
+            # 拖到 ~9Hz（2026-09-19 实机测量）。
+            elapsed = time.monotonic() - cycle_start
+            time.sleep(max(0.0, self.command_period_s - elapsed))
 
     def _HandleSerialError(self, error: Exception) -> bool:
         """处理串口错误，尝试重连。
@@ -253,10 +268,14 @@ class IceLoongBits:
         snapshot = self._CommandSnapshot()
 
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
-        self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
-
         Dribble = snapshot["SET_DRIBBLE_SPEED"]
-        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble)])
+        # 轮速与吸球合入一个多命令帧（固件按序应答 0x80 0x84 0x86，实机
+        # 验证 20/20 稳定，~11ms）。原先每条 SET 独占一帧、各等一次应答，
+        # 是把 50Hz 命令循环拖到 ~9Hz 的主要原因。
+        self.ExecuteCommands([
+            (Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4),
+            (Commands.SET_DRIBBLE_SPEED, Dribble),
+        ])
 
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
@@ -272,16 +291,24 @@ class IceLoongBits:
             _CommandList.append((Commands.GET_POSE,))
         if snapshot["GET_REFEREE_UNLOCK_PIN"]:
             _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
-        if snapshot["GET_DRIBBLE_CURRENT"]:
-            _CommandList.append((Commands.GET_DRIBBLE_CURRENT,))
-        if snapshot["GET_BATTERY_VOLTAGE"]:
-            _CommandList.append((Commands.GET_BATTERY_VOLTAGE,))
+        now = time.monotonic()
+        if now - self._last_slow_poll_t >= self.slow_poll_interval_s:
+            self._last_slow_poll_t = now
+            if snapshot["GET_DRIBBLE_CURRENT"]:
+                _CommandList.append((Commands.GET_DRIBBLE_CURRENT,))
+            if snapshot["GET_BATTERY_VOLTAGE"]:
+                _CommandList.append((Commands.GET_BATTERY_VOLTAGE,))
 
-        response = self.ExecuteCommands(_CommandList)
-        self._ApplyResponses(response)
+        if _CommandList:
+            response = self.ExecuteCommands(_CommandList)
+            self._ApplyResponses(response)
 
-        response = self.ExecuteCommands([(Commands.LINK_GET,)])
-        self._ApplyResponses(response)
+        # LINK_GET 目前没有策略层消费者；按 link_poll_interval_s 降频，
+        # 避免每周期一次 ~50ms 超时等待。有队友通信需求时再调低间隔。
+        if now - self._last_link_poll_t >= self.link_poll_interval_s:
+            self._last_link_poll_t = now
+            response = self.ExecuteCommands([(Commands.LINK_GET,)])
+            self._ApplyResponses(response)
 
     def _ApplyResponses(self, response):
         for i in response:
@@ -573,9 +600,21 @@ class IceLoongBits:
             return []
 
         rx_data = []
-        if resp and len(resp) == resp_len:
+        if resp:
+            # 短读容忍：应答超时会得到不完整字节流（实测约 10% 的周期）。
+            # 逐记录按 id 解析，尾部被截断的记录整体丢弃，之前已对齐的
+            # 记录（尤其是 GET_POSE）仍然生效；未知 id 立即停止。
             i = 0
-            while i < resp_len:
+            n = len(resp)
+            while i < n:
+                record_id = resp[i] ^ 0x80
+                record_length = COMMAND_RESPONSE_LENGTHS.get(record_id, 1)
+                if (
+                    record_length is not None
+                    and record_id != 0x00
+                    and i + record_length > n
+                ):
+                    break
                 match resp[i] ^ 0x80:
                     case 0x00:
                         i += 1
