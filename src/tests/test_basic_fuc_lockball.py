@@ -193,6 +193,8 @@ def _turn_harness(monkeypatch, yaw, holding=True):
     )
     monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: calls.append(("stop",)))
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    # The aligned-stop latch is module state; every test starts a fresh skill.
+    basic._turnto_stop_latched = False
     return calls
 
 
@@ -209,6 +211,31 @@ def test_turn_with_ball_stops_when_aligned(monkeypatch):
 
     assert basic.TurnTo_with_ball(90) is True
     assert calls == [("stop",)]
+
+
+def test_turn_with_ball_stop_is_edge_triggered(monkeypatch):
+    # The stop command latches on the backend: consecutive aligned ticks must
+    # not resend it (it would reset the command filter and spam the bus).
+    calls = _turn_harness(monkeypatch, 90.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is True
+    assert basic.TurnTo_with_ball(90) is True
+    assert calls == [("stop",)]
+
+
+def test_turn_with_ball_stops_again_after_orbit(monkeypatch):
+    calls = _turn_harness(monkeypatch, 90.0, holding=True)
+
+    assert basic.TurnTo_with_ball(90) is True
+    assert calls == [("stop",)]
+
+    monkeypatch.setattr(basic.chassis, "GetYaw", lambda: 40.0)
+    assert basic.TurnTo_with_ball(90) is False
+    assert calls[-1][0] == "twist"
+
+    monkeypatch.setattr(basic.chassis, "GetYaw", lambda: 89.0)
+    assert basic.TurnTo_with_ball(90) is True
+    assert calls[-1] == ("stop",)
 
 
 def test_turn_with_ball_stop_uses_normalized_angle(monkeypatch):
@@ -248,3 +275,43 @@ def test_turn_with_ball_speedk_scales_orbit(monkeypatch):
     fast_wz = fast[-1][3]
 
     assert fast_wz > base_wz
+
+
+def test_lockball_held_stop_is_edge_triggered(monkeypatch):
+    # While the ball is held, the capture-edge stop must fire exactly once;
+    # callers such as TurnTo_with_ball command their own motion afterwards.
+    stops = []
+    monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: basic.BALL_HELD)
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
+
+    lock = basic.LockSeries()
+    assert lock.LockBallSlip() is True
+    assert len(stops) == 1
+
+    assert lock.LockBallSlip() is True
+    assert len(stops) == 1
+
+
+def test_lockball_recatch_stops_again(monkeypatch):
+    # Losing and re-catching the ball must re-arm the capture-edge stop.
+    stops = []
+    observations = iter([basic.BALL_HELD, [30.0, 0.0], basic.BALL_HELD])
+    monkeypatch.setattr(
+        basic.UnitedPosition, "RobotBallPos", lambda: next(observations)
+    )
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *a, **k: None)
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
+
+    lock = basic.LockSeries()
+    assert lock.LockBallSlip() is True
+    assert len(stops) == 1
+
+    assert lock.LockBallSlip() is False  # free ball -> chase, no capture stop
+    assert len(stops) == 1
+
+    assert lock.LockBallSlip() is True  # re-caught -> one more edge stop
+    assert len(stops) == 2
