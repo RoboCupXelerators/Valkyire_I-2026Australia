@@ -85,11 +85,30 @@ def test_link_send_payload_limits_follow_the_pose_flag():
     with pytest.raises(ValueError, match="from 1 to 221 bytes"):
         bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222))])
 
-    with pytest.raises(ValueError, match="from 1 to 199 bytes"):
+    with pytest.raises(ValueError, match="from 0 to 199 bytes"):
         bits.ExecuteCommands([(Commands.LINK_SEND, bytes(200), True)])
+
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"")])
 
     with pytest.raises(ValueError, match="must be bytes-like"):
         bits.ExecuteCommands([(Commands.LINK_SEND, "strategy", True)])
+
+
+def test_link_send_accepts_a_pose_only_message():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x00\x00"]
+    assert bits.SendLinkData(b"", include_pose=True) is True
+    assert bits.CommandLine["LINK_SEND"] == (b"", True)
 
 
 def test_link_send_requires_a_payload_and_an_optional_pose_flag():
@@ -164,6 +183,19 @@ def test_link_get_without_a_pose_flag_only_exposes_the_payload():
     assert bits.GetPeerPose() is None
     assert bits.GetPeerYaw() is None
     assert bits.peer_position_mm is None
+
+
+def test_link_get_without_application_data_reports_no_link_data():
+    bits = IceLoongBits(testing=True)
+    payload = b"\x01" + struct.pack("<ffffff", 30.0, 1.0, -2.0, 100.0, -200.0, 0.0)
+
+    bits._ApplyResponses([(0x8A, payload)])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() == pytest.approx((10.0, -20.0, 30.0))
+
+    bits._ApplyResponses([(0x8A, b"\x00")])
+    assert bits.GetLinkData() is None
+    assert bits.GetPeerPose() is None
 
 
 def test_link_get_without_a_message_exposes_nothing():

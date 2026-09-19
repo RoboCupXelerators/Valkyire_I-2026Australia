@@ -753,9 +753,10 @@ class IceLoongBits:
         else:
             raise ValueError("LINK payload must be bytes-like")
         limit = MAX_LINK_POSE_PAYLOAD if include_pose else MAX_LINK_SEND_PAYLOAD
-        if not value or len(value) > limit:
+        minimum = 0 if include_pose else 1
+        if len(value) < minimum or len(value) > limit:
             raise ValueError(
-                f"LINK payload length must be from 1 to {limit} bytes"
+                f"LINK payload length must be from {minimum} to {limit} bytes"
             )
         return value
 
@@ -767,14 +768,14 @@ class IceLoongBits:
         return pending, False
 
     def SendLinkData(self, payload, include_pose: bool = False) -> bool:
-        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿。"""
+        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿并允许空 Payload。"""
         payload = self._NormalizeLinkPayload(payload, include_pose)
         with self._command_lock:
             self.CommandLine["LINK_SEND"] = (payload, bool(include_pose))
         return True
 
     def GetLinkData(self):
-        """返回最近一次从另一台机器收到的 Payload。"""
+        """返回最近一次从另一台机器收到的 Payload，对方只发了位姿或尚未收到时返回 ``None``。"""
         thread = getattr(self, "SendUnitedCommandThread", None)
         if thread is None or not thread.is_alive():
             response = self.ExecuteCommands([(Commands.LINK_GET,)])
@@ -812,7 +813,7 @@ class IceLoongBits:
             if all(math.isfinite(v) for v in (yaw, pitch, roll, x_mm, y_mm, z_mm)):
                 self.peer_pose = (x_mm / MM_PER_CM, y_mm / MM_PER_CM, yaw % 360)
                 self.peer_position_mm = (x_mm, y_mm, z_mm)
-        self.link_data = raw[offset:]
+        self.link_data = raw[offset:] or None
 
     def SetWheelSpeed(self, Speed1, Speed2, Speed3, Speed4):
         """设置轮子速度"""
