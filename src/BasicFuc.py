@@ -219,14 +219,10 @@ class LockSeries:
 
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(0.5)
-            # chassis.stop()
             peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
             return True
-        if ball == BALL_NOT_FOUND:
-            peripheral.Dribble(0.3)
         elif ball == BALL_NOT_FOUND:
             peripheral.Dribble(0.2)
             chassis.stop()
@@ -252,7 +248,6 @@ class LockSeries:
                 -self.turn_only_max,
                 min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
             )
-            peripheral.Dribble(True)
             peripheral.Dribble(0.3)
             chassis.RobotMoveVector(0.0, 0.0, speed_w)
             return False
@@ -265,7 +260,6 @@ class LockSeries:
             speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
             speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
             speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
-            peripheral.Dribble(True)
             peripheral.Dribble(0.3)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
@@ -281,7 +275,6 @@ class LockSeries:
             creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
             speed_x = max(float(speed_x), creep)
 
-        peripheral.Dribble(True)
         # Gentle final dock: cap the forward speed on a continuous v = sqrt(2 a d)
         # braking curve so the robot does not punch a low-power-held ball back out
         # on contact while still approaching at full speed from far away. The
@@ -310,7 +303,6 @@ lockball = LockSeries()
 def Circle(r, k = 1,d = 1):
     chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
 
-def TurnTo_with_ball(Aim_Angle,SpeedK:int | None = 1):
 # TurnTo_with_ball tuning. The orbit radius matches the historical wheel mix;
 # the align tolerance is the heading band inside which the skill reports done.
 TURN_ORBIT_RADIUS = 0.6
@@ -331,26 +323,6 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     真机/模拟器差异。不要在未真机验证前改成普通旋转。
     """
     yaw = chassis.GetYaw()
-    ball = UnitedPosition.RobotBallPos()
-    Aim_Angle = Aim_Angle%360
-    if lockball.LockBallSlip() == True:
-        peripheral.Dribble(True)
-        # Robot-frame ball angle (0=forward)
-        iDeltaAngle = int(math.degrees(math.atan2(ball[1], ball[0])))
-        Error = angle_error_deg(Aim_Angle, yaw)
-        if Error < 180:
-            iDirectionFactor = -1
-        elif Error >= 180:
-            iDirectionFactor = 1
-        Error = LinearMap(Error,[-180,180],[-1,1])
-        if abs(Aim_Angle-yaw) >= 15:
-            # Intentional raw wheel mix: orbit around the held ball while turning.
-            Circle(0.6,Error,iDirectionFactor)
-            return False
-        else:
-            return True
-    else:
-        return lockball.LockBallSlip()
     Aim_Angle = Aim_Angle % 360
 
     # Not holding the ball yet: keep chasing this tick and report "not done".
