@@ -390,6 +390,47 @@ class Peripherals:
         self.logger = logger
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.DribbleStatus = False
+        # Watchdog: the lower board latches the last IO command, so the
+        # dribbler keeps spinning after the referee gate closes unless
+        # somebody pushes a dribble-off. Strategy loops only notice via
+        # Car.CanMove(); IDLE/REPL or control-panel callers never do, so
+        # poll the gate here independently of any caller.
+        self._last_permission = None
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = threading.Thread(
+            target=self._permission_watchdog, daemon=True
+        )
+        # Record the baseline synchronously: a permission flip during the
+        # first poll interval must still be seen as a True->False edge.
+        try:
+            self._last_permission = bool(self.Permission())
+        except Exception:
+            self._last_permission = False
+        self._watchdog_thread.start()
+
+    def _permission_watchdog(self):
+        """Zero peripheral IO on the permission True->False edge."""
+        while not self._watchdog_stop.wait(0.1):
+            try:
+                permitted = bool(self.Permission())
+            except Exception:
+                permitted = False
+            last = self._last_permission
+            self._last_permission = permitted
+            if last is True and not permitted:
+                try:
+                    self.force_off()
+                except Exception:
+                    pass
+            elif last is False and permitted:
+                # Re-arm the cache so the next Dribble() call re-sends its
+                # value instead of hitting a stale pre-shutdown entry.
+                self.DribbleStatus = False
+
+    def stop_watchdog(self):
+        self._watchdog_stop.set()
+        if self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=0.5)
 
     def ShootBall(self):
         if self.Permission():
