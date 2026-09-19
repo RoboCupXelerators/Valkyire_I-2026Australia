@@ -1,8 +1,8 @@
 """LunaPre 兼容门面包。
 
-外部策略代码仍然可以继续使用 ``from LunaPre import *``。直接导入
-``LunaPre.motion.chassis`` 这类子模块时保持轻量；硬件/SIM 运行时对象
-会在从本包访问时再惰性初始化。
+外部策略代码仍然可以继续使用 ``from LunaPre import *``。本包在 import 时
+就急切初始化 SIM/IL 运行时：``LunaPre.chassis`` 等顶层名字直接是真实对象，
+不做任何惰性代理，方便在调试器里直接查看和打断点。
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
 
 import simple_pid
 
@@ -41,84 +40,44 @@ PeerstatusThreadFuncStarted = _runtime.PeerstatusThreadFuncStarted
 
 UnitedPosition = RecordingPositions()
 
-_RUNTIME_NAMES = {
-    "Bits",
-    "lidar",
-    "sensor",
-    "chassis",
-    "compass",
-    "peripheral",
-    "key",
-    "Odometer",
-    "Morse",
-    "referee",
-    "vision",
-}
 
-
-class _RuntimeObjectProxy:
-    """历史 LunaPre 顶层运行时对象的惰性代理。"""
-
-    def __init__(self, runtime_name: str):
-        """记录需要代理的 runtime 对象名。"""
-        object.__setattr__(self, "_runtime_name", runtime_name)
-
-    def _resolve(self):
-        """确保 runtime 已初始化，并返回真实对象。"""
+def _bind_runtime_objects(*, ensure: bool = True) -> None:
+    """把 runtime 的真实对象绑定为本模块的全局名字（无惰性代理）。"""
+    global Bits, lidar, sensor, chassis, compass, peripheral, key
+    global Odometer, Morse, referee, vision
+    if ensure:
         _runtime.ensure_runtime()
-        return getattr(_runtime, self._runtime_name)
-
-    def __getattr__(self, name: str):
-        """把属性读取转发给真实 runtime 对象。"""
-        return getattr(self._resolve(), name)
-
-    def __setattr__(self, name: str, value) -> None:
-        """把属性写入转发给真实 runtime 对象。"""
-        if name == "_runtime_name":
-            object.__setattr__(self, name, value)
-            return
-        setattr(self._resolve(), name, value)
-
-    def __delattr__(self, name: str) -> None:
-        """把属性删除转发给真实 runtime 对象。"""
-        delattr(self._resolve(), name)
-
-    def __call__(self, *args, **kwargs):
-        """当真实对象可调用时，转发调用。"""
-        return self._resolve()(*args, **kwargs)
-
-    def __bool__(self) -> bool:
-        """按真实对象的布尔值判断代理是否有效。"""
-        return bool(self._resolve())
-
-    def __repr__(self) -> str:
-        """返回代理或真实对象的调试展示。"""
-        runtime_name = object.__getattribute__(self, "_runtime_name")
-        if getattr(_runtime, "_runtime_initialized", False):
-            return repr(getattr(_runtime, runtime_name))
-        return f"<lazy LunaPre.{runtime_name}>"
+    Bits = _runtime.Bits
+    lidar = _runtime.lidar
+    sensor = _runtime.sensor
+    chassis = _runtime.chassis
+    compass = _runtime.compass
+    peripheral = _runtime.peripheral
+    key = _runtime.key
+    Odometer = _runtime.Odometer
+    Morse = _runtime.Morse
+    referee = _runtime.referee
+    vision = _runtime.vision
 
 
-if TYPE_CHECKING:
-    Bits: Any
-    lidar: Sensor
-    sensor: Sensor
-    chassis: RecordingCar
-    compass: Callable[[], float]
-    peripheral: Peripherals
-    key: Any
-    Odometer: Any | None
-    Morse: Any | None
-    referee: Any | None
-    vision: Any | None
-else:
-    Bits = _RuntimeObjectProxy("Bits")
-    lidar = _RuntimeObjectProxy("lidar")
-    sensor = _RuntimeObjectProxy("sensor")
-    chassis = _RuntimeObjectProxy("chassis")
-    compass = _RuntimeObjectProxy("compass")
-    peripheral = _RuntimeObjectProxy("peripheral")
-    key = _RuntimeObjectProxy("key")
+# Eager initialization: importing LunaPre builds the selected SIM/IL runtime
+# up front instead of hiding it behind lazy proxies.
+_bind_runtime_objects()
+
+
+def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
+    """确保运行时已初始化，并把本模块的全名绑定刷新到最新对象。"""
+    _runtime.ensure_runtime(auto_start_lidar=auto_start_lidar)
+    _bind_runtime_objects(ensure=False)
+
+
+_init_runtime = ensure_runtime
+
+
+def shutdown_runtime() -> None:
+    """释放运行时资源，并把本模块的绑定刷新为 shutdown 后的状态。"""
+    _runtime.shutdown_runtime()
+    _bind_runtime_objects(ensure=False)
 
 
 __all__ = [
@@ -161,17 +120,3 @@ __all__ = [
     "ensure_runtime",
     "shutdown_runtime",
 ]
-
-
-# Stable proxies keep previously imported objects valid across runtime restarts.
-ensure_runtime = _runtime.ensure_runtime
-_init_runtime = ensure_runtime
-shutdown_runtime = _runtime.shutdown_runtime
-
-
-def __getattr__(name: str):
-    """Resolve optional runtime objects only when explicitly requested."""
-    if name in _RUNTIME_NAMES:
-        _runtime.ensure_runtime()
-        return getattr(_runtime, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
