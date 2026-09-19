@@ -375,7 +375,8 @@ class Positions:
         """Start UDP receiver + Vision subprocess lazily.
 
         Importing LunaPre should not start external processes automatically.
-        Call this when you really need vision data.
+        Call this when you really need vision data, or set ``XEL_AUTO_VISION=1``
+        before importing LunaPre to auto-start it on import (IDLE/REPL 调试用).
         """
 
         # Simulator fast-path: use lightweight vision adapter (no socket/subprocess)

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
 
 
-def run_from_src(*args):
+def run_from_src(*args, extra_env=None):
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     # LunaPre initializes its runtime eagerly now, so these subprocesses must
@@ -18,6 +18,7 @@ def run_from_src(*args):
     environment["XEL_ROBOT_ID"] = "9"
     environment["XEL_CMD_PORT"] = "21001"
     environment["XEL_STATUS_PORT"] = "21002"
+    environment.update(extra_env or {})
     return subprocess.run(
         [sys.executable, *args],
         cwd=SRC,
@@ -43,6 +44,27 @@ def test_lunapre_import_eagerly_initializes_runtime_from_src():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "Car"
+
+
+def test_lunapre_autostart_vision_opt_in_from_src():
+    # Vision must stay off by default on import, and start only when
+    # XEL_AUTO_VISION is explicitly requested (IDLE/REPL debugging).
+    off = run_from_src(
+        "-c",
+        "import LunaPre; "
+        "assert not LunaPre.UnitedPosition._vision_started; print('off')",
+    )
+    assert off.returncode == 0, off.stderr
+    assert off.stdout.strip().splitlines()[-1] == "off"
+
+    on = run_from_src(
+        "-c",
+        "import LunaPre; "
+        "assert LunaPre.UnitedPosition._vision_started; print('on')",
+        extra_env={"XEL_AUTO_VISION": "1"},
+    )
+    assert on.returncode == 0, on.stderr
+    assert on.stdout.strip().splitlines()[-1] == "on"
 
 
 def test_mlp_strategy_help_is_hardware_free_from_src():

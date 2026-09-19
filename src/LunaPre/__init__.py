@@ -65,6 +65,24 @@ def _bind_runtime_objects(*, ensure: bool = True) -> None:
 _bind_runtime_objects()
 
 
+def _maybe_autostart_vision() -> None:
+    """``XEL_AUTO_VISION=1`` 时 import 即启动视觉，便于 IDLE/交互式调试。
+
+    默认关闭：测试和无硬件环境不应在 import 时拉起相机子进程。
+    """
+    requested = os.environ.get("XEL_AUTO_VISION", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if requested and UnitedPosition.StartVision():
+        logger.info("Vision auto-started on import (XEL_AUTO_VISION).")
+
+
+_maybe_autostart_vision()
+
+
 def ensure_runtime(*, auto_start_lidar: bool = True) -> None:
     """确保运行时已初始化，并把本模块的全名绑定刷新到最新对象。"""
     _runtime.ensure_runtime(auto_start_lidar=auto_start_lidar)
