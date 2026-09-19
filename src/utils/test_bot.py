@@ -41,7 +41,7 @@ def main():
             (Commands.HAND_SHAKE,),
             (Commands.GET_POSE,),
             (Commands.GET_REFEREE_UNLOCK_PIN,), 
-            # (Commands.KICK, 4),
+            (Commands.KICK, 4),
             # (Commands.SET_WHEELS_SPEED, 100, 100, 100, 100), 
             # (Commands.MORSE_PLAY, "Hello")
         ])
