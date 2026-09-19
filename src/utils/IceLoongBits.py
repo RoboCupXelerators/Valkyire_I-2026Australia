@@ -54,7 +54,7 @@ ROOM_SIZE_ERROR = (
 )
 MM_PER_CM = 10.0
 MAX_LINK_PAYLOAD = 224
-LINK_GET_HEADER_LENGTH = 3
+LINK_GET_HEADER_LENGTH = 2
 LINK_PAYLOAD_HEADER_LENGTH = 1
 LINK_SEND_HEADER_LENGTH = 3
 LINK_PAYLOAD_FLAG_POSE = 0x01
@@ -443,7 +443,7 @@ class IceLoongBits:
                 header = self.ser.read(LINK_GET_HEADER_LENGTH)
                 if len(header) != LINK_GET_HEADER_LENGTH:
                     return b""
-                payload_len = struct.unpack("<H", header[1:3])[0]
+                payload_len = header[1]
                 if header[0] != (Commands.LINK_GET | 0x80) or payload_len > MAX_LINK_PAYLOAD:
                     return b""
                 payload = self.ser.read(payload_len)
@@ -470,10 +470,10 @@ class IceLoongBits:
 
         if len(response) < LINK_GET_HEADER_LENGTH or response[0] != (Commands.LINK_GET | 0x80):
             return []
-        payload_len = struct.unpack("<H", response[1:3])[0]
+        payload_len = response[1]
         if len(response) != LINK_GET_HEADER_LENGTH + payload_len:
             return []
-        return [(response[0], bytes(response[3:]))]
+        return [(response[0], bytes(response[2:]))]
 
     def __enter__(self):
         self.OpenPort()
@@ -548,8 +548,9 @@ class IceLoongBits:
                     include_pose = bool(cmd[2]) if len(cmd) == 3 else False
                     payload = self._NormalizeLinkPayload(cmd[1], include_pose)
                     tx_bytes += bytes([
-                        cmd[0], LINK_PAYLOAD_FLAG_POSE if include_pose else 0
-                    ]) + struct.pack("<H", len(payload)) + payload
+                        cmd[0], LINK_PAYLOAD_FLAG_POSE if include_pose else 0,
+                        len(payload)
+                    ]) + payload
                 case _:
                     continue
             response_length = COMMAND_RESPONSE_LENGTHS.get(cmd[0], 0)
