@@ -4,6 +4,7 @@ from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 
 import math
 import numpy as np
+import time
 
 def activate_func(input_score):
     """Return the binary activation used by the strategy scoring functions."""
@@ -90,6 +91,26 @@ def UplaneStep(thershold=[[50, 30], [100, 90]]):
             chassis.FieldMoveVector(0, 1, 90 * angle_k)
     elif TurnTo_with_ball(90 * angle_k):
         chassis.FieldMoveVector(0.91, 0, 90 * angle_k)
+
+
+def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.10):
+    """背对球门时保持带球，再横摆让球借边墙反弹。"""
+    pose = UnitedPosition.FieldRobotPose()
+    if not lockball.LockBallSlip():
+        return False
+    back_to_goal = (UnitedPosition.Pos2Angle(pose, goal) + 180) % 360
+    if not TurnTo_with_ball(back_to_goal):
+        return False
+    try:
+        peripheral.Dribble(1.0)
+        time.sleep(hold_s)
+        for speed_y in (shake_speed, -shake_speed, shake_speed, -shake_speed):
+            chassis.RobotMoveVector(0, speed_y, 0)
+            time.sleep(shake_s)
+        return True
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
 
 
 def logic_step():
