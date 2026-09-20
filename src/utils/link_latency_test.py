@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """双机链路延迟测试：直接收发 0x09/0x0A 原始帧，自动识别长度字段宽度。
 
+Jetson 上若串口突然完全不应答（板子蜂鸣器/链路都正常，也没有进程占用），
+是 tegra_hsuart 驱动卡死，重配置一次端口即可恢复：
+    stty -F /dev/ttyTHS1 460800 cs8 -cstopb -parenb -crtscts clocal raw
+
 写串口后不等 tcdrain：Jetson 的 ttyTHS 上 flush() 一次要 ~10 ms，会把轮询
 压到 80 次/秒（去掉后 460 次/秒），而数据本来就由驱动异步发出。
 
