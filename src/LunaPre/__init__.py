@@ -38,6 +38,12 @@ Beta_Func = _runtime.Beta_Func
 SendstatusThreadFuncStarted = _runtime.SendstatusThreadFuncStarted
 PeerstatusThreadFuncStarted = _runtime.PeerstatusThreadFuncStarted
 
+# The concrete runtime values are assigned by ``_bind_runtime_objects`` below.
+# Keep their public types explicit: strategy modules import these names directly,
+# and otherwise Pylance can only infer the untyped dynamic module assignments.
+chassis: Car
+peripheral: Peripherals
+
 
 UnitedPosition = RecordingPositions()
 
