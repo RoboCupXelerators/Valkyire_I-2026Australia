@@ -151,8 +151,8 @@ class IceLoongBits:
 
     def _SendUnitedCommandLoop(self):
         """后台线程主循环，包含异常恢复机制。"""
+        next_deadline = time.monotonic()
         while not self._stop_thread.is_set():
-            cycle_start = time.monotonic()
             try:
                 self._SendUnitedCommandOnce()
                 # 成功执行后重置错误计数
@@ -167,11 +167,14 @@ class IceLoongBits:
                 self._HandleSerialError(e)
             except Exception as e:
                 self.logger.exception(f"IceLoongBits command loop failed: {e}")
-            # 自适应节拍：事务耗时不与固定 sleep 叠加。实测固件对每条命令
-            # 的应答约 11-20ms，若每周期再固定睡眠会把 60Hz 设计节拍
-            # 拖到 ~9Hz（2026-09-19 实机测量）。
-            elapsed = time.monotonic() - cycle_start
-            self._stop_thread.wait(max(0.0, self.command_period_s - elapsed))
+            # 使用 monotonic 绝对 deadline，避免 Python 循环开销逐周期累积。
+            # 若事务已经跨过 deadline，则跳过过期 tick，不做补跑突发。
+            next_deadline += self.command_period_s
+            now = time.monotonic()
+            if now >= next_deadline:
+                missed = int((now - next_deadline) // self.command_period_s) + 1
+                next_deadline += missed * self.command_period_s
+            self._stop_thread.wait(max(0.0, next_deadline - now))
 
     def _HandleSerialError(self, error: Exception) -> bool:
         """处理串口错误，尝试重连。
