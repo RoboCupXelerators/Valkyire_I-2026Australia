@@ -270,6 +270,8 @@ class Positions:
         self.vision_data_stop_event = threading.Event()
         self.get_vision_data_process: threading.Thread | None = None
         self._vision_started = False
+        self._vision_lifecycle_lock = threading.RLock()
+        self._last_vision_pose_send = 0.0
         # Vision should be opt-in on dev/no-hardware runtime; otherwise strategy loops may spawn heavy processes.
         self._pos2pos_record_enabled = bool(getattr(cfg.Debug, "RecordPos2Pos", False))
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
@@ -379,32 +381,55 @@ class Positions:
         before importing LunaPre to auto-start it on import (IDLE/REPL 调试用).
         """
 
-        # Simulator fast-path: use lightweight vision adapter (no socket/subprocess)
-        v = getattr(runtime, "vision", None)
-        if v is not None:
+        with self._vision_lifecycle_lock:
+            # Simulator fast-path: use lightweight vision adapter (no socket/subprocess)
+            v = getattr(runtime, "vision", None)
+            if v is not None:
+                self._vision_started = True
+                return True
+
+            if not self._vision_enabled:
+                return False
+            if self._vision_started:
+                return True
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind(("127.0.0.1", 5005))
+                sock.settimeout(0.01)
+            except OSError as e:
+                sock.close()
+                logger.warning(f"Vision UDP bind failed: {e}")
+                return False
+
+            self.vision_data_stop_event = threading.Event()
+            self.sock = sock
+            self._last_vision_pose_send = 0.0
+            self.get_vision_data_process = threading.Thread(
+                target=self._get_vision_data,
+                name="LunaPre-VisionReceiver",
+                daemon=True,
+            )
             self._vision_started = True
+            self.get_vision_data_process.start()
             return True
 
-        if not self._vision_enabled:
-            # keep returning default vision_data without starting threads/subprocess
-            return False
+    def _send_vision_pose(self) -> None:
+        """Publish pose at 50 Hz to Hybrid without giving vision serial ownership."""
 
-        if self._vision_started:
-            return True
-        self._vision_started = True
-
-        # Socket for vision data
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        now = time.monotonic()
+        if now - self._last_vision_pose_send < 0.02 or self.sock is None:
+            return
+        self._last_vision_pose_send = now
+        pose = runtime.get_field_pose()
+        if pose is None:
+            return
         try:
-            self.sock.bind(("127.0.0.1", 5005))
-        except OSError as e:
-            logger.warning(f"Vision UDP bind failed: {e}")
-        self.sock.settimeout(0.01)
-
-        self.get_vision_data_process = threading.Thread(target=self._get_vision_data)
-        self.get_vision_data_process.daemon = True
-        self.get_vision_data_process.start()
-        return True
+            packet = pickle.dumps({"pose": pose, "timestamp": now}, protocol=pickle.HIGHEST_PROTOCOL)
+            self.sock.sendto(packet, ("127.0.0.1", 5006))
+        except OSError:
+            if not self.vision_data_stop_event.is_set():
+                logger.debug("Failed to publish pose to Hybrid vision")
 
     @staticmethod
     def _start_vision_subprocess():
@@ -428,6 +453,7 @@ class Positions:
                 if self.sock is None:
                     time.sleep(0.05)
                     continue
+                self._send_vision_pose()
                 data, addr = self.sock.recvfrom(4096)
                 self.vision_data = pickle.loads(data)
                 if isinstance(self.vision_data, dict):
@@ -2236,23 +2262,31 @@ class Positions:
                 runtime.peripheral.Dribble(False)
         except Exception:
             pass
-        self.vision_data_stop_event.set()
+        with self._vision_lifecycle_lock:
+            self.vision_data_stop_event.set()
+            sock = self.sock
+            process = self.vision_process
+            receiver = self.get_vision_data_process
+            self.sock = None
+            self.vision_process = None
+            self.get_vision_data_process = None
+            self._vision_started = False
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.
         try:
-            if self.sock is not None:
+            if sock is not None:
                 try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
+                    sock.shutdown(socket.SHUT_RDWR)
                 except Exception:
                     pass
-                self.sock.close()
+                sock.close()
         except Exception:
             pass
 
         # Terminate vision subprocess. Prefer graceful terminate first so Vision.py
         # can run its finally-close path and release cameras; escalate to kill if needed.
-        if self.vision_process is not None:
-            proc = self.vision_process
+        if process is not None:
+            proc = process
             try:
                 if proc.poll() is None:
                     proc.terminate()
@@ -2269,12 +2303,10 @@ class Positions:
                     proc.kill()
                 except Exception:
                     pass
-            self.vision_process = None
-
         # best-effort join
         try:
-            if self.get_vision_data_process is not None:
-                self.get_vision_data_process.join(timeout=0.5)
+            if receiver is not None and receiver is not threading.current_thread():
+                receiver.join(timeout=0.5)
         except Exception:
             pass
 

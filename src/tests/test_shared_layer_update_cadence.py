@@ -165,8 +165,10 @@ def test_restricted_area_preempts_lockball_while_pose_unsafe(monkeypatch):
 
     p2p_calls: list[list] = []
 
-    # Pose firmly inside the goal box (observed bench pose ~[-67, -38]).
-    monkeypatch.setattr(up, "FieldRobotPose", lambda: [-67.0, -38.0, 30.0])
+    # A point far beyond every supported field boundary is always unsafe,
+    # independent of the active competition protection level.
+    unsafe_pose = [-1000.0, 0.0, 30.0]
+    monkeypatch.setattr(up, "FieldRobotPose", lambda: unsafe_pose)
 
     def fake_pos2pos(aim, *args, **kwargs):
         p2p_calls.append(list(aim))
@@ -179,7 +181,7 @@ def test_restricted_area_preempts_lockball_while_pose_unsafe(monkeypatch):
     assert not any(results), "unsafe pose must make RestrictedArea() return False"
     assert p2p_calls, "RestrictedArea() must drive the escape Pos2Pos itself"
     assert all(
-        call[0] > -67.0 or call[1] > -38.0 for call in p2p_calls
+        call[0] > unsafe_pose[0] or call[1] != unsafe_pose[1] for call in p2p_calls
     ), "escape target must be projected outside the restricted area"
 
 
@@ -222,8 +224,8 @@ def _instrument_bits(monkeypatch):
     return bits, calls
 
 
-def test_iceloong_sends_one_wheel_frame_per_cycle(monkeypatch):
-    """Wheel + dribble share one multi-command frame; acks are still read.
+def test_iceloong_sends_one_control_frame_per_cycle(monkeypatch):
+    """Wheel, dribble and fast state queries share one acknowledged frame.
 
     Bench probe 2026-09-19: firmware answers ``0x80 0x84 0x86`` for the
     batched frame (20/20 stable, ~11 ms), so the batch keeps full ack
@@ -239,23 +241,24 @@ def test_iceloong_sends_one_wheel_frame_per_cycle(monkeypatch):
     for _ in range(cycles):
         bits._SendUnitedCommandOnce()
 
-    wheel_frames = [
+    control_frames = [
         data for data, _ in calls
-        if len(data) == 24 and data[0] == 0x00 and data[1] == int(Commands.SET_WHEELS_SPEED)
+        if len(data) >= 27 and data[0] == 0x00 and data[1] == int(Commands.SET_WHEELS_SPEED)
     ]
-    assert len(wheel_frames) == cycles, (
-        f"expected exactly one batched SET frame per cycle, got {len(wheel_frames)}"
+    assert len(control_frames) == cycles, (
+        f"expected exactly one composite control frame per cycle, got {len(control_frames)}"
     )
 
     k = bits.motor_speed_k
-    payload = struct.unpack("<ffff", wheel_frames[-1][2:18])
+    payload = struct.unpack("<ffff", control_frames[-1][2:18])
     assert payload == pytest.approx((-10.0 * k, 20.0 * k, 30.0 * k, -40.0 * k), rel=1e-3)
-    dribble = struct.unpack("<f", wheel_frames[-1][19:23])
+    dribble = struct.unpack("<f", control_frames[-1][19:23])
     assert dribble == pytest.approx((0.0,))
+    assert bytes([Commands.HAND_SHAKE, Commands.GET_POSE, Commands.GET_REFEREE_UNLOCK_PIN]) in control_frames[-1]
 
     # The batched frame still waits for its acks (fire-and-forget was rejected:
     # ack latency ~ cycle period would interleave stale acks into later reads).
-    batched = [rr for data, rr in calls if len(data) == 24]
+    batched = [rr for data, rr in calls if len(data) >= 27 and data[0] == 0x00]
     assert batched and all(batched), "batched SET frame must read its acks"
 
 
@@ -270,10 +273,13 @@ def test_iceloong_polls_slow_variables_and_link_at_low_rate(monkeypatch):
     for _ in range(cycles):
         bits._SendUnitedCommandOnce()
 
-    get_frames = [data for data, _ in calls if len(data) >= 4 and data[0] == 0x00 and data[1] == int(Commands.HAND_SHAKE)]
-    assert len(get_frames) == cycles, "GET group must be sent every cycle"
+    control_frames = [
+        data for data, _ in calls
+        if len(data) >= 27 and data[0] == 0x00 and data[1] == int(Commands.SET_WHEELS_SPEED)
+    ]
+    assert len(control_frames) == cycles, "composite control frame must be sent every cycle"
 
-    with_slow = [data for data in get_frames if 0x0B in data or 0x0C in data]
+    with_slow = [data for data in control_frames if 0x0B in data or 0x0C in data]
     assert len(with_slow) == 1, (
         "dribble current / battery must poll at slow_poll_interval_s (1 Hz), "
         f"seen in {len(with_slow)}/{cycles} cycles"
@@ -283,6 +289,40 @@ def test_iceloong_polls_slow_variables_and_link_at_low_rate(monkeypatch):
     assert len(link_frames) == 1, (
         "LINK_GET must be throttled to link_poll_interval_s (0.5 Hz)"
     )
+
+
+def test_iceloong_close_joins_worker_and_prevents_reconnect():
+    """Runtime shutdown must leave neither a serial handle nor a worker thread."""
+
+    from utils.IceLoongBits import IceLoongBits
+
+    bits = IceLoongBits(testing=True)
+
+    class FakeSerial:
+        is_open = True
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            self.is_open = False
+
+    fake_serial = FakeSerial()
+    bits.ser = fake_serial
+    worker = threading.Thread(target=lambda: bits._stop_thread.wait(5.0), daemon=True)
+    bits.SendUnitedCommandThread = worker
+    worker.start()
+
+    bits.close(join_timeout=0.5)
+    bits.close(join_timeout=0.5)
+
+    assert not worker.is_alive()
+    assert fake_serial.closed
+    assert bits.ser is None
+    assert bits.RestartThreadIfNeeded() is False
+    with pytest.raises(RuntimeError, match="closed"):
+        bits.OpenPort()
 
 
 def test_iceloong_command_loop_holds_design_period(monkeypatch):

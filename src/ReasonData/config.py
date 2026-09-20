@@ -432,34 +432,6 @@ class _CompatExpectedVals:
     def MaxWarnCount(self): return 3
 
 
-class _CompatWIFI:
-    """向后兼容层：WIFI -> Network"""
-    def __init__(self, settings):
-        self._s = settings
-
-    @property
-    def SelfIP(self): return self._s.Network.SelfIP
-    @property
-    def RemoteIP(self): return self._s.Network.RemoteIP
-    @property
-    def Port(self): return self._s.Network.Port
-    @property
-    def SSID(self): return self._s.Network.SSID
-    @property
-    def PWD(self): return self._s.Network.Password
-
-
-class _CompatTransimission:
-    """向后兼容层：Transimission -> Network"""
-    def __init__(self, settings):
-        self._s = settings
-
-    @property
-    def Type(self): return self._s.Network.Type
-    @property
-    def Method(self): return self._s.Network.Method
-
-
 class _CompatSim:
     """向后兼容层：旧代码仍可读 Settings.Sim，但默认值由 XeleratorSimBits 管理。"""
     def __init__(self, settings):
@@ -532,8 +504,6 @@ class SettingsProxy:
         self.VisionVals = _CompatVisionVals(self)
         self.Bounds = _CompatBounds(self)
         self.ExpectedVals = _CompatExpectedVals(self)
-        self.WIFI = _CompatWIFI(self)
-        self.Transimission = _CompatTransimission(self)
         # Sim需要特殊处理，因为新旧配置混用
         self._sim_compat = _CompatSim(self)
 
@@ -559,17 +529,6 @@ class SettingsProxy:
     def Chassis(self): return self._raw.Chassis
     @property
     def Motion(self): return self._raw.Motion
-    @property
-    def Network(self):
-        return getattr(self._raw, "Network", ConfigSection({
-            "Type": "Slave",
-            "Method": "WIFI",
-            "SelfIP": "192.168.1.x",
-            "RemoteIP": "192.168.1.x",
-            "Port": 20001,
-            "SSID": "MisakaNetwork",
-            "Password": "MisakaNetwork20001/",
-        }))
     @property
     def Sim(self): return getattr(self._raw, "Sim", self._sim_compat)
     @property

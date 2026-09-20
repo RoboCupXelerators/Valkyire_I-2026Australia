@@ -34,6 +34,18 @@ class FusionEngine:
         self.yellow_goal_pos = None
         self.yellow_goal_ts = 0.0
 
+    def reset_spatial_state(self) -> None:
+        """Drop coordinate-bearing state when the tracking reference frame changes."""
+
+        self.kalman = BallKalman()
+        self.track = TrackState()
+        self.chassis_positions = []
+        self.chassis_positions_ts = 0.0
+        self.blue_goal_pos = None
+        self.blue_goal_ts = 0.0
+        self.yellow_goal_pos = None
+        self.yellow_goal_ts = 0.0
+
     @staticmethod
     def _best_detection(detections: Iterable[Detection], label: str, source: str | None = None) -> Optional[Detection]:
         best = None

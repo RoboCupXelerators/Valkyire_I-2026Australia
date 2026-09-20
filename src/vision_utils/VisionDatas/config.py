@@ -67,9 +67,6 @@ class Preference:
         # the system config.
         default_overlay: Dict[str, Any] = {
             "Debug": {
-                "DebugWifi": "RoboCup",
-                "DebugIP": "192.0.2.109",
-                "DebugPSWD": "12345",
                 "Database": True,
             }
         }
@@ -172,9 +169,6 @@ class Prompts(object):
 
     class _debug(object):
         def __init__(self):
-            self.DebugWifi = "RoboCup"
-            self.DebugIP = "192.0.2.109"
-            self.DebugPSWD = "RoboCup9"
             self.FullLog = True
             self.Database = True
 

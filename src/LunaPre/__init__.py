@@ -106,6 +106,10 @@ def _register_exit_cleanup() -> None:
             UnitedPosition.Stop()
         except Exception:
             pass
+        try:
+            _runtime.shutdown_runtime()
+        except Exception:
+            pass
 
     atexit.register(_lunapre_exit_cleanup)
 

@@ -3309,15 +3309,6 @@ function populateConfigForm(config) {
     "checkbox",
   );
 
-  // Network
-  setFieldValue("trans-type", config.Transimission?.Type);
-  setFieldValue("trans-method", config.Transimission?.Method);
-  setFieldValue("wifi-self-ip", config.WIFI?.SelfIP);
-  setFieldValue("wifi-remote-ip", config.WIFI?.RemoteIP);
-  setFieldValue("wifi-port", config.WIFI?.Port);
-  setFieldValue("wifi-ssid", config.WIFI?.SSID);
-  setFieldValue("wifi-pwd", config.WIFI?.PWD);
-
   // Data/Recording
 
   // Field
@@ -3391,7 +3382,7 @@ function updateSystemInfoBar(config) {
   // Local IP
   const localIPEl = document.getElementById("local-ip");
   if (localIPEl) {
-    localIPEl.textContent = config.WIFI?.SelfIP || "--";
+    localIPEl.textContent = window.location.hostname || "--";
   }
 
   // Unity IP
@@ -3408,8 +3399,8 @@ function updateSystemInfoBar(config) {
 
   // Connection mode
   const connModeEl = document.getElementById("connection-mode");
-  if (connModeEl && config.Transimission) {
-    connModeEl.textContent = `${config.Transimission.Type} / ${config.Transimission.Method}`;
+  if (connModeEl) {
+    connModeEl.textContent = config.RoboInfo?.Bit === "IL" ? "IceLoong LINK" : config.RoboInfo?.Bit === "SIM" ? "模拟器 Bits" : "--";
   }
 
   // Recognition type
@@ -4953,19 +4944,6 @@ async function saveConfigLegacy() {
     "vision-bbox-dist",
     "checkbox",
   );
-
-  config.Transimission = {
-    Type: getFieldValue("trans-type"),
-    Method: getFieldValue("trans-method"),
-  };
-
-  config.WIFI = {
-    SelfIP: getFieldValue("wifi-self-ip"),
-    RemoteIP: getFieldValue("wifi-remote-ip"),
-    Port: getFieldValue("wifi-port"),
-    SSID: getFieldValue("wifi-ssid"),
-    PWD: getFieldValue("wifi-pwd"),
-  };
 
   config.Bounds = {
     ClsPos: config.Bounds?.ClsPos || [85, 35, 0],

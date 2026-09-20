@@ -25,6 +25,20 @@ def test_runtime_shutdown_closes_serial_referee_provider(monkeypatch):
     assert closed == [True]
 
 
+def test_runtime_shutdown_supports_legacy_capital_shutdown(monkeypatch):
+    calls = []
+    bits = SimpleNamespace(Shutdown=lambda: calls.append("bits"))
+    monkeypatch.setattr(runtime, "Bits", bits)
+    monkeypatch.setattr(runtime, "vision", None)
+    monkeypatch.setattr(runtime, "peripheral", None)
+    monkeypatch.setattr(runtime, "_referee_serial_provider", None)
+    monkeypatch.setattr(runtime, "_runtime_initialized", True)
+
+    runtime.shutdown_runtime()
+
+    assert calls == ["bits"]
+
+
 def test_debug_motion_bypasses_only_the_runtime_motion_permission(monkeypatch):
     bits = SimpleNamespace(GetRefereeUnlockPin=lambda: False)
 

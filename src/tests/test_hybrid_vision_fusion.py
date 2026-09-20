@@ -4,10 +4,13 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from vision_utils.HybridVision import HybridVision  # noqa: E402
 from vision_utils.hybrid.fusion import FusionEngine  # noqa: E402
+from vision_utils.hybrid.ego_motion import PoseHistory, field_to_robot, robot_to_field  # noqa: E402
 from vision_utils.hybrid.profiles import load_hybrid_config  # noqa: E402
 from vision_utils.hybrid.scheduler import AdaptiveFrameDistributor  # noqa: E402
 from vision_utils.hybrid.types import Detection  # noqa: E402
@@ -171,3 +174,48 @@ def test_same_frame_yolo_correction_does_not_create_velocity_spike():
     vx, vy = fusion.kalman.velocity
     assert abs(vx) < 1.0
     assert abs(vy) < 1.0
+
+
+def test_pose_history_interpolates_translation_and_wrapped_yaw():
+    history = PoseHistory(max_age_s=1.0)
+    history.add((0.0, 0.0, 350.0), 1.0)
+    history.add((10.0, 20.0, 10.0), 2.0)
+
+    pose = history.resolve(1.5)
+
+    assert pose is not None
+    assert (pose.x_cm, pose.y_cm) == (5.0, 10.0)
+    assert pose.yaw_deg == pytest.approx(0.0)
+
+
+def test_hybrid_ego_motion_keeps_static_ball_stable_in_field_frame():
+    vision = object.__new__(HybridVision)
+    vision._pose_history = PoseHistory(max_age_s=1.0)
+    vision._fusion_uses_field_frame = False
+    vision.fusion = FusionEngine(lost_ms=200.0, predict_ms=40.0)
+
+    vision.UpdateRobotPose((0.0, 0.0, 0.0), 1.0)
+    first = vision._pose_corrected_detections([_det("ball", 1.0, pos=(100.0, 0.0))])
+    vision.fusion.update_yolo(first)
+
+    vision.UpdateRobotPose((10.0, 0.0, 0.0), 2.0)
+    second = vision._pose_corrected_detections([_det("ball", 2.0, pos=(90.0, 0.0))])
+    vision.fusion.update_yolo(second)
+
+    assert first[0].position_cm == pytest.approx((100.0, 0.0))
+    assert second[0].position_cm == pytest.approx((100.0, 0.0))
+    output = vision._output_in_robot_frame(vision.fusion.output(2.0), 2.0)
+    assert output.ball_pos_cm == pytest.approx((90.0, 0.0), abs=1.0)
+    assert abs(vision.fusion.kalman.velocity[0]) < 1.0
+
+
+def test_robot_field_transform_roundtrip_with_rotation():
+    history = PoseHistory(max_age_s=1.0)
+    history.add((10.0, 20.0, 90.0), 1.0)
+    pose = history.resolve(1.0)
+
+    field_point = robot_to_field((100.0, 25.0), pose)
+    robot_point = field_to_robot(field_point, pose)
+
+    assert field_point == pytest.approx((-15.0, 120.0))
+    assert robot_point == pytest.approx((100.0, 25.0))

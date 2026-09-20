@@ -216,7 +216,7 @@ def _shutdown_runtime_unlocked() -> None:
                 except Exception:
                     pass
                 break
-    for method_name in ("Close", "close", "shutdown", "stop"):
+    for method_name in ("Close", "close", "Shutdown", "shutdown", "stop"):
         method = getattr(Bits, method_name, None)
         if callable(method):
             try:
