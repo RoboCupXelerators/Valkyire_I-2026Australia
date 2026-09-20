@@ -243,22 +243,27 @@ class HybridVision(VisionPreUntil):
     def _pose_corrected_detections(self, detections):
         """Convert capture-time robot observations to a stable field frame."""
 
-        corrected = []
-        converted_any = False
-        for det in detections:
-            if det.position_cm is None:
-                corrected.append(det)
-                continue
-            pose = self._pose_history.resolve(det.timestamp)
-            if pose is None:
-                corrected.append(replace(det, position_cm=None) if self._fusion_uses_field_frame else det)
-                continue
-            corrected.append(replace(det, position_cm=robot_to_field(det.position_cm, pose)))
-            converted_any = True
+        resolved = [
+            self._pose_history.resolve(det.timestamp) if det.position_cm is not None else None
+            for det in detections
+        ]
+        converted_any = any(pose is not None for pose in resolved)
 
         if converted_any and not self._fusion_uses_field_frame:
             self.fusion.reset_spatial_state()
             self._fusion_uses_field_frame = True
+
+        corrected = []
+        for det, pose in zip(detections, resolved):
+            if det.position_cm is None:
+                corrected.append(det)
+            elif pose is not None:
+                corrected.append(replace(det, position_cm=robot_to_field(det.position_cm, pose)))
+            elif self._fusion_uses_field_frame:
+                # Never mix robot-frame and field-frame measurements in one filter.
+                corrected.append(replace(det, position_cm=None))
+            else:
+                corrected.append(det)
         return corrected
 
     def _output_in_robot_frame(self, output, timestamp: float):

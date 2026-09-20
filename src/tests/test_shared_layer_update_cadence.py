@@ -12,7 +12,7 @@ and the fix that followed it:
   50 ms timeouts), throttling the designed 50 Hz cycle to ~9 Hz. The fix
   batches wheel+dribble into one multi-command frame (firmware verified:
   acks ``0x80 0x84 0x86``), polls slow variables at 1 Hz, LINK_GET at 0.5 Hz,
-  paces the loop adaptively to ``command_period_s`` and parses short
+  runs the competition loop at 60 Hz, paces adaptively to ``command_period_s`` and parses short
   (timeout-truncated) responses instead of discarding them.
 
 These tests pin the shared-layer semantics so regressions surface without
@@ -326,9 +326,9 @@ def test_iceloong_close_joins_worker_and_prevents_reconnect():
 
 
 def test_iceloong_command_loop_holds_design_period(monkeypatch):
-    """Adaptive pacing keeps ~20 ms between cycles when transactions are fast.
+    """Adaptive pacing keeps the configured 60 Hz period when transactions are fast.
 
-    The old loop stacked a fixed 20 ms sleep on top of transaction time,
+    The old loop stacked a fixed sleep on top of transaction time,
     which measured 72-230 ms per cycle on the bench.
     """
 

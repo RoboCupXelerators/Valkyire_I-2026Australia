@@ -127,10 +127,10 @@ class IceLoongBits:
         self._closed = False
 
         # 命令循环节拍与降频轮询（2026-09-19 实机诊断后引入）：
-        # - command_period_s: 设计控制周期 50Hz；
+        # - command_period_s: 比赛控制周期 60Hz；
         # - 慢变量（盘球电流/电池电压）每 slow_poll_interval_s 随 GET 组查一次；
         # - LINK_GET 当前无消费者，按 link_poll_interval_s 降频。
-        self.command_period_s = 0.02
+        self.command_period_s = 1.0 / 60.0
         self.slow_poll_interval_s = 1.0
         self.link_poll_interval_s = 0.5
         self._last_slow_poll_t = 0.0
@@ -168,7 +168,7 @@ class IceLoongBits:
             except Exception as e:
                 self.logger.exception(f"IceLoongBits command loop failed: {e}")
             # 自适应节拍：事务耗时不与固定 sleep 叠加。实测固件对每条命令
-            # 的应答约 11-20ms，若每周期固定再睡 20ms，会把 50Hz 设计节拍
+            # 的应答约 11-20ms，若每周期再固定睡眠会把 60Hz 设计节拍
             # 拖到 ~9Hz（2026-09-19 实机测量）。
             elapsed = time.monotonic() - cycle_start
             self._stop_thread.wait(max(0.0, self.command_period_s - elapsed))
@@ -280,7 +280,7 @@ class IceLoongBits:
 
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
         Dribble = snapshot["SET_DRIBBLE_SPEED"]
-        # 控制输出与高频状态查询共用一个固件复合帧。这样每个 20 ms 周期
+        # 控制输出与高频状态查询共用一个固件复合帧。这样每个 16.67 ms 周期
         # 只承担一次写/读往返，同时仍逐条校验固件应答。
         command_list = [
             (Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4),
