@@ -1,10 +1,14 @@
 """Atlas 决策与控制边界回归；替换运行时对象，不向真实底盘发命令。"""
 
+import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 import math
 
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import atlas
 from LunaPre.positions import Positions
