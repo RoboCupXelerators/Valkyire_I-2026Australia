@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """双机链路延迟测试：直接收发 0x09/0x0A 原始帧，自动识别长度字段宽度。
 
+写串口后不等 tcdrain：Jetson 的 ttyTHS 上 flush() 一次要 ~10 ms，会把轮询
+压到 80 次/秒（去掉后 460 次/秒），而数据本来就由驱动异步发出。
+
 用法（两台机器各跑一份，同时在 --seconds 内收发）:
     python3 link_latency_test.py --rate 20 --seconds 30 --echo
     python3 link_latency_test.py --rate 20 --seconds 30 --echo --pose
@@ -57,7 +60,6 @@ class Link:
         with self.io_lock:
             self.ser.reset_input_buffer()
             self.ser.write(frame)
-            self.ser.flush()
             return self.ser.read(want)
 
     def send(self, flags, payload):
@@ -68,7 +70,6 @@ class Link:
         with self.io_lock:
             self.ser.reset_input_buffer()
             self.ser.write(bytes([CMD_LINK_GET]))
-            self.ser.flush()
             head = self.ser.read(self.resp_header)
             if len(head) != self.resp_header or head[0] != RESP_LINK_GET:
                 return None
@@ -336,7 +337,6 @@ def main():
         with link.io_lock:
             link.ser.reset_input_buffer()
             link.ser.write(bytes([0x0D]))
-            link.ser.flush()
             resp = link.ser.read(33)
         if len(resp) == 33 and resp[0] == 0x8D:
             names = ("rx_ok", "rx_crc_bad", "rx_len_bad", "rx_type_bad",
