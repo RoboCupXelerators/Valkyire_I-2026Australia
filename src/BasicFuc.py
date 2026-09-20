@@ -94,6 +94,7 @@ class LockSeries:
         self._lockball_jump_candidate = None
         self._lockball_jump_candidate_frames = 0
         self._pose_revision = None
+        self._lockball_was_caught = False
         self.pan_x = simple_pid.PID(
             self.forward_kp,
             self.forward_ki,
@@ -220,16 +221,24 @@ class LockSeries:
         ball, caught = self._current_or_recent_ball()
         if caught:
             peripheral.Dribble(0.3)
-            chassis.stop()
-            self._reset_lockball_pid()
+            if not self._lockball_was_caught:
+                # Capture edge: stop the chase motion once. Callers such as
+                # TurnTo_with_ball command their own motion right after, so a
+                # per-tick stop here would fight the caller's drive frames and
+                # reset the backend command filter every single tick.
+                chassis.stop()
+                self._reset_lockball_pid()
+            self._lockball_was_caught = True
             return True
         elif ball == BALL_NOT_FOUND:
             peripheral.Dribble(0.2)
             chassis.stop()
             self._reset_lockball_pid()
+            self._lockball_was_caught = False
             return False
         else:
             peripheral.Dribble(0.3)
+            self._lockball_was_caught = False
 
         ball_x, ball_y = ball[0], ball[1]
         if ball_x == 0 and ball_y == 0:
@@ -300,13 +309,79 @@ class LockSeries:
 
 lockball = LockSeries()
 
+# Historical orbit wheel mix: forward = 0.1*r, lateral = -0.9*r, yaw = 3/r.
+# The lateral term is large; during big turns it flings the ball sideways out
+# of a low-power gripper. TURN_ORBIT_LATERAL scales that term for the carry
+# skill (Circle keeps the historical 0.9 for other callers).
+def _orbit_twist(r, k=1, d=1, lateral=0.9):
+    """Raw wheel mix for :func:`Circle`; returned so callers can add a trim."""
+    return (0.1 * r * d * k, -lateral * r * d * k, 3 / r * d * k)
+
+
 def Circle(r, k = 1,d = 1):
-    chassis.RobotMoveTwist(0.1*r*d*k,-0.9*r*d*k,3/r*d*k)
+    chassis.RobotMoveTwist(*_orbit_twist(r, k, d))
 
 # TurnTo_with_ball tuning. The orbit radius matches the historical wheel mix;
 # the align tolerance is the heading band inside which the skill reports done.
 TURN_ORBIT_RADIUS = 0.6
 TURN_ALIGN_TOLERANCE_DEG = 15.0
+# Carry orbit lateral scaling. 0.9 is the historical wheel mix and the value
+# validated on hardware; lower values were tested to cut the sideways fling on
+# big turns but measured worse (slower, and one ball loss), so keep 0.9.
+TURN_ORBIT_LATERAL = 0.9
+# Ball-hold envelope on the raw robot-frame ball coordinate. While carrying,
+# RobotBallPos() collapses to the BALL_HELD sentinel, but UnitedPosition.ballPos
+# keeps the raw vision reading, which is stable to ~0.1cm on hardware. Inside
+# the envelope the carry skill runs its own closed loop on that coordinate;
+# outside it hands back to LockBallSlip to re-seat the ball.
+TURN_HOLD_X_MIN_CM = 3.0
+TURN_HOLD_X_MAX_CM = 12.0
+TURN_HOLD_Y_ABS_CM = 4.0
+# Closed-loop hold gains: robot-frame velocity (m/s) per cm of ball offset from
+# CatchVal, layered on top of the orbit. +x drives forward, +y drives left, so a
+# ball ahead/left gets a positive correction (same sign as LockBallSlip's PIDs).
+TURN_HOLD_X_MPS_PER_CM = 0.0
+TURN_HOLD_Y_MPS_PER_CM = 0.0
+TURN_HOLD_MAX_MPS = 0.20
+
+
+def _clamp(value: float, limit: float) -> float:
+    return max(-limit, min(limit, value))
+
+
+def _raw_held_ball_xy():
+    """Return the raw robot-frame ball coordinate while held, or None.
+
+    ``RobotBallPos()`` returns the BALL_HELD sentinel once the ball is caught,
+    so callers that need the actual position must read ``UnitedPosition.ballPos``
+    (the raw reading populated as a side effect of the last RobotBallPos call).
+    Returns None when the reading is missing or still a sentinel.
+    """
+    raw = getattr(UnitedPosition, "ballPos", None)
+    if raw is None:
+        return None
+    try:
+        if len(raw) < 2:
+            return None
+        bx = float(raw[0])
+        by = float(raw[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    sentinel = {float(BALL_NOT_FOUND[0]), float(BALL_HELD[0]), 0.0}
+    if bx in sentinel or by in sentinel:
+        return None
+    return bx, by
+
+
+def _ball_seated(bx: float, by: float) -> bool:
+    """Whether a raw ball reading is still inside the carrying envelope."""
+    if bx < TURN_HOLD_X_MIN_CM or bx > TURN_HOLD_X_MAX_CM:
+        return False
+    return abs(by - lockball.catch_y) <= TURN_HOLD_Y_ABS_CM
+
+# True once TurnTo_with_ball has commanded a stop for the current alignment;
+# the stop latches on the motion backend, so it must only be sent once.
+_turnto_stop_latched = False
 
 
 def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
@@ -315,28 +390,52 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     这个函数不是普通原地转向。它故意用四轮差速让机器人围着已控住的球转，
     真实机器上比直接 FieldTurn/RobotTurn 更稳；模拟器物理不准时可能表现很差。
 
-    语义：未持球时只做追球并返回 False；持球后绕球转向，直到航向进入
-    ``TURN_ALIGN_TOLERANCE_DEG`` 才返回 True（此时会主动停车）。``SpeedK``
-    缩放绕球速度（None 等价 1.0），增益会被限制在 [-1, 1] 之内。
+    语义：未持球时只做追球并返回 False（运球器由 LockBallSlip 管理，这里不再
+    重复下发 Dribble，避免 0.3/0.2 交替打穿 chassis.Dribble 的状态缓存）。
+    持球后绕球转向，直到航向进入 ``TURN_ALIGN_TOLERANCE_DEG`` 才返回 True；
+    此时只在对准跳变的那一 tick 下发一次停车指令（后端会保持该指令），后续
+    tick 直接返回 True，不再每 tick 重复 stop 刷总线。``SpeedK`` 缩放绕球
+    速度（None 等价 1.0），增益会被限制在 [-1, 1] 之内。
+
+    持球闭环：用 ``UnitedPosition.ballPos``（原始机体系坐标）作为持球反馈。
+    只要坐标还在持球包络内就持续绕球，不会因为 ``RobotBallPos`` 的持球语义
+    抖动而中断（旧实现每拍先跑 LockBallSlip，语义闪一下就会打断绕球）；按
+    ``TURN_HOLD_X/Y_MPS_PER_CM`` 叠加位置修正保持球贴合 ``CatchVal``。坐标一旦
+    离开包络就交回 ``LockBallSlip`` 重新吃球，避免把球甩丢。
 
     TODO: 后续把轮速常量、角度误差和速度倍率整理成可读参数，并单独记录
     真机/模拟器差异。不要在未真机验证前改成普通旋转。
     """
+    global _turnto_stop_latched
     yaw = chassis.GetYaw()
     Aim_Angle = Aim_Angle % 360
 
-    # Not holding the ball yet: keep chasing this tick and report "not done".
-    # The old code called LockBallSlip() twice and returned the second result,
-    # which could report success without ever aligning.
-    if not lockball.LockBallSlip():
+    # Refresh the raw reading (side effect of RobotBallPos) and decide whether
+    # we already hold the ball. This is deliberately checked BEFORE LockBallSlip
+    # so a momentary semantic dropout cannot interrupt an in-progress carry.
+    # (merged from feat 23f2bd5; the per-tick Dribble call was dropped with the
+    # upstream edge-trigger refactor — Peripherals only sends on status change.)
+    UnitedPosition.RobotBallPos()
+    ball = _raw_held_ball_xy()
+    if ball is None or not _ball_seated(ball[0], ball[1]):
+        # Not measurably seated: let LockBallSlip chase/capture and report
+        # "not done". Do NOT forward its return value: a semantic "caught" with
+        # an out-of-envelope raw reading must not be reported as an aligned turn.
+        lockball.LockBallSlip()
+        # An interrupted carry must re-arm the aligned-stop latch (upstream
+        # edge-trigger semantics): the next aligned tick stops again.
+        _turnto_stop_latched = False
         return False
-    peripheral.Dribble(0.2)
 
     # Shortest signed heading error to the aim, normalized to [-180, 180).
     error = angle_error_deg(Aim_Angle, yaw)
     if abs(error) < TURN_ALIGN_TOLERANCE_DEG:
-        # Aligned: stop rather than let the previous orbit command keep turning.
-        chassis.stop()
+        # Aligned: stop once rather than let the previous orbit command keep
+        # turning. The command latches, so repeating it every tick would only
+        # reset the backend command filter and load the serial bus.
+        if not _turnto_stop_latched:
+            chassis.stop()
+            _turnto_stop_latched = True
         return True
 
     # Intentional raw wheel mix: orbit around the held ball while turning.
@@ -345,7 +444,20 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
     speed_k = 1.0 if SpeedK is None else float(SpeedK)
     gain = LinearMap(error, [-180, 180], [-1, 1]) * speed_k
     gain = max(-1.0, min(1.0, gain))
-    Circle(TURN_ORBIT_RADIUS, gain, -1)
+    vx, vy, wz = _orbit_twist(TURN_ORBIT_RADIUS, gain, -1, TURN_ORBIT_LATERAL)
+
+    # Position hold on top of the orbit (merged from feat 23f2bd5). A ball
+    # ahead (ex>0) or left (ey>0) of CatchVal gets a positive (forward/left)
+    # correction, matching the sign of LockBallSlip's pan_x / pan_y loops.
+    # TURN_HOLD_*_MPS_PER_CM default to 0.0, so this stays a no-op until tuned.
+    ex = ball[0] - lockball.catch_x
+    ey = ball[1] - lockball.catch_y
+    vx += _clamp(TURN_HOLD_X_MPS_PER_CM * ex, TURN_HOLD_MAX_MPS)
+    vy += _clamp(TURN_HOLD_Y_MPS_PER_CM * ey, TURN_HOLD_MAX_MPS)
+
+    chassis.RobotMoveTwist(vx, vy, wz)
+    # An orbit command must re-arm the aligned stop (upstream edge-trigger).
+    _turnto_stop_latched = False
     return False
 
 

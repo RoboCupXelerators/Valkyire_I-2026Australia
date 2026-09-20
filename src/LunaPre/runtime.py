@@ -201,6 +201,12 @@ def _shutdown_runtime_unlocked() -> None:
     global _referee_state_provider, _referee_serial_provider, _runtime_initialized
 
     _stop_bits_thread_monitor()
+    stop_watchdog = getattr(peripheral, "stop_watchdog", None)
+    if callable(stop_watchdog):
+        try:
+            stop_watchdog()
+        except Exception:
+            pass
     for resource in (vision, _referee_serial_provider):
         for method_name in ("Close", "close", "stop"):
             method = getattr(resource, method_name, None)
@@ -210,7 +216,7 @@ def _shutdown_runtime_unlocked() -> None:
                 except Exception:
                     pass
                 break
-    for method_name in ("Close", "close", "shutdown", "stop"):
+    for method_name in ("Close", "close", "Shutdown", "shutdown", "stop"):
         method = getattr(Bits, method_name, None)
         if callable(method):
             try:
@@ -353,6 +359,11 @@ def _init_runtime_unlocked(*, auto_start_lidar: bool = True):
         # ``lidar`` stays as a compatibility global, but is now the semantic
         # Sensor facade instead of a second localization owner.
         lidar = sensor
+        # Let the chassis zero peripheral IO when the referee gate closes;
+        # without this the dribbler keeps its latched state after shutdown.
+        attach_peripherals = getattr(chassis, "attach_peripherals", None)
+        if callable(attach_peripherals):
+            attach_peripherals(peripheral)
         _configure_referee_provider()
         if backend_name == "IL":
             _start_bits_thread_monitor(Bits)

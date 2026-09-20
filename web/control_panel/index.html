@@ -369,7 +369,6 @@
             <button class="tab-btn active" data-tab="robot">机器人</button>
             <button class="tab-btn" data-tab="simulator">模拟器</button>
             <button class="tab-btn" data-tab="vision">视觉</button>
-            <button class="tab-btn" data-tab="network">网络</button>
             <button class="tab-btn" data-tab="data">数据</button>
           </div>
 
@@ -771,66 +770,6 @@
                     <input type="checkbox" id="vision-bbox-dist" checked />
                     启用 BBox 距离估算
                   </label>
-                </div>
-              </div>
-            </div>
-
-            <!-- 网络配置 -->
-            <div id="tab-network" class="tab-content">
-              <div class="settings-section">
-                <h3>传输配置</h3>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>传输类型</label>
-                    <select id="trans-type">
-                      <option value="Slave">Slave</option>
-                      <option value="Master">Master</option>
-                    </select>
-                  </div>
-                  <div class="setting-item">
-                    <label>传输方式</label>
-                    <select id="trans-method">
-                      <option value="WIFI">WIFI</option>
-                      <option value="UART">UART</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-              <div class="settings-section">
-                <h3>WiFi 配置</h3>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>本机 IP</label>
-                    <input type="text" id="wifi-self-ip" value="192.168.1.x" />
-                  </div>
-                  <div class="setting-item">
-                    <label>远程 IP</label>
-                    <input
-                      type="text"
-                      id="wifi-remote-ip"
-                      value="192.168.1.x"
-                    />
-                  </div>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>端口</label>
-                    <input type="number" id="wifi-port" value="20001" />
-                  </div>
-                </div>
-                <div class="setting-row">
-                  <div class="setting-item">
-                    <label>SSID</label>
-                    <input type="text" id="wifi-ssid" value="MisakaNetwork" />
-                  </div>
-                  <div class="setting-item">
-                    <label>密码</label>
-                    <input
-                      type="text"
-                      id="wifi-pwd"
-                      value="MisakaNetwork20001/"
-                    />
-                  </div>
                 </div>
               </div>
             </div>

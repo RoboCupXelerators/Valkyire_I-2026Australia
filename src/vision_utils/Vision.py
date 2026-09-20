@@ -950,6 +950,9 @@ if __name__ == "__main__":
     UDP_IP = "127.0.0.1"
     UDP_PORT = 5005
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    pose_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    pose_sock.bind((UDP_IP, 5006))
+    pose_sock.setblocking(False)
 
     vision = UnitedVision()
     running = {"value": True}
@@ -966,6 +969,15 @@ if __name__ == "__main__":
     try:
         while running["value"]:
             try:
+                update_pose = getattr(vision, "UpdateRobotPose", None)
+                if callable(update_pose):
+                    while True:
+                        try:
+                            pose_packet, _ = pose_sock.recvfrom(1024)
+                            pose_data = pickle.loads(pose_packet)
+                            update_pose(pose_data.get("pose"), pose_data.get("timestamp"))
+                        except BlockingIOError:
+                            break
                 ball_pos = vision.GetBallPos()
                 chassis_pos = vision.GetChassisPos()
                 blue_goal = None
@@ -1012,5 +1024,9 @@ if __name__ == "__main__":
             print(f"Vision cleanup failed: {e}")
         try:
             sock.close()
+        except Exception:
+            pass
+        try:
+            pose_sock.close()
         except Exception:
             pass

@@ -45,6 +45,12 @@ class Car:
         self._last_wz = 0
         self._motor_output_hooks = []
         self._permission_denied_logged = False
+        self.peripherals = None
+        self._last_permission = None
+
+    def attach_peripherals(self, peripherals) -> None:
+        """Register the peripheral IO owner so permission loss can zero it."""
+        self.peripherals = peripherals
 
     def add_motor_output_hook(self, hook):
         if hook not in self._motor_output_hooks:
@@ -91,7 +97,26 @@ class Car:
             permitted = False
         if permitted:
             self._permission_denied_logged = False
+        if self._last_permission is True and not permitted:
+            self._on_permission_lost()
+        self._last_permission = permitted
         return permitted
+
+    def _on_permission_lost(self) -> None:
+        """Referee gate closed: zero peripheral IO so nothing keeps running.
+
+        The lower board latches the last IO state; without this edge the
+        dribbler would keep spinning after the referee module shuts down,
+        because strategy code stops calling Dribble() once motion is denied.
+        """
+        peripherals = self.peripherals
+        if peripherals is not None:
+            force_off = getattr(peripherals, "force_off", None)
+            if callable(force_off):
+                try:
+                    force_off()
+                except Exception as error:
+                    self.logger.warning(f"Peripheral force-off failed: {error}")
 
     def _reset_closed_loop_state(self) -> None:
         """Discard controller state after a command cannot reach the motors."""
@@ -176,15 +201,29 @@ class Car:
 
         Positive X is forward, positive Y is left, and positive Z is
         counterclockwise. Linear values use m/s and angular values use deg/s.
+
+        This is the direct velocity-command API: a requested speed must reach
+        the chassis on this call, rather than becoming an acceleration target.
+        Callers that need a ramp own that trajectory above this layer.
         """
+        SpeedX, SpeedY, SpeedZ = (float(SpeedX), float(SpeedY), float(SpeedZ))
+        if not all(math.isfinite(value) for value in (SpeedX, SpeedY, SpeedZ)):
+            raise ValueError("chassis vector must be finite")
+        if SpeedX == 0.0 and SpeedY == 0.0 and SpeedZ == 0.0:
+            # A zero vector is an explicit brake request, not a target for the
+            # traction-control deceleration ramp.
+            return self.stop()
         if self.SetChassisTwistFunc is not None:
             return self.RobotMoveTwist(
                 float(SpeedX),
                 float(SpeedY),
                 math.radians(float(SpeedZ)),
             )
-        # 缓存速度用于记录
-        SpeedX, SpeedY, SpeedZ = self._motion_backend.filter_chassis_command(SpeedX, SpeedY, SpeedZ)
+
+        # Keep the filter state from a previous control mode from leaking into
+        # this direct command. The configured mechanical RPM cap below still
+        # protects the drivetrain; only artificial command ramping is skipped.
+        self._motion_backend.reset_command_filter()
         self._last_vx = SpeedX
         self._last_vy = SpeedY
         self._last_wz = SpeedZ
@@ -204,13 +243,15 @@ class Car:
             SpeedZ * rpm_per_degps,
         ]
         output = self._motion_backend.allocate_wheel_mix(planar, turn, SpeedZ)
-        self.SetMotor(output)
+        return self.SetMotor(output, immediate=True)
 
     def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
         """Move in the robot frame using m/s and rad/s."""
         values = (float(vx_mps), float(vy_mps), float(wz_rad_s))
         if not all(math.isfinite(value) for value in values):
             raise ValueError("chassis twist must be finite")
+        if values == (0.0, 0.0, 0.0):
+            return self.stop()
         self._last_vx, self._last_vy, self._last_wz = values
         if not self.CanMove():
             self._reset_closed_loop_state()
@@ -365,6 +406,47 @@ class Peripherals:
         self.logger = logger
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.DribbleStatus = False
+        # Watchdog: the lower board latches the last IO command, so the
+        # dribbler keeps spinning after the referee gate closes unless
+        # somebody pushes a dribble-off. Strategy loops only notice via
+        # Car.CanMove(); IDLE/REPL or control-panel callers never do, so
+        # poll the gate here independently of any caller.
+        self._last_permission = None
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread = threading.Thread(
+            target=self._permission_watchdog, daemon=True
+        )
+        # Record the baseline synchronously: a permission flip during the
+        # first poll interval must still be seen as a True->False edge.
+        try:
+            self._last_permission = bool(self.Permission())
+        except Exception:
+            self._last_permission = False
+        self._watchdog_thread.start()
+
+    def _permission_watchdog(self):
+        """Zero peripheral IO on the permission True->False edge."""
+        while not self._watchdog_stop.wait(0.1):
+            try:
+                permitted = bool(self.Permission())
+            except Exception:
+                permitted = False
+            last = self._last_permission
+            self._last_permission = permitted
+            if last is True and not permitted:
+                try:
+                    self.force_off()
+                except Exception:
+                    pass
+            elif last is False and permitted:
+                # Re-arm the cache so the next Dribble() call re-sends its
+                # value instead of hitting a stale pre-shutdown entry.
+                self.DribbleStatus = False
+
+    def stop_watchdog(self):
+        self._watchdog_stop.set()
+        if self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=0.5)
 
     def ShootBall(self):
         if self.Permission():
@@ -378,6 +460,24 @@ class Peripherals:
         else:
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
+    def force_off(self):
+        """Referee gate lost: stop the dribbler and reset the IO cache.
+
+        The lower board latches the last IO state, so the dribbler would keep
+        spinning after the referee module shuts down if no new command is
+        sent. Resetting DribbleStatus also makes the next Dribble() call
+        re-send once permission returns.
+        """
+        try:
+            self.SetIO(self.cfg.Ports.Dribble, 0.0)
+        except Exception as error:
+            self.logger.warning(f"Dribble force-off failed: {error}")
+        try:
+            self.SetIO(self.cfg.Ports.ElecMagnet, 1)
+        except Exception as error:
+            self.logger.warning(f"Electromagnet reset failed: {error}")
+        self.DribbleStatus = False
+
     def Dribble(self,Status):
         if self.Permission():
             if not self.DribbleStatus == Status:
@@ -388,10 +488,14 @@ class Peripherals:
                 else:
                     self.SetIO(self.cfg.Ports.Dribble,Status)
                 self.DribbleStatus = Status
-                self.logger.info("Dribble set to %s" % str(Status))
+                self.logger.debug("Dribble set to %s" % str(Status))
             # self.logger.info("Dribble set to %s" % ("ON" if Status else "OFF"))
         else:
             self.SetIO(self.cfg.Ports.Dribble,0.0)
+            # The hardware actually received a dribble-off; record it so the
+            # next Dribble() call after permission returns re-sends the value
+            # instead of hitting a stale cache entry.
+            self.DribbleStatus = False
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
 class Key:

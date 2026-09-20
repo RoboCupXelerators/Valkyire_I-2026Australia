@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .PreProcess import MODEL_DIR, Settings, VisionPreUntil, cv2, np
 from .hybrid.blob_tracker import BlobTracker
 from .hybrid.fusion import FusionEngine
+from .hybrid.ego_motion import PoseHistory, field_to_robot, robot_to_field
 from .hybrid.perf import HybridPerf
 from .hybrid.profiles import HybridConfig, load_hybrid_config
 from .hybrid.scheduler import AdaptiveFrameDistributor, RateGate
@@ -91,6 +93,8 @@ class HybridVision(VisionPreUntil):
         self._last_yolo_detections = []
         self._last_tracker_frame_ts = [0.0, 0.0, 0.0, 0.0]
         self._last_yolo_frame_ts = [0.0, 0.0, 0.0, 0.0]
+        self._pose_history = PoseHistory()
+        self._fusion_uses_field_frame = False
 
         self.perf = HybridPerf()
         self.BlobMs = 0.0
@@ -221,7 +225,7 @@ class HybridVision(VisionPreUntil):
         with self._frame_lock:
             frames = [frame.copy() if frame is not None else None for frame in list(self.Frames)]
             timestamps = list(self._latest_timestamps)
-        now = time.time()
+        now = time.monotonic()
         for i, frame in enumerate(frames):
             if frame is not None and (i >= len(timestamps) or timestamps[i] <= 0):
                 if i >= len(timestamps):
@@ -230,13 +234,79 @@ class HybridVision(VisionPreUntil):
                     timestamps[i] = now
         return frames, timestamps
 
+    def UpdateRobotPose(self, pose, timestamp: float | None = None) -> bool:
+        """Feed the control process pose into Hybrid without opening a second serial port."""
+
+        ts = time.monotonic() if timestamp is None else float(timestamp)
+        return self._pose_history.add(pose, ts)
+
+    def _pose_corrected_detections(self, detections):
+        """Convert capture-time robot observations to a stable field frame."""
+
+        resolved = [
+            self._pose_history.resolve(det.timestamp) if det.position_cm is not None else None
+            for det in detections
+        ]
+        converted_any = any(pose is not None for pose in resolved)
+
+        if converted_any and not self._fusion_uses_field_frame:
+            self.fusion.reset_spatial_state()
+            self._fusion_uses_field_frame = True
+
+        corrected = []
+        for det, pose in zip(detections, resolved):
+            if det.position_cm is None:
+                corrected.append(det)
+            elif pose is not None:
+                corrected.append(replace(det, position_cm=robot_to_field(det.position_cm, pose)))
+            elif self._fusion_uses_field_frame:
+                # Never mix robot-frame and field-frame measurements in one filter.
+                corrected.append(replace(det, position_cm=None))
+            else:
+                corrected.append(det)
+        return corrected
+
+    def _output_in_robot_frame(self, output, timestamp: float):
+        if not self._fusion_uses_field_frame:
+            return output
+        pose = self._pose_history.resolve(timestamp)
+        if pose is None:
+            return replace(
+                output,
+                ball_pos_cm=(0.0, 0.0),
+                ball_confidence=0.0,
+                chassis_positions_cm=[],
+                blue_goal_pos_cm=None,
+                yellow_goal_pos_cm=None,
+            )
+
+        def point(value):
+            if value is None:
+                return None
+            x, y = field_to_robot(value, pose)
+            tail = list(value[2:]) if len(value) > 2 else []
+            return [round(x, 2), round(y, 2), *tail]
+
+        if output.ball_confidence > 0.0:
+            ball_x, ball_y = field_to_robot(output.ball_pos_cm, pose)
+            ball_position = (round(ball_x, 2), round(ball_y, 2))
+        else:
+            ball_position = (0.0, 0.0)
+        return replace(
+            output,
+            ball_pos_cm=ball_position,
+            chassis_positions_cm=[point(value) for value in output.chassis_positions_cm],
+            blue_goal_pos_cm=point(output.blue_goal_pos_cm),
+            yellow_goal_pos_cm=point(output.yellow_goal_pos_cm),
+        )
+
     @staticmethod
     def _is_new_frame(timestamp: float, previous_timestamp: float) -> bool:
         return float(timestamp) > 0.0 and float(timestamp) > float(previous_timestamp) + 1e-6
 
     def ReadCams(self):
         frame_count = 0
-        last_time = time.time()
+        last_time = time.monotonic()
         fail_counts = []
         while not self._stop_event.is_set():
             cams = self._camera_snapshot() if hasattr(self, "_camera_snapshot") else list(getattr(self, "Cams", []) or [])
@@ -258,7 +328,7 @@ class HybridVision(VisionPreUntil):
                         ret, frame = cam.read()
                     except Exception:
                         ret, frame = False, None
-                ts = time.time()
+                ts = time.monotonic()
                 if (not ret) or frame is None:
                     fail_counts[idx] += 1
                     frames.append(None)
@@ -283,7 +353,7 @@ class HybridVision(VisionPreUntil):
                     self._latest_timestamps = timestamps
                 self.ReadCamTF += 1
             frame_count += 1
-            current = time.time()
+            current = time.monotonic()
             if getattr(Settings.Debug, "FullLog", False) and current - last_time >= 1.0:
                 self.logger.debug(f"HybridVision camera loop FPS: {frame_count}")
                 frame_count = 0
@@ -296,7 +366,7 @@ class HybridVision(VisionPreUntil):
         while not self._stop_event.is_set():
             if not gate.wait_next(self._stop_event):
                 continue
-            now = time.time()
+            now = time.monotonic()
             t0 = time.perf_counter()
             frames, timestamps = self._copy_frames()
             detections = []
@@ -318,7 +388,7 @@ class HybridVision(VisionPreUntil):
                 continue
             if detections:
                 with self._lock:
-                    self.fusion.update_blob(detections)
+                    self.fusion.update_blob(self._pose_corrected_detections(detections))
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             self.perf.record_ms("blob_ms", elapsed_ms)
             self.perf.tracker_rate.tick()
@@ -333,7 +403,7 @@ class HybridVision(VisionPreUntil):
                 continue
             if not gate.wait_next(self._stop_event):
                 continue
-            now = time.time()
+            now = time.monotonic()
             t0 = time.perf_counter()
             frames, timestamps = self._copy_frames()
             if self.cfg_hybrid.adaptive_frame_distribution:
@@ -357,7 +427,7 @@ class HybridVision(VisionPreUntil):
                 detections = self.yolo.detect_batch(yolo_frames, yolo_timestamps, cv2, np)
                 with self._lock:
                     self._last_yolo_detections = detections
-                    self.fusion.update_yolo(detections)
+                    self.fusion.update_yolo(self._pose_corrected_detections(detections))
                     for det in detections:
                         if det.label == "ball":
                             self._frame_distributor.observe(det.camera_index, det.confidence)
@@ -380,10 +450,10 @@ class HybridVision(VisionPreUntil):
         while not self._stop_event.is_set():
             if not gate.wait_next(self._stop_event):
                 continue
-            now = time.time()
+            now = time.monotonic()
             t0 = time.perf_counter()
             with self._lock:
-                out = self.fusion.output(now)
+                out = self._output_in_robot_frame(self.fusion.output(now), now)
                 self._latest_output = out
                 self.BallPos = [float(out.ball_pos_cm[0]), float(out.ball_pos_cm[1])]
                 self.BallPosRaw = list(self.BallPos)

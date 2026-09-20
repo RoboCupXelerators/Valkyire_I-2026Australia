@@ -123,6 +123,18 @@ class IceLoongBits:
         self._max_consecutive_errors = 5
         self._reconnect_delay = 0.3  # 重连间隔秒数
         self._thread_restart_count = 0
+        self._lifecycle_lock = threading.RLock()
+        self._closed = False
+
+        # 命令循环节拍与降频轮询（2026-09-19 实机诊断后引入）：
+        # - command_period_s: 比赛控制周期 60Hz；
+        # - 慢变量（盘球电流/电池电压）每 slow_poll_interval_s 随 GET 组查一次；
+        # - LINK_GET 当前无消费者，按 link_poll_interval_s 降频。
+        self.command_period_s = 1.0 / 60.0
+        self.slow_poll_interval_s = 1.0
+        self.link_poll_interval_s = 0.5
+        self._last_slow_poll_t = 0.0
+        self._last_link_poll_t = 0.0
         
         self.logger = logging.getLogger(self.__class__.__name__)
         if not self.logger.handlers:
@@ -139,6 +151,7 @@ class IceLoongBits:
 
     def _SendUnitedCommandLoop(self):
         """后台线程主循环，包含异常恢复机制。"""
+        next_deadline = time.monotonic()
         while not self._stop_thread.is_set():
             try:
                 self._SendUnitedCommandOnce()
@@ -154,7 +167,14 @@ class IceLoongBits:
                 self._HandleSerialError(e)
             except Exception as e:
                 self.logger.exception(f"IceLoongBits command loop failed: {e}")
-            time.sleep(0.02)
+            # 使用 monotonic 绝对 deadline，避免 Python 循环开销逐周期累积。
+            # 若事务已经跨过 deadline，则跳过过期 tick，不做补跑突发。
+            next_deadline += self.command_period_s
+            now = time.monotonic()
+            if now >= next_deadline:
+                missed = int((now - next_deadline) // self.command_period_s) + 1
+                next_deadline += missed * self.command_period_s
+            self._stop_thread.wait(max(0.0, next_deadline - now))
 
     def _HandleSerialError(self, error: Exception) -> bool:
         """处理串口错误，尝试重连。
@@ -166,13 +186,16 @@ class IceLoongBits:
             bool: 重连是否成功
         """
         with self._reconnect_lock:
+            if self._closed or self._stop_thread.is_set():
+                return False
             self.logger.info(f"Attempting serial reconnection due to error: {error}")
             
             # 先关闭现有连接
             self._ForceClosePort()
             
             # 等待一段时间后重连
-            time.sleep(self._reconnect_delay)
+            if self._stop_thread.wait(self._reconnect_delay):
+                return False
             
             try:
                 self.OpenPort()
@@ -203,8 +226,11 @@ class IceLoongBits:
         Returns:
             bool: 线程是否存活（重启成功或本来就存活）
         """
-        if self.IsThreadAlive():
-            return True
+        with self._lifecycle_lock:
+            if self._closed:
+                return False
+            if self.IsThreadAlive():
+                return True
             
         self.logger.warning("Background command thread is dead, attempting restart...")
         
@@ -213,14 +239,17 @@ class IceLoongBits:
             self._stop_thread.set()
         
         # 创建新线程
-        self._stop_thread = threading.Event()
-        self.SendUnitedCommandThread = threading.Thread(
-            target=self._SendUnitedCommandLoop,
-            daemon=True,
-            name=f"IceLoongBits-CommandThread-Restart-{self._thread_restart_count}"
-        )
-        self._thread_restart_count += 1
-        self.SendUnitedCommandThread.start()
+        with self._lifecycle_lock:
+            if self._closed:
+                return False
+            self._stop_thread = threading.Event()
+            self.SendUnitedCommandThread = threading.Thread(
+                target=self._SendUnitedCommandLoop,
+                daemon=True,
+                name=f"IceLoongBits-CommandThread-Restart-{self._thread_restart_count}"
+            )
+            self._thread_restart_count += 1
+            self.SendUnitedCommandThread.start()
         
         # 给线程一点时间启动
         time.sleep(0.1)
@@ -253,10 +282,31 @@ class IceLoongBits:
         snapshot = self._CommandSnapshot()
 
         Speed1, Speed2, Speed3, Speed4 = snapshot["SET_WHEELS_SPEED"]
-        self.ExecuteCommands([(Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4)])
-
         Dribble = snapshot["SET_DRIBBLE_SPEED"]
-        self.ExecuteCommands([(Commands.SET_DRIBBLE_SPEED, Dribble)])
+        # 控制输出与高频状态查询共用一个固件复合帧。这样每个 16.67 ms 周期
+        # 只承担一次写/读往返，同时仍逐条校验固件应答。
+        command_list = [
+            (Commands.SET_WHEELS_SPEED, Speed1, Speed2, Speed3, Speed4),
+            (Commands.SET_DRIBBLE_SPEED, Dribble),
+        ]
+
+        if snapshot["HAND_SHAKE"]:
+            command_list.append((Commands.HAND_SHAKE,))
+        if snapshot["GET_POSE"]:
+            command_list.append((Commands.GET_POSE,))
+        if snapshot["GET_REFEREE_UNLOCK_PIN"]:
+            command_list.append((Commands.GET_REFEREE_UNLOCK_PIN,))
+
+        now = time.monotonic()
+        if now - self._last_slow_poll_t >= self.slow_poll_interval_s:
+            self._last_slow_poll_t = now
+            if snapshot["GET_DRIBBLE_CURRENT"]:
+                command_list.append((Commands.GET_DRIBBLE_CURRENT,))
+            if snapshot["GET_BATTERY_VOLTAGE"]:
+                command_list.append((Commands.GET_BATTERY_VOLTAGE,))
+
+        response = self.ExecuteCommands(command_list)
+        self._ApplyResponses(response)
 
         if snapshot["MORSE_PLAY"] is not None:
             self.ExecuteCommands([(Commands.MORSE_PLAY, str(snapshot["MORSE_PLAY"]))])
@@ -265,23 +315,12 @@ class IceLoongBits:
             payload, include_pose = self._ParseLinkSend(snapshot["LINK_SEND"])
             self.ExecuteCommands([(Commands.LINK_SEND, payload, include_pose)])
 
-        _CommandList = []
-        if snapshot["HAND_SHAKE"]:
-            _CommandList.append((Commands.HAND_SHAKE,))
-        if snapshot["GET_POSE"]:
-            _CommandList.append((Commands.GET_POSE,))
-        if snapshot["GET_REFEREE_UNLOCK_PIN"]:
-            _CommandList.append((Commands.GET_REFEREE_UNLOCK_PIN,))
-        if snapshot["GET_DRIBBLE_CURRENT"]:
-            _CommandList.append((Commands.GET_DRIBBLE_CURRENT,))
-        if snapshot["GET_BATTERY_VOLTAGE"]:
-            _CommandList.append((Commands.GET_BATTERY_VOLTAGE,))
-
-        response = self.ExecuteCommands(_CommandList)
-        self._ApplyResponses(response)
-
-        response = self.ExecuteCommands([(Commands.LINK_GET,)])
-        self._ApplyResponses(response)
+        # LINK_GET 目前没有策略层消费者；按 link_poll_interval_s 降频，
+        # 避免每周期一次 ~50ms 超时等待。有队友通信需求时再调低间隔。
+        if now - self._last_link_poll_t >= self.link_poll_interval_s:
+            self._last_link_poll_t = now
+            response = self.ExecuteCommands([(Commands.LINK_GET,)])
+            self._ApplyResponses(response)
 
     def _ApplyResponses(self, response):
         for i in response:
@@ -327,6 +366,8 @@ class IceLoongBits:
 
     def OpenPort(self) -> None:
         """打开串口（如果尚未打开）。"""
+        if self._closed:
+            raise RuntimeError("IceLoongBits is closed")
         if serial is None:
             raise RuntimeError("pyserial 未安装，请运行: pip install pyserial")
         if self.ser and getattr(self.ser, "is_open", False):
@@ -338,10 +379,8 @@ class IceLoongBits:
         if self.ser:
             try:
                 self.ser.close()
-            except Exception as e:
-                import subprocess
-                a = subprocess.run(['sudo fuser -k /dev/iceloong'], shell=True, capture_output=True, text=True)
-                self.logger.exception(f"关闭串口失败: {a.returncode}")
+            except Exception:
+                self.logger.exception("关闭串口失败")
             finally:
                 self.ser = None
 
@@ -480,7 +519,7 @@ class IceLoongBits:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self.ClosePort()
+        self.close()
 
     def ExecuteCommands(self, commands: List[tuple]) -> list[tuple]:
         """执行单条或多条命令
@@ -573,9 +612,21 @@ class IceLoongBits:
             return []
 
         rx_data = []
-        if resp and len(resp) == resp_len:
+        if resp:
+            # 短读容忍：应答超时会得到不完整字节流（实测约 10% 的周期）。
+            # 逐记录按 id 解析，尾部被截断的记录整体丢弃，之前已对齐的
+            # 记录（尤其是 GET_POSE）仍然生效；未知 id 立即停止。
             i = 0
-            while i < resp_len:
+            n = len(resp)
+            while i < n:
+                record_id = resp[i] ^ 0x80
+                record_length = COMMAND_RESPONSE_LENGTHS.get(record_id, 1)
+                if (
+                    record_length is not None
+                    and record_id != 0x00
+                    and i + record_length > n
+                ):
+                    break
                 match resp[i] ^ 0x80:
                     case 0x00:
                         i += 1
@@ -861,7 +912,16 @@ class IceLoongBits:
                 self.logger.debug(f"Refresh battery voltage failed: {e}")
         return self.battery_voltage
 
-    def Shutdown(self):
-        """安全关闭串口和后台线程。"""
-        self._stop_thread.set()
+    def close(self, join_timeout: float = 2.0):
+        """幂等停止后台线程并释放串口；关闭后禁止隐式重连。"""
+        with self._lifecycle_lock:
+            self._closed = True
+            self._stop_thread.set()
+            thread = getattr(self, "SendUnitedCommandThread", None)
+
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=max(0.0, float(join_timeout)))
         self.ClosePort()
+
+    Close = close
+    Shutdown = close

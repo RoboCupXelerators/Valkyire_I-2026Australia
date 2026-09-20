@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ReasonData import logger, Settings
+from ReasonData import logger
 
 from . import runtime
 from .strategy_tools import BALL_NOT_FOUND
@@ -10,17 +10,16 @@ from .strategy_tools import BALL_NOT_FOUND
 cfg = runtime.cfg
 
 class Communication:
-    """蓝牙/Wi-Fi 队内通信封装。
+    """通过 IceLoong LINK 或模拟器 Bits 传送队内状态帧。
 
-    协议参考 `蓝牙数据协议.csv`：
+    状态帧格式：
     - 帧头: 0x23
     - 帧尾: 0x42
     - 字段顺序:
         [帧头, 识别ID, 角色, 状态, x+, y+, x-, y-, 备用, 帧尾]
 
     说明：
-    - 这里保留了一个通用实现，既可以用于串口 BLE，也可以用于 Wi-Fi
-      方案中的二次封装。
+    - 传输由运行时 Bits 提供。
     - 对于坐标字段，默认采用“正负拆分”的方式：
         signed = positive - negative
       其中每个分量都会被限制到 0~0xFF。
@@ -30,7 +29,7 @@ class Communication:
     FRAME_TAIL = 0x42
     FRAME_LENGTH = 10
 
-    # 角色编码（对齐蓝牙数据协议.csv）
+    # 角色编码
     ROLE_OFFENCE_YELLOW = 0x01
     ROLE_DEFENCE_YELLOW = 0x00
     ROLE_DEFENCE_BLUE = 0x02
@@ -44,23 +43,21 @@ class Communication:
     STATUS_NO_BALL = 0xFF
 
     def __init__(self, *, bits=None, peer_id: int | None = None):
-        """Pass simulator Bits and peer_id to carry LunaPre frames through Unity."""
-        if (bits is None) != (peer_id is None):
-            raise ValueError("bits and peer_id must be provided together")
+        """Use runtime IceLoong Bits, or explicit simulator Bits and peer_id."""
         if peer_id is not None and (not isinstance(peer_id, int) or not 1 <= peer_id <= 255):
             raise ValueError("peer_id must be from 1 to 255")
-        self._bits = bits
+        self._bits = bits if bits is not None else runtime.Bits
         self._peer_id = peer_id
-        if bits is not None:
-            self.transimission = None
-        elif cfg.Transimission.Method == "WIFI":
-            from utils.ReasonBeacon import MisakaNetwork
-            self.transimission = MisakaNetwork()
-        elif cfg.Transimission.Method == "BLE":
-            import serial
-            self.transimission = serial.Serial(getattr(Settings.Ports, "BLEPort", "/dev/ble"), 115200, timeout=0.1)
-        else:
-            raise RuntimeError("None Transmission Method Selected!")
+        if self._bits is None:
+            raise RuntimeError("Initialize runtime Bits before Communication")
+        self._is_link = all(callable(getattr(self._bits, name, None))
+                            for name in ("SendLinkData", "GetLinkData"))
+        if not self._is_link:
+            if peer_id is None:
+                raise ValueError("Simulator communication requires peer_id")
+            if not all(callable(getattr(self._bits, name, None))
+                       for name in ("SendMessage", "ReceiveMessage")):
+                raise TypeError("Bits must provide IceLoong LINK or simulator messaging")
 
         self.BallFlag = [0, 0]
         self.PeerPosition = list(BALL_NOT_FOUND)
@@ -200,16 +197,10 @@ class Communication:
             payload = self.PackSelfStatus()
 
         try:
-            if self._bits is not None:
-                self._bits.SendMessage(self._peer_id, bytes(payload))
-            elif hasattr(self.transimission, "send") and callable(getattr(self.transimission, "send")):
-                self.transimission.send(payload)
-            elif hasattr(self.transimission, "sendall") and callable(getattr(self.transimission, "sendall")):
-                self.transimission.sendall(payload)
-            elif hasattr(self.transimission, "write") and callable(getattr(self.transimission, "write")):
-                self.transimission.write(payload)
+            if self._is_link:
+                return bool(self._bits.SendLinkData(bytes(payload)))
             else:
-                raise AttributeError("transimission object has no send/write interface")
+                self._bits.SendMessage(self._peer_id, bytes(payload))
             return True
         except Exception as e:
             if self.FullLog:
@@ -220,19 +211,13 @@ class Communication:
         """尝试接收一帧并解析。"""
         try:
             raw = None
-            if self._bits is not None:
+            if self._is_link:
+                raw = self._bits.GetLinkData()
+            else:
                 message = self._bits.ReceiveMessage()
                 if message is None or message[0] != self._peer_id:
                     return None
                 raw = message[1]
-            elif hasattr(self.transimission, "recv") and callable(getattr(self.transimission, "recv")):
-                raw = self.transimission.recv(self.FRAME_LENGTH)
-            elif hasattr(self.transimission, "read") and callable(getattr(self.transimission, "read")):
-                raw = self.transimission.read(self.FRAME_LENGTH)
-            elif hasattr(self.transimission, "receive") and callable(getattr(self.transimission, "receive")):
-                raw = self.transimission.receive()
-            else:
-                raise AttributeError("transimission object has no recv/read/receive interface")
 
             if not raw:
                 return None
@@ -273,13 +258,8 @@ class Communication:
         return self.SendStatus(status=self.Status, position=self.PeerPosition, reserve=reserve)
 
     def Close(self):
-        """关闭通信句柄。"""
-        try:
-            if hasattr(self.transimission, "close") and callable(getattr(self.transimission, "close")):
-                self.transimission.close()
-        except Exception as e:
-            if self.FullLog:
-                logger.warning(f"Communication close failed: {e}")
+        """Bits 生命周期由运行时或调用者管理。"""
+        return None
 
     # Backward-compatible aliases
     def SendMessage(self, *args, **kwargs):
