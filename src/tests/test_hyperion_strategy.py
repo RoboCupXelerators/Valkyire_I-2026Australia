@@ -25,3 +25,49 @@ def test_jump_score_can_round_its_scalar_activation(monkeypatch):
 
     assert score == 1.0
     assert isinstance(score, float)
+
+
+def _u_shoot_harness(monkeypatch, *, turned=True):
+    calls = []
+    monkeypatch.setattr(Hyperion.UnitedPosition, "FieldRobotPose", lambda: (0.0, 0.0, 0.0))
+    monkeypatch.setattr(Hyperion.UnitedPosition, "Pos2Angle", lambda _pose, _goal: 0.0)
+    turn_targets = []
+    monkeypatch.setattr(
+        Hyperion, "TurnTo_with_ball", lambda yaw: turn_targets.append(yaw) or turned
+    )
+    monkeypatch.setattr(Hyperion.chassis, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(
+        Hyperion.chassis, "RobotMoveVector", lambda *args: calls.append(("move", args))
+    )
+    monkeypatch.setattr(Hyperion.peripheral, "Dribble", lambda value: calls.append(("dribble", value)))
+    monkeypatch.setattr(Hyperion.time, "sleep", lambda value: calls.append(("sleep", value)))
+    return calls, turn_targets
+
+
+def test_u_shoot_keeps_chasing_until_the_back_to_goal_turn_is_ready(monkeypatch):
+    calls, turns = _u_shoot_harness(monkeypatch, turned=False)
+
+    assert Hyperion.U_Shoot() is False
+    assert calls == []
+    assert turns == [180.0]
+
+
+def test_u_shoot_runs_full_dribble_then_two_fast_shakes(monkeypatch):
+    calls, turns = _u_shoot_harness(monkeypatch)
+
+    assert Hyperion.U_Shoot() is True
+    assert turns == [180.0]
+    assert calls == [
+        ("dribble", 1.0),
+        ("sleep", 3.0),
+        ("move", (0, 1.5, 0)),
+        ("sleep", 0.10),
+        ("move", (0, -1.5, 0)),
+        ("sleep", 0.10),
+        ("move", (0, 1.5, 0)),
+        ("sleep", 0.10),
+        ("move", (0, -1.5, 0)),
+        ("sleep", 0.10),
+        "stop",
+        ("dribble", False),
+    ]

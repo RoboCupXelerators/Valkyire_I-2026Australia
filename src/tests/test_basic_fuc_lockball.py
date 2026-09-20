@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import BasicFuc as basic  # noqa: E402
 
 
-def test_lockball_loads_all_pid_terms_and_output_limits(monkeypatch):
+def test_lockball_uses_source_owned_pid_terms_and_output_limits(monkeypatch):
     tuning = SimpleNamespace(
         ForwardKp=0.02,
         ForwardKi=0.006,
@@ -35,15 +35,36 @@ def test_lockball_loads_all_pid_terms_and_output_limits(monkeypatch):
 
     lock = basic.LockSeries()
 
-    assert lock.pan_x.tunings == (0.02, 0.006, 0.005)
-    assert lock.pan_y.tunings == (0.016, 0.0005, 0.005)
-    assert lock.pan_w.tunings == (1.3, 0.06, 0.15)
-    assert lock.pan_x.output_limits == (-0.8, 0)
-    assert lock.pan_y.output_limits == (-0.65, 0.65)
-    assert lock.pan_w.output_limits == (-85.0, 85.0)
+    # Old deployments may retain a LockBallSlip section in config, but motion
+    # PID calibration is intentionally source-owned so it cannot drift at
+    # runtime between robots.
+    assert lock.pan_x.tunings == (
+        basic.LOCKBALL_FORWARD_KP,
+        basic.LOCKBALL_FORWARD_KI,
+        basic.LOCKBALL_FORWARD_KD,
+    )
+    assert lock.pan_y.tunings == (
+        basic.LOCKBALL_LATERAL_KP,
+        basic.LOCKBALL_LATERAL_KI,
+        basic.LOCKBALL_LATERAL_KD,
+    )
+    assert lock.pan_w.tunings == (
+        basic.LOCKBALL_ANGULAR_KP,
+        basic.LOCKBALL_ANGULAR_KI,
+        basic.LOCKBALL_ANGULAR_KD,
+    )
+    assert lock.pan_x.output_limits == (-basic.LOCKBALL_FORWARD_MAX_MPS, 0)
+    assert lock.pan_y.output_limits == (
+        -basic.LOCKBALL_LATERAL_MAX_MPS,
+        basic.LOCKBALL_LATERAL_MAX_MPS,
+    )
+    assert lock.pan_w.output_limits == (
+        -basic.LOCKBALL_ANGULAR_MAX_DEGPS,
+        basic.LOCKBALL_ANGULAR_MAX_DEGPS,
+    )
 
 
-def test_lockball_loads_near_dock_envelope(monkeypatch):
+def test_lockball_uses_source_owned_near_dock_envelope(monkeypatch):
     tuning = SimpleNamespace(
         NearDockDecelMps2=0.6,
     )
@@ -51,7 +72,7 @@ def test_lockball_loads_near_dock_envelope(monkeypatch):
 
     lock = basic.LockSeries()
 
-    assert lock.near_dock_decel == 0.6
+    assert lock.near_dock_decel == basic.LOCKBALL_NEAR_DOCK_DECEL_MPS2
 
 
 def _lock_with_observations(monkeypatch, observations):
@@ -96,9 +117,49 @@ def _capture_move(monkeypatch, ball_xy):
     lock, _ = _lock_with_observations(monkeypatch, (ball_xy,))
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     moves = []
-    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(
+        basic.chassis, "RobotMoveVector", lambda *args, **_kwargs: moves.append(args)
+    )
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
     return lock, moves
+
+
+def test_lockball_passes_semantic_vision_state_to_adaptive_dribbler(monkeypatch):
+    lock, _ = _lock_with_observations(monkeypatch, (basic.BALL_HELD,))
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    calls = []
+    monkeypatch.setattr(
+        basic.peripheral,
+        "DribbleAdaptive",
+        lambda power, vision_state=None, lateral_error_cm=None: calls.append(
+            (power, vision_state, lateral_error_cm)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(basic.chassis, "stop", lambda: None)
+
+    assert lock.LockBallSlip() is True
+    assert calls == [(0.3, "held", None)]
+
+
+def test_lockball_uses_near_state_only_inside_capture_envelope(monkeypatch):
+    lock, _ = _lock_with_observations(monkeypatch, ([15.0, 0.0],))
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    lock.catch_x = 6.0
+    lock.catch_y = 0.0
+    calls = []
+    monkeypatch.setattr(
+        basic.peripheral,
+        "DribbleAdaptive",
+        lambda power, vision_state=None, lateral_error_cm=None: calls.append(
+            (power, vision_state, lateral_error_cm)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *_args, **_kwargs: None)
+
+    assert lock.LockBallSlip() is False
+    assert calls == [(basic.LOCKBALL_DRIBBLE_FAR_POWER, "near", 0.0)]
 
 
 def test_lockball_brakes_on_curve_close_to_ball(monkeypatch):
@@ -126,7 +187,9 @@ def test_lockball_braking_curve_fades_with_distance(monkeypatch):
     lock.ball_jump_reject_cm = 1000.0
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     moves = []
-    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(
+        basic.chassis, "RobotMoveVector", lambda *args, **_kwargs: moves.append(args)
+    )
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
 
     # 12cm: inside the brake zone (starts at 0.8^2/(2*0.5) = 64cm).
@@ -143,6 +206,34 @@ def test_lockball_braking_curve_fades_with_distance(monkeypatch):
     assert far_speed > near_speed
 
 
+def test_lockball_uses_wheel_bypass_only_for_aligned_far_chase(monkeypatch):
+    # A 94cm straight, front-side error saturates the new pursuit cap.  This
+    # is the only LockBallSlip geometry permitted to exercise the temporary
+    # wheel-limit debug route.
+    lock, _ = _lock_with_observations(monkeypatch, ([100.0, 1.0],))
+    lock.catch_x = 6.0
+    lock.catch_y = 1.0
+    lock.pan_x.setpoint = lock.catch_x
+    lock.pan_y.setpoint = lock.catch_y
+    lock.pan_x.sample_time = None
+    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
+    monkeypatch.setattr(
+        basic.peripheral, "DribbleAdaptive", lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    commands = []
+    monkeypatch.setattr(
+        basic.chassis,
+        "RobotMoveVector",
+        lambda *args, **kwargs: commands.append((args, kwargs)),
+    )
+
+    assert lock.LockBallSlip() is False
+    args, kwargs = commands[-1]
+    assert args[0] == pytest.approx(basic.LOCKBALL_FORWARD_MAX_MPS)
+    assert kwargs == {"bypass_wheel_limits": True}
+
+
 def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
     lock, _ = _lock_with_observations(monkeypatch, ([15.0, 60.0],))
     lock.turn_only_angle = 70.0
@@ -150,7 +241,9 @@ def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
     lock.turn_only_max = 55.0
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     moves = []
-    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *args: moves.append(args))
+    monkeypatch.setattr(
+        basic.chassis, "RobotMoveVector", lambda *args, **_kwargs: moves.append(args)
+    )
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
 
     assert lock.LockBallSlip() is False

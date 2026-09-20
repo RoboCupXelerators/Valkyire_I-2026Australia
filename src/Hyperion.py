@@ -1,9 +1,13 @@
-from BasicFuc import *
+from BasicFuc import TurnTo_with_ball, lockball
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
 from LunaPre.strategy_tools import BALL_NOT_FOUND, safe_stop
 
 import math
 import numpy as np
+import time
+
+
+U_SHOOT_PERIOD_S = 0.02
 
 def activate_func(input_score):
     """Return the binary activation used by the strategy scoring functions."""
@@ -92,6 +96,48 @@ def UplaneStep(thershold=[[50, 30], [100, 90]]):
         chassis.FieldMoveVector(0.91, 0, 90 * angle_k)
 
 
+def U_Shoot(goal=(100, 0), dribble_s=0.03, shake_speed=0.8, shake_s=0.3):
+    """控球后背对目标，满盘三秒，再横向快速抖动甩球。"""
+    pose = UnitedPosition.FieldRobotPose()
+    x, y, w = pose
+    if y > 0:
+        shake_speed = - shake_speed
+    else:
+        pass
+    back_to_goal = (UnitedPosition.Pos2Angle(pose, goal) + 180) % 360
+    if not lockball.slip():
+        return False
+    if not TurnTo_with_ball(back_to_goal):
+        return False
+    else:
+        for _ in range(100):
+            if TurnTo_with_ball(back_to_goal):
+                peripheral.Dribble(0.9)
+                time.sleep(dribble_s)
+            else:
+                break
+        for speed_y in (shake_speed, -shake_speed):
+            chassis.RobotMoveVector(0, speed_y, 0)
+            time.sleep(shake_s)
+        chassis.stop()
+        peripheral.Dribble(0.2)
+        return True
+
+
+def run_u_shoot_loop(period_s=U_SHOOT_PERIOD_S):
+    if not UnitedPosition.StartVision():
+        logger.error("Hyperion U_Shoot cannot start vision.")
+        return
+    try:
+        while True:
+            U_Shoot()
+            time.sleep(period_s)
+    except KeyboardInterrupt:
+        logger.info("Hyperion U_Shoot interrupted by user.")
+    finally:
+        safe_stop(chassis, peripheral, UnitedPosition)
+
+
 def logic_step():
     """Select and execute one shot strategy tick."""
     pose = UnitedPosition.FieldRobotPose()
@@ -129,10 +175,4 @@ def logic_step():
         logger.debug("Jump/rebound score selected; shot action is disabled.")
 
 if __name__ == "__main__":
-    try:
-        while True:
-            logic_step()
-    except KeyboardInterrupt:
-        logger.info("Program interrupted by user.")
-    finally:
-        safe_stop(chassis, peripheral, UnitedPosition)
+    run_u_shoot_loop()
