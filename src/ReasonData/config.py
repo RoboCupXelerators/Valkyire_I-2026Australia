@@ -103,10 +103,6 @@ class Preference:
         "Motion": {
             "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
-            # RobotMoveVector 是速度阶跃命令: 斜坡默认关闭 (2026-09-20).
-            # 打开 EnableTractionControl/EnableWheelSlewLimit 可恢复机械保护斜坡.
-            "EnableTractionControl": False,
-            "EnableWheelSlewLimit": False,
 
             "LockBallSlip": {
                 "ForwardKp": 0.025,
