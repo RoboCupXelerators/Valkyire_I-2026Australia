@@ -76,12 +76,12 @@ class IceLoongBits:
     - 提供线程监控和重启机制
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 115200, timeout: float = 0.05, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.05, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
             port: 串口设备路径，例如 "/dev/ttyUSB0" 或 "COM3"。
-            baudrate: 波特率，例如 115200。
+            baudrate: 波特率，例如 460800（MainBoard 的 USART1）。
             timeout: 读超时（秒）。
             testing: 测试模式，不启动后台线程。
         """

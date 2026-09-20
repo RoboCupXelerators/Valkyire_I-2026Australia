@@ -38,7 +38,7 @@ FLAG_POSE = 0x01
 class Link:
     """0x09 / 0x0A 的最小实现，长度字段宽度自动探测。"""
 
-    def __init__(self, port, baudrate=115200, timeout=0.05):
+    def __init__(self, port, baudrate=460800, timeout=0.05):
         self.ser = serial.Serial(port, baudrate, timeout=timeout)
         self.io_lock = threading.Lock()
         self.len_bytes = 0
@@ -134,7 +134,7 @@ def sync_client(peer, rounds=200):
 class Runner:
     def __init__(self, args):
         self.args = args
-        self.link = Link(args.port, timeout=args.timeout)
+        self.link = Link(args.port, baudrate=args.baud, timeout=args.timeout)
         self.offset = args.clock_offset_ms / 1000.0
         self.pad = max(0, args.pad - 15)
         self.sent = {}
@@ -304,6 +304,7 @@ def default_port():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=None, help="STM32 串口，默认自动探测")
+    parser.add_argument("--baud", type=int, default=460800, help="串口波特率（MainBoard USART1，默认 460800）")
     parser.add_argument("--rate", type=float, default=20.0, help="LINK_SEND 频率 Hz")
     parser.add_argument("--counter-base", type=int, default=0,
                         help="计数器起始值，双向同时 ping 时两侧用不同基数避免互相混淆")
@@ -333,7 +334,7 @@ def main():
         return
 
     if args.diag:
-        link = Link(args.port or default_port())
+        link = Link(args.port or default_port(), args.baud)
         with link.io_lock:
             link.ser.reset_input_buffer()
             link.ser.write(bytes([0x0D]))
