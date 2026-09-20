@@ -201,15 +201,29 @@ class Car:
 
         Positive X is forward, positive Y is left, and positive Z is
         counterclockwise. Linear values use m/s and angular values use deg/s.
+
+        This is the direct velocity-command API: a requested speed must reach
+        the chassis on this call, rather than becoming an acceleration target.
+        Callers that need a ramp own that trajectory above this layer.
         """
+        SpeedX, SpeedY, SpeedZ = (float(SpeedX), float(SpeedY), float(SpeedZ))
+        if not all(math.isfinite(value) for value in (SpeedX, SpeedY, SpeedZ)):
+            raise ValueError("chassis vector must be finite")
+        if SpeedX == 0.0 and SpeedY == 0.0 and SpeedZ == 0.0:
+            # A zero vector is an explicit brake request, not a target for the
+            # traction-control deceleration ramp.
+            return self.stop()
         if self.SetChassisTwistFunc is not None:
             return self.RobotMoveTwist(
                 float(SpeedX),
                 float(SpeedY),
                 math.radians(float(SpeedZ)),
             )
-        # 缓存速度用于记录
-        SpeedX, SpeedY, SpeedZ = self._motion_backend.filter_chassis_command(SpeedX, SpeedY, SpeedZ)
+
+        # Keep the filter state from a previous control mode from leaking into
+        # this direct command. The configured mechanical RPM cap below still
+        # protects the drivetrain; only artificial command ramping is skipped.
+        self._motion_backend.reset_command_filter()
         self._last_vx = SpeedX
         self._last_vy = SpeedY
         self._last_wz = SpeedZ
@@ -229,13 +243,15 @@ class Car:
             SpeedZ * rpm_per_degps,
         ]
         output = self._motion_backend.allocate_wheel_mix(planar, turn, SpeedZ)
-        self.SetMotor(output)
+        return self.SetMotor(output, immediate=True)
 
     def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
         """Move in the robot frame using m/s and rad/s."""
         values = (float(vx_mps), float(vy_mps), float(wz_rad_s))
         if not all(math.isfinite(value) for value in values):
             raise ValueError("chassis twist must be finite")
+        if values == (0.0, 0.0, 0.0):
+            return self.stop()
         self._last_vx, self._last_vy, self._last_wz = values
         if not self.CanMove():
             self._reset_closed_loop_state()
