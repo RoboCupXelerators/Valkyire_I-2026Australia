@@ -415,10 +415,10 @@ class Positions:
             return True
 
     def _send_vision_pose(self) -> None:
-        """Publish pose at 50 Hz to Hybrid without giving vision serial ownership."""
+        """Publish pose at 60 Hz to Hybrid without giving vision serial ownership."""
 
         now = time.monotonic()
-        if now - self._last_vision_pose_send < 0.02 or self.sock is None:
+        if now - self._last_vision_pose_send < (1.0 / 60.0) or self.sock is None:
             return
         self._last_vision_pose_send = now
         pose = runtime.get_field_pose()
