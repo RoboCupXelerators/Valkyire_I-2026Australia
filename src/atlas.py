@@ -8,9 +8,8 @@ import math
 import time
 
 from BasicFuc import Circle, TurnTo_with_ball, lockball
-from Hyperion import U_Shoot
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
-from LunaPre.strategy_tools import BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop, valid_pose
+from LunaPre.strategy_tools import BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop, valid_pose, timer
 
 
 # 各项先归一化到 [0, 1]，每组权重之和为 1。越接近对方半场，推进项越高。
@@ -273,6 +272,27 @@ def UplaneStep(pose, window):
         speed_x = clamp((target_x - x) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)/8
         # 推进时持续修正横向误差，而不是一越过 y=50 就重新转入边路阶段。
         chassis.FieldMoveVector(speed_x, speed_y, facing)
+
+
+def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
+    """背对球门时保持带球，再横摆让球借边墙反弹。"""
+    pose = UnitedPosition.FieldRobotPose()
+    if not lockball.LockBallSlip():
+        return False
+    back_to_goal = (UnitedPosition.Pos2Angle(pose, goal) + 180) % 360
+    if not TurnTo_with_ball(back_to_goal):
+        return False
+    else:
+        if not lockball.LockBallSlip():
+            return False
+        else:
+            dribble_timer = timer()
+            if not dribble_timer.countdown(hold_s):
+                peripheral.Dribble(0.99)
+            else:
+                dribble_timer.reset()
+                dribble_timer.reset() if dribble_timer.countdown(shake_s*2) else chassis.RobotMoveVector(0, shake_speed, 0) if dribble_timer.countdown(shake_s) else chassis.RobotMoveVector(0, -shake_speed, 0)
+                return True
 
 
 def logic_step():

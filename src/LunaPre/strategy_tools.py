@@ -64,3 +64,28 @@ def safe_stop(chassis, peripheral=None, position=None) -> None:
                 pass
         except Exception:
             pass
+
+import time
+
+class timer:
+    def __init__(self):
+        self._time_stamp_cache = None
+        self.tagged = False
+
+    def started(self) -> bool:
+        return False if not self.tagged or not self._time_stamp_cache else True
+
+    def countdown(self, seconds):
+        '''
+        it will record the time when created.
+        `seconds` int: after ~ second, this will return true
+        '''
+        if not self.tagged or not self._time_stamp_cache:
+            self._time_stamp_cache = time.time()
+            self.tagged = True
+            return self._time_stamp_cache
+        return True if time.time() - self._time_stamp_cache >= seconds else False
+
+    def reset(self):
+        self.tagged = False
+        return True
