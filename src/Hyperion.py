@@ -93,7 +93,7 @@ def UplaneStep(thershold=[[50, 30], [100, 90]]):
         chassis.FieldMoveVector(0.91, 0, 90 * angle_k)
 
 
-def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.10):
+def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
     """背对球门时保持带球，再横摆让球借边墙反弹。"""
     pose = UnitedPosition.FieldRobotPose()
     if not lockball.LockBallSlip():

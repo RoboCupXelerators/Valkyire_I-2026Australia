@@ -265,12 +265,12 @@ def UplaneStep(pose, window):
     if not TurnTo_with_ball(facing):
         return
 
-    speed_y = clamp((_uplane_side * LANE_Y - y) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)
+    speed_y = clamp((_uplane_side * LANE_Y - y) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)/5
     if _uplane_phase == "lane":
         chassis.FieldMoveVector(0.0, speed_y, facing)
     else:
         target_x = (UPLANE_REGION[0][0] + UPLANE_REGION[1][0]) / 2.0
-        speed_x = clamp((target_x - x) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)
+        speed_x = clamp((target_x - x) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)/8
         # 推进时持续修正横向误差，而不是一越过 y=50 就重新转入边路阶段。
         chassis.FieldMoveVector(speed_x, speed_y, facing)
 
