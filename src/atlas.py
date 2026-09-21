@@ -8,6 +8,7 @@ import math
 import time
 
 from BasicFuc import Circle, TurnTo_with_ball, lockball
+from Hyperion import U_Shoot
 from LunaPre import Settings, UnitedPosition, chassis, logger, peripheral
 from LunaPre.strategy_tools import BALL_NOT_FOUND, angle_error_deg, clamp, safe_stop, valid_pose
 
@@ -20,6 +21,9 @@ UPLANE_ALIGNMENT_WEIGHT = 0.45
 UPLANE_LANE_WEIGHT = 0.35
 UPLANE_PROGRESS_WEIGHT = 0.20
 SWITCH_MARGIN = 0.08  # 新策略必须至少高出此分差才切换；可直接射门时不受此限制。
+# 最终只会从这里列出的方案里选择；删掉名称即可禁用对应方案。
+ENABLED_SHOTS = ("huck", "uplane", "u_shoot")
+U_SHOOT_BACKWARD_MIN_DEG = 135.0
 
 GOAL_POS = (100.0, 0.0)  # 沿用 Hyperion 的几何瞄准点，窗口不可用时仅用于转向。
 UPLANE_REGION = ((75.0, 30.0), (100.0, 90.0))  # X 到 75cm 后进入瞄准；负半场逐帧镜像。
@@ -92,9 +96,14 @@ def UplaneScore(pose):
     )
 
 
+def UshootScore(pose, yaw):
+    """背对目标球门时才提供弹墙射门候选。"""
+    return 1.01 if abs(angle_error_deg(yaw, _goal_yaw(pose))) >= U_SHOOT_BACKWARD_MIN_DEG else 0.0
+
+
 def select_shot(scores, previous=None):
-    """只在已实现的两种动作中选择；初次同分优先直射，之后小分差保持。"""
-    best = max(("huck", "uplane"), key=scores.__getitem__)
+    """在启用的动作中选择；初次同分保持插入顺序，之后小分差保持。"""
+    best = max(scores, key=scores.__getitem__)
     if previous in scores and scores[best] - scores[previous] <= SWITCH_MARGIN:
         return previous
     return best
@@ -256,12 +265,12 @@ def UplaneStep(pose, window):
     if not TurnTo_with_ball(facing):
         return
 
-    speed_y = clamp((_uplane_side * LANE_Y - y) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)
+    speed_y = clamp((_uplane_side * LANE_Y - y) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)/5
     if _uplane_phase == "lane":
         chassis.FieldMoveVector(0.0, speed_y, facing)
     else:
         target_x = (UPLANE_REGION[0][0] + UPLANE_REGION[1][0]) / 2.0
-        speed_x = clamp((target_x - x) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)
+        speed_x = clamp((target_x - x) * CARRY_POSITION_KP, -CARRY_SPEED_MPS, CARRY_SPEED_MPS)/8
         # 推进时持续修正横向误差，而不是一越过 y=50 就重新转入边路阶段。
         chassis.FieldMoveVector(speed_x, speed_y, facing)
 
@@ -314,7 +323,7 @@ def logic_step():
         logger.debug("Atlas shot_allowed=%s source=%s pose=%s yaw=%s target=%s" %
                      (approved, window.get("reason", "window_unavailable"), pose, yaw, window.get("target_yaw_deg")))
         _last_shot_log_at = now
-    if approved:
+    if approved and "huck" in ENABLED_SHOTS:
         if _shoot_ready_since is None:
             _shoot_ready_since = now
         chassis.stop()
@@ -331,7 +340,16 @@ def logic_step():
     aim_yaw = window.get("target_yaw_deg")
     if aim_yaw is not None and not math.isfinite(aim_yaw):
         aim_yaw = None
-    scores = {"huck": HuckScore(pose, aim_yaw), "uplane": UplaneScore(pose)}
+    scores = {}
+    if "huck" in ENABLED_SHOTS:
+        scores["huck"] = HuckScore(pose, aim_yaw)
+    if "uplane" in ENABLED_SHOTS:
+        scores["uplane"] = UplaneScore(pose)
+    if "u_shoot" in ENABLED_SHOTS and UshootScore(pose, yaw):
+        scores["u_shoot"] = UshootScore(pose, yaw)
+    if not scores:
+        chassis.stop()
+        return
     if _uplane_phase is not None:
         _last_shot = "uplane"  # 当前动作完成前，朝向变化不触发重新竞选。
     elif now < _uplane_retry_after:
@@ -339,7 +357,9 @@ def logic_step():
     else:
         _last_shot = select_shot(scores, _last_shot)
     logger.debug("Atlas scores=%s selected=%s" % (scores, _last_shot))
-    if _last_shot == "huck":
+    if _last_shot == "u_shoot":
+        U_Shoot(GOAL_POS)
+    elif _last_shot == "huck":
         _turn_to_shot(pose, window)
     else:
         UplaneStep(pose, window)
