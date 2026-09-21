@@ -65,7 +65,10 @@ class MotionBackend:
         self._last_motor_output = [0.0, 0.0, 0.0, 0.0]
         self._last_motor_t = time.monotonic()
 
-    def clamp_motor_vector(self, values):
+    def clamp_motor_vector(self, values, *, bypass_speed_limit: bool = False):
+        """Apply the configured wheel-RPM cap unless a scoped debug caller opts out."""
+        if bypass_speed_limit:
+            return [float(v) for v in values]
         max_speed = abs(self._chassis_float("MaxWheelRPM", 500))
         if max_speed <= 0:
             return [0.0, 0.0, 0.0, 0.0]
@@ -158,7 +161,13 @@ class MotionBackend:
                 upper = min(upper, (-max_speed - base_v) / scaled_v)
         return self.clamp(upper, 0.0, 1.0)
 
-    def allocate_wheel_mix(self, planar, turn, speed_z):
+    def allocate_wheel_mix(
+        self, planar, turn, speed_z, *, bypass_speed_limit: bool = False
+    ):
+        if bypass_speed_limit:
+            # A caller has explicitly limited this to a guarded debug motion.
+            # Preserve its mix rather than scaling against competition RPM cap.
+            return [float(p) + float(t) for p, t in zip(planar, turn)]
         if not self._motion_bool("EnableCoupledWheelAllocator", True):
             return [p + t for p, t in zip(planar, turn)]
 

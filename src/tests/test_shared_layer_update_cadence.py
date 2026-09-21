@@ -49,7 +49,7 @@ def motion_harness(monkeypatch):
         def CanMove(self):
             return True
 
-        def RobotMoveVector(self, vx, vy, wz):
+        def RobotMoveVector(self, vx, vy, wz, **_kwargs):
             commands.append((float(vx), float(vy), float(wz)))
 
         def stop(self):
