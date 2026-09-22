@@ -35,7 +35,7 @@ def test_command_table_matches_motion_controller_firmware():
         Commands.LINK_GET: None,
         Commands.GET_DRIBBLE_CURRENT: 5,
         Commands.GET_BATTERY_VOLTAGE: 5,
-        Commands.LINK_STATUS: 5,
+        Commands.LINK_STATUS: 6,
     }
 
 
