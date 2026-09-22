@@ -359,6 +359,22 @@
               "label": "恢复额外间隙 (CM)",
               "default": 3.0,
               "order": 9
+            },
+            "SpeedSlowZoneCm": {
+              "type": "float",
+              "label": "减速区距离 (CM)",
+              "description": "0=按场地尺寸自动推导；>0 时用该值覆盖",
+              "default": 0.0,
+              "order": 10
+            },
+            "SpeedMinScale": {
+              "type": "float",
+              "label": "边界最低速度系数",
+              "description": "到达禁区边界时的速度倍率 (0~1)",
+              "min": 0.0,
+              "max": 1.0,
+              "default": 0.3,
+              "order": 11
             }
           },
           "order": 3

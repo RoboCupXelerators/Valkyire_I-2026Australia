@@ -143,7 +143,13 @@ class Preference:
                 "ProtectionLevel": 1,
                 "Clearance": 5.0,
                 "RecoveryClearance": 16.0,
-                "RecoveryExtra": 3.0
+                "RecoveryExtra": 3.0,
+                # 距离禁区越近速度越低：进入减速区开始线性减速，到边界时降到
+                # SpeedMinScale 倍，避免雷达/定位延迟冲过线。
+                # SpeedSlowZoneCm=0 表示减速区距离按场地尺寸自动推导（推荐）；
+                # >0 时用该值(cm)覆盖。
+                "SpeedSlowZoneCm": 0,
+                "SpeedMinScale": 0.3
             },
         },
         "Debug": {

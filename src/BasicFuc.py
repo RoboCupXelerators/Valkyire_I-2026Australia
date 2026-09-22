@@ -318,6 +318,21 @@ class LockSeries:
             LOCKBALL_FORWARD_MAX_MPS - LOCKBALL_NEAR_FORWARD_MAX_MPS
         )
 
+    @staticmethod
+    def _restricted_speed_scale() -> float:
+        """Proximity throttle shared with ``Pos2Pos``.
+
+        The robot slows near the forbidden boundary/goal box so a lagging
+        lidar/localization fix cannot carry a fast chase across the line.
+        Returns 1.0 when the guard or pose is unavailable.
+        """
+
+        try:
+            scale = float(UnitedPosition.RestrictedAreaSpeedScale())
+        except Exception:
+            return 1.0
+        return max(0.0, min(1.0, scale))
+
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
         self._reset_on_pose_change()
@@ -378,6 +393,9 @@ class LockSeries:
             speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
             speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
             speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
+            scale = self._restricted_speed_scale()
+            speed_x *= scale
+            speed_y *= scale
             self._dribble_for_ball_position(ball)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
@@ -387,6 +405,11 @@ class LockSeries:
         speed_w = -self.pan_w(ball_angle)
         remaining_cm = max(0.0, float(ball_x) - float(self.catch_x))
         speed_x = min(float(speed_x), self._near_forward_speed_cap(remaining_cm))
+        # Proximity throttle: shed chase speed near the forbidden boundary while
+        # leaving the creep/dock floors below intact for final ball capture.
+        chase_scale = self._restricted_speed_scale()
+        speed_x *= chase_scale
+        speed_y *= chase_scale
 
         # If the ball is already closer than CatchVal but still free, keep a
         # small forward creep so a ~1cm shortfall still gets eaten into the
