@@ -32,6 +32,8 @@ except Exception:  # pragma: no cover
 import threading
 import queue
 import time
+import glob
+import os
 from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
@@ -107,6 +109,19 @@ def _is_jetson_nano() -> bool:
     except Exception:
         pass
     return False
+
+
+# Logical camera id -> stable USB physical-path fragment.
+# Vision.CamPorts order is [back, left, front, right] = [0, 2, 4, 6] on this
+# robot, and the four H65 cameras sit on hub ports 1.1..1.4 respectively.
+# The kernel reassigns /dev/videoN on every hub re-enumeration, so capture
+# devices are resolved through /dev/v4l/by-path/<fragment>-video-index0.
+_DEFAULT_CAMERA_USB_PATHS = {
+    0: "usb-0:1.1:1.0",  # back
+    2: "usb-0:1.2:1.0",  # left
+    4: "usb-0:1.3:1.0",  # front
+    6: "usb-0:1.4:1.0",  # right
+}
 
 
 def _build_gst_v4l2_pipelines(
@@ -1029,6 +1044,40 @@ class VisionPreUntil:
             time.sleep(period)
 
 
+    def _resolve_capture_index(self, port):
+        """Resolve a logical camera id to the current /dev/videoN capture index.
+
+        USB hub re-enumeration (e.g. EMI from the shooter) reshuffles the kernel
+        videoN numbers, so the configured logical ids (0/2/4/6) must be mapped
+        through the physical-path symlinks to stay on the right camera. Returns
+        an int index for cv2.VideoCapture, or None when the device is not
+        currently present (caller should retry later).
+        """
+        try:
+            logical = int(port)
+        except (TypeError, ValueError):
+            return None
+
+        mapping = getattr(getattr(self.cfg, "VisionVals", object()), "CameraUsbPaths", None)
+        if not isinstance(mapping, dict):
+            mapping = _DEFAULT_CAMERA_USB_PATHS
+        fragment = mapping.get(logical, mapping.get(str(logical)))
+        if not fragment:
+            # No physical mapping configured: assume the id is already an index.
+            return logical
+
+        matches = sorted(glob.glob(f"/dev/v4l/by-path/*{fragment}-video-index0"))
+        if not matches:
+            return None
+        node = os.path.realpath(matches[0])
+        base = os.path.basename(node)
+        if base.startswith("video"):
+            try:
+                return int(base[5:])
+            except ValueError:
+                pass
+        return None
+
     def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
         """Initialize cameras.
 
@@ -1067,33 +1116,41 @@ class VisionPreUntil:
             Cam = None
             is_v4l2 = False
 
+            CaptureIndex = self._resolve_capture_index(Port)
+            if CaptureIndex is None:
+                self.logger.warning(
+                    f"Camera {Port}: physical device not present, skipping this open attempt"
+                )
+                camera_entries.append((Port, None, False))
+                continue
+
             # Try gstreamer first (Jetson Nano only by default)
             if use_gst:
                 try:
-                    Cam, pipeline = _try_open_gstreamer(Port, Width, Height, fps, codec=codec, logger=self.logger)
+                    Cam, pipeline = _try_open_gstreamer(CaptureIndex, Width, Height, fps, codec=codec, logger=self.logger)
                     if Cam is None:
                         self.logger.warning(
-                            f"GStreamer open failed for /dev/video{Port} codec={codec}, fallback to V4L2"
+                            f"GStreamer open failed for /dev/video{CaptureIndex} codec={codec}, fallback to V4L2"
                         )
                     else:
                         self.logger.info(
-                            f"Camera opened with GStreamer: /dev/video{Port} codec={codec} {Width}x{Height}@{fps}"
+                            f"Camera opened with GStreamer: /dev/video{CaptureIndex} codec={codec} {Width}x{Height}@{fps}"
                         )
                         if pipeline:
                             self.logger.debug(f"GStreamer pipeline: {pipeline}")
                 except Exception as e:
-                    self.logger.warning(f"GStreamer init exception for /dev/video{Port}: {e}. Fallback to V4L2")
+                    self.logger.warning(f"GStreamer init exception for /dev/video{CaptureIndex}: {e}. Fallback to V4L2")
                     Cam = None
 
             # Legacy V4L2 backend
             if Cam is None:
-                Cam = cv2.VideoCapture(Port, cv2.CAP_V4L2)
+                Cam = cv2.VideoCapture(CaptureIndex, cv2.CAP_V4L2)
                 is_v4l2 = True
                 Cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
                 Cam.set(cv2.CAP_PROP_FRAME_WIDTH, Width)
                 Cam.set(cv2.CAP_PROP_FRAME_HEIGHT, Height)
                 if not Cam.isOpened():
-                    self.logger.error(f"Camera open failed: /dev/video{Port} (index={Port})")
+                    self.logger.error(f"Camera open failed: {Port} -> /dev/video{CaptureIndex}")
                     try:
                         Cam.release()
                     except Exception:
@@ -1149,6 +1206,18 @@ class VisionPreUntil:
         warn_flag = False
         LastTime = time.time()
         fail_counts = []
+
+        # Auto-reopen: a USB hub re-enumeration (e.g. EMI from the shooter) can
+        # drop every camera for a couple of seconds and invalidate the open V4L2
+        # handles. When all cameras have been failing continuously for a while,
+        # release and re-open them so the capture path self-heals.
+        vision_vals = getattr(self.cfg, "VisionVals", object())
+        auto_reopen = bool(getattr(vision_vals, "CameraAutoReopen", True))
+        reopen_after = float(getattr(vision_vals, "CameraReopenAfterSec", 2.0))
+        reopen_cooldown = float(getattr(vision_vals, "CameraReopenCooldownSec", 5.0))
+        all_fail_since = None
+        last_reopen_attempt = 0.0
+
         while not self._stop_event.is_set():
             cams = self._camera_snapshot()
             if not cams:
@@ -1188,10 +1257,31 @@ class VisionPreUntil:
                 LastTime = CurrentTime
             self.ReadCamTF = self.ReadCamTF + 1
 
-            # If all cameras are failing, avoid a busy-loop that will eat CPU and
-            # starve inference threads.
-            if not any_ok:
-                self._stop_event.wait(0.01)
+            if any_ok:
+                if all_fail_since is not None:
+                    self.logger.info("Camera reads recovered")
+                all_fail_since = None
+                continue
+
+            # All cameras are failing: attempt an automatic reopen (rate limited).
+            now = CurrentTime
+            if all_fail_since is None:
+                all_fail_since = now
+            elif auto_reopen and (now - all_fail_since) >= reopen_after and (now - last_reopen_attempt) >= reopen_cooldown:
+                self.logger.warning(
+                    f"All cameras unavailable for {now - all_fail_since:.1f}s; reopening cameras"
+                )
+                last_reopen_attempt = now
+                all_fail_since = None
+                fail_counts = []
+                try:
+                    self.reopen_cameras()
+                except Exception as e:
+                    self.logger.error(f"Auto camera reopen failed: {e}")
+                continue
+
+            # Avoid a busy-loop that will eat CPU and starve inference threads.
+            self._stop_event.wait(0.01)
 
 
 
