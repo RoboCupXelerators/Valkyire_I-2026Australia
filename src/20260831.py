@@ -119,10 +119,8 @@ if __name__ == "__main__":
                         Macon_kick()
                     elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
                         back_kick()
-                    elif 0 < robot_pos[0] <= 95 and -50 < robot_pos[1] < 50:
+                    elif robot_pos[0] > -30 and -50 < robot_pos[1] < 50:
                         OpenGoalShoot()
-                    elif robot_pos[0] >= 95 and -50 < robot_pos[1] < 50:
-                        peripheral.ShootBall()
                 elif ball_state == "lost":
                     defence_points = UnitedPosition.FieldChassisPos()
                     if defence_points:
