@@ -64,6 +64,15 @@ def test_selection_holds_small_lead_but_releases_large_lead():
     assert atlas.select_shot({"huck": 0.7, "uplane": 0.5}, "uplane") == "huck"
 
 
+def test_u_shoot_candidate_reuses_jump_lane_and_heading_gate():
+    pose = (0.0, 60.0, 0.0)
+    jump_yaw = math.degrees(math.atan2(200.0 - pose[1], 80.0 - pose[0]))
+    assert atlas.can_u_shoot(pose, jump_yaw)
+    assert not atlas.can_u_shoot(pose, jump_yaw + 8.0)
+    assert not atlas.can_u_shoot((0.0, 50.0, 0.0), jump_yaw)
+    assert not atlas.can_u_shoot(pose, None)
+
+
 @pytest.fixture
 def runtime(monkeypatch):
     geometry = Positions()
@@ -147,6 +156,29 @@ def test_window_absolute_yaw_is_forwarded_without_negation(runtime):
     runtime.position.ShootWindow.assert_called_once_with(current_yaw_deg=80.0, use_estimated_goal=False)
     runtime.turn.assert_called_once_with(100.0)
     runtime.peripheral.ShootBall.assert_not_called()
+
+
+def test_strategy_override_can_disable_u_shoot(runtime):
+    runtime.position.FieldRobotPose.return_value = [0.0, 60.0, 180.0]
+    runtime.chassis.GetYaw.return_value = math.degrees(math.atan2(140.0, 80.0))
+    atlas.logic_step(("huck",))
+    runtime.turn.assert_called_once_with(100.0)
+    runtime.peripheral.ShootBall.assert_not_called()
+
+
+def test_u_shoot_is_not_preempted_while_turning_and_releases_when_done(runtime, monkeypatch):
+    runtime.position.FieldRobotPose.return_value = [0.0, 60.0, 0.0]
+    runtime.chassis.GetYaw.return_value = math.degrees(math.atan2(140.0, 80.0))
+    u_shoot = Mock(side_effect=(False, True))
+    monkeypatch.setattr(atlas, "U_Shoot", u_shoot)
+
+    atlas.logic_step()
+    assert atlas._last_shot == "u_shoot"
+    runtime.chassis.GetYaw.return_value = 180.0  # U_Shoot 内部转向后已离开 Jump 触发角。
+    atlas.logic_step()
+
+    assert u_shoot.call_count == 2
+    assert atlas._last_shot is None
 
 
 def test_aligned_but_blocked_stops_previous_motion(runtime):

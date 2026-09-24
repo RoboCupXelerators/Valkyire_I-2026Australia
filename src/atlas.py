@@ -1,7 +1,7 @@
 """Atlas：Hyperion 的连续评分版本，每次 logic_step 只执行一帧。
 
 沿用 +X 进攻方向及带球绕球转向技能。权重是待真机/模拟赛调优的初值，
-不是进球概率。Bow/Jump 尚无完整动作，不参与选择。
+不是进球概率。Bow 尚无完整动作，不参与选择；弹墙由 u_shoot 执行。
 """
 
 import math
@@ -20,9 +20,8 @@ UPLANE_ALIGNMENT_WEIGHT = 0.45
 UPLANE_LANE_WEIGHT = 0.35
 UPLANE_PROGRESS_WEIGHT = 0.20
 SWITCH_MARGIN = 0.08  # 新策略必须至少高出此分差才切换；可直接射门时不受此限制。
-# 最终只会从这里列出的方案里选择；删掉名称即可禁用对应方案。
+# 默认只会从这里列出的方案里选择；也可向 logic_step/main 传入策略名列表覆盖它。
 ENABLED_SHOTS = ("huck", "uplane", "u_shoot")
-U_SHOOT_BACKWARD_MIN_DEG = 135.0
 
 GOAL_POS = (100.0, 0.0)  # 沿用 Hyperion 的几何瞄准点，窗口不可用时仅用于转向。
 UPLANE_REGION = ((75.0, 30.0), (100.0, 90.0))  # X 到 75cm 后进入瞄准；负半场逐帧镜像。
@@ -95,9 +94,26 @@ def UplaneScore(pose):
     )
 
 
+def can_u_shoot(pose, yaw):
+    """复用 Hyperion Jump 的边路、窄角度触发条件；调用方已确认持球。"""
+    if yaw is None or not valid_pose(pose):
+        return False
+    try:
+        x, y, _ = (float(value) for value in pose[:3])
+        yaw = float(yaw)
+        if not all(math.isfinite(value) for value in (x, y, yaw)) or abs(y) <= LANE_ENTRY_Y:
+            return False
+        # Hyperion JumpScore 的 [80, ±200]：瞄向本侧墙外的点，使弹墙动作只在边路触发。
+        wall_y = math.copysign(float(Settings.Bounds.Short), y)
+        jump_yaw = math.degrees(math.atan2(wall_y - y, 80.0 - x)) % 360.0
+        return abs(angle_error_deg(yaw, jump_yaw)) <= 7.2
+    except (TypeError, ValueError):
+        return False
+
+
 def UshootScore(pose, yaw):
-    """背对目标球门时才提供弹墙射门候选。"""
-    return 1.01 if abs(angle_error_deg(yaw, _goal_yaw(pose))) >= U_SHOOT_BACKWARD_MIN_DEG else 0.0
+    """仅在持球流程中、边路对准侧墙虚拟目标时提供弹墙射门候选。"""
+    return 1.01 if can_u_shoot(pose, yaw) else 0.0
 
 
 def select_shot(scores, previous=None):
@@ -295,10 +311,11 @@ def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
                 return True
 
 
-def logic_step():
-    """看球 → 持球 → 确认直射许可 → 连续评分及小分差保持 → 执行动作。"""
+def logic_step(enabled_shots=None):
+    """看球 → 持球 → 评分执行；可传入策略名序列覆盖默认配置。"""
     global _last_shot, _shoot_ready_since, _last_kick_at, _last_shot_log_at
     global _last_possession_at
+    active_shots = ENABLED_SHOTS if enabled_shots is None else tuple(enabled_shots)
     now = time.monotonic()
 
     if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
@@ -343,7 +360,7 @@ def logic_step():
         logger.debug("Atlas shot_allowed=%s source=%s pose=%s yaw=%s target=%s" %
                      (approved, window.get("reason", "window_unavailable"), pose, yaw, window.get("target_yaw_deg")))
         _last_shot_log_at = now
-    if approved and "huck" in ENABLED_SHOTS:
+    if approved and "huck" in active_shots:
         if _shoot_ready_since is None:
             _shoot_ready_since = now
         chassis.stop()
@@ -361,12 +378,15 @@ def logic_step():
     if aim_yaw is not None and not math.isfinite(aim_yaw):
         aim_yaw = None
     scores = {}
-    if "huck" in ENABLED_SHOTS:
+    if "huck" in active_shots:
         scores["huck"] = HuckScore(pose, aim_yaw)
-    if "uplane" in ENABLED_SHOTS:
+    if "uplane" in active_shots:
         scores["uplane"] = UplaneScore(pose)
-    if "u_shoot" in ENABLED_SHOTS and UshootScore(pose, yaw):
-        scores["u_shoot"] = UshootScore(pose, yaw)
+    u_shoot_score = UshootScore(pose, yaw)
+    if "u_shoot" in active_shots and (u_shoot_score or _last_shot == "u_shoot"):
+        # U_Shoot 内部会先转到背向球门；转向中航向自然会离开 Jump 触发角，
+        # 但本次动作必须连续执行到其返回完成，不能中途误切换成其他策略。
+        scores["u_shoot"] = u_shoot_score or 1.01
     if not scores:
         chassis.stop()
         return
@@ -378,17 +398,18 @@ def logic_step():
         _last_shot = select_shot(scores, _last_shot)
     logger.debug("Atlas scores=%s selected=%s" % (scores, _last_shot))
     if _last_shot == "u_shoot":
-        U_Shoot(GOAL_POS)
+        if U_Shoot(GOAL_POS):
+            _last_shot = None
     elif _last_shot == "huck":
         _turn_to_shot(pose, window)
     else:
         UplaneStep(pose, window)
 
 
-def main():
+def main(enabled_shots=None):
     try:
         while True:
-            logic_step()
+            logic_step(enabled_shots)
             time.sleep(CONTROL_PERIOD_S)
     except KeyboardInterrupt:
         logger.info("Atlas interrupted by user.")
