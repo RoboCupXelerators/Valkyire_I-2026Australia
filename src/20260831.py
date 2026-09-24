@@ -126,6 +126,8 @@ if __name__ == "__main__":
                     if defence_points:
                         point = defence_points[0]
                         UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
+                    else:
+                        UnitedPosition.Pos2Pos([0, 0, 0])
                 else:
                     lockball.LockBallSlip()
     finally:
