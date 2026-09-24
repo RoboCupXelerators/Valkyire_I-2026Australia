@@ -11,7 +11,8 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from LunaPre import UnitedPosition
+from LunaPre import UnitedPosition, runtime
+from LunaPre.strategy_tools import POSE_NOT_FOUND
 from ReasonData import Settings
 
 
@@ -103,3 +104,80 @@ def test_rounded_goal_box_body_still_projects_outside():
     assert target is not None
     assert target[0] < 80
     assert not UnitedPosition.IsPoseInRestrictedArea(target)
+
+
+def test_restricted_area_clearance_positive_when_safe():
+    # Center is far from every forbidden edge.
+    assert UnitedPosition.RestrictedAreaClearance([0.0, 0.0, 0.0]) > 40.0
+    # Approaching the +x boundary reduces the clearance monotonically.
+    near = UnitedPosition.RestrictedAreaClearance([85.0, 0.0, 0.0])
+    far = UnitedPosition.RestrictedAreaClearance([0.0, 0.0, 0.0])
+    assert near < far
+
+
+def test_restricted_area_clearance_none_without_pose():
+    assert UnitedPosition.RestrictedAreaClearance(list(POSE_NOT_FOUND)) is None
+
+
+def _speed_scale_env(monkeypatch, slow_zone=40.0, min_scale=0.3):
+    restricted = Settings.Motion.RestrictedArea
+    monkeypatch.setattr(restricted, "SpeedSlowZoneCm", slow_zone, raising=False)
+    monkeypatch.setattr(restricted, "SpeedMinScale", min_scale, raising=False)
+
+
+def test_speed_scale_full_when_far_and_floor_inside(monkeypatch):
+    _speed_scale_env(monkeypatch)
+
+    assert UnitedPosition.RestrictedAreaSpeedScale([0.0, 0.0, 0.0]) == pytest.approx(1.0)
+    # x=85 is inside the strict body envelope (guard x=86) -> floor.
+    assert UnitedPosition.RestrictedAreaSpeedScale([85.0, 0.0, 0.0]) == pytest.approx(0.3)
+
+
+def test_speed_scale_ramps_inside_the_slow_zone(monkeypatch):
+    _speed_scale_env(monkeypatch)
+
+    # 26cm to the y-guard (56cm) is inside the 40cm slow zone.
+    mid = UnitedPosition.RestrictedAreaSpeedScale([0.0, 30.0, 0.0])
+    assert 0.3 < mid < 1.0
+    # Closer to the line is slower.
+    assert UnitedPosition.RestrictedAreaSpeedScale([0.0, 50.0, 0.0]) < mid
+
+
+def test_speed_scale_slow_zone_is_derived_from_field(monkeypatch):
+    # SpeedSlowZoneCm=0 -> derived as 0.5 * min(XLimit=100, YLimit=70) = 35cm.
+    _speed_scale_env(monkeypatch, slow_zone=0.0)
+
+    # 26cm from the y-guard (56cm) is inside the derived 35cm slow zone.
+    assert 0.3 < UnitedPosition.RestrictedAreaSpeedScale([0.0, 30.0, 0.0]) < 1.0
+    # The field center is outside the derived slow zone -> full speed.
+    assert UnitedPosition.RestrictedAreaSpeedScale([0.0, 0.0, 0.0]) == pytest.approx(1.0)
+
+
+def test_speed_scale_disabled_when_min_scale_is_one(monkeypatch):
+    _speed_scale_env(monkeypatch, slow_zone=0.0, min_scale=1.0)
+
+    assert UnitedPosition.RestrictedAreaSpeedScale([85.0, 0.0, 0.0]) == pytest.approx(1.0)
+
+
+def test_pos2pos_applies_restricted_speed_scale(monkeypatch):
+    commands = []
+
+    class FakeChassis:
+        def FieldMoveVector(self, x, y, yaw, **_kwargs):
+            commands.append((x, y, yaw))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runtime, "chassis", FakeChassis())
+    monkeypatch.setattr(UnitedPosition, "FieldRobotPose", lambda: [60.0, 0.0, 0.0])
+    monkeypatch.setattr(
+        UnitedPosition, "RestrictedAreaSpeedScale", lambda pose=None: 0.5
+    )
+    UnitedPosition._reset_pos2pos_pid()
+
+    assert UnitedPosition.Pos2Pos([0.0, 0.0, 0.0], speed_gain=6.0) is False
+    command_norm = (commands[0][0] ** 2 + commands[0][1] ** 2) ** 0.5
+    assert command_norm <= 0.5 * UnitedPosition._pos2pos_command_limit(60.0) + 1e-9
+    assert command_norm > 0.0
+

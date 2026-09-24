@@ -42,6 +42,16 @@ POS2POS_MAX_YAW_RATE_DEG_S = 100.0
 # floor, so fine final approach remains unchanged.
 POS2POS_MIN_SPEED_MPS = 0.12
 POS2POS_ARRIVAL_SCALE = 0.5
+# Proximity throttle for the forbidden boundary / goal box. The scale ramps
+# linearly from 1.0 at the slow-zone distance down to RESTRICTED_SPEED_MIN_SCALE
+# at the boundary (and stays there inside it), so a lagging lidar/localization
+# fix cannot carry a fast robot across a forbidden line before the guard reacts.
+# The slow-zone distance is *not* a fixed number: by default it is derived from
+# the field as this fraction of the smaller restricted-area limit, so it scales
+# with whatever field the robot is configured for. Never scales to zero:
+# recovery still escapes.
+RESTRICTED_SPEED_SLOW_ZONE_FRACTION = 0.5
+RESTRICTED_SPEED_MIN_SCALE = 0.30
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
 ROBOT_BALL_MAX_ABS_Y_CM = 220.0
@@ -1739,6 +1749,10 @@ class Positions:
         pid_y = self.Position_Y_PID(float(loc_y)) * gain
         pid_norm = math.hypot(pid_x, pid_y)
         command_limit = self._pos2pos_command_limit(dist, arrival_cm)
+        # Throttle the planar command as the current pose approaches a
+        # forbidden boundary so late localization/lidar updates cannot carry
+        # the robot across the line at full speed.
+        command_limit *= self.RestrictedAreaSpeedScale(start)
         if dist > 1e-6 and pid_norm > 0.0:
             # Keep the translation direction tied to the target vector. The
             # two axis PID derivatives can differ when pose packets arrive at
@@ -2233,6 +2247,104 @@ class Positions:
         """Pure coordinate-space restricted-area predicate."""
 
         return self.ProjectSafePose(pose) is not None
+
+    def _goal_box_clearance(self, x: float, y: float, params: dict, search_cm: float = 250.0) -> float:
+        """Signed distance (cm) from a point to the forbidden goal box.
+
+        Positive when outside the box, negative when inside. The boundary is
+        located with the same rounded-box predicate the hard guard uses, so the
+        soft speed envelope and the guard can never disagree about which side
+        of the line a point is on.
+        """
+
+        base_margin = float(params["goal_box_margin"])
+
+        def contained(extra: float) -> bool:
+            return self._rounded_goal_box_contains(
+                x, y, params, margin=base_margin + extra
+            )
+
+        if not contained(search_cm):
+            return search_cm
+        if contained(-search_cm):
+            return -search_cm
+        lo, hi = -search_cm, search_cm
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            if contained(mid):
+                hi = mid
+            else:
+                lo = mid
+        return float(hi)
+
+    def RestrictedAreaClearance(self, pose: list | tuple | None = None):
+        """Signed clearance (cm) from a field pose to the nearest forbidden area.
+
+        Positive values are the legal distance to the boundary; zero or negative
+        values mean the pose is on or inside the forbidden envelope. Returns
+        ``None`` when the pose is unavailable so callers can skip throttling
+        instead of assuming the worst.
+        """
+
+        if pose is None:
+            pose = self.FieldRobotPose()
+        if not pose or len(pose) < 3 or list(pose[:3]) == POSE_NOT_FOUND:
+            return None
+        x = float(pose[0])
+        y = float(pose[1])
+        params = self._restricted_area_params()
+        guard_x = max(0.0, float(params["x_limit"]) - float(params["boundary_margin"]))
+        guard_y = max(0.0, float(params["y_limit"]) - float(params["boundary_margin"]))
+        boundary_clearance = min(guard_x - abs(x), guard_y - abs(y))
+        goal_box_clearance = self._goal_box_clearance(x, y, params)
+        return float(min(boundary_clearance, goal_box_clearance))
+
+    def RestrictedAreaSpeedScale(self, pose: list | tuple | None = None) -> float:
+        """Speed multiplier in ``[min_scale, 1.0]`` from forbidden-area distance.
+
+        Full speed away from the forbidden area, linearly throttled inside the
+        slow zone, and floored at ``SpeedMinScale`` at/inside the boundary. The
+        slow-zone distance is derived from the field by default (see
+        ``RESTRICTED_SPEED_SLOW_ZONE_FRACTION``) and may be overridden with the
+        positive ``SpeedSlowZoneCm`` config value. Disabled (always 1.0) when
+        the derived slow zone is non-positive, the pose is unavailable, or
+        ``SpeedMinScale >= 1``.
+        """
+
+        safety_cfg = getattr(getattr(cfg, "Motion", None), "RestrictedArea", None)
+        params = self._restricted_area_params()
+        try:
+            slow_zone = float(
+                RESTRICTED_SPEED_SLOW_ZONE_FRACTION
+                * min(float(params["x_limit"]), float(params["y_limit"]))
+            )
+        except (TypeError, ValueError, KeyError):
+            slow_zone = 0.0
+        try:
+            configured_slow_zone = float(getattr(safety_cfg, "SpeedSlowZoneCm", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            configured_slow_zone = 0.0
+        if configured_slow_zone > 0.0:
+            slow_zone = configured_slow_zone
+
+        try:
+            min_scale = float(
+                getattr(safety_cfg, "SpeedMinScale", RESTRICTED_SPEED_MIN_SCALE)
+            )
+        except (TypeError, ValueError):
+            min_scale = RESTRICTED_SPEED_MIN_SCALE
+        min_scale = clamp(min_scale, 0.0, 1.0)
+        if slow_zone <= 0.0 or min_scale >= 1.0:
+            return 1.0
+
+        clearance = self.RestrictedAreaClearance(pose)
+        if clearance is None:
+            return 1.0
+        if clearance <= 0.0:
+            return min_scale
+        if clearance >= slow_zone:
+            return 1.0
+        return float(min_scale + (1.0 - min_scale) * (clearance / slow_zone))
 
     def RestrictedArea(self):
         """Coordinate-based boundary/restricted-area guard.

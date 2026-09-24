@@ -27,6 +27,7 @@ class Commands(IntEnum):
     LINK_GET               = 0x0A
     GET_DRIBBLE_CURRENT    = 0x0B
     GET_BATTERY_VOLTAGE    = 0x0C
+    LINK_STATUS            = 0x0D
 
 
 COMMAND_RESPONSE_LENGTHS = {
@@ -42,6 +43,7 @@ COMMAND_RESPONSE_LENGTHS = {
     Commands.LINK_GET:               None,
     Commands.GET_DRIBBLE_CURRENT:    1 + 4,
     Commands.GET_BATTERY_VOLTAGE:    1 + 4,
+    Commands.LINK_STATUS:            1 + 2 + 1 + 2,
 }
 
 MAX_DRIBBLE_INPUT = 1.0
@@ -54,6 +56,9 @@ ROOM_SIZE_ERROR = (
 )
 MM_PER_CM = 10.0
 MAX_LINK_PAYLOAD = 224
+LINK_PAIR_STATE_BOOT = 0
+LINK_PAIR_STATE_PAIRED = 1
+LINK_PAIR_STATE_LOST = 2
 LINK_GET_HEADER_LENGTH = 2
 LINK_PAYLOAD_HEADER_LENGTH = 1
 LINK_SEND_HEADER_LENGTH = 3
@@ -88,6 +93,9 @@ class IceLoongBits:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.link_pair_id = None
+        self.link_pair_state = None
+        self.link_answer_age_ms = None
 
         self.CommandLine = {
             'HAND_SHAKE': True,
@@ -361,6 +369,8 @@ class IceLoongBits:
                 case Commands.GET_BATTERY_VOLTAGE:
                     _, battery_voltage = i
                     self.battery_voltage = battery_voltage
+                case Commands.LINK_STATUS:
+                    _, self.link_pair_id, self.link_pair_state, self.link_answer_age_ms = i
                 case Commands.LINK_GET:
                     self._ApplyLinkPayload(i[1])
 
@@ -649,6 +659,8 @@ class IceLoongBits:
                         rx_data.append((resp[i], *struct.unpack('<f', resp[i+1:i+5])))
                     case Commands.GET_BATTERY_VOLTAGE:
                         rx_data.append((resp[i], *struct.unpack('<f', resp[i+1:i+5])))
+                    case Commands.LINK_STATUS:
+                        rx_data.append((resp[i], *struct.unpack('<HBH', resp[i+1:i+6])))
                     case Commands.MORSE_PLAY:
                         rx_data.append((resp[i],))
                     case Commands.LINK_SEND:
@@ -901,6 +913,28 @@ class IceLoongBits:
         response = self.ExecuteCommands([(Commands.GET_BATTERY_VOLTAGE,)])
         self._ApplyResponses(response)
         return self.battery_voltage
+
+    def GetLinkStatus(self):
+        """查询双机链路配对状态。
+
+        返回 ``(pair_id, pair_state, answer_age_ms)``：
+
+        - ``pair_state`` 由 ESP32 权威给出，取 ``LINK_PAIR_STATE_BOOT``（本次上电后
+          从未配对，例如刚重启）、``LINK_PAIR_STATE_PAIRED``（已配对）或
+          ``LINK_PAIR_STATE_LOST``（配过对但对端掉线），因此不会把"自己刚重启"
+          误判成"对端掉线"；
+        - ``pair_id`` 为 0 表示当前没有配对，非 0 表示已配对且每次配对都会变成新值
+          （可用来识别重新配对）；
+        - ``answer_age_ms`` 是距上次 ESP32 应答轮询的毫秒数，``0xFFFF`` 表示本次上电
+          后从未收到应答（通常是 ESP32 没在运行）。
+
+        串口异常时返回 ``(None, None, None)``。
+        """
+        response = self.ExecuteCommands([(Commands.LINK_STATUS,)])
+        if not response:
+            return None, None, None
+        self._ApplyResponses(response)
+        return self.link_pair_id, self.link_pair_state, self.link_answer_age_ms
 
     def GetBatteryVoltage(self):
         """获取电池电压（伏特），尚未读到有效值时返回 ``None``。"""

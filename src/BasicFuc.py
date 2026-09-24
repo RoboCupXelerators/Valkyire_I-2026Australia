@@ -20,6 +20,54 @@ import time
 # than relying on a wildcard import to leak the name into this module.
 cfg = Settings
 
+# LockBallSlip dribble profile, calibrated on robot1 on 2026-09-20.  The
+# roller remains at the historical low command while the ball is far away.  At
+# the near-capture envelope it starts softly and the adaptive controller raises
+# output in 0.10 steps every 1.10 s.  That period is slightly longer than the
+# IceLoong current telemetry poll, so each raise can inspect the prior level.
+LOCKBALL_DRIBBLE_FAR_POWER = 0.30
+LOCKBALL_DRIBBLE_LOST_POWER = 0.20
+LOCKBALL_DRIBBLE_NEAR_RADIUS_CM = 12.0
+
+# LockBallSlip source-owned pursuit tuning.  CatchVal remains robot-specific
+# runtime geometry, but PID/velocity changes must be explicit source changes.
+LOCKBALL_FORWARD_KP = 0.030
+LOCKBALL_FORWARD_KI = 0.0
+LOCKBALL_FORWARD_KD = 0.0
+LOCKBALL_LATERAL_KP = 0.012
+LOCKBALL_LATERAL_KI = 0.0
+LOCKBALL_LATERAL_KD = 0.0
+LOCKBALL_ANGULAR_KP = 0.90
+LOCKBALL_ANGULAR_KI = 0.0
+LOCKBALL_ANGULAR_KD = 0.0
+LOCKBALL_FORWARD_MAX_MPS = 1.80
+LOCKBALL_LATERAL_MAX_MPS = 0.35
+LOCKBALL_ANGULAR_MAX_DEGPS = 50.0
+LOCKBALL_TURN_ONLY_ANGLE_DEG = 70.0
+LOCKBALL_TURN_ONLY_KP = 1.0
+LOCKBALL_TURN_ONLY_MAX_DEGPS = 75.0
+LOCKBALL_REAR_FORWARD_KP = 0.015
+LOCKBALL_REAR_FORWARD_MAX_MPS = 0.80
+LOCKBALL_REAR_LATERAL_KP = 0.020
+LOCKBALL_REAR_LATERAL_MAX_MPS = 0.85
+LOCKBALL_REAR_ANGULAR_KP = 2.35
+LOCKBALL_REAR_ANGULAR_MAX_DEGPS = 120.0
+LOCKBALL_LOST_HOLD_SECONDS = 0.18
+LOCKBALL_NEAR_CREEP_MAX_MPS = 0.14
+LOCKBALL_NEAR_DOCK_DECEL_MPS2 = 0.50
+LOCKBALL_BALL_JUMP_REJECT_CM = 45.0
+LOCKBALL_BALL_JUMP_CONFIRM_FRAMES = 2
+
+# Temporary robot1 far-chase debug envelope.  This bypass is unavailable once
+# the ball is near, lateral, or poorly aligned.  It never bypasses referee
+# permission; an ordinary stop still sends zero wheel output.
+LOCKBALL_DEBUG_BYPASS_WHEEL_LIMITS = True
+LOCKBALL_DEBUG_BYPASS_MIN_REMAINING_CM = 50.0
+LOCKBALL_DEBUG_BYPASS_MAX_ANGLE_DEG = 25.0
+LOCKBALL_FAST_TO_NEAR_START_CM = 50.0
+LOCKBALL_FAST_TO_NEAR_END_CM = 25.0
+LOCKBALL_NEAR_FORWARD_MAX_MPS = 0.50
+
 def LinearMap(value, input_range, output_range):
     """把 ``value`` 从一个数值区间线性映射到另一个区间。
     
@@ -53,30 +101,29 @@ class LockSeries:
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
-        tuning = getattr(Settings.Motion, "LockBallSlip", None)
-        self.forward_kp = float(getattr(tuning, "ForwardKp", 0.020))
-        self.forward_ki = max(0.0, float(getattr(tuning, "ForwardKi", 0.006)))
-        self.forward_kd = max(0.0, float(getattr(tuning, "ForwardKd", 0.005)))
-        self.lateral_kp = float(getattr(tuning, "LateralKp", 0.016))
-        self.lateral_ki = max(0.0, float(getattr(tuning, "LateralKi", 0.0005)))
-        self.lateral_kd = max(0.0, float(getattr(tuning, "LateralKd", 0.005)))
-        self.angular_kp = float(getattr(tuning, "AngularKp", 1.30))
-        self.angular_ki = max(0.0, float(getattr(tuning, "AngularKi", 0.06)))
-        self.angular_kd = max(0.0, float(getattr(tuning, "AngularKd", 0.15)))
-        self.forward_max = max(0.0, float(getattr(tuning, "ForwardMaxMps", 0.80)))
-        self.lateral_max = max(0.0, float(getattr(tuning, "LateralMaxMps", 0.65)))
-        self.angular_max = max(0.0, float(getattr(tuning, "AngularMaxDegS", 85.0)))
-        self.turn_only_angle = max(10.0, float(getattr(tuning, "TurnOnlyAngleDeg", 70.0)))
-        self.turn_only_kp = float(getattr(tuning, "TurnOnlyKp", 0.75))
-        self.turn_only_max = max(0.0, float(getattr(tuning, "TurnOnlyMaxDegS", 55.0)))
-        self.rear_forward_kp = float(getattr(tuning, "RearForwardKp", 0.012))
-        self.rear_forward_max = max(0.0, float(getattr(tuning, "RearForwardMaxMps", 0.55)))
-        self.rear_lateral_kp = float(getattr(tuning, "RearLateralKp", 0.016))
-        self.rear_lateral_max = max(0.0, float(getattr(tuning, "RearLateralMaxMps", 0.65)))
-        self.rear_angular_kp = float(getattr(tuning, "RearAngularKp", 1.80))
-        self.rear_angular_max = max(0.0, float(getattr(tuning, "RearAngularMaxDegS", 85.0)))
-        self.lost_hold_seconds = max(0.0, float(getattr(tuning, "LostHoldSeconds", 0.18)))
-        self.near_creep_max = max(0.0, float(getattr(tuning, "NearCreepMaxMps", 0.10)))
+        self.forward_kp = LOCKBALL_FORWARD_KP
+        self.forward_ki = LOCKBALL_FORWARD_KI
+        self.forward_kd = LOCKBALL_FORWARD_KD
+        self.lateral_kp = LOCKBALL_LATERAL_KP
+        self.lateral_ki = LOCKBALL_LATERAL_KI
+        self.lateral_kd = LOCKBALL_LATERAL_KD
+        self.angular_kp = LOCKBALL_ANGULAR_KP
+        self.angular_ki = LOCKBALL_ANGULAR_KI
+        self.angular_kd = LOCKBALL_ANGULAR_KD
+        self.forward_max = LOCKBALL_FORWARD_MAX_MPS
+        self.lateral_max = LOCKBALL_LATERAL_MAX_MPS
+        self.angular_max = LOCKBALL_ANGULAR_MAX_DEGPS
+        self.turn_only_angle = LOCKBALL_TURN_ONLY_ANGLE_DEG
+        self.turn_only_kp = LOCKBALL_TURN_ONLY_KP
+        self.turn_only_max = LOCKBALL_TURN_ONLY_MAX_DEGPS
+        self.rear_forward_kp = LOCKBALL_REAR_FORWARD_KP
+        self.rear_forward_max = LOCKBALL_REAR_FORWARD_MAX_MPS
+        self.rear_lateral_kp = LOCKBALL_REAR_LATERAL_KP
+        self.rear_lateral_max = LOCKBALL_REAR_LATERAL_MAX_MPS
+        self.rear_angular_kp = LOCKBALL_REAR_ANGULAR_KP
+        self.rear_angular_max = LOCKBALL_REAR_ANGULAR_MAX_DEGPS
+        self.lost_hold_seconds = LOCKBALL_LOST_HOLD_SECONDS
+        self.near_creep_max = LOCKBALL_NEAR_CREEP_MAX_MPS
         # Docking: a fast approach carries too much momentum for the low-power
         # dribbler to hold, so the ball gets punched back out right before it
         # seats. The forward speed is capped on a continuous constant-deceleration
@@ -84,11 +131,9 @@ class LockSeries:
         # reached, so the far field still runs at its configured limit while the
         # last centimetres slow down smoothly instead of stepping at a fixed
         # range. A lower deceleration brakes earlier and docks more gently.
-        self.near_dock_decel = max(0.0, float(getattr(tuning, "NearDockDecelMps2", 0.6)))
-        self.ball_jump_reject_cm = max(0.0, float(getattr(tuning, "BallJumpRejectCm", 45.0)))
-        self.ball_jump_confirm_frames = max(
-            1, int(getattr(tuning, "BallJumpConfirmFrames", 2))
-        )
+        self.near_dock_decel = LOCKBALL_NEAR_DOCK_DECEL_MPS2
+        self.ball_jump_reject_cm = LOCKBALL_BALL_JUMP_REJECT_CM
+        self.ball_jump_confirm_frames = LOCKBALL_BALL_JUMP_CONFIRM_FRAMES
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
         self._lockball_jump_candidate = None
@@ -208,6 +253,86 @@ class LockSeries:
         self._lockball_last_seen_ts = now
         return ball, False
 
+    @staticmethod
+    def _dribble_for_ball_state(
+        vision_state: str,
+        fallback_power: float = 0.3,
+        lateral_error_cm: float | None = None,
+    ):
+        """Use hardware current feedback when it is explicitly enabled.
+
+        ``Peripherals.DribbleAdaptive`` preserves the requested power when the
+        lower board does not expose current telemetry, when a read is stale, or
+        when adaptive control is disabled.  Keeping the fallback here makes the
+        existing SIM and legacy strategy behaviour unchanged.
+        """
+        adaptive = getattr(peripheral, "DribbleAdaptive", None)
+        if callable(adaptive):
+            return adaptive(
+                fallback_power,
+                vision_state=vision_state,
+                lateral_error_cm=lateral_error_cm,
+            )
+        peripheral.Dribble(fallback_power)
+        return None
+
+    def _dribble_for_ball_position(self, ball) -> None:
+        """Classify visual distance before asking for current-aware roller IO."""
+
+        try:
+            dx = float(ball[0]) - float(self.catch_x)
+            dy = float(ball[1]) - float(self.catch_y)
+            is_near = math.hypot(dx, dy) <= LOCKBALL_DRIBBLE_NEAR_RADIUS_CM
+        except (TypeError, ValueError, IndexError):
+            is_near = False
+        self._dribble_for_ball_state(
+            "near" if is_near else "approaching",
+            LOCKBALL_DRIBBLE_FAR_POWER,
+            lateral_error_cm=dy if is_near else None,
+        )
+
+    def _far_lockball_wheel_bypass(self, ball_x, ball_y, ball_angle) -> bool:
+        """Whether this tick is inside the temporary, supervised fast window."""
+
+        if not LOCKBALL_DEBUG_BYPASS_WHEEL_LIMITS:
+            return False
+        remaining_cm = float(ball_x) - float(self.catch_x)
+        return (
+            remaining_cm >= LOCKBALL_DEBUG_BYPASS_MIN_REMAINING_CM
+            and abs(float(ball_y) - float(self.catch_y)) <= remaining_cm * 0.45
+            and abs(float(ball_angle)) <= LOCKBALL_DEBUG_BYPASS_MAX_ANGLE_DEG
+        )
+
+    @staticmethod
+    def _near_forward_speed_cap(remaining_cm: float) -> float:
+        """Blend from fast far chase into controllable final docking."""
+
+        start = LOCKBALL_FAST_TO_NEAR_START_CM
+        end = LOCKBALL_FAST_TO_NEAR_END_CM
+        if remaining_cm >= start:
+            return LOCKBALL_FORWARD_MAX_MPS
+        if remaining_cm <= end:
+            return LOCKBALL_NEAR_FORWARD_MAX_MPS
+        ratio = (remaining_cm - end) / (start - end)
+        return LOCKBALL_NEAR_FORWARD_MAX_MPS + ratio * (
+            LOCKBALL_FORWARD_MAX_MPS - LOCKBALL_NEAR_FORWARD_MAX_MPS
+        )
+
+    @staticmethod
+    def _restricted_speed_scale() -> float:
+        """Proximity throttle shared with ``Pos2Pos``.
+
+        The robot slows near the forbidden boundary/goal box so a lagging
+        lidar/localization fix cannot carry a fast chase across the line.
+        Returns 1.0 when the guard or pose is unavailable.
+        """
+
+        try:
+            scale = float(UnitedPosition.RestrictedAreaSpeedScale())
+        except Exception:
+            return 1.0
+        return max(0.0, min(1.0, scale))
+
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
         self._reset_on_pose_change()
@@ -220,7 +345,7 @@ class LockSeries:
 
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(0.3)
+            self._dribble_for_ball_state("held", LOCKBALL_DRIBBLE_FAR_POWER)
             if not self._lockball_was_caught:
                 # Capture edge: stop the chase motion once. Callers such as
                 # TurnTo_with_ball command their own motion right after, so a
@@ -231,13 +356,12 @@ class LockSeries:
             self._lockball_was_caught = True
             return True
         elif ball == BALL_NOT_FOUND:
-            peripheral.Dribble(0.2)
+            self._dribble_for_ball_state("lost", LOCKBALL_DRIBBLE_LOST_POWER)
             chassis.stop()
             self._reset_lockball_pid()
             self._lockball_was_caught = False
             return False
         else:
-            peripheral.Dribble(0.3)
             self._lockball_was_caught = False
 
         ball_x, ball_y = ball[0], ball[1]
@@ -257,7 +381,7 @@ class LockSeries:
                 -self.turn_only_max,
                 min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
             )
-            peripheral.Dribble(0.3)
+            self._dribble_for_ball_position(ball)
             chassis.RobotMoveVector(0.0, 0.0, speed_w)
             return False
 
@@ -269,13 +393,23 @@ class LockSeries:
             speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
             speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
             speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
-            peripheral.Dribble(0.3)
+            scale = self._restricted_speed_scale()
+            speed_x *= scale
+            speed_y *= scale
+            self._dribble_for_ball_position(ball)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
 
         speed_x = -self.pan_x(ball_x)
         speed_y = -self.pan_y(ball_y)
         speed_w = -self.pan_w(ball_angle)
+        remaining_cm = max(0.0, float(ball_x) - float(self.catch_x))
+        speed_x = min(float(speed_x), self._near_forward_speed_cap(remaining_cm))
+        # Proximity throttle: shed chase speed near the forbidden boundary while
+        # leaving the creep/dock floors below intact for final ball capture.
+        chase_scale = self._restricted_speed_scale()
+        speed_x *= chase_scale
+        speed_y *= chase_scale
 
         # If the ball is already closer than CatchVal but still free, keep a
         # small forward creep so a ~1cm shortfall still gets eaten into the
@@ -290,8 +424,11 @@ class LockSeries:
         # cruise limit comes from the live pan_x output limit so tuning one knob
         # (ForwardMaxMps) automatically moves where braking starts.
         if self.near_dock_decel > 0.0:
-            cruise = abs(float(self.pan_x.output_limits[0]))
-            remaining_m = max(0.0, float(ball_x) - self.catch_x) / 100.0
+            # The docking curve owns its modest final speed.  Reusing the far
+            # chase maximum here would start braking across the full field and
+            # hide the remote PID increase we are trying to validate.
+            cruise = LOCKBALL_NEAR_FORWARD_MAX_MPS
+            remaining_m = remaining_cm / 100.0
             brake_start_m = (cruise * cruise) / (2.0 * self.near_dock_decel)
             if cruise > 0.0 and remaining_m < brake_start_m:
                 speed_x = min(
@@ -299,8 +436,13 @@ class LockSeries:
                     math.sqrt(2.0 * self.near_dock_decel * remaining_m),
                 )
 
-        peripheral.Dribble(0.3)
-        chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+        self._dribble_for_ball_position(ball)
+        if self._far_lockball_wheel_bypass(ball_x, ball_y, ball_angle):
+            chassis.RobotMoveVector(
+                speed_x, speed_y, speed_w, bypass_wheel_limits=True
+            )
+        else:
+            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
     def slip(self):

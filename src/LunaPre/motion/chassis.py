@@ -5,6 +5,7 @@ from ReasonData import logger
 import time, threading
 
 from .motion_backend import MotionBackend
+from .dribble_adaptive import DribbleAdaptiveController
 
 
 class Car:
@@ -139,7 +140,10 @@ class Car:
             self._permission_denied_logged = True
         return False
 
-    def SetMotor(self,speedCache:list[int,int,int,int], immediate=False):
+    def SetMotor(
+        self, speedCache:list[int,int,int,int], immediate=False,
+        *, bypass_wheel_limits: bool = False,
+    ):
         if self.SetMotorFunc is None:
             raise RuntimeError("wheel-speed output is unavailable for this chassis backend")
         if self.CanMove():
@@ -148,8 +152,12 @@ class Car:
             ordered = [0,0,0,0]
             for n in range(4):
                 ordered[n] = float(speedCache[number[n]-1])
-            speed = self._motion_backend.clamp_motor_vector(ordered)
-            speed = self._motion_backend.apply_wheel_slew_limit(speed, immediate=immediate)
+            speed = self._motion_backend.clamp_motor_vector(
+                ordered, bypass_speed_limit=bypass_wheel_limits
+            )
+            speed = self._motion_backend.apply_wheel_slew_limit(
+                speed, immediate=immediate or bypass_wheel_limits
+            )
             speed = [int(round(v)) for v in speed]
             if self.cfg.Debug.FullLog:
                 if self.MotorEncoder:
@@ -196,7 +204,9 @@ class Car:
         self.stop()
         return False
 
-    def RobotMoveVector(self, SpeedX, SpeedY, SpeedZ):
+    def RobotMoveVector(
+        self, SpeedX, SpeedY, SpeedZ, *, bypass_wheel_limits: bool = False
+    ):
         """Move in the robot frame.
 
         Positive X is forward, positive Y is left, and positive Z is
@@ -242,10 +252,18 @@ class Car:
             SpeedZ * rpm_per_degps,
             SpeedZ * rpm_per_degps,
         ]
-        output = self._motion_backend.allocate_wheel_mix(planar, turn, SpeedZ)
-        return self.SetMotor(output, immediate=True)
+        output = self._motion_backend.allocate_wheel_mix(
+            planar, turn, SpeedZ, bypass_speed_limit=bypass_wheel_limits
+        )
+        return self.SetMotor(
+            output,
+            immediate=True,
+            bypass_wheel_limits=bypass_wheel_limits,
+        )
 
-    def RobotMoveTwist(self, vx_mps, vy_mps, wz_rad_s):
+    def RobotMoveTwist(
+        self, vx_mps, vy_mps, wz_rad_s, *, bypass_wheel_limits: bool = False
+    ):
         """Move in the robot frame using m/s and rad/s."""
         values = (float(vx_mps), float(vy_mps), float(wz_rad_s))
         if not all(math.isfinite(value) for value in values):
@@ -260,7 +278,10 @@ class Car:
         if self.SetChassisTwistFunc is not None:
             return self.SetChassisTwistFunc(*values)
         # Wheel-based backends consume the public degree-per-second API.
-        return self.RobotMoveVector(values[0], values[1], math.degrees(values[2]))
+        return self.RobotMoveVector(
+            values[0], values[1], math.degrees(values[2]),
+            bypass_wheel_limits=bypass_wheel_limits,
+        )
 
     def RobotMoveAngle(self,Angle,Speed,Kp:float|None = 1):
         '''
@@ -394,18 +415,30 @@ class Car:
 
 
 class Peripherals:
-    def __init__(self,IOFunc,permission=None):
+    def __init__(
+        self, IOFunc, permission=None, GetDribbleCurrentFunc=None, KickFunc=None
+    ):
         if permission is None:
             self.Permission = lambda: True
         else:
             self.Permission = permission
         self.SetIO = IOFunc
+        self.GetDribbleCurrentFunc = GetDribbleCurrentFunc
+        # Modern lower boards expose a direct, level-aware KICK command.
+        # Keep the virtual-port callback for legacy boards and compatibility.
+        self.KickFunc = KickFunc
         from ReasonData import Settings
         self.cfg = Settings
         from ReasonData import logger
         self.logger = logger
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.DribbleStatus = False
+        self._dribble_adaptive = DribbleAdaptiveController(
+            # Current-and-vision adaptation is source-owned and activates only
+            # on the IceLoong backend.  SIM/legacy callbacks have no current
+            # getter, so their established raw Dribble behavior is unchanged.
+            enabled=callable(GetDribbleCurrentFunc),
+        )
         # Watchdog: the lower board latches the last IO command, so the
         # dribbler keeps spinning after the referee gate closes unless
         # somebody pushes a dribble-off. Strategy loops only notice via
@@ -448,17 +481,36 @@ class Peripherals:
         if self._watchdog_thread.is_alive():
             self._watchdog_thread.join(timeout=0.5)
 
-    def ShootBall(self):
-        if self.Permission():
-            self.SetIO(self.cfg.Ports.ElecMagnet,0)
-            self.logger.info("ShootBall Activated")
-            # TODO 用更优雅的实现技能冷却
-            # Physical kickers need the electromagnet pulse width. The SIM port
-            # is an edge-triggered UDP event, so sleeping only hides its peak.
-            if os.environ.get("ROBOCUPX_BITS", "").strip().upper() != "SIM":
-                time.sleep(0.3)
-        else:
-            self.logger.warning("Permission Denied: Unable to set dribble status.")
+    def ShootBall(self, level=None):
+        """Fire once, optionally at a lower-board power level from 1 to 4.
+
+        On robot1, ``KickFunc`` is ``IceLoongBits.Kick``: passing ``level``
+        reaches the protocol command directly and does not change the default
+        level used by later shots.  Older IO-only boards retain their existing
+        electromagnet-pulse path.
+        """
+        if not self.Permission():
+            self.logger.warning("Permission Denied: Unable to shoot ball.")
+            return False
+
+        kick = getattr(self, "KickFunc", None)
+        if callable(kick):
+            # IceLoongBits/XeleratorSimBits validate that an explicit level is
+            # an integer in 1..4 before emitting any kick frame.
+            result = kick() if level is None else kick(level)
+            self.logger.info(
+                "ShootBall Activated%s" % ("" if level is None else f" level={level}")
+            )
+            return result
+
+        self.SetIO(self.cfg.Ports.ElecMagnet, 0)
+        self.logger.info("ShootBall Activated (legacy IO)")
+        # TODO 用更优雅的实现技能冷却
+        # Physical kickers need the electromagnet pulse width. The SIM port
+        # is an edge-triggered UDP event, so sleeping only hides its peak.
+        if os.environ.get("ROBOCUPX_BITS", "").strip().upper() != "SIM":
+            time.sleep(0.3)
+        return True
 
     def force_off(self):
         """Referee gate lost: stop the dribbler and reset the IO cache.
@@ -477,8 +529,52 @@ class Peripherals:
         except Exception as error:
             self.logger.warning(f"Electromagnet reset failed: {error}")
         self.DribbleStatus = False
+        adaptive = getattr(self, "_dribble_adaptive", None)
+        if adaptive is not None:
+            adaptive.reset()
+
+    def DribbleAdaptive(self, Status, vision_state=None, lateral_error_cm=None):
+        """Command the dribbler through the guarded current-and-vision policy.
+
+        This retains :meth:`Dribble` as the raw compatibility API.  Strategies
+        that know the camera ball state (currently ``LockBallSlip``) opt into
+        this method; simulator and older lower boards simply retain ``Status``.
+        """
+        controller = getattr(self, "_dribble_adaptive", None)
+        if controller is None:
+            self.Dribble(Status)
+            return None
+
+        current = None
+        getter = getattr(self, "GetDribbleCurrentFunc", None)
+        if callable(getter):
+            try:
+                current = getter()
+            except Exception as error:
+                self.logger.debug(f"Dribble current read failed: {error}")
+
+        decision = controller.decide(
+            Status,
+            vision_state=vision_state,
+            current_a=current,
+            lateral_error_cm=lateral_error_cm,
+        )
+        self.Dribble(decision.power)
+        return decision
+
+    def GetDribbleAdaptiveTelemetry(self):
+        """Return the last pure-policy decision for dashboard/debug consumers."""
+        controller = getattr(self, "_dribble_adaptive", None)
+        return None if controller is None else controller.last_decision
 
     def Dribble(self,Status):
+        # A direct raw off command is also a state boundary for the adaptive
+        # policy.  Without this reset, the next capture could inherit an old
+        # relief/hold decision after a strategy intentionally released a ball.
+        if not Status:
+            adaptive = getattr(self, "_dribble_adaptive", None)
+            if adaptive is not None:
+                adaptive.reset()
         if self.Permission():
             if not self.DribbleStatus == Status:
                 if Status == True:
@@ -496,6 +592,9 @@ class Peripherals:
             # next Dribble() call after permission returns re-sends the value
             # instead of hitting a stale cache entry.
             self.DribbleStatus = False
+            adaptive = getattr(self, "_dribble_adaptive", None)
+            if adaptive is not None:
+                adaptive.reset()
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
 class Key:
