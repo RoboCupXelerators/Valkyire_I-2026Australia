@@ -1,3 +1,4 @@
+from __future__ import annotations
 import threading
 import math
 import numpy as np

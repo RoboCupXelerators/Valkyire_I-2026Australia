@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .PreProcess import Settings, logger, MODEL_DIR, VisionPreUntil, threading, queue, time, cv2, np
 from .modern_calibration import model_bbox_to_raw
 from hailo_platform import VDevice, HailoSchedulingAlgorithm

@@ -7,6 +7,7 @@ preprocessing, and projection all see the same system config plus optional
 vision overlay. Runtime logging and data-directory ownership remain in
 ``ReasonData``.
 """
+from __future__ import annotations
 
 from pathlib import Path
 
