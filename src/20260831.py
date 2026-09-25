@@ -1,6 +1,7 @@
 from LunaPre import *
 from BasicFuc import lockball, TurnTo_with_ball
 import math
+import time
 
 from LunaPre.strategy_tools import angle_error_deg
 
@@ -52,7 +53,7 @@ def back_kick():
     else:
         return False
 
-def IsOpenGoal():
+def IsOpenGoal(window):
     window = UnitedPosition.ShootWindow(
         target="opponent",
         use_estimated_goal=False,
@@ -61,7 +62,7 @@ def IsOpenGoal():
     return (
         window["goal_key"] is not None
         and window["window_open"]
-        and len(window["blockers"]) == 0
+        and len(window["blockers"]) <=1
     )
 
 def OpenGoalShoot():
@@ -72,7 +73,7 @@ def OpenGoalShoot():
         current_yaw_deg=robot_pos[2],
     )
 
-    if not IsOpenGoal():
+    if not IsOpenGoal(window):
         target_yaw = window.get("target_yaw_deg")
         if target_yaw is not None:
             TurnTo_with_ball(target_yaw)
@@ -126,8 +127,9 @@ if __name__ == "__main__":
                         Macon_kick()
                     elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
                         back_kick()
-                    elif robot_pos[0] > -30 and -50 < robot_pos[1] < 50:
+                    elif -50 < robot_pos[1] < 50:
                         OpenGoalShoot()
+                    
                 elif ball_state == "lost":
                     defence_points = UnitedPosition.FieldChassisPos()
                     if defence_points:
@@ -137,6 +139,7 @@ if __name__ == "__main__":
                         UnitedPosition.Pos2Pos([0, 0, 0])
                 else:
                     lockball.LockBallSlip()
+            time.sleep(0.03)
     except:
         UnitedPosition.Pos2Pos([0, 0, 0])
     finally:
