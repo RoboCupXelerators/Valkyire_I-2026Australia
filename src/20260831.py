@@ -130,6 +130,8 @@ if __name__ == "__main__":
                         UnitedPosition.Pos2Pos([0, 0, 0])
                 else:
                     lockball.LockBallSlip()
+    except:
+        UnitedPosition.Pos2Pos([0, 0, 0])
     finally:
         chassis.stop()
         peripheral.Dribble(False)
