@@ -101,6 +101,7 @@ def OpenGoalShoot():
         return False
     if window.get("can_shoot_now"):
         peripheral.ShootBall()
+        time.sleep(0.03)
         return True
     target_yaw = window.get("target_yaw_deg")
     if target_yaw is not None:
@@ -117,6 +118,8 @@ def defence():
             chassis_positions = UnitedPosition.FieldChassisPos()
             if chassis_positions and chassis_positions[0][1] < robot_pos[1]:
                 peripheral.ShootBall()
+                time.sleep(0.03)
+                return True
             else:
                 TurnTo_with_ball(0)
                 peripheral.ShootBall()
