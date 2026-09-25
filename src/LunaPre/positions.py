@@ -276,6 +276,8 @@ class Positions:
             "yellow_goal": None,
             "goal_bboxes": [None, None, None, None],
         }
+        self._last_vision_rx_monotonic: float | None = None
+        self._vision_rx_intervals_s: list[float] = []
         self.vision_process = None
         self.vision_data_stop_event = threading.Event()
         self.get_vision_data_process: threading.Thread | None = None
@@ -414,6 +416,8 @@ class Positions:
 
             self.vision_data_stop_event = threading.Event()
             self.sock = sock
+            self._last_vision_rx_monotonic = None
+            self._vision_rx_intervals_s.clear()
             self._last_vision_pose_send = 0.0
             self.get_vision_data_process = threading.Thread(
                 target=self._get_vision_data,
@@ -465,13 +469,22 @@ class Positions:
                     continue
                 self._send_vision_pose()
                 data, addr = self.sock.recvfrom(4096)
-                self.vision_data = pickle.loads(data)
-                if isinstance(self.vision_data, dict):
-                    self.vision_data.setdefault("ball_pos", [0, 0])
-                    self.vision_data.setdefault("chassis_pos", [])
-                    self.vision_data.setdefault("blue_goal", None)
-                    self.vision_data.setdefault("yellow_goal", None)
-                    self.vision_data.setdefault("goal_bboxes", [None, None, None, None])
+                packet = pickle.loads(data)
+                if not isinstance(packet, dict):
+                    continue
+                packet.setdefault("ball_pos", [0, 0])
+                packet.setdefault("chassis_pos", [])
+                packet.setdefault("blue_goal", None)
+                packet.setdefault("yellow_goal", None)
+                packet.setdefault("goal_bboxes", [None, None, None, None])
+                received_at = time.monotonic()
+                if self._last_vision_rx_monotonic is not None:
+                    interval = received_at - self._last_vision_rx_monotonic
+                    if math.isfinite(interval) and interval >= 0.0:
+                        self._vision_rx_intervals_s.append(interval)
+                        del self._vision_rx_intervals_s[:-600]
+                self.vision_data = packet
+                self._last_vision_rx_monotonic = received_at
                 # if we can receive packets, reset restart counter
                 restart_count = 0
 
@@ -538,6 +551,24 @@ class Positions:
         # ensure vision thread is running
         self.StartVision()
         return self.vision_data
+
+    def VisionRxAge(self) -> float | None:
+        """Return seconds since the last valid UDP vision packet, or ``None``.
+
+        Timeout handling publishes an empty compatibility dictionary so normal
+        reads remain non-blocking. Its creation must not count as a new camera
+        sample, so only the receive thread updates this timestamp.
+        """
+
+        received_at = self._last_vision_rx_monotonic
+        if received_at is None:
+            return None
+        return max(0.0, time.monotonic() - received_at)
+
+    def VisionRxIntervals(self) -> list[float]:
+        """Return recent intervals between successfully received UDP packets."""
+
+        return list(self._vision_rx_intervals_s)
 
     def _get_ball_pos(self):
         v = getattr(runtime, "vision", None)
@@ -2383,6 +2414,8 @@ class Positions:
             self.vision_process = None
             self.get_vision_data_process = None
             self._vision_started = False
+            self._last_vision_rx_monotonic = None
+            self._vision_rx_intervals_s.clear()
         # Close UDP socket after signalling stop. Closing can raise in receiver thread;
         # _get_vision_data handles it.
         try:
