@@ -22,7 +22,7 @@ def Macon_kick():
         TurnTo_with_ball(90 * side)
         threshold = [[40, 30 * side], [90, 80 * side]]
         if UnitedPosition.PointInShape(robot_pos, threshold):
-            if abs((robot_pos[2] + 50*side)%360) < 10:
+            if abs(angle_error_deg(robot_pos[2],50*side)) < 10:
                 peripheral.ShootBall()
                 return True
             else:
@@ -127,7 +127,7 @@ if __name__ == "__main__":
                         Macon_kick()
                     elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
                         back_kick()
-                    elif -50 < robot_pos[1] < 50:
+                    elif -50 <= robot_pos[1] <= 50:
                         OpenGoalShoot()
                     
                 elif ball_state == "lost":
@@ -140,8 +140,11 @@ if __name__ == "__main__":
                 else:
                     lockball.LockBallSlip()
             time.sleep(0.03)
-    except:
-        UnitedPosition.Pos2Pos([0, 0, 0])
+    except Exception:
+        try:
+            UnitedPosition.Pos2Pos([0, 0, 0])
+        except Exception:
+            pass
     finally:
         chassis.stop()
         peripheral.Dribble(False)
