@@ -43,7 +43,17 @@ class Communication:
     STATUS_NO_BALL = 0xFF
 
     def __init__(self, *, bits=None, peer_id: int | None = None):
-        """Use runtime IceLoong Bits, or explicit simulator Bits and peer_id."""
+        """Use runtime IceLoong Bits, or explicit simulator Bits and peer_id.
+
+        TODO(team-comm): real-robot teammate link is not ready yet. On hardware
+        this class drives the IceLoong LINK path (``Bits.SendLinkData`` /
+        ``Bits.GetLinkData``); the lower controller (下位机) must expose/adapt that
+        LINK channel (framing, peer addressing, queueing) before real matches can
+        use team communication. Until that interface lands, only the simulator
+        Bits path (``SendMessage``/``ReceiveMessage``) is validated end to end.
+        Track the adaptation with the firmware team; do not select the LINK path
+        for real robots until it is confirmed.
+        """
         if peer_id is not None and (not isinstance(peer_id, int) or not 1 <= peer_id <= 255):
             raise ValueError("peer_id must be from 1 to 255")
         self._bits = bits if bits is not None else runtime.Bits
