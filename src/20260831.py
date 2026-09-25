@@ -24,6 +24,7 @@ def Macon_kick():
         if UnitedPosition.PointInShape(robot_pos, threshold):
             if abs(angle_error_deg(robot_pos[2],50*side)) < 10:
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return True
             else:
                 TurnTo_with_ball(40 * side)
@@ -46,6 +47,7 @@ def back_kick():
                 TurnTo_with_ball(goal)
             else:
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return True
             return False
         else:
@@ -81,6 +83,7 @@ def OpenGoalShoot():
 
     if window["can_shoot_now"]:
         peripheral.ShootBall()
+        time.sleep(0.03)
         return True
 
     target_yaw = window.get("target_yaw_deg")
@@ -96,21 +99,25 @@ def defence():#防守机
             if chassis_positions and chassis_positions[0][1] < robot_pos[1]:
                 peripheral.Dribble(0.7)
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return True
             else:
                 peripheral.Dribble(0.7)
                 TurnTo_with_ball(0)
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return False          
         else:
             peripheral.Dribble(0.7)
             if UnitedPosition.PointInShape(robot_pos, [[-80, 75], [-90, -75]]):
                 TurnTo_with_ball(150 * side)
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return True           
             else:
                 TurnTo_with_ball(0)
                 peripheral.ShootBall()
+                time.sleep(0.03)
                 return True           
     else:
         UnitedPosition.PredictBallLanding()
