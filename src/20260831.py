@@ -2,6 +2,8 @@ from LunaPre import *
 from BasicFuc import lockball, TurnTo_with_ball
 import math
 
+from LunaPre.strategy_tools import angle_error_deg
+
 
 def _read_state():
     """Read a fresh robot pose and ball state for the current control cycle."""
@@ -23,7 +25,7 @@ def Macon_kick():
                 peripheral.ShootBall()
                 return True
             else:
-                chassis.FieldTurn(40 * side)
+                TurnTo_with_ball(40 * side)
             return False
         else:
             UnitedPosition.Pos2Pos([56, 75 * side, 90])
@@ -39,7 +41,7 @@ def back_kick():
         if robot_pos[0] > back_point:
             aim = [121.5, -30 * side]
             goal = math.degrees(math.atan2(aim[1] - robot_pos[1],aim[0] - robot_pos[0],)) % 360
-            if abs(robot_pos[2] - goal) > 8:
+            if abs(angle_error_deg(robot_pos[2],goal)) > 8:
                 TurnTo_with_ball(goal)
             else:
                 peripheral.ShootBall()
@@ -93,20 +95,25 @@ def defence():#防守机
             if chassis_positions and chassis_positions[0][1] < robot_pos[1]:
                 peripheral.Dribble(0.7)
                 peripheral.ShootBall()
+                return True
             else:
                 peripheral.Dribble(0.7)
                 TurnTo_with_ball(0)
                 peripheral.ShootBall()
+                return False          
         else:
             peripheral.Dribble(0.7)
             if UnitedPosition.PointInShape(robot_pos, [[-80, 75], [-90, -75]]):
-                chassis.FieldTurn(150 * side)
+                TurnTo_with_ball(150 * side)
                 peripheral.ShootBall()
+                return True           
             else:
-                chassis.FieldTurn(0)
+                TurnTo_with_ball(0)
                 peripheral.ShootBall()
+                return True           
     else:
         UnitedPosition.PredictBallLanding()
+        return False
 
 
 if __name__ == "__main__":
@@ -136,4 +143,3 @@ if __name__ == "__main__":
         chassis.stop()
         peripheral.Dribble(False)
         UnitedPosition.Stop()
-
