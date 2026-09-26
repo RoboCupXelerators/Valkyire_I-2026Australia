@@ -101,7 +101,7 @@ class Preference:
             "MaxWheelRPM": 500,     # 电机命令单位 RPM，正方向为单轮顺时针
         },
         "Motion": {
-            "CatchVal": [8.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
+            "CatchVal": [6.8, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
 
             "LockBallSlip": {

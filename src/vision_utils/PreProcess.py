@@ -114,14 +114,16 @@ def _is_jetson_nano() -> bool:
 
 # Logical camera id -> stable USB physical-path fragment.
 # Vision.CamPorts order is [back, left, front, right] = [0, 2, 4, 6] on this
-# robot, and the four H65 cameras sit on hub ports 1.1..1.4 respectively.
+# robot, and the four H65 cameras sit on hub ports 2.1..2.4 respectively on
+# robot2. Some older images exposed the same hub as 1.1..1.4, so both path
+# layouts are accepted below.
 # The kernel reassigns /dev/videoN on every hub re-enumeration, so capture
 # devices are resolved through /dev/v4l/by-path/<fragment>-video-index0.
 _DEFAULT_CAMERA_USB_PATHS = {
-    0: "usb-0:1.1:1.0",  # back
-    2: "usb-0:1.2:1.0",  # left
-    4: "usb-0:1.3:1.0",  # front
-    6: "usb-0:1.4:1.0",  # right
+    0: ("usb-0:2.1:1.0", "usb-0:1.1:1.0"),  # back
+    2: ("usb-0:2.2:1.0", "usb-0:1.2:1.0"),  # left
+    4: ("usb-0:2.3:1.0", "usb-0:1.3:1.0"),  # front
+    6: ("usb-0:2.4:1.0", "usb-0:1.4:1.0"),  # right
 }
 
 
@@ -1067,16 +1069,18 @@ class VisionPreUntil:
             # No physical mapping configured: assume the id is already an index.
             return logical
 
-        matches = sorted(glob.glob(f"/dev/v4l/by-path/*{fragment}-video-index0"))
-        if not matches:
-            return None
-        node = os.path.realpath(matches[0])
-        base = os.path.basename(node)
-        if base.startswith("video"):
-            try:
-                return int(base[5:])
-            except ValueError:
-                pass
+        fragments = [fragment] if isinstance(fragment, str) else list(fragment)
+        for candidate in fragments:
+            matches = sorted(glob.glob(f"/dev/v4l/by-path/*{candidate}-video-index0"))
+            if not matches:
+                continue
+            node = os.path.realpath(matches[0])
+            base = os.path.basename(node)
+            if base.startswith("video"):
+                try:
+                    return int(base[5:])
+                except ValueError:
+                    pass
         return None
 
     def InitCam(self, CamPorts, Width=640, Height=480, AutoExposure=3, Exposure=157, Brightness=0, Contrast=32, Saturation=64):
