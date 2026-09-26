@@ -46,7 +46,7 @@ def OpenGoalShoot():
 def Macon_kick():
     robot_pos, ball_state, side = _read_state()
     if ball_state == "held":
-        peripheral.Dribble(0.5)
+        peripheral.Dribble(0.2)
         TurnTo_with_ball(100 * side)
         threshold = [[40, 30 * side], [90, 80 * side]]
         if UnitedPosition.PointInShape(robot_pos, threshold):
@@ -66,7 +66,7 @@ def Macon_kick():
 def back_kick():
     robot_pos, ball_state, side = _read_state()
     if ball_state == "held":
-        peripheral.Dribble(0.5)
+        peripheral.Dribble(0.2)
         back_point = 80
         if robot_pos[0] > back_point:
             aim = [121.5, -30 * side]

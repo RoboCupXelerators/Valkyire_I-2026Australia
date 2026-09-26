@@ -43,3 +43,21 @@ def defence():#防守机
     else:
         UnitedPosition.PredictBallLanding()
         return False
+if __name__ == "__main__":
+    try:
+        while True:
+            if UnitedPosition.RestrictedArea():
+                robot_pos, ball_state, side = _read_state()
+                if ball_state == "held":
+                    defence()          
+                elif ball_state == "lost":
+                    UnitedPosition.Pos2Pos([-80, 0, 0])
+    except Exception:
+        try:
+            UnitedPosition.Pos2Pos([-80, 0, 0])
+        except Exception:
+            pass
+    finally:
+        chassis.stop()
+        peripheral.Dribble(False)
+        UnitedPosition.Stop()
