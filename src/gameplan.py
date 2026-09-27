@@ -55,10 +55,8 @@ BOUNCE_DRIBBLE = 0.8
 #   bit0~6 = yaw 档位（0~127，约 2.81 度/档）   bit7 = dribbler ready
 # 策略侧只广播自己的状态，由接收方自行差分推导队友速度，不读 Unity 真值。
 #
-# 注意配置访问路径：Team / Tactics 都挂在 AustraliaStrategy 下面，即
-# cfg.AustraliaStrategy.Team.RobotIds —— 直接写 cfg.Team / cfg.Tactics 会抛
-# AttributeError（SettingsProxy 只在顶层做 __getattr__ 透传）。这里统一走
-# _cfg_lookup 安全取值，任何一层缺失都退回默认值，绝不在导入期崩掉。
+# 队内通信参数原先挂在 AustraliaStrategy 配置段，现已改为本文件内的常量，
+# 不再读写运行时 config.json。_cfg_lookup 仍用于可选字段（如 RoboInfo.Color）。
 def _cfg_lookup(*keys, default=None):
     """按属性路径安全取配置；任一层缺失返回 default。"""
     node = cfg
@@ -70,20 +68,8 @@ def _cfg_lookup(*keys, default=None):
     return default if node is None else node
 
 
-def _cfg_number(*keys, default):
-    """按路径取数值配置，取不到或不是数字时返回 default。"""
-    try:
-        return float(_cfg_lookup(*keys))
-    except (TypeError, ValueError):
-        return float(default)
-
-
-TEAM_STATE_SEND_PERIOD_S = _cfg_number(
-    "AustraliaStrategy", "Tactics", "TEAM_STATE_SEND_PERIOD_S", default=0.05
-)   # 约 20Hz 广播
-TEAM_STATE_MAX_AGE_S = _cfg_number(
-    "AustraliaStrategy", "Tactics", "TEAM_STATE_MAX_AGE_S", default=0.30
-)   # 300ms 没有新帧即判定队友数据过期
+TEAM_STATE_SEND_PERIOD_S = 0.05   # 约 20Hz 广播
+TEAM_STATE_MAX_AGE_S = 0.30       # 300ms 没有新帧即判定队友数据过期
 TEAM_RECEIVE_DRAIN_MAX = 16   # 每周期最多清空 16 帧；最新帧用于状态，跳变帧单独留事件
 TEAM_YAW_STEPS = 128
 TEAM_YAW_MASK = 0x7F
@@ -130,16 +116,7 @@ def _team_peer_id():
         return _TEAM_PEER_ID
     robot_id = _team_robot_id()
 
-    ids = []
-    for path in (("AustraliaStrategy", "Team", "RobotIds"), ("Team", "RobotIds")):
-        found = _cfg_lookup(*path)
-        if not found:
-            continue
-        try:
-            ids = [int(value) for value in found]
-        except (TypeError, ValueError):
-            ids = []
-        break
+    ids = [1, 2]
 
     # 正式策略把 RobotIds 硬编码成 [1, 2]。如果本机是 3 号，这份配置根本
     # 不适用于我们——不能顺手挑一个"不等于自己的"就当成队友（那会把队友

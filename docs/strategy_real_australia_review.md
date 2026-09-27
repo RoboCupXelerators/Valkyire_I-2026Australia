@@ -5,7 +5,7 @@
 本次按“保留原战术行为、改为无参数启动、协同不可用时自动降级”的方向改写。新入口位于 `src/strategy_real_australia.py`，原始下载文件没有覆盖。
 
 - 启动不解析命令行参数。机器人编号取 `RoboInfo.number`；当前默认配置为 1。若两台机器人同时协同，需在各自设备的 `config.json` 中分别设为 1 和 2。
-- 赛制/物理/战术参数集中放到 `AustraliaStrategy` 配置段，默认值由 `ReasonData/config.py` 管理；现有本地 `config.json` 会通过配置迁移获得默认段。
+- 赛制/物理/战术参数内联在 `src/strategy_real_australia.py` 顶部的 `AUSTRALIA` 命名空间中；不再写入 `ReasonData` 配置，避免污染运行时 `config.json`。
 - 无 Team Link API、配置关闭 Team Link、启动后 1 秒仍未配对，或已配对后心跳连续丢失 0.75 秒，都会进入单机接管并清除传球等协同计划。心跳恢复后允许重新启用双机战术。
 - 视觉有效期和包间隔从 `Positions.VisionRxAge()` / `VisionRxIntervals()` 读取，只认成功接收的 UDP 包；超时发布的空字典不会刷新有效期。
 
@@ -18,7 +18,7 @@
 ## 本次代码调整
 
 - 移除参数解析、`--robot-id`、`--solo`、`--check` 和同时启动两台进程的 `run_all()`。入口只调用 `main()`；身份及运行配置读 JSON。
-- 将 264 个纯配置字段收进 `AustraliaStrategy.Real`、`Team`、`Tactics`、`Runtime`。策略中可调整的阈值、速度、距离、超时和角色表不再各自硬编码为模块级常量。机器人实时状态仍保留在模块变量中，因为它们会在控制循环中持续变化。
+- 将可调阈值、速度、距离、超时和角色表内联为策略文件顶部的 `AUSTRALIA.Real` / `Team` / `Tactics` / `Runtime` 命名空间字段，不再污染 `ReasonData` 配置。机器人实时状态仍保留在模块变量中，因为它们会在控制循环中持续变化。
 - 合并两个 `reset_strategy()`，删除为了串接两个重置函数而设置的 `_TACTICAL_RESET` 别名。
 - 去掉策略文件向 `sys.path` 插入路径的代码；运行位置遵循项目约定，从 `Software/src` 启动。
 - 删除策略里重复实现视觉接收新鲜度的类，改用 `LunaPre.positions.Positions.VisionRxAge()` 和 `VisionRxIntervals()`。
@@ -32,12 +32,14 @@
 ## 配置位置
 
 - 机器人编号：`RoboInfo.number`
-- 是否尝试双机链路：`AustraliaStrategy.Runtime.TeamLinkEnabled`
-- 场地、球门、视觉、边界和实机控制限值：`AustraliaStrategy.Real`
-- 配对超时、心跳超时、传球和攻防参数：`AustraliaStrategy.Team` / `AustraliaStrategy.Tactics`
-- 默认配置模板：`src/ReasonData/config.py` 的 `Preference.DEFAULT_CONFIG`
+- 场地尺寸：`Field.Long` / `Field.Short`（现已为 243 / 182）
+- 球门与球径：`Vision.GoalWidth` / `Vision.GoalHeight` / `Vision.BallDiameter`（现已为 45 / 14 / 4.2）
+- 是否尝试双机链路：`AUSTRALIA.Runtime.TeamLinkEnabled`
+- 墙线、边界和实机控制限值：`AUSTRALIA.Real`
+- 配对超时、心跳超时、传球和攻防参数：`AUSTRALIA.Team` / `AUSTRALIA.Tactics`
+- 其余参数定义：`src/strategy_real_australia.py` 顶部的 `AUSTRALIA` 命名空间
 
-`src/ReasonData/data/config.json` 是本地运行配置目录，受 `.gitignore` 忽略。当前工作区已补入 `AustraliaStrategy` 段；新环境会从 `Preference.DEFAULT_CONFIG` 迁入同一组默认值。
+`src/ReasonData/data/config.json` 是本地运行配置目录，受 `.gitignore` 忽略。场地/球门几何归入公共 `Field` / `Vision` 段；其余澳洲策略参数不再写入该文件。旧配置迁移时会一次性采纳上面的实机几何。
 
 ## 静态检查与限制
 

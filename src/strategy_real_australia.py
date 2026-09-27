@@ -16,11 +16,11 @@ import struct
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace as _Namespace
 
 SRC_DIR = Path(__file__).resolve().parent
 from ReasonData import Settings
 
-AUSTRALIA = Settings.AustraliaStrategy
 
 def _bootstrap_iceloong_backend():
     """Select the only supported physical backend before LunaPre is imported.
@@ -55,13 +55,242 @@ from LunaPre.strategy_tools import (
     valid_pose,
 )
 
+# Australia Open tuning inlined from the former AustraliaStrategy config
+# section, so runtime config.json stays clean. Unit suffixes in names are
+# centimetres, seconds, m/s or degrees. Field size, goal geometry and ball
+# diameter are shared with the global Field/Vision config.
+_REAL_PLATFORM = "jetson_nano"
+
+AUSTRALIA = _Namespace(
+    Real=_Namespace(
+        RCJA_WHITE_LINE_OFFSET_CM=25.0,
+        RCJA_WHITE_LINE_WIDTH_CM=5.0,
+        REAL_WALL_CLEARANCE_CM=0.05,
+        REAL_DETECTION_TOLERANCE_CM=5.0,
+        SIDE_MIN_X_CM=20.0,
+        SIDE_CONFIRM_S=0.3,
+        SIDE_POSITION_TOLERANCE_CM=5.0,
+        CONTROL_OVERRUN_LOG_INTERVAL_S=2.0,
+        CONTROL_PERF_LOG_INTERVAL_S=5.0,
+        CONTROL_PERF_SAMPLE_WINDOW=300,
+        REAL_MAINBOARD_RX_TIMEOUT_S=0.3,
+        REAL_MAINBOARD_TX_TIMEOUT_S=0.3,
+        REAL_POSE_RX_TIMEOUT_S=0.3,
+        REAL_REFEREE_RX_TIMEOUT_S=0.3,
+        REAL_RUNTIME_TELEMETRY_LOG_INTERVAL_S=5.0,
+        REAL_ABSOLUTE_MAX_MPS=2.0,
+        REAL_SAFE_FAST_MPS=1.5,
+        REAL_ALIGNMENT_MPS=0.55,
+        CHASE_MAX_MPS=3.0,
+        REAL_DIRECT_COMMAND_HORIZON_S=0.06,
+        REAL_POSE_VELOCITY_MIN_SAMPLE_S=0.05,
+        REAL_POSE_VELOCITY_MAX_SAMPLE_S=0.4,
+        REAL_POSE_VELOCITY_MAX_CM_S=300.0,
+        REAL_POSE_VELOCITY_MAX_DEG_S=720.0,
+        REAL_BOUNDARY_BRAKE_MPS2=1.8,
+        REAL_HOLD_CONFIRM_S=0.25,
+        REAL_HOLD_LOSS_GRACE_S=0.15,
+        REAL_CARRY_MPS=1.5,
+        REAL_BACK_CARRY_MPS=1.5,
+        REAL_REPOSITION_MPS=0.75,
+        REAL_RELEASE_BACK_MPS=0.35,
+        REAL_RELEASE_TIMEOUT_S=0.45,
+        REAL_REACQUIRE_TIMEOUT_S=3.5,
+        REAL_LOST_WAIT_S=0.3,
+        REAL_REACQUIRE_RADIUS_CM=28.0,
+        REAL_CARRY_RECOVERY_MAX_ATTEMPTS=2,
+        REAL_CARRY_RECOVERY_ARRIVAL_CM=7.0,
+        REAL_HELD_BALL_STALL_TIMEOUT_S=0.75,
+        REAL_VISION_TIMEOUT_S=0.18,
+        REAL_PLATFORM_JETSON_NANO=_REAL_PLATFORM,
+        REAL_VISION_BACKEND='HV',
+        REAL_VISION_PROFILE='nano',
+        REAL_BALL_DIAMETER_CM=float(Settings.Vision.BallDiameter),
+    ),
+    Team=_Namespace(
+        SHOT_ALIGN_DEG=5.0,
+        SHOT_COOLDOWN_S=1.2,
+        SHOT_GOAL_MARGIN_CM=6.0,
+        TEAMMATE_VISION_MATCH_CM=30.0,
+        RobotIds=[1, 2],
+        RobotRoles=['PRIMARY', 'SUPPORT'],
+        ContestStates=['contest_ball', 'contest_carrier_challenge', 'contest_block_helper', 'contest_push_enemy', 'front_defence_challenge'],
+    ),
+    Tactics=_Namespace(
+        SIM_PENALTY_RULE_ENABLED=False,
+        SIM_GOAL_WIDTH_CM=45.0,
+        SIM_GOAL_DEPTH_CM=7.4,
+        SIM_PENALTY_FRONT_CM=70.0,
+        SIM_PENALTY_HALF_WIDTH_CM=45.0,
+        SIM_PENALTY_RAW_HALF_WIDTH_CM=45.0,
+        ATTACK_DIR=None,
+        LAST_BALL_MEMORY_S=0.8,
+        CHASE_SENSOR_PREDICT_S=0.12,
+        SIM_BODY_RADIUS_CM=11.0,
+        MOTION_CLEARANCE_CM=5.0,
+        BOUNDARY_CONTACT_EDGE_GUARD_CM=30.0,
+        BOUNDARY_CONTACT_APPROACH_CM=38.0,
+        TEAM_STATE_SEND_PERIOD_S=0.05,
+        TEAM_STATE_MAX_AGE_S=0.3,
+        TEAMMATE_LOSS_CONFIRM_S=0.75,
+        TEAMMATE_STARTUP_TAKEOVER_S=1.0,
+        TEAMMATE_HELD_BALL_MATCH_CM=20.0,
+        MOTION_MIN_MPS=0.08,
+        SIM_MAX_SPEED_MPS=3.0,
+        MOTION_COMMAND_BRAKE_MPS2=4.0,
+        MOTION_LATENCY_S=0.06,
+        MOTION_TELEMETRY_DELAY_S=0.18,
+        SIM_RULE_EDGE_EPSILON_CM=0.05,
+        HIGH_SPEED_ENEMY_CM_S=35.0,
+        HIGH_SPEED_ENEMY_MIN_PROGRESS_CM=-55.0,
+        CHASE_ALIGN_DEG=10.0,
+        CHASE_TURN_MAX_DEG_S=360.0,
+        CHASE_TURN_GAIN=5.0,
+        CHASE_LEAD_MAX_S=0.25,
+        CHASE_CAPTURE_KP=8.0,
+        SIM_DRIBBLER_CAPTURE_RELATIVE_LIMIT_MPS=1.6,
+        CHASE_CAPTURE_SLOWDOWN_DISTANCE_M=0.98,
+        DIRECT_CARRY_ALIGN_DEG=20.0,
+        SCREEN_THREAT_RADIUS_CM=85.0,
+        SCREEN_IMMEDIATE_RADIUS_CM=45.0,
+        SCREEN_BALL_CLEARANCE_CM=26.0,
+        SCREEN_LANE_CLEARANCE_CM=28.0,
+        SCREEN_LATERAL_OFFSET_CM=18.0,
+        CONTEST_ASSIST_CONTACT_CM=46.0,
+        CONTEST_ASSIST_CHASER_CM=48.0,
+        CONTEST_SUPPORT_BACK_CM=24.0,
+        CONTEST_SUPPORT_SIDE_CM=34.0,
+        CONTEST_HELPER_MIN_CM=48.0,
+        CONTEST_HELPER_MAX_CM=95.0,
+        CONTEST_HELPER_BLOCK_CM=38.0,
+        TEAMMATE_HOLD_GRACE_S=0.2,
+        HELD_TURN_MAX_DEG_S=120.0,
+        TURN_MIN_DEG_S=16.0,
+        SHOT_RELEASE_TIMEOUT_S=0.1,
+        SHOT_OPENING_ALIGN_MAX_DEG=12.0,
+        DIRECT_KICK_POWER_LEVEL=3,
+        WALL_KICK_POWER_LEVEL=4,
+        MACAU_ENTRY_MIN_ABS_Y_CM=58.0,
+        MACAU_LANE_ENEMY_CLEARANCE_CM=58.0,
+        MACAU_RETRY_S=1.2,
+        MACAU_POCKET_MIN_PROGRESS_CM=98.0,
+        MACAU_POCKET_MAX_PROGRESS_CM=108.0,
+        MACAU_POCKET_TARGET_PROGRESS_CM=104.0,
+        MACAU_POCKET_ARRIVAL_CM=6.0,
+        MACAU_POCKET_MIN_ABS_Y_CM=40.0,
+        MACAU_POCKET_MAX_ABS_Y_CM=80.0,
+        MACAU_POCKET_TARGET_ABS_Y_CM=60.0,
+        MACAU_SHIELD_SAMPLE_DEG=15.0,
+        MACAU_SHIELD_REPLAN_GAIN=12.0,
+        MACAU_SHIELD_MAX_STEP_DEG=36.0,
+        MACAU_SHIELD_BODY_MARGIN_CM=2.0,
+        MACAU_SHIELD_LANE_STEP_CM=6.0,
+        MACAU_SHIELD_REAR_PROGRESS_CM=10.0,
+        MACAU_DEFENCE_LANE_MIN_CM=52.0,
+        MACAU_DEFENCE_LEAD_CM=32.0,
+        MACAU_DEFENCE_TRACK_S=0.45,
+        MACAU_DEFENCE_MIN_ADVANCE_CM_S=15.0,
+        MACAU_DEFENCE_MAX_LATERAL_SHIFT_CM=16.0,
+        MACAU_DEFENCE_HOLD_S=0.35,
+        HIDDEN_MACAU_COLLAPSE_S=0.5,
+        SPLIT_SHIFT_CM=24.0,
+        SPLIT_TIMEOUT_S=4.0,
+        WALL_AIM_TIMEOUT_S=1.5,
+        FRONT_PRESSURE_DISTANCE_CM=45.0,
+        DUEL_BREAKAWAY_CONFIRM_S=0.18,
+        DUEL_BREAKAWAY_CONTACT_CM=26.0,
+        DUEL_BREAKAWAY_RETREAT_CM=30.0,
+        DUEL_BREAKAWAY_MAX_S=0.55,
+        DUEL_BREAKAWAY_ARRIVAL_CM=6.0,
+        DUEL_EJECT_FALLBACK_S=1.0,
+        ENEMY_SAMPLE_MIN_S=0.05,
+        ENEMY_SAMPLE_MAX_S=0.4,
+        ENEMY_MAX_SPEED_CM_S=300.0,
+        SUPPORT_SIDE=-1.0,
+        SUPPORT_Y_CM=38.0,
+        SUPPORT_BALL_MIN_X_CM=-10.0,
+        SUPPORT_CAPTURE_RADIUS_CM=60.0,
+        ALLY_CARRIER_CLEARANCE_CM=36.0,
+        ALLY_SHOT_LANE_CLEARANCE_CM=34.0,
+        SUPPORT_COVER_FORWARD_CM=30.0,
+        SUPPORT_COVER_LATERAL_CM=55.0,
+        COOP_MIN_PROGRESS_CM=-35.0,
+        COOP_SETUP_TIMEOUT_S=2.4,
+        COOP_RETRY_S=2.5,
+        PASS_READY_S=0.08,
+        PASS_READY_DISTANCE_CM=7.0,
+        PASS_RECEIVE_ALIGN_DEG=8.0,
+        PASS_RECEIVE_SPEED_MPS=0.65,
+        PASS_MAX_LAUNCH_MPS=4.0,
+        MAX_PASS_CUSHIONS=1,
+        PINNED_PASS_CONTACT_CM=26.0,
+        PINNED_PASS_MAX_SPEED_MPS=0.03,
+        SHOT_MAX_LAUNCH_MPS=4.0,
+        PASS_KICK_IMPULSE_MPS=4.0,
+        PASS_WALL_RESTITUTION=0.5,
+        PASS_RESISTANCE_MODEL='rolling',
+        PASS_CALIBRATED_DECEL_MPS2=0.3,
+        PASS_CALIBRATED_DRAG_MPS2=0.0,
+        PASS_CALIBRATED_BACKSPIN_MPS=0.0,
+        PASS_MAX_AGE_S=0.35,
+        PASS_FLIGHT_TIMEOUT_S=3.0,
+        SHOT_RECEIVE_SPEED_MPS=2.0,
+        PASS_SETUP_ESCAPE_CM=18.0,
+        PASS_SETUP_SHIELD_RADIUS_CM=55.0,
+        PASS_SETUP_TIMEOUT_S=1.25,
+        SHIELD_PASS_TIMEOUT_S=0.7,
+        SLIP_SIDE_TIMEOUT_S=1.6,
+        SLIP_SIDE_ESCAPE_CM=30.0,
+        SLIP_SIDE_LATERAL_CM=24.0,
+        MAX_CUSHIONS=1,
+        FRONT_DEFENCE_X=0.0,
+        SOLO_GOAL_THREAT_RADIUS_CM=68.0,
+        HELD_ENEMY_OVERLAP_CM=14.0,
+        DEFENCE_BALL_ENTER_CM=10.0,
+        DEFENCE_RELEASE_DELAY_S=0.6,
+        INTERCEPT_HORIZON_S=1.2,
+        INTERCEPT_MIN_SPEED_CM_S=15.0,
+        INTERCEPT_MAX_SPEED_CM_S=3000.0,
+        INTERCEPT_CAPTURE_RADIUS_CM=24.0,
+        INTERCEPT_CAPTURE_MAX_SPEED_CM_S=70.0,
+        RADICAL_MEMORY_TIME=0.45,
+        RADICAL_TRACK_CM=45.0,
+        RADICAL_STANDOFF_CM=28.0,
+        RADICAL_PREP_FORWARD_CM=14.0,
+        RADICAL_PREP_LATERAL_CM=30.0,
+        RADICAL_REAR_ENTRY_CM=12.0,
+        RADICAL_PREP_ARRIVAL_CM=2.0,
+        RADICAL_CONTACT_RUSH_CM=44.0,
+        CARRIER_GOAL_LINE_BLOCK_STANDOFF_CM=52.0,
+        CARRIER_GOAL_LINE_BLOCK_ARRIVAL_CM=2.0,
+        DEADBALL_CONTACT_CM=25.0,
+        DEADBALL_SLOT_OCCUPIED_CM=28.0,
+        DEADBALL_SLOT_INSET_CM=45.0,
+        RADICAL_APPROACH_SPEED_CM_S=10.0,
+        RADICAL_NEAR_MIDFIELD_PROGRESS_CM=-25.0,
+        PRESS_MAX_MPS=3.0,
+        GOAL_BACK_WALL_AIM_MARGIN_CM=4.5,
+        GOAL_POST_RETREAT_TRIGGER_CM=34.0,
+        GOAL_POST_RETREAT_ARRIVAL_CM=6.0,
+        GOAL_POST_PATH_GRID_CM=10.0,
+        GOAL_POST_PATH_MAX_DISTANCE_CM=80.0,
+        GOAL_POST_PATH_REPLAN_S=1.2,
+    ),
+    Runtime=_Namespace(
+        ControlPeriodSeconds=0.016666666666666666,
+        TeamLinkPollIntervalSeconds=0.016666666666666666,
+        TeamLinkEnabled=True,
+        Platform=_REAL_PLATFORM,
+    ),
+)
+
 # Dedicated RoboCup Junior Australia Open 2026 physical strategy. Rule 2.1's
 # field diagram gives the 2430×1820mm wall envelope. Its 50mm white line is
 # 250mm from each wall, so the active white-line interior is 1830×1220mm.
 # Bits coordinates use the wall-centred physical envelope; free-ball tactics
 # separately reject a ball that has left the white-line playing area.
-RCJA_PLAYING_HALF_X_CM = AUSTRALIA.Real.FIELD_LONG / 2.0 - AUSTRALIA.Real.RCJA_WHITE_LINE_OFFSET_CM - AUSTRALIA.Real.RCJA_WHITE_LINE_WIDTH_CM
-RCJA_PLAYING_HALF_Y_CM = AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Real.RCJA_WHITE_LINE_OFFSET_CM - AUSTRALIA.Real.RCJA_WHITE_LINE_WIDTH_CM
+RCJA_PLAYING_HALF_X_CM = Settings.Field.Long / 2.0 - AUSTRALIA.Real.RCJA_WHITE_LINE_OFFSET_CM - AUSTRALIA.Real.RCJA_WHITE_LINE_WIDTH_CM
+RCJA_PLAYING_HALF_Y_CM = Settings.Field.Short / 2.0 - AUSTRALIA.Real.RCJA_WHITE_LINE_OFFSET_CM - AUSTRALIA.Real.RCJA_WHITE_LINE_WIDTH_CM
 # Keep the full chassis inside the physical wall envelope, with a small
 # numerical margin for field-pose noise.  This is separate from the ball's
 # white-line playing-area rule: a robot may legally traverse the out area,
@@ -368,37 +597,12 @@ def _configure_real_rule_settings(vision_settings):
             raise RuntimeError("physical vision must provide an orange-ball diameter") from exc
         if not 4.1 <= configured_ball_diameter <= 4.3:
             raise RuntimeError("Australia Open requires a configured 42 mm orange ball")
-        # The official physical profile owns this value.  The existing config
-        # is validated for compatibility, then the fixed value is exported to
-        # the child process so a stale shell variable cannot override it.
-        ball_diameter = AUSTRALIA.Real.REAL_BALL_DIAMETER_CM
-        # Vision starts in a child process that reloads its merged config.
-        # Export the official physical geometry instead of assuming this
-        # parent-process settings mutation crosses that process boundary.
-        os.environ["ROBOCUPX_VISION_BALL_DIAMETER_CM"] = str(ball_diameter)
-        os.environ["ROBOCUPX_VISION_GOAL_WIDTH_CM"] = str(AUSTRALIA.Real.REAL_GOAL_WIDTH_CM)
-        os.environ["ROBOCUPX_VISION_GOAL_HEIGHT_CM"] = str(AUSTRALIA.Real.REAL_GOAL_HEIGHT_CM)
-        settings.Field.Long = AUSTRALIA.Real.FIELD_LONG
-        settings.Field.Short = AUSTRALIA.Real.FIELD_SHORT
-        settings.Vision.BallDiameter = ball_diameter
-        settings.Vision.GoalWidth = AUSTRALIA.Real.REAL_GOAL_WIDTH_CM
-        settings.Vision.GoalHeight = AUSTRALIA.Real.REAL_GOAL_HEIGHT_CM
-        # The HybridVision compatibility view may retain legacy goal values,
-        # so update both views before the camera pipeline starts.
-        vision_vals = getattr(settings, "VisionVals", None)
-        if vision_vals is not None:
-            for name, value in (
-                ("BlueGoalWidthCM", AUSTRALIA.Real.REAL_GOAL_WIDTH_CM),
-                ("YellowGoalWidthCM", AUSTRALIA.Real.REAL_GOAL_WIDTH_CM),
-                ("BlueGoalHeightCM", AUSTRALIA.Real.REAL_GOAL_HEIGHT_CM),
-                ("YellowGoalHeightCM", AUSTRALIA.Real.REAL_GOAL_HEIGHT_CM),
-            ):
-                try:
-                    setattr(vision_vals, name, value)
-                except (AttributeError, TypeError):
-                    # ReasonData's compatibility view is read-only and already
-                    # delegates these values to settings.Vision.
-                    pass
+        # Field, goal and ball geometry live in the shared Field/Vision config.
+        # Export the validated values to the vision child process so a stale
+        # shell variable cannot override them across the process boundary.
+        os.environ["ROBOCUPX_VISION_BALL_DIAMETER_CM"] = str(configured_ball_diameter)
+        os.environ["ROBOCUPX_VISION_GOAL_WIDTH_CM"] = str(settings.Vision.GoalWidth)
+        os.environ["ROBOCUPX_VISION_GOAL_HEIGHT_CM"] = str(settings.Vision.GoalHeight)
         safety = settings.Motion.RestrictedArea
         safety.ProtectionLevel = 2
         # At protection level 2 Positions computes its coordinate guard as
@@ -414,8 +618,8 @@ def _configure_real_rule_settings(vision_settings):
             raise RuntimeError("physical chassis must provide RobotRadiusM") from exc
         if not math.isfinite(robot_radius_cm) or robot_radius_cm <= 0.0:
             raise RuntimeError("physical chassis RobotRadiusM must be positive")
-        safety.XLimit = AUSTRALIA.Real.FIELD_LONG / 2.0 - 0.05
-        safety.YLimit = AUSTRALIA.Real.FIELD_SHORT / 2.0 - 0.05
+        safety.XLimit = float(settings.Field.Long) / 2.0 - 0.05
+        safety.YLimit = float(settings.Field.Short) / 2.0 - 0.05
         safety.GoalBoxWidth = 0.0
         safety.GoalBoxYHalf = 0.0
         safety.GoalBoxCornerRadius = 0.0
@@ -428,7 +632,7 @@ def _configure_mainboard_field(bits):
     configure = getattr(bits, "SetRoomSize", None)
     if not callable(configure):
         raise RuntimeError("physical MainBoard does not expose SET_ROOM_SIZE")
-    result = configure(AUSTRALIA.Real.FIELD_LONG * 10.0, AUSTRALIA.Real.FIELD_SHORT * 10.0)
+    result = configure(Settings.Field.Long * 10.0, Settings.Field.Short * 10.0)
     # IceLoongBits returns the decoded response list.  An empty list means the
     # serial command was not acknowledged; ``None`` remains accepted for thin
     # wrappers whose setter is intentionally fire-and-forget.
@@ -695,7 +899,7 @@ def _update_attack_direction(pose):
     # field X coordinate still identifies the starting half, so it is safe to
     # lock the direction immediately while outside the X boundary.  A pose
     # beyond only the Y line may likewise use its valid X sign.
-    if abs(x) >= AUSTRALIA.Real.FIELD_LONG / 2.0 and math.isfinite(x):
+    if abs(x) >= Settings.Field.Long / 2.0 and math.isfinite(x):
         ATTACK_DIR = -1.0 if x > 0.0 else 1.0
         _SIDE_CANDIDATE = None
         _SIDE_CANDIDATE_SINCE = None
@@ -1193,7 +1397,7 @@ def _field_xy(value):
         return None
     if not all(math.isfinite(item) for item in (x, y)):
         return None
-    if abs(x) > AUSTRALIA.Real.FIELD_LONG / 2.0 or abs(y) > AUSTRALIA.Real.FIELD_SHORT / 2.0:
+    if abs(x) > Settings.Field.Long / 2.0 or abs(y) > Settings.Field.Short / 2.0:
         return None
     return [x, y]
 
@@ -1247,8 +1451,8 @@ def _physical_xy(value):
     }:
         return None
     if (
-        abs(x) > AUSTRALIA.Real.FIELD_LONG / 2.0 + AUSTRALIA.Real.REAL_DETECTION_TOLERANCE_CM
-        or abs(y) > AUSTRALIA.Real.FIELD_SHORT / 2.0 + AUSTRALIA.Real.REAL_DETECTION_TOLERANCE_CM
+        abs(x) > Settings.Field.Long / 2.0 + AUSTRALIA.Real.REAL_DETECTION_TOLERANCE_CM
+        or abs(y) > Settings.Field.Short / 2.0 + AUSTRALIA.Real.REAL_DETECTION_TOLERANCE_CM
     ):
         return None
     return [x, y]
@@ -1624,7 +1828,7 @@ def _real_ball_control(pose, state):
     _REAL_WAS_HELD = state == "held" and _REAL_HOLD_CONFIRMED
     if was_held and state != "held" and not _AWAIT_BALL_RELEASE and _REAL_REACQUIRE is None:
         _reset_attack()
-        goal = [ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+        goal = [ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
         _begin_reacquire(UnitedPosition.Pos2Angle(pose, goal), aim_point=goal)
         return "ball_slip_stop"
     if _REAL_REACQUIRE is not None:
@@ -2070,7 +2274,7 @@ _MATCH_JOURNAL_PATH = None
 
 restricted = getattr(cfg.Motion, "RestrictedArea", None)
 
-penalty_x_limit = float(getattr(restricted, "XLimit", AUSTRALIA.Real.FIELD_LONG / 2 - 30.0))
+penalty_x_limit = float(getattr(restricted, "XLimit", Settings.Field.Long / 2 - 30.0))
 
 clearance = float(getattr(restricted, "Clearance", 5.0))
 
@@ -2635,7 +2839,7 @@ def _rule_field_approach_clearance_cm(pose, field_vx, field_vy):
         clearances.append((SIM_WALL_CONTACT_Y_CM - 0.1 - abs(pose[1])) / y_progress)
     # 禁区的两个场地侧角是圆角，不能将其放大为矩形。只在这条速度射线真的
     # 会进入 Unity 的处罚区时才计算制动距离。
-    for distance_cm in range(0, int(2.0 * max(AUSTRALIA.Real.FIELD_LONG, AUSTRALIA.Real.FIELD_SHORT)) + 1):
+    for distance_cm in range(0, int(2.0 * max(Settings.Field.Long, Settings.Field.Short)) + 1):
         point = [pose[0] + field_vx / speed * distance_cm,
                  pose[1] + field_vy / speed * distance_cm]
         if UnitedPosition.ProjectSafePose([point[0], point[1], pose[2]]) is not None:
@@ -2866,7 +3070,7 @@ def _cooperative_plan(context):
         return None
     receiver_xy = [receiver["x_cm"], receiver["y_cm"]]
     pass_blockers = list(enemies)
-    goal = [ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+    goal = [ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
     x = ATTACK_DIR * clamp(progress + 35.0, 20.0, 65.0)
     candidates = []
     for y in (-55.0, -32.0, 32.0, 55.0):
@@ -3237,8 +3441,8 @@ def _sideline_capture_target(ball):
     if not _is_sideline_capture_ball(ball):
         return None
     x, y = float(ball[0]), float(ball[1])
-    max_center = AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
-    if abs(x) > AUSTRALIA.Real.FIELD_LONG / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5:
+    max_center = Settings.Field.Short / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
+    if abs(x) > Settings.Field.Long / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5:
         return None
     reach = SIM_CATCH_POINT_CM[0] + 1.0
     side = 1.0 if y >= 0.0 else -1.0
@@ -3250,8 +3454,8 @@ def _sideline_capture_pose_legal(pose, ball):
     if target is None or not _pose_valid(pose):
         return False
     return (
-        abs(float(pose[0])) <= AUSTRALIA.Real.FIELD_LONG / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
-        and abs(float(pose[1])) <= AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
+        abs(float(pose[0])) <= Settings.Field.Long / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
+        and abs(float(pose[1])) <= Settings.Field.Short / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
     )
 
 def _edge_capture_normal(ball, pose):
@@ -3383,7 +3587,7 @@ def _edge_capture_step(pose, approach, ball=None):
             progress_to_limit = max(0.0, side * (approach[0] - pose[0]) / distance)
             remaining_cm = limit - 0.5 - side * pose[0] - 4.0
         else:
-            limit = AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
+            limit = Settings.Field.Short / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - 0.5
             side = 1.0 if float(ball[1]) >= 0.0 else -1.0
             progress_to_limit = max(0.0, side * (approach[1] - pose[1]) / distance)
             remaining_cm = limit - side * pose[1] - 1.5
@@ -4377,7 +4581,7 @@ def safe_defence(look_at=None):
         guard_yaw = UnitedPosition.Pos2Angle(pose, look_at)
     guard_x = _guard_line_x()
 
-    max_y = min(AUSTRALIA.Real.FIELD_SHORT / 2.0 - 32.0, float(Settings.Vision.GoalWidth) / 2.0)
+    max_y = min(Settings.Field.Short / 2.0 - 32.0, float(Settings.Vision.GoalWidth) / 2.0)
 
     if not hasattr(safe_defence, "target_y"):
         # 两台无球巡逻不能从同一门线端出发，否则会在门前互相顶住。
@@ -4553,8 +4757,8 @@ def _rule_boundary_limits_cm():
     # crossed the white line.  Leave a tiny numeric margin at that exact legal
     # limit; this is not an enlarged out-area buffer.
     return (
-        AUSTRALIA.Real.FIELD_LONG / 2.0 + AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.SIM_RULE_EDGE_EPSILON_CM,
-        AUSTRALIA.Real.FIELD_SHORT / 2.0 + AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.SIM_RULE_EDGE_EPSILON_CM,
+        Settings.Field.Long / 2.0 + AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.SIM_RULE_EDGE_EPSILON_CM,
+        Settings.Field.Short / 2.0 + AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.SIM_RULE_EDGE_EPSILON_CM,
     )
 
 SIM_WALL_CONTACT_X_CM, SIM_WALL_CONTACT_Y_CM = _rule_boundary_limits_cm()
@@ -4632,11 +4836,11 @@ def _cooperation_target(x, y, yaw):
         return None
     params = UnitedPosition._restricted_area_params()
     x_limit = min(
-        AUSTRALIA.Real.FIELD_LONG / 2.0 - COOP_FIELD_MARGIN_CM,
+        Settings.Field.Long / 2.0 - COOP_FIELD_MARGIN_CM,
         float(params["x_limit"]) - float(params["boundary_margin"]) - 1.0,
     )
     y_limit = min(
-        AUSTRALIA.Real.FIELD_SHORT / 2.0 - COOP_FIELD_MARGIN_CM,
+        Settings.Field.Short / 2.0 - COOP_FIELD_MARGIN_CM,
         float(params["y_limit"]) - float(params["boundary_margin"]) - 1.0,
     )
     if abs(x) > x_limit or abs(y) > y_limit:
@@ -4968,7 +5172,7 @@ def _escape_wall_side(pose, enemy):
 
 def _drop_ball_slots():
     # 对齐 Unity GetDropBallSpotSlotsCm(): goalLine(109.5)-45, y=±50。
-    x = AUSTRALIA.Real.FIELD_LONG / 2.0 - AUSTRALIA.Tactics.SIM_GOAL_DEPTH_CM - AUSTRALIA.Tactics.DEADBALL_SLOT_INSET_CM
+    x = Settings.Field.Long / 2.0 - AUSTRALIA.Tactics.SIM_GOAL_DEPTH_CM - AUSTRALIA.Tactics.DEADBALL_SLOT_INSET_CM
     y = AUSTRALIA.Tactics.SIM_PENALTY_RAW_HALF_WIDTH_CM
     return ([0.0, 0.0], [x, y], [x, -y], [-x, y], [-x, -y])
 
@@ -5054,7 +5258,7 @@ def _prepared_drop_wall_step(pose, immediate_only=False):
 def _challenge_enemy(enemy, enemy_pose=None, stand_off_cm=AUSTRALIA.Tactics.RADICAL_STANDOFF_CM):
     pose = UnitedPosition.FieldRobotPose()
     if not _pose_valid(enemy_pose):
-        enemy_pose = [*enemy, UnitedPosition.Pos2Angle(enemy, [-ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0])]
+        enemy_pose = [*enemy, UnitedPosition.Pos2Angle(enemy, [-ATTACK_DIR * Settings.Field.Long / 2.0, 0.0])]
     theta = math.radians(enemy_pose[2])
     forward = (math.cos(theta), math.sin(theta))
     left = (-forward[1], forward[0])
@@ -5186,7 +5390,7 @@ def _predicted_intercept_y(ball, velocity, guard_x):
     arrival = (guard_x - ball[0]) / vx
     if not 0.0 <= arrival <= AUSTRALIA.Tactics.INTERCEPT_HORIZON_S:
         return None
-    half_width = (AUSTRALIA.Real.FIELD_SHORT - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM) / 2.0
+    half_width = (Settings.Field.Short - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM) / 2.0
     if half_width <= 0.0:
         return None
     y, remaining = clamp(ball[1], -half_width, half_width), arrival
@@ -5209,7 +5413,7 @@ def _incoming_goal_target(observation):
         return None
     if math.hypot(*velocity) <= AUSTRALIA.Tactics.INTERCEPT_CAPTURE_MAX_SPEED_CM_S:
         return None
-    goal_y = _predicted_intercept_y(ball, velocity, -ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0)
+    goal_y = _predicted_intercept_y(ball, velocity, -ATTACK_DIR * Settings.Field.Long / 2.0)
     if goal_y is None or abs(goal_y) > (float(Settings.Vision.GoalWidth) + AUSTRALIA.Real.REAL_BALL_DIAMETER_CM) / 2.0:
         return None
     guard_x = _guard_line_x()
@@ -5243,7 +5447,7 @@ def intercept_defence(observation=None):
         return safe_defence()
 
     guard_x = _guard_line_x()
-    goal = [-ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+    goal = [-ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
     goal_dx = goal[0] - source[0]
     fraction = clamp((guard_x - source[0]) / goal_dx, 0.0, 1.0) if abs(goal_dx) > 0.01 else 0.0
     target_y = source[1] * (1.0 - fraction)
@@ -5259,9 +5463,9 @@ def intercept_defence(observation=None):
             chase_ball(ball_field=ball)
             return True
 
-    max_y = (AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.MOTION_CLEARANCE_CM
+    max_y = (Settings.Field.Short / 2.0 - AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM - AUSTRALIA.Tactics.MOTION_CLEARANCE_CM
              if predicted_y is not None
-             else min(AUSTRALIA.Real.FIELD_SHORT / 2.0 - 32.0, float(Settings.Vision.GoalWidth) / 2.0))
+             else min(Settings.Field.Short / 2.0 - 32.0, float(Settings.Vision.GoalWidth) / 2.0))
     target = _safe_target(guard_x, clamp(target_y, -max_y, max_y), yaw)
     peripheral.Dribble(True)
     _position_step(target, speed_gain=1.0, arrival_cm=1.0)
@@ -5374,10 +5578,10 @@ def macau_defence(observation=None, hidden_ball=False):
     if math.dist(pose[:2], enemy) <= AUSTRALIA.Tactics.RADICAL_CONTACT_RUSH_CM:
         return _challenge_enemy(enemy, observation.get("enemy_pose"), AUSTRALIA.Tactics.DEADBALL_CONTACT_CM)
     progress = -ATTACK_DIR * enemy[0]
-    target_progress = clamp(progress + AUSTRALIA.Tactics.MACAU_DEFENCE_LEAD_CM, 24.0, AUSTRALIA.Real.FIELD_LONG / 2.0 - 34.0)
+    target_progress = clamp(progress + AUSTRALIA.Tactics.MACAU_DEFENCE_LEAD_CM, 24.0, Settings.Field.Long / 2.0 - 34.0)
     target_x = -ATTACK_DIR * target_progress
     target_y = math.copysign(
-        clamp(abs(enemy[1]), AUSTRALIA.Tactics.MACAU_DEFENCE_LANE_MIN_CM, AUSTRALIA.Real.FIELD_SHORT / 2.0 - 18.0),
+        clamp(abs(enemy[1]), AUSTRALIA.Tactics.MACAU_DEFENCE_LANE_MIN_CM, Settings.Field.Short / 2.0 - 18.0),
         enemy[1],
     )
     target = _safe_target(target_x, target_y, UnitedPosition.Pos2Angle([target_x, target_y], enemy))
@@ -5605,7 +5809,7 @@ def _blocks_teammate_carrier(pose, holder):
     ball = _held_ball_field_pos(holder_pose)
     if math.dist(pose[:2], ball) <= AUSTRALIA.Tactics.ALLY_CARRIER_CLEARANCE_CM:
         return True
-    goal = [ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+    goal = [ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
     dx, dy = goal[0] - ball[0], goal[1] - ball[1]
     length_sq = dx * dx + dy * dy
     if length_sq <= 0.01:
@@ -5656,7 +5860,7 @@ def _support_step(ball_state):
     _CHASE_ALIGNED = False
     yaw = 0.0 if ATTACK_DIR > 0 else 180.0
     target = _safe_target(
-        ATTACK_DIR * min(AUSTRALIA.Real.FIELD_LONG * 0.2, AUSTRALIA.Real.FIELD_LONG / 2.0 - 55.0),
+        ATTACK_DIR * min(Settings.Field.Long * 0.2, Settings.Field.Long / 2.0 - 55.0),
         AUSTRALIA.Tactics.SUPPORT_SIDE * AUSTRALIA.Tactics.SUPPORT_Y_CM,
         yaw,
     )
@@ -6090,7 +6294,7 @@ def _solo_defence_step(observation=None):
         if _enemy_shot_lane_target(observation) is not None:
             if _block_carrier_goal_line(observation):
                 return "solo_goal_line_block"
-        own_goal = [-ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+        own_goal = [-ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
         if math.dist(carrier, own_goal) <= AUSTRALIA.Tactics.SOLO_GOAL_THREAT_RADIUS_CM:
             if safe_defence(carrier):
                 return "solo_goal_patrol"
@@ -6134,7 +6338,7 @@ def _carrier_goal_line_block_target(observation, chaser_id=None, robots=None):
     ball = _carrier_ball_reference(observation)
     if ball is None:
         return None
-    own_goal = [-ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+    own_goal = [-ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
     dx, dy = own_goal[0] - ball[0], own_goal[1] - ball[1]
     goal_distance = math.hypot(dx, dy)
     if goal_distance <= AUSTRALIA.Tactics.SIM_BODY_RADIUS_CM:
@@ -6186,7 +6390,7 @@ def _enemy_shot_lane_target(observation):
     forward = [math.cos(theta), math.sin(theta)]
     ball = [enemy_pose[0] + SIM_CATCH_POINT_CM[0] * forward[0],
             enemy_pose[1] + SIM_CATCH_POINT_CM[0] * forward[1]]
-    own_goal = [-ATTACK_DIR * AUSTRALIA.Real.FIELD_LONG / 2.0, 0.0]
+    own_goal = [-ATTACK_DIR * Settings.Field.Long / 2.0, 0.0]
     to_goal = [own_goal[0] - ball[0], own_goal[1] - ball[1]]
     if forward[0] * to_goal[0] + forward[1] * to_goal[1] <= 0.0 or abs(forward[0]) < 0.05:
         return None
@@ -6452,9 +6656,9 @@ def _strategy_step(role):
 # Physical geometry and identity are observation/actuator contracts, not
 # tactical choices. Restore them after the generated SIM decision graph has
 # initialized its constants and state.
-SIM_GOAL_LINE_X_CM = AUSTRALIA.Real.FIELD_LONG / 2.0
-SIM_SIDE_WALL_BALL_CENTER_LIMIT_CM = AUSTRALIA.Real.FIELD_SHORT / 2.0 - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM / 2.0
-SIM_END_WALL_BALL_CENTER_LIMIT_CM = AUSTRALIA.Real.FIELD_LONG / 2.0 - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM / 2.0
+SIM_GOAL_LINE_X_CM = Settings.Field.Long / 2.0
+SIM_SIDE_WALL_BALL_CENTER_LIMIT_CM = Settings.Field.Short / 2.0 - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM / 2.0
+SIM_END_WALL_BALL_CENTER_LIMIT_CM = Settings.Field.Long / 2.0 - AUSTRALIA.Real.REAL_BALL_DIAMETER_CM / 2.0
 SIM_CATCH_POINT_CM = _catch_point()
 # Preserve the SIM tactical request value; _safe_robot_move applies the REAL
 # physical projection before a command reaches the chassis.
@@ -7394,8 +7598,8 @@ def _log_startup_summary(profile, camera_count, robot_id):
         mode,
         robot_id,
         _strategy_role(),
-        int(AUSTRALIA.Real.FIELD_LONG * 10.0),
-        int(AUSTRALIA.Real.FIELD_SHORT * 10.0),
+        int(Settings.Field.Long * 10.0),
+        int(Settings.Field.Short * 10.0),
         strategy_sha256,
         software_commit,
     )
@@ -7419,9 +7623,9 @@ def preflight():
     robot_ids = list(AUSTRALIA.Team.RobotIds)
     robot_roles = list(AUSTRALIA.Team.RobotRoles)
     if set(robot_ids) != {1, 2} or len(robot_ids) != len(robot_roles) or len(set(robot_ids)) != len(robot_ids):
-        raise ValueError("AustraliaStrategy.Team must define IDs 1 and 2 with one role each")
+        raise ValueError("AUSTRALIA.Team must define IDs 1 and 2 with one role each")
     if robot_id not in robot_ids:
-        raise ValueError("RoboInfo.number must match an AustraliaStrategy.Team.RobotIds entry")
+        raise ValueError("RoboInfo.number must match an AUSTRALIA.Team.RobotIds entry")
     hardware_profile = _real_hardware_profile(AUSTRALIA.Runtime.Platform)
     team_link = bool(AUSTRALIA.Runtime.TeamLinkEnabled)
     _configure_real_hardware_profile(hardware_profile)
