@@ -81,7 +81,7 @@ class IceLoongBits:
     - 提供线程监控和重启机制
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.05, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.003, testing = False):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -136,11 +136,11 @@ class IceLoongBits:
 
         # 命令循环节拍与降频轮询（2026-09-19 实机诊断后引入）：
         # - command_period_s: 比赛控制周期 60Hz；
-        # - 慢变量（盘球电流/电池电压）每 slow_poll_interval_s 随 GET 组查一次；
-        # - LINK_GET 当前无消费者，按 link_poll_interval_s 降频。
+        # - 慢变量（盘球电流/电池电压）每个命令周期随 GET 组查询；
+        # - LINK_GET 每个命令周期查询。
         self.command_period_s = 1.0 / 60.0
-        self.slow_poll_interval_s = 1.0
-        self.link_poll_interval_s = 0.5
+        self.slow_poll_interval_s = 0.0
+        self.link_poll_interval_s = 0.0
         self._last_slow_poll_t = 0.0
         self._last_link_poll_t = 0.0
         
@@ -323,8 +323,7 @@ class IceLoongBits:
             payload, include_pose = self._ParseLinkSend(snapshot["LINK_SEND"])
             self.ExecuteCommands([(Commands.LINK_SEND, payload, include_pose)])
 
-        # LINK_GET 目前没有策略层消费者；按 link_poll_interval_s 降频，
-        # 避免每周期一次 ~50ms 超时等待。有队友通信需求时再调低间隔。
+        # LINK_GET 每个命令周期查询；若对端无响应，单次查询仍可能受串口超时影响。
         if now - self._last_link_poll_t >= self.link_poll_interval_s:
             self._last_link_poll_t = now
             response = self.ExecuteCommands([(Commands.LINK_GET,)])
