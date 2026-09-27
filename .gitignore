@@ -278,3 +278,5 @@ docs/nonorthogonal_kinematics_simulation.*
 .runtime/
 logs/mlp/
 Records/
+# 盘球空转校准：每台机器不一样，是本地标定产物，不入库
+src/ReasonData/data/dribble_calib.json

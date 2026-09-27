@@ -28,9 +28,20 @@ import csv
 import glob
 import html
 import math
+import os
 import statistics as st
+import sys
 from datetime import datetime
 from pathlib import Path
+
+# --- 让工具放在 ~/Software/Tools/ 下也能直接跑：定位 src、加 path、切到 src ---
+_SRC = next((p / "src" for p in Path(__file__).resolve().parents
+             if (p / "src" / "LunaPre").is_dir()), None)
+if _SRC is None:
+    _SRC = Path(__file__).resolve().parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+os.chdir(_SRC)
 
 NEAR_CM = 9.0
 FAR_CM = 12.0
@@ -369,7 +380,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, default=Path("Records/analysis"))
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+    root = _SRC
     csvs = args.csvs or sorted(Path(root).glob(CSV_GLOB))
     if not csvs:
         print("没有找到 CSV")
@@ -377,7 +388,7 @@ def main(argv=None):
 
     out_dir = args.out
     if not out_dir.is_absolute():
-        out_dir = (root / out_dir) if "__file__" in globals() else out_dir
+        out_dir = root / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     infos = [analyze_file(p) for p in csvs]

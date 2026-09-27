@@ -9,8 +9,19 @@ from __future__ import annotations
 import csv
 import glob
 import math
+import os
+import sys
 from collections import Counter
 from pathlib import Path
+
+# --- 让工具放在 ~/Software/Tools/ 下也能直接跑：定位 src、加 path、切到 src ---
+_SRC = next((p / "src" for p in Path(__file__).resolve().parents
+             if (p / "src" / "LunaPre").is_dir()), None)
+if _SRC is None:
+    _SRC = Path(__file__).resolve().parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+os.chdir(_SRC)
 
 from LunaPre.positions import BALL_NOT_FOUND, Positions
 

@@ -54,11 +54,20 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# --- 让工具放在 ~/Software/Tools/ 下也能直接跑：定位 src、加 path、切到 src ---
+_SRC = next((p / "src" for p in Path(__file__).resolve().parents
+             if (p / "src" / "LunaPre").is_dir()), None)
+if _SRC is None:
+    _SRC = Path(__file__).resolve().parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+os.chdir(_SRC)
+
 # ==================== 配置区 ====================
 
 DEFAULT_DURATION_S = 30.0
 DEFAULT_RATE_HZ = 50.0
-DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "Records" / "ball_current"
+DEFAULT_OUT_DIR = _SRC / "Records" / "ball_current"
 
 # 与仓库一致的哨兵值
 BALL_NOT_FOUND = [0xFFF, 0xFFF]
@@ -132,7 +141,7 @@ def _pick_cjk_font():
 
 def _robot_number():
     """从 config.json 读取本机编号，用于图表标题。"""
-    path = Path(__file__).resolve().parent / "ReasonData" / "data" / "config.json"
+    path = _SRC / "ReasonData" / "data" / "config.json"
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
         return cfg.get("RoboInfo", {}).get("number", "?")

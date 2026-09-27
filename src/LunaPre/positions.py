@@ -87,6 +87,10 @@ DRIBBLE_BASELINE_ALPHA_FAR = 0.15    # far（确定空转）时基线跟随速�
 DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
 DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
 DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
+DRIBBLE_MARGIN_ADAPT_ALPHA = 0.02    # 在线把 margin 往“实测咬球增量”缓慢靠（越跑越准）
+DRIBBLE_MARGIN_ADAPT_RATIO = 0.5     # 目标 margin = RATIO * (球近均值 - 球远均值)
+DRIBBLE_SEP_MIN_NEAR = 60            # 至少这么多“近球”样本才开始在线调 margin
+DRIBBLE_SEP_EMA_ALPHA = 0.05         # 近/远电流均值的 EMA 系数
 DRIBBLE_BASELINE_MIN_SAMPLES = 30    # 至少采这么多帧才允许确认受载（跳过启动尖峰）
 DRIBBLE_HOLD_BRIDGE_S = 0.35         # 视觉丢球后，电流可继续判持球的最长时间
 BALL_STATUS_REQUIRE_LOAD = False     # True：窗口内但电流未受载就判 free（更保守）
@@ -343,6 +347,9 @@ class Positions:
         self._dribble_margin = DRIBBLE_LOAD_MARGIN_DEFAULT
         self._dribble_cmd: float | None = None
         self._dribble_cmd_since = 0.0
+        self._dribble_far_ema: float | None = None
+        self._dribble_near_ema: float | None = None
+        self._dribble_near_count = 0
         self._dribble_calib: list | None = None
         self._dribble_calib_loaded = False
         self._last_in_window_monotonic: float | None = None
@@ -1003,6 +1010,9 @@ class Positions:
         cmd_changed = cmd != self._dribble_cmd
         if cmd_changed:
             self._dribble_cmd_since = now
+            self._dribble_far_ema = None
+            self._dribble_near_ema = None
+            self._dribble_near_count = 0
         self._dribble_cmd = cmd
         blanking = (now - self._dribble_cmd_since) < DRIBBLE_STARTUP_BLANK_S
 
@@ -1019,13 +1029,14 @@ class Positions:
         if calib is not None:
             base0, margin = calib
             if cmd_changed or self._dribble_baseline is None:
-                # 换功率/首帧：直接取校准基线，瞬时生效（无需预热）
+                # 换功率/首帧：用校准值做先验，瞬时生效（无需预热）。
+                # margin 只在这里播种，之后交给下面的在线细化，避免每帧被重置。
                 self._dribble_baseline = base0
+                self._dribble_margin = margin
                 self._dribble_devs.clear()
             elif mode == "far":
-                # 缓慢漂移补偿（温度/电路漂移），margin 保持校准值不变
+                # 缓慢漂移补偿（温度/电路漂移）
                 self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
-            self._dribble_margin = margin
             self._dribble_baseline_samples = DRIBBLE_BASELINE_MIN_SAMPLES
         else:
             # 无校准：退回自适应（需要少量空转样本，较慢）
@@ -1039,6 +1050,28 @@ class Positions:
                 if len(self._dribble_devs) > DRIBBLE_NOISE_WINDOW:
                     del self._dribble_devs[:-DRIBBLE_NOISE_WINDOW]
             self._dribble_margin = self._current_margin()
+
+        # 在线细化（越跑越准）：用弱标签估计真实咬球增量——
+        # 球远(d>=12cm)=纯空转，球近/在窗口=已咬合；把 margin 从校准值缓慢
+        # 往 0.5*增量 靠。启动仍由校准值兜底，所以没有预热时间。
+        if mode == "far":
+            if self._dribble_far_ema is None:
+                self._dribble_far_ema = cur
+            else:
+                self._dribble_far_ema += DRIBBLE_SEP_EMA_ALPHA * (cur - self._dribble_far_ema)
+        elif mode in ("window", "near") and (cmd is None or cmd > 0.0):
+            if self._dribble_near_ema is None:
+                self._dribble_near_ema = cur
+            else:
+                self._dribble_near_ema += DRIBBLE_SEP_EMA_ALPHA * (cur - self._dribble_near_ema)
+            self._dribble_near_count += 1
+        if (self._dribble_far_ema is not None and self._dribble_near_ema is not None
+                and self._dribble_near_count >= DRIBBLE_SEP_MIN_NEAR):
+            sep = self._dribble_near_ema - self._dribble_far_ema
+            target = max(DRIBBLE_LOAD_MARGIN_FLOOR, DRIBBLE_MARGIN_ADAPT_RATIO * sep)
+            if self._dribble_baseline:
+                target = min(target, DRIBBLE_LOAD_MARGIN_CAP_FRAC * self._dribble_baseline)
+            self._dribble_margin += DRIBBLE_MARGIN_ADAPT_ALPHA * (target - self._dribble_margin)
 
         loaded_now = (cur - self._dribble_baseline) > self._dribble_margin
         if blanking:
@@ -1084,6 +1117,7 @@ class Positions:
             "cmd": self._dribble_cmd,
             "calibrated": bool(self._load_dribble_calib()),
             "noise_samples": len(self._dribble_devs),
+            "near_count": self._dribble_near_count,
         }
 
     def _classify_ball_status(self, ball_pos, raw=None, current=None, now=None,

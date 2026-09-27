@@ -21,10 +21,21 @@ import csv
 import glob
 import json
 import math
+import os
 import statistics as st
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+# --- 让工具放在 ~/Software/Tools/ 下也能直接跑：定位 src、加 path、切到 src ---
+_SRC = next((p / "src" for p in Path(__file__).resolve().parents
+             if (p / "src" / "LunaPre").is_dir()), None)
+if _SRC is None:
+    _SRC = Path(__file__).resolve().parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+os.chdir(_SRC)
 
 CALIB_REL = "ReasonData/data/dribble_calib.json"
 FREESPIN_MIN_CM = 12.0
@@ -127,7 +138,7 @@ def main():
     parser.add_argument("--out", default=None, help="校准文件路径（默认 src/ReasonData/data/）")
     args = parser.parse_args()
 
-    src_root = Path(__file__).resolve().parent
+    src_root = _SRC
     out_path = Path(args.out) if args.out else (src_root / CALIB_REL)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
