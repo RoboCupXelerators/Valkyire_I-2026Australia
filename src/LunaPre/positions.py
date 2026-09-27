@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import errno
+import json
 import pickle
 import socket
 import subprocess
@@ -68,17 +69,26 @@ ROBOT_BALL_MAX_ABS_Y_CM = 220.0
 #   - 球在窗口 + 电流受载  => 确定持球
 #   - 视觉丢球 + 电流仍受载且刚在窗口出现过 => 仍判持球（跨过遮挡）
 #   - 球在窗口 + 电流没受载 => 球到了但还没咬住（接近/刚捕获）
-# 绝对阈值不可靠：空转基线随下发功率漂移，所以用自适应基线。
-DRIBBLE_LOAD_MARGIN = 0.075        # A：平滑电流高于基线多少算滚轮受载
-DRIBBLE_SMOOTH_ALPHA = 0.35       # 电流平滑（抑制空转抖动/尖峰）
-DRIBBLE_BASELINE_ALPHA_UP = 0.02  # 基线向上慢慢跟（有球在窗口时的正常上抬）
-DRIBBLE_BASELINE_ALPHA_DOWN = 0.25  # 基线向下快速跟（功率调低/停机时及时回落）
-DRIBBLE_BASELINE_RESYNC_ALPHA = 0.25  # 长时间无球却持续偏高 => 换了功率，快速重定基线
-DRIBBLE_LOAD_ENGAGE_S = 0.08      # 受载持续多久才确认
-DRIBBLE_LOAD_RELEASE_S = 0.20     # 失载持续多久才撤销
-DRIBBLE_BASELINE_MIN_SAMPLES = 30  # 至少采这么多帧才允许确认受载（跳过启动尖峰）
-DRIBBLE_HOLD_BRIDGE_S = 0.35      # 视觉丢球后，电流可继续判持球的最长时间
-BALL_STATUS_REQUIRE_LOAD = False  # True：窗口内但电流未受载就判 free（更保守）
+# 空转电流是下发功率的函数（实测 0.2->0.33A, 0.3->0.48A, 0.8->1.1A），咬球增量
+# 也随之放大（0.2->0.015A, 0.3->0.08A, 0.8->0.47A）。所以：
+#   1) 优先用“一次性校准 + 按功率查表”的固定参数（瞬时生效、无需每次开机校准）；
+#   2) 校准文件缺失时，退回按空转噪声自适应估计（需要少量空转样本，较慢）。
+# 校准由 calibrate_dribble.py 生成，存 ReasonData/data/dribble_calib.json。
+DRIBBLE_CALIB_REL = "ReasonData/data/dribble_calib.json"
+DRIBBLE_LOAD_MARGIN_DEFAULT = 0.04   # A：无校准且无功率信息时的兜底 margin
+DRIBBLE_LOAD_MARGIN_K = 2.5          # 自适应时 margin = K * 空转电流稳健标准差
+DRIBBLE_LOAD_MARGIN_FLOOR = 0.010    # A：最小 margin（σ 很小时兜底）
+DRIBBLE_LOAD_MARGIN_CAP_FRAC = 0.9   # margin 不超过空转基线的这个比例
+DRIBBLE_NOISE_WINDOW = 120           # 空转噪声滑动窗帧数
+DRIBBLE_NOISE_MIN_SAMPLES = 30       # 至少这么多空转样本才启用自适应 margin
+DRIBBLE_FREESPIN_MIN_CM = 12.0       # 球距离 >= 此值才算“确定空转”，用于估基线/噪声
+DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰）
+DRIBBLE_BASELINE_ALPHA_FAR = 0.15    # far（确定空转）时基线跟随速度
+DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
+DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
+DRIBBLE_BASELINE_MIN_SAMPLES = 30    # 至少采这么多帧才允许确认受载（跳过启动尖峰）
+DRIBBLE_HOLD_BRIDGE_S = 0.35         # 视觉丢球后，电流可继续判持球的最长时间
+BALL_STATUS_REQUIRE_LOAD = False     # True：窗口内但电流未受载就判 free（更保守）
 SHOOT_WINDOW_DEFAULT_CAMERA_FOV_DEG = 95.0
 SHOOT_WINDOW_GOAL_KEYS = ("blue_goal", "yellow_goal")
 SHOOT_WINDOW_CAMERA_BASE_BEARING_DEG = {
@@ -328,6 +338,11 @@ class Positions:
         self._dribble_unloaded_since: float | None = None
         self._dribble_last_current: float | None = None
         self._dribble_smooth: float | None = None
+        self._dribble_devs: list[float] = []
+        self._dribble_margin = DRIBBLE_LOAD_MARGIN_DEFAULT
+        self._dribble_cmd: float | None = None
+        self._dribble_calib: list | None = None
+        self._dribble_calib_loaded = False
         self._last_in_window_monotonic: float | None = None
 
     def _build_pos2pos_pid(self):
@@ -836,7 +851,8 @@ class Positions:
         except Exception:
             return None
 
-    def BallStatus(self, ball_pos: list | None = None, current=None, now=None) -> str:
+    def BallStatus(self, ball_pos: list | None = None, current=None, now=None,
+                   dribble_cmd=None) -> str:
         """Return the semantic ball state: ``lost``, ``free``, or ``held``.
 
         Coordinates and possession are intentionally separate:
@@ -860,7 +876,8 @@ class Positions:
             raw = getattr(self, "ballPos", ball_pos)
         else:
             raw = getattr(self, "ballPos", ball_pos)
-        return self._classify_ball_status(ball_pos, raw, current=current, now=now)
+        return self._classify_ball_status(ball_pos, raw, current=current, now=now,
+                                          dribble_cmd=dribble_cmd)
 
     def _read_dribble_current(self):
         """读取当前盘球电流(A)；无 Bits / 读不到时返回 None。"""
@@ -880,12 +897,88 @@ class Positions:
             return None
         return cur if math.isfinite(cur) else None
 
-    def _update_dribble_load(self, in_window: bool, current=None, now=None) -> bool:
-        """更新自适应基线并返回“滚轮是否受载”（带迟滞）。
+    def _load_dribble_calib(self):
+        """懒加载一次性校准表 ``[(cmd, baseline, margin), ...]``（按功率升序）。"""
 
-        基线只在球不在窗口（空转）时更新；向下快、向上慢，避免把受载电流当成
-        新基线，也能跟上功率调低 / 停机后的回落。``current`` / ``now`` 可显式
-        传入，便于用录制数据离线回放测试。
+        if self._dribble_calib_loaded:
+            return self._dribble_calib
+        self._dribble_calib_loaded = True
+        self._dribble_calib = []
+        try:
+            src_root = Path(__file__).resolve().parents[1]
+            path = src_root / DRIBBLE_CALIB_REL
+            data = json.loads(path.read_text(encoding="utf-8"))
+            pts = [
+                (float(p["cmd"]), float(p["baseline"]), float(p["margin"]))
+                for p in data.get("points", [])
+                if p.get("baseline") is not None and p.get("cmd") is not None
+            ]
+            self._dribble_calib = sorted(pts)
+            if self._dribble_calib:
+                logger.info(f"Dribble calibration loaded: {path.name} "
+                            f"{len(self._dribble_calib)} points")
+        except FileNotFoundError:
+            logger.info("No dribble calibration file; using adaptive fallback")
+        except Exception as error:
+            logger.warning(f"Dribble calibration load failed: {error}")
+        return self._dribble_calib
+
+    def _calib_for(self, cmd):
+        """按功率查校准表，线性插值返回 ``(baseline, margin)``；无校准则 None。"""
+
+        pts = self._load_dribble_calib()
+        if not pts or cmd is None:
+            return None
+        if cmd <= pts[0][0]:
+            return pts[0][1], pts[0][2]
+        if cmd >= pts[-1][0]:
+            return pts[-1][1], pts[-1][2]
+        for (c0, b0, m0), (c1, b1, m1) in zip(pts, pts[1:]):
+            if c0 <= cmd <= c1:
+                t = (cmd - c0) / (c1 - c0) if c1 > c0 else 0.0
+                return b0 + t * (b1 - b0), m0 + t * (m1 - m0)
+        return pts[-1][1], pts[-1][2]
+
+    @staticmethod
+    def _normalize_cmd(cmd):
+        if cmd is True:
+            return 0.5
+        if cmd is None:
+            return None
+        if cmd is False:
+            return 0.0
+        try:
+            return float(cmd)
+        except (TypeError, ValueError):
+            return None
+
+    def _commanded_power(self):
+        """从盘球出口读当前下发功率（``Peripherals.DribbleStatus``）。"""
+
+        per = getattr(runtime, "peripheral", None)
+        status = getattr(per, "DribbleStatus", None) if per is not None else None
+        return self._normalize_cmd(status)
+
+    def _current_margin(self) -> float:
+        """自适应兜底：按空转电流噪声稳健估计 margin(A)。"""
+
+        margin = DRIBBLE_LOAD_MARGIN_FLOOR
+        devs = self._dribble_devs
+        if len(devs) >= DRIBBLE_NOISE_MIN_SAMPLES:
+            ordered = sorted(devs)
+            median = ordered[len(ordered) // 2]
+            mad = sorted(abs(d - median) for d in devs)[len(devs) // 2]
+            margin = max(margin, DRIBBLE_LOAD_MARGIN_K * 1.4826 * mad)
+        if self._dribble_baseline is not None:
+            margin = min(margin, DRIBBLE_LOAD_MARGIN_CAP_FRAC * self._dribble_baseline)
+        return margin
+
+    def _update_dribble_load(self, mode: str, current=None, now=None, dribble_cmd=None) -> bool:
+        """返回“滚轮是否受载”（带迟滞）。
+
+        优先用“校准表 + 当前下发功率”的固定参数，瞬时生效、无需预热；没有校准
+        文件时退回按空转噪声自适应。``mode``：``window``/``near``/``far``/``lost``。
+        ``current`` / ``now`` / ``dribble_cmd`` 可显式传入，便于离线回放测试。
         """
 
         raw = current if current is not None else self._read_dribble_current()
@@ -901,29 +994,49 @@ class Positions:
             self._dribble_smooth += DRIBBLE_SMOOTH_ALPHA * (raw - self._dribble_smooth)
         cur = self._dribble_smooth
 
-        if in_window:
+        if mode == "window":
             self._last_in_window_monotonic = now
-        recently = (
-            self._last_in_window_monotonic is not None
-            and now - self._last_in_window_monotonic <= DRIBBLE_HOLD_BRIDGE_S
-        )
 
-        if self._dribble_baseline is None:
+        cmd = self._normalize_cmd(dribble_cmd) if dribble_cmd is not None else self._commanded_power()
+
+        # 盘球明确关闭：绝不受载
+        if cmd is not None and cmd <= 0.0:
             self._dribble_baseline = cur
-            self._dribble_baseline_samples = 1
-        elif not in_window:
-            over = cur - self._dribble_baseline
-            if over > DRIBBLE_LOAD_MARGIN and not recently:
-                # 长时间没球却持续偏高 => 多半是换了盘球功率，基线过期了。
-                # 快速把基线抬到新工况，不把它误判成受载。
-                self._dribble_baseline += DRIBBLE_BASELINE_RESYNC_ALPHA * over
-            elif over < 0:
-                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_DOWN * over
-            else:
-                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_UP * over
-            self._dribble_baseline_samples += 1
+            self._dribble_margin = 0.0
+            self._dribble_cmd = cmd
+            self._dribble_loaded = False
+            self._dribble_loaded_since = None
+            self._dribble_unloaded_since = None
+            return False
 
-        loaded_now = (cur - self._dribble_baseline) > DRIBBLE_LOAD_MARGIN
+        calib = self._calib_for(cmd)
+        if calib is not None:
+            base0, margin = calib
+            if self._dribble_cmd != cmd or self._dribble_baseline is None:
+                # 换功率/首帧：直接取校准基线，瞬时生效（无需预热）
+                self._dribble_baseline = base0
+                self._dribble_cmd = cmd
+                self._dribble_devs.clear()
+            elif mode == "far":
+                # 缓慢漂移补偿（温度/电路漂移），margin 保持校准值不变
+                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
+            self._dribble_margin = margin
+            self._dribble_baseline_samples = DRIBBLE_BASELINE_MIN_SAMPLES
+        else:
+            # 无校准：退回自适应（需要少量空转样本，较慢）
+            self._dribble_cmd = cmd
+            if self._dribble_baseline is None:
+                self._dribble_baseline = cur
+                self._dribble_baseline_samples = 0
+            elif mode == "far":
+                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
+                self._dribble_baseline_samples += 1
+                self._dribble_devs.append(cur - self._dribble_baseline)
+                if len(self._dribble_devs) > DRIBBLE_NOISE_WINDOW:
+                    del self._dribble_devs[:-DRIBBLE_NOISE_WINDOW]
+            self._dribble_margin = self._current_margin()
+
+        loaded_now = (cur - self._dribble_baseline) > self._dribble_margin
         if loaded_now:
             self._dribble_unloaded_since = None
             if self._dribble_loaded_since is None:
@@ -960,24 +1073,40 @@ class Positions:
             "baseline": self._dribble_baseline,
             "loaded": self._dribble_loaded,
             "margin": margin,
+            "threshold": self._dribble_margin,
+            "cmd": self._dribble_cmd,
+            "calibrated": bool(self._load_dribble_calib()),
+            "noise_samples": len(self._dribble_devs),
         }
 
-    def _classify_ball_status(self, ball_pos, raw=None, current=None, now=None) -> str:
+    def _classify_ball_status(self, ball_pos, raw=None, current=None, now=None,
+                              dribble_cmd=None) -> str:
         """用“球坐标 + 盘球电流”判断持球状态。
 
-        ``current`` / ``now`` 只在离线回放测试时显式传入；正常运行不传。
+        ``current`` / ``now`` / ``dribble_cmd`` 只在离线回放测试时显式传入；
+        正常运行不传（功率从 ``Peripherals.DribbleStatus`` 读）。
         """
 
         authoritative = self._authoritative_ball_possession()
         if authoritative is True:
-            self._update_dribble_load(True, current, now)
+            self._update_dribble_load("window", current, now, dribble_cmd)
             return "held"
         if ball_pos == BALL_HELD or raw == BALL_HELD:
-            self._update_dribble_load(True, current, now)
+            self._update_dribble_load("window", current, now, dribble_cmd)
             return "held"
 
         in_window = ball_pos != BALL_NOT_FOUND and self._within_catch_window(ball_pos)
-        loaded = self._update_dribble_load(in_window, current, now)
+        if ball_pos == BALL_NOT_FOUND:
+            mode = "lost"
+        elif in_window:
+            mode = "window"
+        else:
+            try:
+                dist = math.hypot(float(ball_pos[0]), float(ball_pos[1]))
+            except (TypeError, ValueError, IndexError):
+                dist = 0.0
+            mode = "far" if dist >= DRIBBLE_FREESPIN_MIN_CM else "near"
+        loaded = self._update_dribble_load(mode, current, now, dribble_cmd)
         now = time.monotonic() if now is None else now
         if in_window:
             self._last_in_window_monotonic = now

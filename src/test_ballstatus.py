@@ -29,7 +29,7 @@ from collections import deque
 
 from LunaPre import UnitedPosition, Bits
 
-HEADER = ("t_rel   ball(x,y)            status   cur    smooth  base    margin  loaded")
+HEADER = ("t_rel   ball(x,y)            status   cur    smooth  base    margin  thr    loaded")
 LINE_W = max(len(HEADER), 72)
 
 
@@ -56,7 +56,8 @@ def format_row(t, ball, status, info, cur_fallback):
     return (f"{t:5.2f}  {ball_s}  {status:6s}  "
             f"{fmt_current(cur):>6s}  {fmt_current(info.get('smoothed')):>6s}  "
             f"{fmt_current(info['baseline']):>6s}  "
-            f"{fmt_current(info['margin']):>6s}  {info['loaded']}")
+            f"{fmt_current(info['margin']):>6s}  {fmt_current(info.get('threshold')):>6s}  "
+            f"{info['loaded']}")
 
 
 def main():
