@@ -83,7 +83,7 @@ def _physical_escape_side() -> float:
 
 def _ball_state(ball) -> str:
     try:
-        state = UnitedPosition.BallState(ball)
+        state = UnitedPosition.BallStatus(ball)
         if state in {"lost", "held", "free"}:
             return state
     except Exception:

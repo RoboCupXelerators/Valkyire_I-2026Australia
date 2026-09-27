@@ -67,6 +67,7 @@ class MlpV2ContractTests(unittest.TestCase):
         position = SimpleNamespace(
             FieldRobotPose=lambda: [0.0, 0.0, 0.0],
             RobotBallPos=lambda: [-1, -1],
+            BallStatus=lambda ball=None: "lost",
             RobotChassisPos=lambda: [],
             DirectDistance=lambda: [100.0] * 4,
             RobotVelocity=lambda: [0.0, 0.0, 0.0, True],

@@ -21,7 +21,6 @@ from utils.XeleratorSimBits import SimStatus, XeleratorSimBits  # noqa: E402
 from vision_utils.XeleratorVision import XeleratorVision  # noqa: E402
 from LunaPre.positions import Positions, cfg as positions_cfg  # noqa: E402
 from LunaPre import runtime  # noqa: E402
-from LunaPre.strategy_tools import BALL_HELD  # noqa: E402
 
 
 def _catch_val():
@@ -157,7 +156,8 @@ def _robot_ball_pos_for_observation(observation):
     vision = runtime.vision
     try:
         runtime.vision = None
-        return Positions.RobotBallPos(position), Positions.BallState(position)
+        ball = Positions.RobotBallPos(position)
+        return ball, Positions.BallStatus(position, ball)
     finally:
         runtime.vision = vision
 
@@ -173,12 +173,12 @@ def test_sim_possession_reaches_lunapre_as_held(ball, dribble, has_ball):
     assert bits.HasBall() is True
     observation = bits.GetBallPos()
     assert observation == _catch_val()
-    assert _robot_ball_pos_for_observation(observation) == (BALL_HELD, "held")
+    assert _robot_ball_pos_for_observation(observation) == (_catch_val(), "held")
 
 
 @pytest.mark.parametrize("observation,has_ball,expected,state", [
     ([9.5, 0.0], False, [9.5, 0.0], "free"),
-    ([12.0, 1.0], True, BALL_HELD, "held"),
+    ([12.0, 1.0], True, [12.0, 1.0], "held"),
 ])
 def test_sim_provider_possession_controls_lunapre_ball_state(
     monkeypatch, observation, has_ball, expected, state,

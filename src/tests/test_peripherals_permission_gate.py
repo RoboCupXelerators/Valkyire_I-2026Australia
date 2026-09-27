@@ -9,6 +9,7 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from LunaPre.motion.chassis import Car, Peripherals  # noqa: E402
+from LunaPre.strategy_tools import register_permission_pid  # noqa: E402
 
 
 def _make_peripheral(io_log):
@@ -57,6 +58,37 @@ def test_permission_loss_edge_fires_once():
     car.CanMove()
     car.CanMove()  # still denied: no repeated force-off spam
     assert io_log == [(4, 0.0), (3, 1)]
+
+
+def test_permission_loss_resets_registered_pids():
+    # A controller that is simply never called while the gate is closed must
+    # still drop its integral on the referee off edge, not on re-enable.
+    class FakePID:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self):
+            self.resets += 1
+
+    io_log = []
+    p = _make_peripheral(io_log)
+    car = Car(permission=lambda: True)
+    car.attach_peripherals(p)
+    pid = FakePID()
+    register_permission_pid(pid)
+
+    assert car.CanMove() is True
+    assert pid.resets == 0
+
+    car.Permission = lambda: False
+    assert car.CanMove() is False
+    assert pid.resets >= 1
+
+    # Still denied: no repeated reset spam.
+    resets_after_edge = pid.resets
+    car.CanMove()
+    assert pid.resets == resets_after_edge
+    p.stop_watchdog()
 
 
 def test_dribble_denied_updates_status_cache():

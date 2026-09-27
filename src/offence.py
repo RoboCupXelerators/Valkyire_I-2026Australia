@@ -88,9 +88,9 @@ def _clear_shot_release() -> None:
     _shot_release_until = 0.0
 
 
-def _observe_ball_state(ball) -> None:
+def _observe_ball_state(ball_state) -> None:
     global _held_since
-    if ball == BALL_HELD:
+    if ball_state == "held":
         if _held_since is None:
             _held_since = time.monotonic()
     else:
@@ -533,7 +533,7 @@ def _controlled_ball_step(pose) -> str:
     if progress < 0.0:
         return _carry_own_half(goal_angle, pose)
 
-    if progress >= 24.0 and abs_y >= 34.0 and UnitedPosition.RobotBallPos() == BALL_HELD:
+    if progress >= 24.0 and abs_y >= 34.0 and UnitedPosition.BallStatus() == "held":
         shot = bool(Slipsideshot(attack_dir=ATTACK_DIR))
         action = "sideline_shot" if shot else "sideline_drive"
         _set_decision(action=action, progress=round(float(progress), 3), y=round(float(y), 3))
@@ -609,9 +609,11 @@ def OffenceStep():
     global state
 
     ball = UnitedPosition.RobotBallPos()
-    if ball != BALL_HELD and ball != BALL_NOT_FOUND and not _valid_free_ball(ball):
+    ball_state = UnitedPosition.BallStatus(ball)
+    if ball_state == "free" and not _valid_free_ball(ball):
         ball = BALL_NOT_FOUND
-    _observe_ball_state(ball)
+        ball_state = "lost"
+    _observe_ball_state(ball_state)
     search_home = _search_home()
 
     if _shot_release_active():
@@ -621,14 +623,14 @@ def OffenceStep():
     # This branch is deliberately before ordinary search/chase.  Once the
     # ball disappears, a nearby opponent at the last ball point is the best
     # available indication that the opponent has possession and may shoot.
-    if ball != BALL_HELD:
+    if ball_state != "held":
         ball_observation = _opponent_ball_observation(ball)
         if ball_observation["state"] == "opponent_held":
             state = _block_opponent_shot(ball_observation)
             _attach_ball_observation(ball_observation)
             return state
 
-    if ball == BALL_NOT_FOUND or (ball != BALL_HELD and not _valid_free_ball(ball)):
+    if ball_state == "lost":
         recent_ball = _recent_free_ball()
         if recent_ball is not None:
             state = _direct_chase_ball(recent_ball, stale=True)
@@ -646,7 +648,7 @@ def OffenceStep():
         state = "search_ball"
         return state
 
-    if ball != BALL_HELD:
+    if ball_state != "held":
         state = _lock_or_chase_free_ball(ball)
         _attach_ball_observation(ball_observation)
         return state

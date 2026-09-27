@@ -294,7 +294,6 @@ def _build_iceloong_backend(*, auto_start_lidar: bool) -> dict:
         "peripheral": Peripherals(
             bits.VirtualPorts,
             lambda: _motion_permission(bits),
-            GetDribbleCurrentFunc=getattr(bits, "GetDribbleCurrent", None),
             KickFunc=getattr(bits, "Kick", None),
         ),
         "key": None,

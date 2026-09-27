@@ -6,7 +6,7 @@ from ReasonData import logger
 import time, threading
 
 from .motion_backend import MotionBackend
-from .dribble_adaptive import DribbleAdaptiveController
+from ..strategy_tools import register_permission_pid, reset_permission_pids
 
 
 class Car:
@@ -38,6 +38,7 @@ class Car:
         import simple_pid
         max_wz = self._max_physical_wz_degps()
         self.Yaw_PID = simple_pid.PID(2.3, 0.08, 0.05, setpoint=0,output_limits=(-max_wz, max_wz),auto_mode=True)
+        register_permission_pid(self.Yaw_PID)
         # Always use the unified project logger (ReasonData.logger)
         # to avoid AttributeError when FullLog=False.
         self.logger = logger
@@ -111,6 +112,11 @@ class Car:
         dribbler would keep spinning after the referee module shuts down,
         because strategy code stops calling Dribble() once motion is denied.
         """
+        # Drop controller integral action across the whole process. Entry-point
+        # gates already reset on a denied call, but a controller that is simply
+        # never called while the gate is closed would otherwise fire its stale
+        # integral the moment motion is allowed again.
+        reset_permission_pids()
         peripherals = self.peripherals
         if peripherals is not None:
             force_off = getattr(peripherals, "force_off", None)
@@ -416,15 +422,12 @@ class Car:
 
 
 class Peripherals:
-    def __init__(
-        self, IOFunc, permission=None, GetDribbleCurrentFunc=None, KickFunc=None
-    ):
+    def __init__(self, IOFunc, permission=None, KickFunc=None):
         if permission is None:
             self.Permission = lambda: True
         else:
             self.Permission = permission
         self.SetIO = IOFunc
-        self.GetDribbleCurrentFunc = GetDribbleCurrentFunc
         # Modern lower boards expose a direct, level-aware KICK command.
         # Keep the virtual-port callback for legacy boards and compatibility.
         self.KickFunc = KickFunc
@@ -434,12 +437,6 @@ class Peripherals:
         self.logger = logger
         self.SetIO(self.cfg.Ports.ElecMagnet,1)
         self.DribbleStatus = False
-        self._dribble_adaptive = DribbleAdaptiveController(
-            # Current-and-vision adaptation is source-owned and activates only
-            # on the IceLoong backend.  SIM/legacy callbacks have no current
-            # getter, so their established raw Dribble behavior is unchanged.
-            enabled=callable(GetDribbleCurrentFunc),
-        )
         # Watchdog: the lower board latches the last IO command, so the
         # dribbler keeps spinning after the referee gate closes unless
         # somebody pushes a dribble-off. Strategy loops only notice via
@@ -530,52 +527,8 @@ class Peripherals:
         except Exception as error:
             self.logger.warning(f"Electromagnet reset failed: {error}")
         self.DribbleStatus = False
-        adaptive = getattr(self, "_dribble_adaptive", None)
-        if adaptive is not None:
-            adaptive.reset()
-
-    def DribbleAdaptive(self, Status, vision_state=None, lateral_error_cm=None):
-        """Command the dribbler through the guarded current-and-vision policy.
-
-        This retains :meth:`Dribble` as the raw compatibility API.  Strategies
-        that know the camera ball state (currently ``LockBallSlip``) opt into
-        this method; simulator and older lower boards simply retain ``Status``.
-        """
-        controller = getattr(self, "_dribble_adaptive", None)
-        if controller is None:
-            self.Dribble(Status)
-            return None
-
-        current = None
-        getter = getattr(self, "GetDribbleCurrentFunc", None)
-        if callable(getter):
-            try:
-                current = getter()
-            except Exception as error:
-                self.logger.debug(f"Dribble current read failed: {error}")
-
-        decision = controller.decide(
-            Status,
-            vision_state=vision_state,
-            current_a=current,
-            lateral_error_cm=lateral_error_cm,
-        )
-        self.Dribble(decision.power)
-        return decision
-
-    def GetDribbleAdaptiveTelemetry(self):
-        """Return the last pure-policy decision for dashboard/debug consumers."""
-        controller = getattr(self, "_dribble_adaptive", None)
-        return None if controller is None else controller.last_decision
 
     def Dribble(self,Status):
-        # A direct raw off command is also a state boundary for the adaptive
-        # policy.  Without this reset, the next capture could inherit an old
-        # relief/hold decision after a strategy intentionally released a ball.
-        if not Status:
-            adaptive = getattr(self, "_dribble_adaptive", None)
-            if adaptive is not None:
-                adaptive.reset()
         if self.Permission():
             if not self.DribbleStatus == Status:
                 if Status == True:
@@ -593,9 +546,6 @@ class Peripherals:
             # next Dribble() call after permission returns re-sends the value
             # instead of hitting a stale cache entry.
             self.DribbleStatus = False
-            adaptive = getattr(self, "_dribble_adaptive", None)
-            if adaptive is not None:
-                adaptive.reset()
             self.logger.warning("Permission Denied: Unable to set dribble status.")
 
 class Key:

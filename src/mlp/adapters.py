@@ -18,13 +18,13 @@ def deployable_referee_state(snapshot) -> tuple[int, bool]:
 
 def observation_from_lunapre(role: int = int(RoleId.ATTACKER)) -> PolicyObservation:
     from LunaPre import UnitedPosition, ensure_runtime
-    from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND
 
     ensure_runtime()
     pose = UnitedPosition.FieldRobotPose()
     ball = UnitedPosition.RobotBallPos()
-    has_ball = ball == BALL_HELD
-    ball_visible = ball != BALL_NOT_FOUND and not has_ball and isinstance(ball, (list, tuple)) and len(ball) >= 2
+    ball_status = UnitedPosition.BallStatus(ball)
+    has_ball = ball_status == "held"
+    ball_visible = ball_status == "free" and isinstance(ball, (list, tuple)) and len(ball) >= 2
     enemies = []
     try:
         raw_enemies = UnitedPosition.RobotChassisPos() or []

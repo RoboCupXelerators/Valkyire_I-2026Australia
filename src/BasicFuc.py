@@ -11,7 +11,13 @@ from __future__ import annotations
 
 from LunaPre import Settings, UnitedPosition, chassis, compass, logger, peripheral
 from LunaPre import runtime
-from LunaPre.strategy_tools import BALL_HELD, BALL_NOT_FOUND, angle_error_deg, clamp
+from LunaPre.strategy_tools import (
+    BALL_HELD,
+    BALL_NOT_FOUND,
+    angle_error_deg,
+    clamp,
+    register_permission_pid,
+)
 import math
 import simple_pid
 import time
@@ -20,14 +26,10 @@ import time
 # than relying on a wildcard import to leak the name into this module.
 cfg = Settings
 
-# LockBallSlip dribble profile, calibrated on robot1 on 2026-09-20.  The
-# roller remains at the historical low command while the ball is far away.  At
-# the near-capture envelope it starts softly and the adaptive controller raises
-# output in 0.10 steps every 1.10 s.  That period is slightly longer than the
-# IceLoong current telemetry poll, so each raise can inspect the prior level.
+# LockBallSlip dribble profile.  Chasing and possession use one fixed roller
+# power; a lost ball falls back to a weaker command.
 LOCKBALL_DRIBBLE_FAR_POWER = 0.30
 LOCKBALL_DRIBBLE_LOST_POWER = 0.20
-LOCKBALL_DRIBBLE_NEAR_RADIUS_CM = 12.0
 
 # LockBallSlip source-owned pursuit tuning.  CatchVal remains robot-specific
 # runtime geometry, but PID/velocity changes must be explicit source changes.
@@ -164,6 +166,9 @@ class LockSeries:
             output_limits=(-self.angular_max, self.angular_max),
             auto_mode=True,
         )
+        register_permission_pid(self.pan_x)
+        register_permission_pid(self.pan_y)
+        register_permission_pid(self.pan_w)
 
     def _reset_lockball_pid(self):
         self.pan_x.reset()
@@ -201,11 +206,13 @@ class LockSeries:
         """返回当前球坐标；如果刚丢球很短时间，就临时沿用上一帧坐标。
 
         视觉偶尔会闪一下 [0xfff, 0xfff]，直接停车会让追球动作抖动。
-        所以这里保留一个很短的缓存窗口。真正持球 [0xddd, 0xddd] 时清掉缓存。
+        所以这里保留一个很短的缓存窗口。持球状态由 ``BallStatus()`` 判定，
+        真正持球时清掉缓存。
         """
         ball = UnitedPosition.RobotBallPos()
+        ball_status = UnitedPosition.BallStatus(ball)
         now = time.time()
-        if ball == BALL_NOT_FOUND:
+        if ball_status == "lost":
             self._clear_ball_jump_candidate()
             if (
                 self._lockball_last_seen is not None
@@ -213,7 +220,7 @@ class LockSeries:
             ):
                 return self._lockball_last_seen, False
             return ball, False
-        if ball == BALL_HELD:
+        if ball_status == "held":
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             self._clear_ball_jump_candidate()
@@ -252,44 +259,6 @@ class LockSeries:
         self._lockball_last_seen = candidate
         self._lockball_last_seen_ts = now
         return ball, False
-
-    @staticmethod
-    def _dribble_for_ball_state(
-        vision_state: str,
-        fallback_power: float = 0.3,
-        lateral_error_cm: float | None = None,
-    ):
-        """Use hardware current feedback when it is explicitly enabled.
-
-        ``Peripherals.DribbleAdaptive`` preserves the requested power when the
-        lower board does not expose current telemetry, when a read is stale, or
-        when adaptive control is disabled.  Keeping the fallback here makes the
-        existing SIM and legacy strategy behaviour unchanged.
-        """
-        adaptive = getattr(peripheral, "DribbleAdaptive", None)
-        if callable(adaptive):
-            return adaptive(
-                fallback_power,
-                vision_state=vision_state,
-                lateral_error_cm=lateral_error_cm,
-            )
-        peripheral.Dribble(fallback_power)
-        return None
-
-    def _dribble_for_ball_position(self, ball) -> None:
-        """Classify visual distance before asking for current-aware roller IO."""
-
-        try:
-            dx = float(ball[0]) - float(self.catch_x)
-            dy = float(ball[1]) - float(self.catch_y)
-            is_near = math.hypot(dx, dy) <= LOCKBALL_DRIBBLE_NEAR_RADIUS_CM
-        except (TypeError, ValueError, IndexError):
-            is_near = False
-        self._dribble_for_ball_state(
-            "near" if is_near else "approaching",
-            LOCKBALL_DRIBBLE_FAR_POWER,
-            lateral_error_cm=dy if is_near else None,
-        )
 
     def _far_lockball_wheel_bypass(self, ball_x, ball_y, ball_angle) -> bool:
         """Whether this tick is inside the temporary, supervised fast window."""
@@ -345,7 +314,7 @@ class LockSeries:
 
         ball, caught = self._current_or_recent_ball()
         if caught:
-            self._dribble_for_ball_state("held", LOCKBALL_DRIBBLE_FAR_POWER)
+            peripheral.Dribble(LOCKBALL_DRIBBLE_FAR_POWER)
             if not self._lockball_was_caught:
                 # Capture edge: stop the chase motion once. Callers such as
                 # TurnTo_with_ball command their own motion right after, so a
@@ -356,7 +325,7 @@ class LockSeries:
             self._lockball_was_caught = True
             return True
         elif ball == BALL_NOT_FOUND:
-            self._dribble_for_ball_state("lost", LOCKBALL_DRIBBLE_LOST_POWER)
+            peripheral.Dribble(LOCKBALL_DRIBBLE_LOST_POWER)
             chassis.stop()
             self._reset_lockball_pid()
             self._lockball_was_caught = False
@@ -381,7 +350,7 @@ class LockSeries:
                 -self.turn_only_max,
                 min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
             )
-            self._dribble_for_ball_position(ball)
+            peripheral.Dribble(LOCKBALL_DRIBBLE_FAR_POWER)
             chassis.RobotMoveVector(0.0, 0.0, speed_w)
             return False
 
@@ -396,7 +365,7 @@ class LockSeries:
             scale = self._restricted_speed_scale()
             speed_x *= scale
             speed_y *= scale
-            self._dribble_for_ball_position(ball)
+            peripheral.Dribble(LOCKBALL_DRIBBLE_FAR_POWER)
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
             return False
 
@@ -436,7 +405,7 @@ class LockSeries:
                     math.sqrt(2.0 * self.near_dock_decel * remaining_m),
                 )
 
-        self._dribble_for_ball_position(ball)
+        peripheral.Dribble(LOCKBALL_DRIBBLE_FAR_POWER)
         if self._far_lockball_wheel_bypass(ball_x, ball_y, ball_angle):
             chassis.RobotMoveVector(
                 speed_x, speed_y, speed_w, bypass_wheel_limits=True
@@ -471,9 +440,9 @@ TURN_ALIGN_TOLERANCE_DEG = 15.0
 # validated on hardware; lower values were tested to cut the sideways fling on
 # big turns but measured worse (slower, and one ball loss), so keep 0.9.
 TURN_ORBIT_LATERAL = 0.9
-# Ball-hold envelope on the raw robot-frame ball coordinate. While carrying,
-# RobotBallPos() collapses to the BALL_HELD sentinel, but UnitedPosition.ballPos
-# keeps the raw vision reading, which is stable to ~0.1cm on hardware. Inside
+# Ball-hold envelope on the raw robot-frame ball coordinate. RobotBallPos()
+# now returns that coordinate while carrying, and UnitedPosition.ballPos keeps
+# the same raw vision reading, which is stable to ~0.1cm on hardware. Inside
 # the envelope the carry skill runs its own closed loop on that coordinate;
 # outside it hands back to LockBallSlip to re-seat the ball.
 TURN_HOLD_X_MIN_CM = 3.0
@@ -494,10 +463,9 @@ def _clamp(value: float, limit: float) -> float:
 def _raw_held_ball_xy():
     """Return the raw robot-frame ball coordinate while held, or None.
 
-    ``RobotBallPos()`` returns the BALL_HELD sentinel once the ball is caught,
-    so callers that need the actual position must read ``UnitedPosition.ballPos``
-    (the raw reading populated as a side effect of the last RobotBallPos call).
-    Returns None when the reading is missing or still a sentinel.
+    ``RobotBallPos()`` returns the real coordinate while carrying, and also
+    stores it on ``UnitedPosition.ballPos``. Returns None when the reading is
+    missing or still a legacy sentinel.
     """
     raw = getattr(UnitedPosition, "ballPos", None)
     if raw is None:
@@ -606,12 +574,13 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
 def Slipsideshot(attack_dir=1): #溜边
     """One tick of sideline carry and shot."""
     robot_ball = UnitedPosition.RobotBallPos()
+    ball_status = UnitedPosition.BallStatus(robot_ball)
     close_ball = False
     try:
         close_ball = 0.0 <= float(robot_ball[0]) <= 24.0 and abs(float(robot_ball[1])) <= 16.0
     except Exception:
         close_ball = False
-    if not close_ball and robot_ball != BALL_HELD:
+    if not close_ball and ball_status != "held":
         return lockball.LockBallSlip()
     try:
         local_x, local_y, _ = UnitedPosition.FieldRobotPose()

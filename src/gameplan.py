@@ -434,7 +434,7 @@ def read_ball_snapshot():
     global last_ball_field, last_ball_seen_time, search_target_yaw, search_sweep_side
 
     ball_pos = UnitedPosition.RobotBallPos()
-    ball_state = UnitedPosition.BallState(ball_pos)
+    ball_state = UnitedPosition.BallStatus(ball_pos)
 
     field_pos = None
     if ball_state == "free":
@@ -631,10 +631,11 @@ def BackWallBounceStep(attack_dir=None):
     # Step A: 判断有没有持球
     # 没球就先锁球；有球才计算弹墙几何。
     ball = UnitedPosition.RobotBallPos()
-    if ball == BALL_NOT_FOUND:
+    ball_status = UnitedPosition.BallStatus(ball)
+    if ball_status == "lost":
         peripheral.Dribble(False)
         return "locking"
-    if ball != BALL_HELD and not lockball.LockBallSlip():
+    if ball_status != "held" and not lockball.LockBallSlip():
         peripheral.Dribble(True)
         return "locking"
 
@@ -803,7 +804,7 @@ def _shooting_step():#射门策略选择
     # return
     logger.info(UnitedPosition.RobotBallPos())
     if _pose_is_safe():#当前位姿在安全区内（等价于"不在禁区/不越界"）
-        if not UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:#球未丢失
+        if UnitedPosition.BallStatus() != "lost":#球未丢失
             if lockball.LockBallSlip():#成功持球
                 uplane_score = UplaneScore(robot_pose)
                 huck_score = HuckScore(robot_pose)
@@ -838,7 +839,7 @@ def _shooting_step():#射门策略选择
                 #    #BowScoreshoot()未定义U型射的射门方式
         else:
             peripheral.Dribble(False)
-            if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
+            if UnitedPosition.BallStatus() == "lost":
                 logger.info(f"Ball position is {BALL_NOT_FOUND}, moving to home position.")
                 _safe_navigate_to(Settings.CheckPoints.Home)
     return "shooting"
@@ -921,7 +922,7 @@ def InterceptBall(ball_pos=None, field_pos=None):
     if ball_pos == BALL_NOT_FOUND:
         return "lost"
 
-    if ball_pos == BALL_HELD:
+    if UnitedPosition.BallStatus(ball_pos) == "held":
         peripheral.Dribble(True)
         return "ball_held"
 

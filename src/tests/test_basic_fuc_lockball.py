@@ -16,6 +16,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import BasicFuc as basic  # noqa: E402
 
 
+def test_adaptive_dribbler_layer_is_removed():
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("LunaPre.motion.dribble_adaptive")
+    assert not hasattr(basic.peripheral, "DribbleAdaptive")
+    assert not hasattr(basic.peripheral, "GetDribbleAdaptiveTelemetry")
+
+
 def test_lockball_uses_source_owned_pid_terms_and_output_limits(monkeypatch):
     tuning = SimpleNamespace(
         ForwardKp=0.02,
@@ -124,42 +133,21 @@ def _capture_move(monkeypatch, ball_xy):
     return lock, moves
 
 
-def test_lockball_passes_semantic_vision_state_to_adaptive_dribbler(monkeypatch):
+def test_lockball_uses_fixed_dribble_powers(monkeypatch):
+    dribbles = []
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda value: dribbles.append(value))
+    monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
+    monkeypatch.setattr(basic.chassis, "stop", lambda *args, **kwargs: None)
+
     lock, _ = _lock_with_observations(monkeypatch, (basic.BALL_HELD,))
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    calls = []
-    monkeypatch.setattr(
-        basic.peripheral,
-        "DribbleAdaptive",
-        lambda power, vision_state=None, lateral_error_cm=None: calls.append(
-            (power, vision_state, lateral_error_cm)
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(basic.chassis, "stop", lambda: None)
-
     assert lock.LockBallSlip() is True
-    assert calls == [(0.3, "held", None)]
+    assert dribbles[-1] == basic.LOCKBALL_DRIBBLE_FAR_POWER
 
-
-def test_lockball_uses_near_state_only_inside_capture_envelope(monkeypatch):
-    lock, _ = _lock_with_observations(monkeypatch, ([15.0, 0.0],))
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    lock.catch_x = 6.0
-    lock.catch_y = 0.0
-    calls = []
-    monkeypatch.setattr(
-        basic.peripheral,
-        "DribbleAdaptive",
-        lambda power, vision_state=None, lateral_error_cm=None: calls.append(
-            (power, vision_state, lateral_error_cm)
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *_args, **_kwargs: None)
-
-    assert lock.LockBallSlip() is False
-    assert calls == [(basic.LOCKBALL_DRIBBLE_FAR_POWER, "near", 0.0)]
+    lock_lost, _ = _lock_with_observations(monkeypatch, (basic.BALL_NOT_FOUND,))
+    monkeypatch.setattr(lock_lost, "_reset_on_pose_change", lambda: None)
+    assert lock_lost.LockBallSlip() is False
+    assert dribbles[-1] == basic.LOCKBALL_DRIBBLE_LOST_POWER
 
 
 def test_lockball_brakes_on_curve_close_to_ball(monkeypatch):
@@ -217,10 +205,7 @@ def test_lockball_uses_wheel_bypass_only_for_aligned_far_chase(monkeypatch):
     lock.pan_y.setpoint = lock.catch_y
     lock.pan_x.sample_time = None
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    monkeypatch.setattr(
-        basic.peripheral, "DribbleAdaptive", lambda *_args, **_kwargs: None,
-        raising=False,
-    )
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args, **_kwargs: None)
     commands = []
     monkeypatch.setattr(
         basic.chassis,

@@ -144,11 +144,12 @@ class RuleDefenceStrategy:
 
         # 2. Ball state decides the defensive mode.
         ball = UnitedPosition.RobotBallPos()
-        if ball == BALL_NOT_FOUND:
+        ball_status = UnitedPosition.BallStatus(ball)
+        if ball_status == "lost":
             self._hold_home()
             return
 
-        if ball == BALL_HELD:
+        if ball_status == "held":
             self._clear_ball(pose)
             return
 

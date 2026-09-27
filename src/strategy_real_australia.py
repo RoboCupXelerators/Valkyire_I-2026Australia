@@ -778,7 +778,7 @@ def _real_ball_state(ball=None):
 
     if ball is None:
         ball = UnitedPosition.RobotBallPos()
-    raw_state = UnitedPosition.BallState(ball)
+    raw_state = UnitedPosition.BallStatus(ball)
     observed_hold = raw_state == "held" or (
         raw_state == "free" and _dribbler_controls_ball(ball)
     )

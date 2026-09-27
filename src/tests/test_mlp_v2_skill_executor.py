@@ -33,7 +33,10 @@ class FakeChassis:
 class SkillExecutorTests(unittest.TestCase):
     def runtime_modules(self, ball_value):
         held = object()
-        position = types.SimpleNamespace(RobotBallPos=lambda: held if ball_value == "held" else [20.0, 0.0])
+        position = types.SimpleNamespace(
+            RobotBallPos=lambda: [8.5, 0.0] if ball_value == "held" else [20.0, 0.0],
+            BallStatus=lambda ball=None: ball_value,
+        )
         chassis = FakeChassis()
         peripheral = FakePeripheral()
         luna = types.ModuleType("LunaPre")

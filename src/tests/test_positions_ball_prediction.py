@@ -10,6 +10,7 @@ os.environ.setdefault("ROBOCUPX_BITS", "SIM")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import LunaPre.positions as positions_module  # noqa: E402
+from LunaPre import runtime  # noqa: E402
 from LunaPre.positions import BallLandingPredictor, Positions  # noqa: E402
 from LunaPre.strategy_tools import BALL_NOT_FOUND  # noqa: E402
 
@@ -72,3 +73,21 @@ def test_positions_predict_ball_landing_uses_field_observations(monkeypatch):
     assert second["valid"] is True
     assert second["reason"] == "ok"
     assert second["field_pos"] == [60.0, 0.0]
+
+
+def test_positions_predict_ball_landing_resets_history_when_held(monkeypatch):
+    positions = Positions()
+    predictor = positions._ball_predictor()
+    predictor.observe([0.0, 0.0], timestamp_s=1.0)
+    predictor.observe([10.0, 0.0], timestamp_s=1.1)
+    assert predictor.sample_count >= 2
+
+    monkeypatch.setattr(runtime, "vision", None)
+    monkeypatch.setattr(positions, "FieldBallPos", lambda: [18.5, 20.0])
+    monkeypatch.setattr(positions, "ballPos", [8.5, 0.0])
+    monkeypatch.setattr(positions, "ballPosOut", [8.5, 0.0], raising=False)
+
+    result = positions.PredictBallLanding()
+
+    assert result["reason"] == "held"
+    assert predictor.sample_count == 0

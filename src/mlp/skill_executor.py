@@ -53,9 +53,8 @@ class SkillExecutor:
             lockball.LockBallSlip()
             return SkillExecutionResult(True, "lock_ball")
         if intent == IntentId.SHOOT or packet.shoot_intent == int(ShootIntent.TRY_SHOOT):
-            from LunaPre.strategy_tools import BALL_HELD
-
-            if UnitedPosition.RobotBallPos() != BALL_HELD:
+            ball_status = UnitedPosition.BallStatus(UnitedPosition.RobotBallPos())
+            if ball_status != "held":
                 chassis.stop()
                 return SkillExecutionResult(True, "shoot_blocked_no_possession")
             now = self.clock()

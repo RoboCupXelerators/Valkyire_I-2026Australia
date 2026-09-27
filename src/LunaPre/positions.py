@@ -21,7 +21,14 @@ import simple_pid
 from ReasonData import logger, Settings
 
 from . import runtime
-from .strategy_tools import BALL_HELD, BALL_NOT_FOUND, POSE_NOT_FOUND, angle_error_deg, clamp
+from .strategy_tools import (
+    BALL_HELD,
+    BALL_NOT_FOUND,
+    POSE_NOT_FOUND,
+    angle_error_deg,
+    clamp,
+    register_permission_pid,
+)
 
 cfg = runtime.cfg
 
@@ -289,6 +296,8 @@ class Positions:
         self._pos2pos_record_dir = str(getattr(cfg.Debug, "Pos2PosRecordDir", "./Records/pos2pos"))
         self.Position_X_PID = self._build_pos2pos_pid()
         self.Position_Y_PID = self._build_pos2pos_pid()
+        register_permission_pid(self.Position_X_PID)
+        register_permission_pid(self.Position_Y_PID)
         self._last_pos2pos_command = (0.0, 0.0, 0.0)
         self._position_data_loss_reported = False
         self._pose_revision = None
@@ -755,39 +764,32 @@ class Positions:
             BallPos: [0,0]
         #### Note:
             `0xfff` stand for `NoBallFounded`
-            `0xddd` stand for `CatchBall`
+
+        Possession is *not* encoded in the returned coordinate. A held ball is
+        returned as its real robot-frame coordinate; use :meth:`BallStatus` to
+        ask whether the ball is held, free, or lost. The legacy
+        ``[0xDDD, 0xDDD]`` sentinel may still arrive from an old vision provider,
+        but this method never synthesizes it from a capture window.
         '''
         # 20251017 already changed X,Y dimension.
         # Ball semantics belong to the active vision provider. Runtime only wires
         # providers together; it should not bypass vision with a second Bits path.
         self.ballPos = self._get_ball_pos()
-        authoritative_possession = self._authoritative_ball_possession()
-        if authoritative_possession is True:
-            self.ballPosOut = BALL_HELD
-        elif self.ballPos == BALL_HELD or self.ballPos == BALL_NOT_FOUND:
-            self.ballPosOut = self.ballPos
+        if self.ballPos == BALL_NOT_FOUND:
+            self.ballPosOut = list(BALL_NOT_FOUND)
+        elif self.ballPos == BALL_HELD:
+            # Legacy provider fold: no ordinary coordinate exists. Collapse the
+            # sentinel to the no-ball output; BallStatus() still resolves the
+            # possession from the raw reading for input compatibility.
+            self.ballPosOut = list(BALL_NOT_FOUND)
         elif self.ballPos == [0, 0]:
-            self.ballPosOut = BALL_NOT_FOUND
+            self.ballPosOut = list(BALL_NOT_FOUND)
         elif self._robot_ball_out_of_bounds(self.ballPos):
-            self.ballPosOut = BALL_NOT_FOUND
-        elif authoritative_possession is False:
-            # Simulator status already distinguishes physical possession from a
-            # nearby free ball. Do not widen that state through camera tolerance.
-            self.ballPosOut = self.ballPos
+            self.ballPosOut = list(BALL_NOT_FOUND)
         else:
-            catch_x, catch_y = cfg.Motion.CatchVal
-            # Near-field vision noise / dribbler occlusion is often ~1cm.
-            # Keep a usable catch window instead of ErrorRange/20 (=0.5cm).
-            x_tol = max(1.5, float(cfg.Motion.ErrorRange) / 8.0)
-            y_tol = max(2.0, float(cfg.Motion.ErrorRange) / 5.0)
-            # Asymmetric: accept slightly closer-than-catch readings so a ball
-            # that is almost seated is not forced back into free-ball chasing.
-            dx = float(self.ballPos[0]) - float(catch_x)
-            dy = abs(float(self.ballPos[1]) - float(catch_y))
-            if dy <= y_tol and (-x_tol <= dx <= x_tol * 0.75):
-                self.ballPosOut = BALL_HELD
-            else:
-                self.ballPosOut = self.ballPos
+            # Valid robot-frame coordinate, including a held ball. Return it
+            # unchanged; BallStatus() owns the possession decision.
+            self.ballPosOut = self.ballPos
         if Settings.Debug.FullLog:
             logger.debug("[Relative] Ball Position: %s" % self.ballPosOut)
         return self.ballPosOut
@@ -803,24 +805,62 @@ class Positions:
         except Exception:
             return None
 
-    def BallState(self, ball_pos: list | None = None) -> str:
-        """Return the semantic ball state: ``lost``, ``held``, or ``free``.
+    def BallStatus(self, ball_pos: list | None = None) -> str:
+        """Return the semantic ball state: ``lost``, ``free``, or ``held``.
 
-        This is the canonical wrapper for the legacy sentinel values returned by
-        ``RobotBallPos()``:
+        Coordinates and possession are intentionally separate:
 
-        - ``[0xFFF, 0xFFF]`` means the ball is not visible.
-        - ``[0xDDD, 0xDDD]`` means the robot has possession.
-        - any other ``[x, y]`` means the ball is free in robot frame.
+        - ``RobotBallPos()`` reports a real coordinate (or ``BALL_NOT_FOUND``).
+        - this method decides possession.
+
+        The visual provider's ``has_ball()`` is authoritative when present.
+        Without it, a captured reading inside ``cfg.Motion.CatchVal`` is treated
+        as held. The legacy ``[0xDDD, 0xDDD]`` sentinel is still accepted as an
+        input for compatibility but is never produced by ``RobotBallPos()``.
         """
 
         if ball_pos is None:
             ball_pos = self.RobotBallPos()
+            raw = getattr(self, "ballPos", ball_pos)
+        else:
+            raw = getattr(self, "ballPos", ball_pos)
+        return self._classify_ball_status(ball_pos, raw)
+
+    def _classify_ball_status(self, ball_pos, raw=None) -> str:
+        """Classify a robot-frame reading without issuing another vision read."""
+
+        authoritative = self._authoritative_ball_possession()
+        if authoritative is True:
+            return "held"
+        if ball_pos == BALL_HELD or raw == BALL_HELD:
+            return "held"
         if ball_pos == BALL_NOT_FOUND:
             return "lost"
-        if ball_pos == BALL_HELD:
-            return "held"
-        return "free"
+        if authoritative is False:
+            # Simulator status already distinguishes physical possession from a
+            # nearby free ball. Do not widen that state through camera tolerance.
+            return "free"
+        return "held" if self._within_catch_window(ball_pos) else "free"
+
+    def _within_catch_window(self, ball_pos) -> bool:
+        """Whether a real robot-frame reading sits in the capture envelope."""
+
+        try:
+            catch_x, catch_y = cfg.Motion.CatchVal
+            # Near-field vision noise / dribbler occlusion is often ~1cm.
+            # Keep a usable catch window instead of ErrorRange/20 (=0.5cm).
+            x_tol = max(1.5, float(cfg.Motion.ErrorRange) / 8.0)
+            y_tol = max(2.0, float(cfg.Motion.ErrorRange) / 5.0)
+            # Asymmetric: accept slightly closer-than-catch readings so a ball
+            # that is almost seated is not forced back into free-ball chasing.
+            dx = float(ball_pos[0]) - float(catch_x)
+            dy = abs(float(ball_pos[1]) - float(catch_y))
+        except Exception:
+            return False
+        return dy <= y_tol and (-x_tol <= dx <= x_tol * 0.75)
+
+    # Compatibility alias for the pre-BallStatus name.
+    BallState = BallStatus
 
     def _ball_predictor(self) -> BallLandingPredictor:
         predictor = getattr(self, "_ball_landing_predictor", None)
@@ -1623,28 +1663,34 @@ class Positions:
 
         #### Note:
             `0xfff` stand for `NoBall`
-            `0xddd` stand for `CatchBall`
+
+        Holding is no longer a sentinel output: a held ball is transformed like
+        any other real coordinate, and only possession-free observations feed
+        the predictor.
         '''
         ball_pos = self.RobotBallPos()
+        if ball_pos == BALL_HELD or getattr(self, "ballPos", None) == BALL_HELD:
+            # Legacy provider folded possession with no coordinate to convert.
+            self.ResetBallLandingPredictor()
+            return list(BALL_NOT_FOUND)
         ballX, ballY = ball_pos
-        ball_state = self.BallState(ball_pos)
+        ball_state = self.BallStatus(ball_pos)
         if ball_state == "lost":
             return list(BALL_NOT_FOUND)
         if ball_state == "held":
             self.ResetBallLandingPredictor()
-            return list(BALL_HELD)
-        else:
-            SelfX, SelfY, SelfZ = self.FieldRobotPose()
-            # Convert robot-frame relative (x_forward, y_left) into field-frame delta using yaw.
-            # yaw=0 => robot forward aligns with +x_forward.
-            th = math.radians(float(SelfZ))
-            c = math.cos(th)
-            s = math.sin(th)
-            dx = float(ballX) * c - float(ballY) * s
-            dy = float(ballX) * s + float(ballY) * c
-            field_ball = [SelfX + dx, SelfY + dy]
+        SelfX, SelfY, SelfZ = self.FieldRobotPose()
+        # Convert robot-frame relative (x_forward, y_left) into field-frame delta using yaw.
+        # yaw=0 => robot forward aligns with +x_forward.
+        th = math.radians(float(SelfZ))
+        c = math.cos(th)
+        s = math.sin(th)
+        dx = float(ballX) * c - float(ballY) * s
+        dy = float(ballX) * s + float(ballY) * c
+        field_ball = [SelfX + dx, SelfY + dy]
+        if ball_state == "free":
             self._observe_field_ball_for_prediction(field_ball)
-            return field_ball
+        return field_ball
 
     def PredictBallLanding(
         self,
@@ -1667,11 +1713,17 @@ class Positions:
 
         try:
             ball_field = self.FieldBallPos() if field_ball_pos is None else field_ball_pos
-            self._observe_field_ball_for_prediction(ball_field)
-            if BallLandingPredictor._sentinel_pair(ball_field, BALL_HELD):
+            ball_status = self._classify_ball_status(
+                getattr(self, "ballPosOut", None), getattr(self, "ballPos", None)
+            )
+            if ball_status == "held" or BallLandingPredictor._sentinel_pair(ball_field, BALL_HELD):
+                # Possession invalidates the free-ball trajectory; do not feed
+                # the predictor a held (or sentinel) observation.
+                self.ResetBallLandingPredictor()
                 result = self._ball_predictor()._empty_prediction("held")
-                result["field_pos"] = list(BALL_HELD)
+                result["field_pos"] = list(BALL_NOT_FOUND)
                 return result
+            self._observe_field_ball_for_prediction(ball_field)
         except Exception:
             pass
 

@@ -1352,7 +1352,7 @@ class ControlPanelApp:
             try:
                 ball_pos = positions.RobotBallPos()
                 result["ball_pos"] = ball_pos
-                result["has_ball"] = positions.BallState(ball_pos) == "held"
+                result["has_ball"] = positions.BallStatus(ball_pos) == "held"
             except Exception:
                 pass
 
