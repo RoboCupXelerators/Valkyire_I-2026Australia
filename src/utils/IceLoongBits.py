@@ -81,7 +81,7 @@ class IceLoongBits:
     - 提供线程监控和重启机制
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.003, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.003, testing = False, auto_include_pose: bool = True):
         """初始化串口参数（不自动打开）。
 
         Args:
