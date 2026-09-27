@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 from ReasonData import logger, Settings
 from .referee import IoRefereeProvider, RefereeSnapshot, SerialRefereeProvider
@@ -30,6 +31,8 @@ _velocity_provider = None
 _referee_status_provider = None
 _referee_state_provider = None
 _referee_serial_provider = None
+_peer_state = None
+_peer_state_updated_at = None
 _runtime_initialized = False
 _runtime_lock = threading.RLock()
 
@@ -88,6 +91,47 @@ def get_robot_velocity():
         return [float(vx), float(vy), float(wz), True]
     except Exception:
         return [0.0, 0.0, 0.0, False]
+
+
+def publish_peer_state(state) -> None:
+    """Publish the latest decoded teammate frame for ``UnitedPosition``.
+
+    ``Communication.ParseFrame`` calls this on every valid frame so the shared
+    facade can expose the peer position/role without the caller touching the
+    transport object directly.  ``None`` clears the cached peer.
+    """
+
+    global _peer_state, _peer_state_updated_at
+    if state is None:
+        _peer_state = None
+        _peer_state_updated_at = None
+        return
+    _peer_state = dict(state)
+    _peer_state_updated_at = time.monotonic()
+
+
+def get_peer_state():
+    """Return a copy of the latest decoded teammate frame, or ``None``."""
+
+    if _peer_state is None:
+        return None
+    return dict(_peer_state)
+
+
+def get_peer_state_age_s():
+    """Return the age in seconds of the latest peer frame, or ``None``."""
+
+    if _peer_state_updated_at is None:
+        return None
+    return max(0.0, time.monotonic() - _peer_state_updated_at)
+
+
+def clear_peer_state() -> None:
+    """Forget the cached teammate frame (pair generation lost, reset, ...)."""
+
+    global _peer_state, _peer_state_updated_at
+    _peer_state = None
+    _peer_state_updated_at = None
 
 
 def _configure_referee_provider() -> None:
@@ -199,6 +243,7 @@ def _shutdown_runtime_unlocked() -> None:
     global Bits, lidar, sensor, chassis, compass, peripheral, key, Odometer, Morse, referee, vision
     global _field_pose_provider, _velocity_provider, _referee_status_provider
     global _referee_state_provider, _referee_serial_provider, _runtime_initialized
+    global _peer_state, _peer_state_updated_at
 
     _stop_bits_thread_monitor()
     stop_watchdog = getattr(peripheral, "stop_watchdog", None)
@@ -228,6 +273,7 @@ def _shutdown_runtime_unlocked() -> None:
     Bits = lidar = sensor = chassis = compass = peripheral = key = Odometer = Morse = referee = vision = None
     _field_pose_provider = _velocity_provider = _referee_status_provider = None
     _referee_state_provider = _referee_serial_provider = None
+    _peer_state = _peer_state_updated_at = None
     _runtime_initialized = False
 
 

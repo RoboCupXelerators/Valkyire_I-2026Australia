@@ -42,6 +42,14 @@ class Communication:
     STATUS_AVOIDING = 0xEE
     STATUS_NO_BALL = 0xFF
 
+    # 备用字节内的姿态编码：低 7 位为 128 档偏航，bit7 为盘球就绪。
+    PEER_YAW_STEPS = 128
+    PEER_YAW_MASK = 0x7F
+    PEER_DRIBBLE_BIT = 0x80
+
+    # 未配置/未知的裁判输入不参与自动 ROLE_BAN 覆盖。
+    _UNCONFIGURED_REFEREE_SOURCES = frozenset({"", "unconfigured", "provider-error"})
+
     def __init__(self, *, bits=None, peer_id: int | None = None):
         """Use runtime IceLoong Bits, or explicit simulator Bits and peer_id.
 
@@ -71,6 +79,9 @@ class Communication:
 
         self.BallFlag = [0, 0]
         self.PeerPosition = list(BALL_NOT_FOUND)
+        self.PeerRole = None
+        self.PeerStatus = None
+        self.PeerYaw = None
         self.FullLog = cfg.Debug.FullLog
         self.RobotID = int(getattr(cfg.RoboInfo, "number", 1))
         self.Role = self._default_role_from_config()
@@ -85,6 +96,34 @@ class Communication:
         if robo_type in {"DP", "DEFENCE", "DEFENSE"}:
             return self.ROLE_DEFENCE_BLUE if color.startswith("B") else self.ROLE_DEFENCE_YELLOW
         return self.ROLE_OFFENCE_BLUE if color.startswith("B") else self.ROLE_OFFENCE_YELLOW
+
+    def _referee_locked(self) -> bool:
+        """True only when a configured referee reports control disabled.
+
+        An unconfigured or errored referee snapshot means the deck is on the
+        bench/simulator, where the old role must stay untouched.
+        """
+        try:
+            state = runtime.get_referee_state()
+        except Exception:
+            return False
+        source = str(getattr(state, "source", "") or "").strip().lower()
+        if source in self._UNCONFIGURED_REFEREE_SOURCES:
+            return False
+        return not bool(getattr(state, "control_enabled", False))
+
+    def _effective_role(self, role=None) -> int:
+        """Apply the automatic ROLE_BAN override when the referee is locked.
+
+        The override wins over ``self.Role`` and over an explicit ``role``
+        argument so a robot that may not start never advertises itself as an
+        available teammate.
+        """
+        if role is None:
+            role = self.Role
+        if self._referee_locked():
+            return self.ROLE_BAN
+        return self._clamp_byte(role)
 
     @staticmethod
     def _clamp_byte(value) -> int:
@@ -122,7 +161,7 @@ class Communication:
         frame = bytes([
             self.FRAME_HEAD,
             self._clamp_byte(self.RobotID if identity_id is None else identity_id),
-            self._clamp_byte(self.Role if role is None else role),
+            self._effective_role(role),
             self._clamp_byte(self.Status if status is None else status),
             self._clamp_byte(x_pos),
             self._clamp_byte(y_pos),
@@ -152,6 +191,7 @@ class Communication:
         status = int(payload[3])
         x_pos, y_pos, x_neg, y_neg, reserve = map(int, payload[4:9])
         signed_xy = self._merge_signed_xy(x_pos, y_pos, x_neg, y_neg)
+        yaw_deg, dribble_ready = self._decode_reserve(reserve)
         data = {
             "id": identity_id,
             "role": role,
@@ -162,11 +202,73 @@ class Communication:
             "y_neg": y_neg,
             "reserve": reserve,
             "signed_xy": signed_xy,
+            "yaw_deg": yaw_deg,
+            "dribble_ready": dribble_ready,
         }
         self.LastPeerFrame = data
         self.PeerPosition = signed_xy
+        self.PeerRole = role
+        self.PeerStatus = status
+        self.PeerYaw = yaw_deg
         self.BallFlag = [status, reserve]
+        self._publish_peer_state(data)
         return data
+
+    @classmethod
+    def _decode_reserve(cls, reserve) -> tuple[float, bool]:
+        """Split the reserve byte into ``(yaw_deg, dribble_ready)``."""
+
+        try:
+            reserve = int(reserve) & 0xFF
+        except Exception:
+            return 0.0, False
+        yaw_deg = (reserve & cls.PEER_YAW_MASK) * 360.0 / cls.PEER_YAW_STEPS
+        return yaw_deg, bool(reserve & cls.PEER_DRIBBLE_BIT)
+
+    def _publish_peer_state(self, data) -> None:
+        """Expose the freshly parsed teammate frame to ``UnitedPosition``."""
+
+        if int(data["id"]) == int(self.RobotID):
+            return
+        if self._peer_id is not None and int(data["id"]) != int(self._peer_id):
+            return
+        try:
+            x_cm, y_cm = (int(value) for value in data["signed_xy"][:2])
+        except (TypeError, ValueError, IndexError):
+            return
+        runtime.publish_peer_state({
+            "id": int(data["id"]),
+            "role": int(data["role"]),
+            "status": int(data["status"]),
+            "signed_xy": [x_cm, y_cm],
+            "yaw_deg": float(data["yaw_deg"]),
+            "dribble_ready": bool(data["dribble_ready"]),
+            "reserve": int(data["reserve"]),
+        })
+
+    def PeerPose(self):
+        """返回最近一帧队友位姿 ``[x_cm, y_cm, yaw_deg]``，无帧时返回 ``None``。"""
+        frame = self.LastPeerFrame
+        if not isinstance(frame, dict):
+            return None
+        try:
+            return [
+                int(frame["signed_xy"][0]),
+                int(frame["signed_xy"][1]),
+                float(frame.get("yaw_deg", 0.0)),
+            ]
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+
+    def PeerAvailable(self) -> bool:
+        """对方是否可用（最近一帧未声明 ``ROLE_BAN``）。"""
+        frame = self.LastPeerFrame
+        if not isinstance(frame, dict):
+            return False
+        try:
+            return int(frame.get("role", self.ROLE_BAN)) != self.ROLE_BAN
+        except (TypeError, ValueError):
+            return False
 
     def UpdateState(self, *, role: int | None = None, status: int | None = None,
                     ball_flag: list[int] | None = None, peer_position: list[int] | None = None):

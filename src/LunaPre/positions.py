@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import errno
+import json
 import pickle
 import socket
 import subprocess
@@ -62,6 +63,38 @@ RESTRICTED_SPEED_MIN_SCALE = 0.30
 ROBOT_BALL_MAX_DISTANCE_CM = 240.0
 ROBOT_BALL_MAX_ABS_X_CM = 260.0
 ROBOT_BALL_MAX_ABS_Y_CM = 220.0
+
+# ---- 盘球电流 -> 滚轮受载 / 持球 融合检测 ----
+# 电流反映“滚轮有没有被球咬住”，球坐标反映“球在不在视野/窗口”，两者互补：
+#   - 球在窗口 + 电流受载  => 确定持球
+#   - 视觉丢球 + 电流仍受载且刚在窗口出现过 => 仍判持球（跨过遮挡）
+#   - 球在窗口 + 电流没受载 => 球到了但还没咬住（接近/刚捕获）
+# 空转电流是下发功率的函数（实测 0.2->0.33A, 0.3->0.48A, 0.8->1.1A），咬球增量
+# 也随之放大（0.2->0.015A, 0.3->0.08A, 0.8->0.47A）。所以：
+#   1) 优先用“一次性校准 + 按功率查表”的固定参数（瞬时生效、无需每次开机校准）；
+#   2) 校准文件缺失时，退回按空转噪声自适应估计（需要少量空转样本，较慢）。
+# 校准由 calibrate_dribble.py 生成，存 ReasonData/data/dribble_calib.json。
+DRIBBLE_CALIB_REL = "ReasonData/data/dribble_calib.json"
+DRIBBLE_LOAD_MARGIN_DEFAULT = 0.04   # A：无校准且无功率信息时的兜底 margin
+DRIBBLE_LOAD_MARGIN_K = 2.5          # 自适应时 margin = K * 空转电流稳健标准差
+DRIBBLE_LOAD_MARGIN_FLOOR = 0.010    # A：最小 margin（σ 很小时兜底）
+DRIBBLE_LOAD_MARGIN_CAP_FRAC = 0.9   # margin 不超过空转基线的这个比例
+DRIBBLE_NOISE_WINDOW = 120           # 空转噪声滑动窗帧数
+DRIBBLE_NOISE_MIN_SAMPLES = 30       # 至少这么多空转样本才启用自适应 margin
+DRIBBLE_FREESPIN_MIN_CM = 12.0       # 球距离 >= 此值才算“确定空转”，用于估基线/噪声
+DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰）
+DRIBBLE_BASELINE_ALPHA_FAR = 0.0     # 只用标定基线，不做漂移补偿（电流环不准）
+DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
+DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
+DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
+DRIBBLE_CMD_EPS = 0.03               # 下发功率变化小于此值不算“换功率”（平滑升功率时不重置）
+DRIBBLE_MARGIN_ADAPT_ALPHA = 0.0     # 关掉在线 margin 细化，只用标定 margin（电流环不准）
+DRIBBLE_MARGIN_ADAPT_RATIO = 0.5     # 目标 margin = RATIO * (球近均值 - 球远均值)
+DRIBBLE_SEP_MIN_NEAR = 60            # 至少这么多“近球”样本才开始在线调 margin
+DRIBBLE_SEP_EMA_ALPHA = 0.05         # 近/远电流均值的 EMA 系数
+DRIBBLE_BASELINE_MIN_SAMPLES = 30    # 至少采这么多帧才允许确认受载（跳过启动尖峰）
+DRIBBLE_HOLD_BRIDGE_S = 0.35         # 视觉丢球后，电流可继续判持球的最长时间
+BALL_STATUS_REQUIRE_LOAD = False     # True：窗口内但电流未受载就判 free（更保守）
 SHOOT_WINDOW_DEFAULT_CAMERA_FOV_DEG = 95.0
 SHOOT_WINDOW_GOAL_KEYS = ("blue_goal", "yellow_goal")
 SHOOT_WINDOW_CAMERA_BASE_BEARING_DEG = {
@@ -303,6 +336,24 @@ class Positions:
         self._pose_revision = None
         self._vision_enabled = runtime.default_vision_enabled()
         self._ball_landing_predictor = BallLandingPredictor()
+        # 盘球电流受载检测状态（供 BallStatus 融合使用）
+        self._dribble_baseline: float | None = None
+        self._dribble_baseline_samples = 0
+        self._dribble_loaded = False
+        self._dribble_loaded_since: float | None = None
+        self._dribble_unloaded_since: float | None = None
+        self._dribble_last_current: float | None = None
+        self._dribble_smooth: float | None = None
+        self._dribble_devs: list[float] = []
+        self._dribble_margin = DRIBBLE_LOAD_MARGIN_DEFAULT
+        self._dribble_cmd: float | None = None
+        self._dribble_cmd_since = 0.0
+        self._dribble_far_ema: float | None = None
+        self._dribble_near_ema: float | None = None
+        self._dribble_near_count = 0
+        self._dribble_calib: list | None = None
+        self._dribble_calib_loaded = False
+        self._last_in_window_monotonic: float | None = None
 
     def _build_pos2pos_pid(self):
         return simple_pid.PID(
@@ -441,7 +492,8 @@ class Positions:
         """Publish pose at 60 Hz to Hybrid without giving vision serial ownership."""
 
         now = time.monotonic()
-        if now - self._last_vision_pose_send < (1.0 / 60.0) or self.sock is None:
+        sock = self.sock
+        if now - self._last_vision_pose_send < (1.0 / 60.0) or sock is None:
             return
         self._last_vision_pose_send = now
         pose = runtime.get_field_pose()
@@ -449,7 +501,7 @@ class Positions:
             return
         try:
             packet = pickle.dumps({"pose": pose, "timestamp": now}, protocol=pickle.HIGHEST_PROTOCOL)
-            self.sock.sendto(packet, ("127.0.0.1", 5006))
+            sock.sendto(packet, ("127.0.0.1", 5006))
         except OSError:
             if not self.vision_data_stop_event.is_set():
                 logger.debug("Failed to publish pose to Hybrid vision")
@@ -473,11 +525,15 @@ class Positions:
         while not self.vision_data_stop_event.is_set():
             time.sleep(0.005)
             try:
-                if self.sock is None:
+                # 取一次局部引用：Stop() 可能在别处把 self.sock 置 None 并关闭，
+                # 这里再读 self.sock 会拿到 None 触发 AttributeError。用局部变量后，
+                # 关闭场景只会抛 OSError(EBADF)，下面已按正常退出处理。
+                sock = self.sock
+                if sock is None:
                     time.sleep(0.05)
                     continue
                 self._send_vision_pose()
-                data, addr = self.sock.recvfrom(4096)
+                data, addr = sock.recvfrom(4096)
                 packet = pickle.loads(data)
                 if not isinstance(packet, dict):
                     continue
@@ -805,7 +861,8 @@ class Positions:
         except Exception:
             return None
 
-    def BallStatus(self, ball_pos: list | None = None) -> str:
+    def BallStatus(self, ball_pos: list | None = None, current=None, now=None,
+                   dribble_cmd=None) -> str:
         """Return the semantic ball state: ``lost``, ``free``, or ``held``.
 
         Coordinates and possession are intentionally separate:
@@ -817,6 +874,11 @@ class Positions:
         Without it, a captured reading inside ``cfg.Motion.CatchVal`` is treated
         as held. The legacy ``[0xDDD, 0xDDD]`` sentinel is still accepted as an
         input for compatibility but is never produced by ``RobotBallPos()``.
+
+        盘球电流融合（真机）：球坐标给“位置”，电流给“滚轮有没有咬住”。默认只做
+        加法融合——视觉丢球但电流仍受载且刚在窗口出现过，仍判 ``held``，用来跨过
+        球被挡住时的视觉丢失。把 ``BALL_STATUS_REQUIRE_LOAD`` 置 True 则更保守：
+        窗口内但电流未受载会判 ``free``。受载状态可用 :meth:`BallLoadInfo` 查看。
         """
 
         if ball_pos is None:
@@ -824,23 +886,295 @@ class Positions:
             raw = getattr(self, "ballPos", ball_pos)
         else:
             raw = getattr(self, "ballPos", ball_pos)
-        return self._classify_ball_status(ball_pos, raw)
+        return self._classify_ball_status(ball_pos, raw, current=current, now=now,
+                                          dribble_cmd=dribble_cmd)
 
-    def _classify_ball_status(self, ball_pos, raw=None) -> str:
-        """Classify a robot-frame reading without issuing another vision read."""
+    def _read_dribble_current(self):
+        """读取当前盘球电流(A)；无 Bits / 读不到时返回 None。"""
+
+        bits = getattr(runtime, "Bits", None)
+        if bits is None:
+            return None
+        try:
+            cur = bits.GetDribbleCurrent()
+        except Exception:
+            return None
+        if cur is None:
+            return None
+        try:
+            cur = float(cur)
+        except (TypeError, ValueError):
+            return None
+        return cur if math.isfinite(cur) else None
+
+    def _load_dribble_calib(self):
+        """懒加载一次性校准表 ``[(cmd, baseline, margin), ...]``（按功率升序）。"""
+
+        if self._dribble_calib_loaded:
+            return self._dribble_calib
+        self._dribble_calib_loaded = True
+        self._dribble_calib = []
+        try:
+            src_root = Path(__file__).resolve().parents[1]
+            path = src_root / DRIBBLE_CALIB_REL
+            data = json.loads(path.read_text(encoding="utf-8"))
+            pts = [
+                (float(p["cmd"]), float(p["baseline"]), float(p["margin"]))
+                for p in data.get("points", [])
+                if p.get("baseline") is not None and p.get("cmd") is not None
+            ]
+            self._dribble_calib = sorted(pts)
+            if self._dribble_calib:
+                logger.info(f"Dribble calibration loaded: {path.name} "
+                            f"{len(self._dribble_calib)} points")
+        except FileNotFoundError:
+            logger.info("No dribble calibration file; using adaptive fallback")
+        except Exception as error:
+            logger.warning(f"Dribble calibration load failed: {error}")
+        return self._dribble_calib
+
+    def _calib_for(self, cmd):
+        """按功率查校准表，线性插值返回 ``(baseline, margin)``；无校准则 None。"""
+
+        pts = self._load_dribble_calib()
+        if not pts or cmd is None:
+            return None
+        if cmd <= pts[0][0]:
+            return pts[0][1], pts[0][2]
+        if cmd >= pts[-1][0]:
+            return pts[-1][1], pts[-1][2]
+        for (c0, b0, m0), (c1, b1, m1) in zip(pts, pts[1:]):
+            if c0 <= cmd <= c1:
+                t = (cmd - c0) / (c1 - c0) if c1 > c0 else 0.0
+                return b0 + t * (b1 - b0), m0 + t * (m1 - m0)
+        return pts[-1][1], pts[-1][2]
+
+    @staticmethod
+    def _normalize_cmd(cmd):
+        if cmd is True:
+            return 0.5
+        if cmd is None:
+            return None
+        if cmd is False:
+            return 0.0
+        try:
+            return float(cmd)
+        except (TypeError, ValueError):
+            return None
+
+    def _commanded_power(self):
+        """从盘球出口读当前下发功率（``Peripherals.DribbleStatus``）。"""
+
+        per = getattr(runtime, "peripheral", None)
+        status = getattr(per, "DribbleStatus", None) if per is not None else None
+        return self._normalize_cmd(status)
+
+    def _current_margin(self) -> float:
+        """自适应兜底：按空转电流噪声稳健估计 margin(A)。"""
+
+        margin = DRIBBLE_LOAD_MARGIN_FLOOR
+        devs = self._dribble_devs
+        if len(devs) >= DRIBBLE_NOISE_MIN_SAMPLES:
+            ordered = sorted(devs)
+            median = ordered[len(ordered) // 2]
+            mad = sorted(abs(d - median) for d in devs)[len(devs) // 2]
+            margin = max(margin, DRIBBLE_LOAD_MARGIN_K * 1.4826 * mad)
+        if self._dribble_baseline is not None:
+            margin = min(margin, DRIBBLE_LOAD_MARGIN_CAP_FRAC * self._dribble_baseline)
+        return margin
+
+    def _update_dribble_load(self, mode: str, current=None, now=None, dribble_cmd=None) -> bool:
+        """返回“滚轮是否受载”（带迟滞）。
+
+        优先用“校准表 + 当前下发功率”的固定参数，瞬时生效、无需预热；没有校准
+        文件时退回按空转噪声自适应。``mode``：``window``/``near``/``far``/``lost``。
+        ``current`` / ``now`` / ``dribble_cmd`` 可显式传入，便于离线回放测试。
+        """
+
+        raw = current if current is not None else self._read_dribble_current()
+        self._dribble_last_current = raw
+        if raw is None:
+            return self._dribble_loaded
+        now = time.monotonic() if now is None else now
+
+        # 先平滑，抑制空转抖动和启动尖峰
+        if self._dribble_smooth is None:
+            self._dribble_smooth = raw
+        else:
+            self._dribble_smooth += DRIBBLE_SMOOTH_ALPHA * (raw - self._dribble_smooth)
+        cur = self._dribble_smooth
+
+        if mode == "window":
+            self._last_in_window_monotonic = now
+
+        cmd = self._normalize_cmd(dribble_cmd) if dribble_cmd is not None else self._commanded_power()
+        prev_cmd = self._dribble_cmd
+        if cmd is None or prev_cmd is None:
+            cmd_changed = cmd is not prev_cmd
+        else:
+            # 功率平滑渐变（比如拿到球后 0.3->0.5 的提升）不该被当成换功率
+            cmd_changed = abs(cmd - prev_cmd) > DRIBBLE_CMD_EPS
+        if cmd_changed:
+            self._dribble_cmd_since = now
+            self._dribble_far_ema = None
+            self._dribble_near_ema = None
+            self._dribble_near_count = 0
+        self._dribble_cmd = cmd
+        blanking = (now - self._dribble_cmd_since) < DRIBBLE_STARTUP_BLANK_S
+
+        # 盘球明确关闭：绝不受载
+        if cmd is not None and cmd <= 0.0:
+            self._dribble_baseline = cur
+            self._dribble_margin = 0.0
+            self._dribble_loaded = False
+            self._dribble_loaded_since = None
+            self._dribble_unloaded_since = None
+            return False
+
+        calib = self._calib_for(cmd)
+        if calib is not None:
+            base0, margin = calib
+            if cmd_changed or self._dribble_baseline is None:
+                # 换功率/首帧：用校准值做先验，瞬时生效（无需预热）。
+                # margin 只在这里播种，之后交给下面的在线细化，避免每帧被重置。
+                self._dribble_baseline = base0
+                self._dribble_margin = margin
+                self._dribble_devs.clear()
+            elif mode == "far":
+                # 缓慢漂移补偿（温度/电路漂移）
+                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
+            self._dribble_baseline_samples = DRIBBLE_BASELINE_MIN_SAMPLES
+        else:
+            # 无校准：退回自适应（需要少量空转样本，较慢）
+            if self._dribble_baseline is None:
+                self._dribble_baseline = cur
+                self._dribble_baseline_samples = 0
+            elif mode == "far":
+                self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
+                self._dribble_baseline_samples += 1
+                self._dribble_devs.append(cur - self._dribble_baseline)
+                if len(self._dribble_devs) > DRIBBLE_NOISE_WINDOW:
+                    del self._dribble_devs[:-DRIBBLE_NOISE_WINDOW]
+            self._dribble_margin = self._current_margin()
+
+        # 在线细化（越跑越准）：用弱标签估计真实咬球增量——
+        # 球远(d>=12cm)=纯空转，球近/在窗口=已咬合；把 margin 从校准值缓慢
+        # 往 0.5*增量 靠。启动仍由校准值兜底，所以没有预热时间。
+        if mode == "far":
+            if self._dribble_far_ema is None:
+                self._dribble_far_ema = cur
+            else:
+                self._dribble_far_ema += DRIBBLE_SEP_EMA_ALPHA * (cur - self._dribble_far_ema)
+        elif mode in ("window", "near") and (cmd is None or cmd > 0.0):
+            if self._dribble_near_ema is None:
+                self._dribble_near_ema = cur
+            else:
+                self._dribble_near_ema += DRIBBLE_SEP_EMA_ALPHA * (cur - self._dribble_near_ema)
+            self._dribble_near_count += 1
+        if (self._dribble_far_ema is not None and self._dribble_near_ema is not None
+                and self._dribble_near_count >= DRIBBLE_SEP_MIN_NEAR):
+            sep = self._dribble_near_ema - self._dribble_far_ema
+            target = max(DRIBBLE_LOAD_MARGIN_FLOOR, DRIBBLE_MARGIN_ADAPT_RATIO * sep)
+            if self._dribble_baseline:
+                target = min(target, DRIBBLE_LOAD_MARGIN_CAP_FRAC * self._dribble_baseline)
+            self._dribble_margin += DRIBBLE_MARGIN_ADAPT_ALPHA * (target - self._dribble_margin)
+
+        loaded_now = (cur - self._dribble_baseline) > self._dribble_margin
+        if blanking:
+            # 盘球刚上电/换功率，滚轮起转电流有尖峰，这段时间不判定受载
+            loaded_now = False
+        if loaded_now:
+            self._dribble_unloaded_since = None
+            if self._dribble_loaded_since is None:
+                self._dribble_loaded_since = now
+        else:
+            self._dribble_loaded_since = None
+            if self._dribble_unloaded_since is None:
+                self._dribble_unloaded_since = now
+
+        if not self._dribble_loaded:
+            if (loaded_now
+                    and self._dribble_baseline_samples >= DRIBBLE_BASELINE_MIN_SAMPLES
+                    and now - self._dribble_loaded_since >= DRIBBLE_LOAD_ENGAGE_S):
+                self._dribble_loaded = True
+        elif (not loaded_now
+              and now - self._dribble_unloaded_since >= DRIBBLE_LOAD_RELEASE_S):
+            self._dribble_loaded = False
+        return self._dribble_loaded
+
+    def BallLoadInfo(self) -> dict:
+        """返回当前电流 / 基线 / 受载状态，便于调用测试与调参。
+
+        Returns:
+            dict: ``current`` 盘球电流(A)，``baseline`` 自适应空转基线(A)，
+            ``loaded`` 是否判定滚轮受载，``margin`` = current - baseline。
+        """
+
+        margin = None
+        if self._dribble_smooth is not None and self._dribble_baseline is not None:
+            margin = self._dribble_smooth - self._dribble_baseline
+        return {
+            "current": self._dribble_last_current,
+            "smoothed": self._dribble_smooth,
+            "baseline": self._dribble_baseline,
+            "loaded": self._dribble_loaded,
+            "margin": margin,
+            "threshold": self._dribble_margin,
+            "cmd": self._dribble_cmd,
+            "calibrated": bool(self._load_dribble_calib()),
+            "noise_samples": len(self._dribble_devs),
+            "near_count": self._dribble_near_count,
+        }
+
+    def _classify_ball_status(self, ball_pos, raw=None, current=None, now=None,
+                              dribble_cmd=None) -> str:
+        """用“球坐标 + 盘球电流”判断持球状态。
+
+        ``current`` / ``now`` / ``dribble_cmd`` 只在离线回放测试时显式传入；
+        正常运行不传（功率从 ``Peripherals.DribbleStatus`` 读）。
+        """
 
         authoritative = self._authoritative_ball_possession()
         if authoritative is True:
+            self._update_dribble_load("window", current, now, dribble_cmd)
             return "held"
         if ball_pos == BALL_HELD or raw == BALL_HELD:
+            self._update_dribble_load("window", current, now, dribble_cmd)
             return "held"
+
+        in_window = ball_pos != BALL_NOT_FOUND and self._within_catch_window(ball_pos)
         if ball_pos == BALL_NOT_FOUND:
-            return "lost"
+            mode = "lost"
+        elif in_window:
+            mode = "window"
+        else:
+            try:
+                dist = math.hypot(float(ball_pos[0]), float(ball_pos[1]))
+            except (TypeError, ValueError, IndexError):
+                dist = 0.0
+            mode = "far" if dist >= DRIBBLE_FREESPIN_MIN_CM else "near"
+        loaded = self._update_dribble_load(mode, current, now, dribble_cmd)
+        now = time.monotonic() if now is None else now
+        if in_window:
+            self._last_in_window_monotonic = now
+        recently_in_window = (
+            self._last_in_window_monotonic is not None
+            and now - self._last_in_window_monotonic <= DRIBBLE_HOLD_BRIDGE_S
+        )
+
         if authoritative is False:
-            # Simulator status already distinguishes physical possession from a
-            # nearby free ball. Do not widen that state through camera tolerance.
-            return "free"
-        return "held" if self._within_catch_window(ball_pos) else "free"
+            # 仿真：has_ball() 已区分物理持球；只有“窗口内且电流受载”才补成 held。
+            return "held" if (loaded and in_window) else "free"
+
+        if ball_pos == BALL_NOT_FOUND:
+            # 视觉丢球但电流仍受载、且刚在窗口里出现过 -> 大概率仍咬着，判 held。
+            return "held" if (loaded and recently_in_window) else "lost"
+
+        if in_window:
+            if BALL_STATUS_REQUIRE_LOAD and not loaded:
+                return "free"
+            return "held"
+        return "free"
 
     def _within_catch_window(self, ball_pos) -> bool:
         """Whether a real robot-frame reading sits in the capture envelope."""
@@ -2070,6 +2404,89 @@ class Positions:
         """Return the structured referee state from LunaPre's input provider."""
 
         return runtime.get_referee_state()
+
+    def PeerState(self):
+        """Return the latest decoded teammate frame, or ``None``.
+
+        The frame is published by ``Communication.ParseFrame`` and is shared
+        through the runtime, so strategies can read peer role/status/position
+        without holding the transport object.
+        """
+
+        return runtime.get_peer_state()
+
+    def PeerStateAge(self):
+        """Return the age in seconds of the latest teammate frame, or ``None``."""
+
+        return runtime.get_peer_state_age_s()
+
+    def PeerRole(self):
+        """Return the peer role code, or ``None`` when no frame was received."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            return int(state.get("role"))
+        except (TypeError, ValueError):
+            return None
+
+    def PeerStatus(self):
+        """Return the peer status code, or ``None`` when no frame was received."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            return int(state.get("status"))
+        except (TypeError, ValueError):
+            return None
+
+    def PeerAvailable(self) -> bool:
+        """Return whether the peer last advertised itself as available."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return False
+        from .communication import Communication
+
+        try:
+            return int(state.get("role", Communication.ROLE_BAN)) != Communication.ROLE_BAN
+        except (TypeError, ValueError):
+            return False
+
+    def FieldPeerYaw(self):
+        """Return the peer yaw in degrees, or ``None`` when unavailable."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            yaw = float(state.get("yaw_deg", 0.0))
+        except (TypeError, ValueError):
+            return None
+        return yaw % 360.0 if math.isfinite(yaw) else None
+
+    def FieldPeerPose(self):
+        """Return the teammate field pose ``[x_cm, y_cm, yaw_deg]``.
+
+        Returns ``POSE_NOT_FOUND`` when no frame has arrived, the peer declared
+        itself unavailable (``ROLE_BAN``), or the coordinates are non-finite.
+        """
+
+        if not self.PeerAvailable():
+            return list(POSE_NOT_FOUND)
+        state = runtime.get_peer_state()
+        if not state:
+            return list(POSE_NOT_FOUND)
+        try:
+            x_cm, y_cm = (float(value) for value in state.get("signed_xy", ())[:2])
+            yaw_deg = float(state.get("yaw_deg", 0.0)) % 360.0
+        except (TypeError, ValueError, IndexError):
+            return list(POSE_NOT_FOUND)
+        if not all(math.isfinite(value) for value in (x_cm, y_cm, yaw_deg)):
+            return list(POSE_NOT_FOUND)
+        return [x_cm, y_cm, yaw_deg]
 
     def RobotVelocity(self):
         """Return [vx_cm_s, vy_cm_s, wz_deg_s, valid]."""

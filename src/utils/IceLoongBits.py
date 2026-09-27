@@ -81,7 +81,7 @@ class IceLoongBits:
     - 提供线程监控和重启机制
     """
 
-    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.05, testing = False):
+    def __init__(self, port: str = "/dev/ttyUSB0", baudrate: int = 460800, timeout: float = 0.003, testing = False, auto_include_pose: bool = True):
         """初始化串口参数（不自动打开）。
 
         Args:
@@ -89,10 +89,14 @@ class IceLoongBits:
             baudrate: 波特率，例如 460800（MainBoard 的 USART1）。
             timeout: 读超时（秒）。
             testing: 测试模式，不启动后台线程。
+            auto_include_pose: 自动报送姿态开关。为 ``True`` 时，
+                ``SendLinkData``/``ExecuteCommands`` 未显式指定
+                ``include_pose`` 的 LINK_SEND 都会附带本机位姿。
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self._auto_include_pose = bool(auto_include_pose)
         self.link_pair_id = None
         self.link_pair_state = None
         self.link_answer_age_ms = None
@@ -136,11 +140,11 @@ class IceLoongBits:
 
         # 命令循环节拍与降频轮询（2026-09-19 实机诊断后引入）：
         # - command_period_s: 比赛控制周期 60Hz；
-        # - 慢变量（盘球电流/电池电压）每 slow_poll_interval_s 随 GET 组查一次；
-        # - LINK_GET 当前无消费者，按 link_poll_interval_s 降频。
+        # - 慢变量（盘球电流/电池电压）每个命令周期随 GET 组查询；
+        # - LINK_GET 每个命令周期查询。
         self.command_period_s = 1.0 / 60.0
-        self.slow_poll_interval_s = 1.0
-        self.link_poll_interval_s = 0.5
+        self.slow_poll_interval_s = 0.0
+        self.link_poll_interval_s = 0.0
         self._last_slow_poll_t = 0.0
         self._last_link_poll_t = 0.0
         
@@ -323,8 +327,7 @@ class IceLoongBits:
             payload, include_pose = self._ParseLinkSend(snapshot["LINK_SEND"])
             self.ExecuteCommands([(Commands.LINK_SEND, payload, include_pose)])
 
-        # LINK_GET 目前没有策略层消费者；按 link_poll_interval_s 降频，
-        # 避免每周期一次 ~50ms 超时等待。有队友通信需求时再调低间隔。
+        # LINK_GET 每个命令周期查询；若对端无响应，单次查询仍可能受串口超时影响。
         if now - self._last_link_poll_t >= self.link_poll_interval_s:
             self._last_link_poll_t = now
             response = self.ExecuteCommands([(Commands.LINK_GET,)])
@@ -594,7 +597,11 @@ class IceLoongBits:
                 case Commands.LINK_SEND:
                     if len(cmd) not in (2, 3):
                         raise ValueError(LINK_SEND_ARGUMENT_ERROR)
-                    include_pose = bool(cmd[2]) if len(cmd) == 3 else False
+                    if len(cmd) == 3:
+                        include_pose = bool(cmd[2])
+                    else:
+                        with self._command_lock:
+                            include_pose = self._auto_include_pose
                     payload = self._NormalizeLinkPayload(cmd[1], include_pose)
                     tx_bytes += bytes([
                         cmd[0], LINK_PAYLOAD_FLAG_POSE if include_pose else 0,
@@ -831,11 +838,31 @@ class IceLoongBits:
             return payload, bool(include_pose)
         return pending, False
 
-    def SendLinkData(self, payload, include_pose: bool = False) -> bool:
-        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿并允许空 Payload。"""
-        payload = self._NormalizeLinkPayload(payload, include_pose)
+    def SetAutoPoseReporting(self, enabled) -> bool:
+        """设置 LINK_SEND 是否默认自动附带本机姿态，返回生效后的开关状态。"""
         with self._command_lock:
-            self.CommandLine["LINK_SEND"] = (payload, bool(include_pose))
+            self._auto_include_pose = bool(enabled)
+            return self._auto_include_pose
+
+    def GetAutoPoseReporting(self) -> bool:
+        """返回 LINK_SEND 当前是否默认自动附带本机姿态。"""
+        with self._command_lock:
+            return self._auto_include_pose
+
+    def SendLinkData(self, payload, include_pose: Optional[bool] = None) -> bool:
+        """保存一份待发送的最新链路 Payload。
+
+        ``include_pose`` 为 ``None`` 时使用自动姿态开关；显式
+        ``True``/``False`` 覆盖自动开关。开启姿态时附带本机位姿并允许空
+        Payload。姿态标志在入队时锁定，避免发送线程与开关切换产生竞态。
+        """
+        with self._command_lock:
+            if include_pose is None:
+                include_pose = self._auto_include_pose
+            else:
+                include_pose = bool(include_pose)
+            payload = self._NormalizeLinkPayload(payload, include_pose)
+            self.CommandLine["LINK_SEND"] = (payload, include_pose)
         return True
 
     def GetLinkData(self):

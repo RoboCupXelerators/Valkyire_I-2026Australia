@@ -50,7 +50,7 @@ def test_link_send_encodes_flags_u16_length_and_payload():
     bits.SendHex = send_hex
 
     payload = bytes(range(32))
-    assert bits.ExecuteCommands([(Commands.LINK_SEND, payload)]) == [(0x89,)]
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, payload, False)]) == [(0x89,)]
     assert sent == [(
         b"\x09\x00" + bytes([len(payload)]) + payload,
         True,
@@ -81,17 +81,17 @@ def test_link_send_payload_limits_follow_the_pose_flag():
 
     bits.SendHex = send_hex
 
-    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(221))]) == [(0x89,)]
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(221), False)]) == [(0x89,)]
     assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(199), True)]) == [(0x89,)]
 
     with pytest.raises(ValueError, match="from 1 to 221 bytes"):
-        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222))])
+        bits.ExecuteCommands([(Commands.LINK_SEND, bytes(222), False)])
 
     with pytest.raises(ValueError, match="from 0 to 199 bytes"):
         bits.ExecuteCommands([(Commands.LINK_SEND, bytes(200), True)])
 
     with pytest.raises(ValueError, match="from 1 to 221 bytes"):
-        bits.ExecuteCommands([(Commands.LINK_SEND, b"")])
+        bits.ExecuteCommands([(Commands.LINK_SEND, b"", False)])
 
     with pytest.raises(ValueError, match="must be bytes-like"):
         bits.ExecuteCommands([(Commands.LINK_SEND, "strategy", True)])
@@ -139,6 +139,85 @@ def test_send_link_data_queues_one_message_with_the_pose_flag():
 
     assert b"\x09\x01\x08" + b"strategy" in sent
     assert bits.CommandLine["LINK_SEND"] is None
+
+
+def test_auto_pose_reporting_defaults_on_and_drives_bare_link_send():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.GetAutoPoseReporting() is True
+    assert bits.SendLinkData(b"\x2a") is True
+    assert bits.CommandLine["LINK_SEND"] == (b"\x2a", True)
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"\x2a")]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x01\x2a"]
+
+
+def test_auto_pose_reporting_can_be_disabled_and_reenabled():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.SetAutoPoseReporting(False) is False
+    assert bits.GetAutoPoseReporting() is False
+    assert bits.SendLinkData(b"\x2a") is True
+    assert bits.CommandLine["LINK_SEND"] == (b"\x2a", False)
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"\x2a")]) == [(0x89,)]
+    assert sent == [b"\x09\x00\x01\x2a"]
+
+    assert bits.SetAutoPoseReporting(True) is True
+    assert bits.GetAutoPoseReporting() is True
+
+
+def test_explicit_pose_flag_overrides_the_auto_switch():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.SendLinkData(b"x", include_pose=False) is True
+    assert bits.CommandLine["LINK_SEND"] == (b"x", False)
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, b"x", True)]) == [(0x89,)]
+    assert sent == [b"\x09\x01\x01x"]
+
+
+def test_auto_pose_reporting_allows_empty_payload_and_pose_bounds():
+    bits = IceLoongBits(testing=True)
+    sent = []
+
+    def send_hex(data, read_response, response_length, response_timeout):
+        sent.append(data)
+        return b"\x89"
+
+    bits.SendHex = send_hex
+
+    assert bits.SendLinkData(b"") is True
+    assert bits.CommandLine["LINK_SEND"] == (b"", True)
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(199))]) == [(0x89,)]
+    assert sent[-1] == b"\x09\x01" + bytes([199]) + bytes(199)
+
+    with pytest.raises(ValueError, match="from 0 to 199 bytes"):
+        bits.SendLinkData(bytes(200))
+
+    assert bits.SetAutoPoseReporting(False) is False
+    with pytest.raises(ValueError, match="from 1 to 221 bytes"):
+        bits.SendLinkData(b"")
+    assert bits.ExecuteCommands([(Commands.LINK_SEND, bytes(221))]) == [(0x89,)]
+    assert sent[-1] == b"\x09\x00" + bytes([221]) + bytes(221)
 
 
 def test_link_get_reads_variable_length_response():
