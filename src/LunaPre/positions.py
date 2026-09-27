@@ -83,11 +83,12 @@ DRIBBLE_NOISE_WINDOW = 120           # 空转噪声滑动窗帧数
 DRIBBLE_NOISE_MIN_SAMPLES = 30       # 至少这么多空转样本才启用自适应 margin
 DRIBBLE_FREESPIN_MIN_CM = 12.0       # 球距离 >= 此值才算“确定空转”，用于估基线/噪声
 DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰）
-DRIBBLE_BASELINE_ALPHA_FAR = 0.15    # far（确定空转）时基线跟随速度
+DRIBBLE_BASELINE_ALPHA_FAR = 0.0     # 只用标定基线，不做漂移补偿（电流环不准）
 DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
 DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
 DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
-DRIBBLE_MARGIN_ADAPT_ALPHA = 0.02    # 在线把 margin 往“实测咬球增量”缓慢靠（越跑越准）
+DRIBBLE_CMD_EPS = 0.03               # 下发功率变化小于此值不算“换功率”（平滑升功率时不重置）
+DRIBBLE_MARGIN_ADAPT_ALPHA = 0.0     # 关掉在线 margin 细化，只用标定 margin（电流环不准）
 DRIBBLE_MARGIN_ADAPT_RATIO = 0.5     # 目标 margin = RATIO * (球近均值 - 球远均值)
 DRIBBLE_SEP_MIN_NEAR = 60            # 至少这么多“近球”样本才开始在线调 margin
 DRIBBLE_SEP_EMA_ALPHA = 0.05         # 近/远电流均值的 EMA 系数
@@ -1007,7 +1008,12 @@ class Positions:
             self._last_in_window_monotonic = now
 
         cmd = self._normalize_cmd(dribble_cmd) if dribble_cmd is not None else self._commanded_power()
-        cmd_changed = cmd != self._dribble_cmd
+        prev_cmd = self._dribble_cmd
+        if cmd is None or prev_cmd is None:
+            cmd_changed = cmd is not prev_cmd
+        else:
+            # 功率平滑渐变（比如拿到球后 0.3->0.5 的提升）不该被当成换功率
+            cmd_changed = abs(cmd - prev_cmd) > DRIBBLE_CMD_EPS
         if cmd_changed:
             self._dribble_cmd_since = now
             self._dribble_far_ema = None
