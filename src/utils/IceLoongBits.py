@@ -89,10 +89,14 @@ class IceLoongBits:
             baudrate: 波特率，例如 460800（MainBoard 的 USART1）。
             timeout: 读超时（秒）。
             testing: 测试模式，不启动后台线程。
+            auto_include_pose: 自动报送姿态开关。为 ``True`` 时，
+                ``SendLinkData``/``ExecuteCommands`` 未显式指定
+                ``include_pose`` 的 LINK_SEND 都会附带本机位姿。
         """
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self._auto_include_pose = bool(auto_include_pose)
         self.link_pair_id = None
         self.link_pair_state = None
         self.link_answer_age_ms = None
@@ -593,7 +597,11 @@ class IceLoongBits:
                 case Commands.LINK_SEND:
                     if len(cmd) not in (2, 3):
                         raise ValueError(LINK_SEND_ARGUMENT_ERROR)
-                    include_pose = bool(cmd[2]) if len(cmd) == 3 else False
+                    if len(cmd) == 3:
+                        include_pose = bool(cmd[2])
+                    else:
+                        with self._command_lock:
+                            include_pose = self._auto_include_pose
                     payload = self._NormalizeLinkPayload(cmd[1], include_pose)
                     tx_bytes += bytes([
                         cmd[0], LINK_PAYLOAD_FLAG_POSE if include_pose else 0,
@@ -830,11 +838,31 @@ class IceLoongBits:
             return payload, bool(include_pose)
         return pending, False
 
-    def SendLinkData(self, payload, include_pose: bool = False) -> bool:
-        """保存一份待发送的最新链路 Payload，include_pose 为真时附带本机位姿并允许空 Payload。"""
-        payload = self._NormalizeLinkPayload(payload, include_pose)
+    def SetAutoPoseReporting(self, enabled) -> bool:
+        """设置 LINK_SEND 是否默认自动附带本机姿态，返回生效后的开关状态。"""
         with self._command_lock:
-            self.CommandLine["LINK_SEND"] = (payload, bool(include_pose))
+            self._auto_include_pose = bool(enabled)
+            return self._auto_include_pose
+
+    def GetAutoPoseReporting(self) -> bool:
+        """返回 LINK_SEND 当前是否默认自动附带本机姿态。"""
+        with self._command_lock:
+            return self._auto_include_pose
+
+    def SendLinkData(self, payload, include_pose: Optional[bool] = None) -> bool:
+        """保存一份待发送的最新链路 Payload。
+
+        ``include_pose`` 为 ``None`` 时使用自动姿态开关；显式
+        ``True``/``False`` 覆盖自动开关。开启姿态时附带本机位姿并允许空
+        Payload。姿态标志在入队时锁定，避免发送线程与开关切换产生竞态。
+        """
+        with self._command_lock:
+            if include_pose is None:
+                include_pose = self._auto_include_pose
+            else:
+                include_pose = bool(include_pose)
+            payload = self._NormalizeLinkPayload(payload, include_pose)
+            self.CommandLine["LINK_SEND"] = (payload, include_pose)
         return True
 
     def GetLinkData(self):
