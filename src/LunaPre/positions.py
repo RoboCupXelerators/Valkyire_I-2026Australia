@@ -2229,6 +2229,89 @@ class Positions:
 
         return runtime.get_referee_state()
 
+    def PeerState(self):
+        """Return the latest decoded teammate frame, or ``None``.
+
+        The frame is published by ``Communication.ParseFrame`` and is shared
+        through the runtime, so strategies can read peer role/status/position
+        without holding the transport object.
+        """
+
+        return runtime.get_peer_state()
+
+    def PeerStateAge(self):
+        """Return the age in seconds of the latest teammate frame, or ``None``."""
+
+        return runtime.get_peer_state_age_s()
+
+    def PeerRole(self):
+        """Return the peer role code, or ``None`` when no frame was received."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            return int(state.get("role"))
+        except (TypeError, ValueError):
+            return None
+
+    def PeerStatus(self):
+        """Return the peer status code, or ``None`` when no frame was received."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            return int(state.get("status"))
+        except (TypeError, ValueError):
+            return None
+
+    def PeerAvailable(self) -> bool:
+        """Return whether the peer last advertised itself as available."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return False
+        from .communication import Communication
+
+        try:
+            return int(state.get("role", Communication.ROLE_BAN)) != Communication.ROLE_BAN
+        except (TypeError, ValueError):
+            return False
+
+    def FieldPeerYaw(self):
+        """Return the peer yaw in degrees, or ``None`` when unavailable."""
+
+        state = runtime.get_peer_state()
+        if not state:
+            return None
+        try:
+            yaw = float(state.get("yaw_deg", 0.0))
+        except (TypeError, ValueError):
+            return None
+        return yaw % 360.0 if math.isfinite(yaw) else None
+
+    def FieldPeerPose(self):
+        """Return the teammate field pose ``[x_cm, y_cm, yaw_deg]``.
+
+        Returns ``POSE_NOT_FOUND`` when no frame has arrived, the peer declared
+        itself unavailable (``ROLE_BAN``), or the coordinates are non-finite.
+        """
+
+        if not self.PeerAvailable():
+            return list(POSE_NOT_FOUND)
+        state = runtime.get_peer_state()
+        if not state:
+            return list(POSE_NOT_FOUND)
+        try:
+            x_cm, y_cm = (float(value) for value in state.get("signed_xy", ())[:2])
+            yaw_deg = float(state.get("yaw_deg", 0.0)) % 360.0
+        except (TypeError, ValueError, IndexError):
+            return list(POSE_NOT_FOUND)
+        if not all(math.isfinite(value) for value in (x_cm, y_cm, yaw_deg)):
+            return list(POSE_NOT_FOUND)
+        return [x_cm, y_cm, yaw_deg]
+
     def RobotVelocity(self):
         """Return [vx_cm_s, vy_cm_s, wz_deg_s, valid]."""
 
