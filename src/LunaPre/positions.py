@@ -86,6 +86,7 @@ DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰�
 DRIBBLE_BASELINE_ALPHA_FAR = 0.15    # far（确定空转）时基线跟随速度
 DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
 DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
+DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
 DRIBBLE_BASELINE_MIN_SAMPLES = 30    # 至少采这么多帧才允许确认受载（跳过启动尖峰）
 DRIBBLE_HOLD_BRIDGE_S = 0.35         # 视觉丢球后，电流可继续判持球的最长时间
 BALL_STATUS_REQUIRE_LOAD = False     # True：窗口内但电流未受载就判 free（更保守）
@@ -341,6 +342,7 @@ class Positions:
         self._dribble_devs: list[float] = []
         self._dribble_margin = DRIBBLE_LOAD_MARGIN_DEFAULT
         self._dribble_cmd: float | None = None
+        self._dribble_cmd_since = 0.0
         self._dribble_calib: list | None = None
         self._dribble_calib_loaded = False
         self._last_in_window_monotonic: float | None = None
@@ -998,12 +1000,16 @@ class Positions:
             self._last_in_window_monotonic = now
 
         cmd = self._normalize_cmd(dribble_cmd) if dribble_cmd is not None else self._commanded_power()
+        cmd_changed = cmd != self._dribble_cmd
+        if cmd_changed:
+            self._dribble_cmd_since = now
+        self._dribble_cmd = cmd
+        blanking = (now - self._dribble_cmd_since) < DRIBBLE_STARTUP_BLANK_S
 
         # 盘球明确关闭：绝不受载
         if cmd is not None and cmd <= 0.0:
             self._dribble_baseline = cur
             self._dribble_margin = 0.0
-            self._dribble_cmd = cmd
             self._dribble_loaded = False
             self._dribble_loaded_since = None
             self._dribble_unloaded_since = None
@@ -1012,10 +1018,9 @@ class Positions:
         calib = self._calib_for(cmd)
         if calib is not None:
             base0, margin = calib
-            if self._dribble_cmd != cmd or self._dribble_baseline is None:
+            if cmd_changed or self._dribble_baseline is None:
                 # 换功率/首帧：直接取校准基线，瞬时生效（无需预热）
                 self._dribble_baseline = base0
-                self._dribble_cmd = cmd
                 self._dribble_devs.clear()
             elif mode == "far":
                 # 缓慢漂移补偿（温度/电路漂移），margin 保持校准值不变
@@ -1024,7 +1029,6 @@ class Positions:
             self._dribble_baseline_samples = DRIBBLE_BASELINE_MIN_SAMPLES
         else:
             # 无校准：退回自适应（需要少量空转样本，较慢）
-            self._dribble_cmd = cmd
             if self._dribble_baseline is None:
                 self._dribble_baseline = cur
                 self._dribble_baseline_samples = 0
@@ -1037,6 +1041,9 @@ class Positions:
             self._dribble_margin = self._current_margin()
 
         loaded_now = (cur - self._dribble_baseline) > self._dribble_margin
+        if blanking:
+            # 盘球刚上电/换功率，滚轮起转电流有尖峰，这段时间不判定受载
+            loaded_now = False
         if loaded_now:
             self._dribble_unloaded_since = None
             if self._dribble_loaded_since is None:
