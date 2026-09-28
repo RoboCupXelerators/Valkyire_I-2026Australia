@@ -64,6 +64,9 @@ class TunaIntelligence(VisionPreUntil):
         # Use a slightly lower default to reduce flicker.
         conf_ball: float = 0.30,
         conf_chassis: float = 0.50,
+        # Goals are short/far and score lower than ball/chassis; keep this in
+        # line with the Hailo backend (0.25) so both backends behave the same.
+        conf_goal: float = 0.25,
         init_cams: bool = True,
         export_engine_if_missing: bool = True,
         engine_half: bool = True,
@@ -73,6 +76,7 @@ class TunaIntelligence(VisionPreUntil):
 
         self.conf_ball = float(conf_ball)
         self.conf_chassis = float(conf_chassis)
+        self.conf_goal = float(conf_goal)
 
         self.PreProcessTF = 0
         self.InferTF = 0
@@ -93,6 +97,10 @@ class TunaIntelligence(VisionPreUntil):
         # Optional: bbox outputs (xyxy in 640x640 resized space)
         self.BallBBoxQueue = queue.Queue(maxsize=1)
         self.ChassisBBoxQueue = queue.Queue(maxsize=1)
+        # Goal bbox queue for dashboard overlay, same contract as ArisuIntelligence.
+        # Format: [[cam, cls, x1, y1, x2, y2, conf], ...] in 640x640 space.
+        # cls: 1 BlueGoal, 2 YellowGoal
+        self.GoalBBoxQueue = queue.Queue(maxsize=1)
 
         # Init cameras/record threads from base class (can be disabled for tests)
         super().__init__(init_cams=init_cams)
@@ -414,7 +422,7 @@ class TunaIntelligence(VisionPreUntil):
                 results = self._yolo.predict(
                     imgs,
                     verbose=False,
-                    conf=min(self.conf_ball, self.conf_chassis),
+                    conf=min(self.conf_ball, self.conf_chassis, self.conf_goal),
                     device=self.device,
                     imgsz=640,
                 )
@@ -426,7 +434,7 @@ class TunaIntelligence(VisionPreUntil):
                     r1 = self._yolo.predict(
                         im,
                         verbose=False,
-                        conf=min(self.conf_ball, self.conf_chassis),
+                        conf=min(self.conf_ball, self.conf_chassis, self.conf_goal),
                         device=self.device,
                         imgsz=640,
                     )
@@ -435,7 +443,7 @@ class TunaIntelligence(VisionPreUntil):
             results = self._yolo.predict(
                 imgs,
                 verbose=False,
-                conf=min(self.conf_ball, self.conf_chassis),
+                conf=min(self.conf_ball, self.conf_chassis, self.conf_goal),
                 device=self.device,
                 imgsz=640,
             )
@@ -496,6 +504,8 @@ class TunaIntelligence(VisionPreUntil):
             chassis_bbox_out = [[i, 0, 0, 0, 0, 0.0] for i in range(4)]  # [cam,x1,y1,x2,y2,conf]
             # goals: [cam, cls, cx, bottom_y, w, h, conf]
             goal_out = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
+            # goal bboxes: [cam, cls, x1, y1, x2, y2, conf] in 640x640 space
+            goal_bbox_out = [[i, -1, 0, 0, 0, 0, 0.0] for i in range(4)]
 
             if imgs:
                 try:
@@ -566,12 +576,20 @@ class TunaIntelligence(VisionPreUntil):
                             d
                             for d in dets_sorted
                             if d.cls in (self._cls_blue_goal, self._cls_yellow_goal)
-                            and d.conf >= 0.40
+                            and d.conf >= self.conf_goal
                         ),
                         None,
                     )
                     if goal_candidate is not None:
                         x1, y1, x2, y2 = goal_candidate.xyxy
+                        # Dashboard bbox in 640x640 space (same contract as Arisu).
+                        goal_bbox_out[cam_i] = [
+                            cam_i,
+                            int(goal_candidate.cls),
+                            int(round(x1)), int(round(y1)),
+                            int(round(x2)), int(round(y2)),
+                            float(goal_candidate.conf),
+                        ]
                         source_size = source_sizes[cam_i]
                         if source_size is not None:
                             rx1, ry1, rx2, ry2 = model_bbox_to_raw(goal_candidate.xyxy, source_size)
@@ -613,12 +631,18 @@ class TunaIntelligence(VisionPreUntil):
                     _ = self.GoalQueue.get_nowait()
                 except Exception:
                     pass
+            if self.GoalBBoxQueue.full():
+                try:
+                    _ = self.GoalBBoxQueue.get_nowait()
+                except Exception:
+                    pass
 
             self.ChassisQueue.put(chassis_out)
             self.BallQueue.put(ball_out)
             self.BallBBoxQueue.put(ball_bbox_out)
             self.ChassisBBoxQueue.put(chassis_bbox_out)
             self.GoalQueue.put(goal_out)
+            self.GoalBBoxQueue.put(goal_bbox_out)
 
             time.sleep(0.001)
 

@@ -174,12 +174,13 @@ class UnitedVision(Detect_Method):
             self.BallDetectionThread.daemon = True
             self.BallDetectionThread.start()
 
-        # Optional: goals (BlueGoal/YellowGoal) available in AI backends.
-        # self._goal_backend = hasattr(self, "GoalQueue")
-        # if self._goal_backend:
-        #     self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
-        #     self.GoalDetectionThread.daemon = True
-        #     self.GoalDetectionThread.start()
+        # Goals (BlueGoal/YellowGoal) are available in AI/TI queue backends.
+        # Consume GoalQueue to compute goal positions in robot frame.
+        self._goal_backend = hasattr(self, "GoalQueue")
+        if self._goal_backend:
+            self.GoalDetectionThread = threading.Thread(target=self.GoalDetection)
+            self.GoalDetectionThread.daemon = True
+            self.GoalDetectionThread.start()
 
     def reload_calibration(self):
         projectors = []
