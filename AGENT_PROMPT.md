@@ -6,7 +6,7 @@
 
 ## House Rules for AI
 
-1. 这是 Jetson 上的 **30 Hz 控制循环**；任何建议都必须优先保证实时性和安全停止。
+1. 这是 Jetson 上的 **60 Hz 控制循环**；任何建议都必须优先保证实时性和安全停止。
 2. **不要新增 class / dataclass / enum / 抽象层**；确需复用时优先写模块级函数或复用现有函数。
 3. 主循环里不要每帧分配大对象、不要每帧 `print` / 打日志；调试输出必须节流。
 4. 保持最小 diff，不重写已工作的模块，不回滚或覆盖他人的未提交修改。
@@ -133,21 +133,11 @@ from LunaPre.strategy_tools import BALL_NOT_FOUND, BALL_HELD
 
 编写代码时遵循：
 
-```python
-# 1. 必须有 try/finally 块确保安全停止
-try:
-    # 策略代码
-    pass
-finally:
-    chassis.stop()
-    peripheral.Dribble(False)
-    UnitedPosition.Stop()
-
-# 2. 使用有意义的变量名
+# 1. 使用有意义的变量名
 ball_pos = UnitedPosition.RobotBallPos()  # 好
 bp = UnitedPosition.RobotBallPos()        # 不好
 
-# 3. 添加注释解释关键逻辑
+# 2. 添加注释解释关键逻辑
 ball_state = UnitedPosition.BallState(ball_pos)
 if ball_state == "lost":
     # 没看到球，回到搜索位置
@@ -164,16 +154,12 @@ if ball_state == "lost":
 from LunaPre import *
 from BasicFuc import lockball
 
-try:
-    while True:
-        if UnitedPosition.RestrictedArea():
-            ball_pos = UnitedPosition.RobotBallPos()
-            if UnitedPosition.BallState(ball_pos) == "free":
-                lockball.LockBallSlip()  # 自动追球
-        time.sleep(0.03)
-finally:
-    chassis.stop()
-    UnitedPosition.Stop()
+while True:
+    if UnitedPosition.RestrictedArea():
+        ball_pos = UnitedPosition.RobotBallPos()
+        if UnitedPosition.BallState(ball_pos) == "free":
+            lockball.LockBallSlip()  # 自动追球
+    time.sleep(0.03)
 ```
 
 ### Q: 如何让机器人移动到指定位置？
@@ -238,36 +224,30 @@ import time
 
 def main():
     """主策略循环"""
-    try:
-        while True:
-            # 1. 安全检查
-            if not UnitedPosition.RestrictedArea():
-                continue  # 正在避障，跳过本帧
-            
-            # 2. 获取状态
-            ball_pos = UnitedPosition.RobotBallPos()
-            robot_pos = UnitedPosition.FieldRobotPose()
-            
-            # 3. 状态机逻辑
-            ball_state = UnitedPosition.BallState(ball_pos)
-            if ball_state == "lost":
-                # 状态：找不到球
-                handle_no_ball()
-            elif ball_state == "held":
-                # 状态：已抱球
-                handle_has_ball(robot_pos)
-            else:
-                # 状态：看到球
-                handle_chase_ball()
-            
-            # 4. 循环频率控制
-            time.sleep(0.03)  # ~30Hz
-            
-    finally:
-        # 安全停止
-        chassis.stop()
-        peripheral.Dribble(False)
-        UnitedPosition.Stop()
+    while True:
+        # 1. 安全检查
+        if not UnitedPosition.RestrictedArea():
+            continue  # 正在避障，跳过本帧
+        
+        # 2. 获取状态
+        ball_pos = UnitedPosition.RobotBallPos()
+        robot_pos = UnitedPosition.FieldRobotPose()
+        
+        # 3. 状态机逻辑
+        ball_state = UnitedPosition.BallState(ball_pos)
+        if ball_state == "lost":
+            # 状态：找不到球
+            handle_no_ball()
+        elif ball_state == "held":
+            # 状态：已抱球
+            handle_has_ball(robot_pos)
+        else:
+            # 状态：看到球
+            handle_chase_ball()
+        
+        # 4. 循环频率控制
+        time.sleep(0.03)  # ~30Hz
+        
 
 def handle_no_ball():
     """处理找不到球的情况"""
@@ -295,38 +275,33 @@ from BasicFuc import lockball, TurnTo_with_ball
 import time
 
 def main():
-    try:
-        while True:
-            if UnitedPosition.RestrictedArea():
-                ball_pos = UnitedPosition.RobotBallPos()
-                robot_pos = UnitedPosition.FieldRobotPose()
+    while True:
+        if UnitedPosition.RestrictedArea():
+            ball_pos = UnitedPosition.RobotBallPos()
+            robot_pos = UnitedPosition.FieldRobotPose()
+            
+            ball_state = UnitedPosition.BallState(ball_pos)
+            if ball_state == "lost":
+                # 找球
+                UnitedPosition.Pos2Pos([0, 0, 0])
                 
-                ball_state = UnitedPosition.BallState(ball_pos)
-                if ball_state == "lost":
-                    # 找球
-                    UnitedPosition.Pos2Pos([0, 0, 0])
-                    
-                elif ball_state == "held":
-                    # 抱球，准备射门
-                    peripheral.Dribble(0.7)
-                    
-                    # 计算球门角度
-                    goal_angle = UnitedPosition.Local2Angle([230, 0]) + 180
-                    
-                    # 转向球门并射门
-                    if TurnTo_with_ball(goal_angle % 360, 0.6):
-                        chassis.stop()
-                        peripheral.ShootBall()
-                        peripheral.Dribble(0.0)
-                else:
-                    # 追球
-                    lockball.LockBallSlip()
-                    
-            time.sleep(0.03)
-    finally:
-        chassis.stop()
-        peripheral.Dribble(False)
-        UnitedPosition.Stop()
+            elif ball_state == "held":
+                # 抱球，准备射门
+                peripheral.Dribble(0.7)
+                
+                # 计算球门角度
+                goal_angle = UnitedPosition.Local2Angle([230, 0]) + 180
+                
+                # 转向球门并射门
+                if TurnTo_with_ball(goal_angle % 360, 0.6):
+                    chassis.stop()
+                    peripheral.ShootBall()
+                    peripheral.Dribble(0.0)
+            else:
+                # 追球
+                lockball.LockBallSlip()
+                
+        time.sleep(0.03)
 
 if __name__ == "__main__":
     main()
@@ -344,24 +319,20 @@ from simple_pid import PID
 pan_y = PID(Kp=2.0, Ki=0.0, Kd=0.5, setpoint=0)
 
 def main():
-    try:
-        while True:
-            if UnitedPosition.RestrictedArea():
-                ball_pos = UnitedPosition.RobotBallPos()
+    while True:
+        if UnitedPosition.RestrictedArea():
+            ball_pos = UnitedPosition.RobotBallPos()
+            
+            ball_state = UnitedPosition.BallState(ball_pos)
+            if ball_state == "free":
+                # 在球门线附近横向移动，跟随球的Y位置
+                speed_y = pan_y(ball_pos[1])
+                chassis.FieldMoveVector(0, -speed_y, 0)
+            else:
+                # 没看到球或已被己方抱住，回到球门中心
+                UnitedPosition.Pos2Pos([-80, 0, 0])
                 
-                ball_state = UnitedPosition.BallState(ball_pos)
-                if ball_state == "free":
-                    # 在球门线附近横向移动，跟随球的Y位置
-                    speed_y = pan_y(ball_pos[1])
-                    chassis.FieldMoveVector(0, -speed_y, 0)
-                else:
-                    # 没看到球或已被己方抱住，回到球门中心
-                    UnitedPosition.Pos2Pos([-80, 0, 0])
-                    
-            time.sleep(0.03)
-    finally:
-        chassis.stop()
-        UnitedPosition.Stop()
+        time.sleep(0.03)
 
 if __name__ == "__main__":
     main()
@@ -417,12 +388,9 @@ if __name__ == "__main__":
 from LunaPre import *
 import time
 
-try:
-    while True:
-        chassis.RobotTurn(50)  # 正值逆时针转，负值顺时针转
-        time.sleep(0.03)
-finally:
-    chassis.stop()
+while True:
+    chassis.RobotTurn(50)  # 正值逆时针转，负值顺时针转
+    time.sleep(0.03)
 ```
 
 参数说明：
@@ -474,16 +442,12 @@ from LunaPre import *
 from BasicFuc import lockball
 import time
 
-try:
-    while True:
-        if UnitedPosition.RestrictedArea():
-            ball = UnitedPosition.RobotBallPos()
-            if UnitedPosition.BallState(ball) == "free":
-                lockball.LockBallSlip()
-        time.sleep(0.03)
-finally:
-    chassis.stop()
-    UnitedPosition.Stop()
+while True:
+    if UnitedPosition.RestrictedArea():
+        ball = UnitedPosition.RobotBallPos()
+        if UnitedPosition.BallState(ball) == "free":
+            lockball.LockBallSlip()
+    time.sleep(0.03)
 ```
 
 ---

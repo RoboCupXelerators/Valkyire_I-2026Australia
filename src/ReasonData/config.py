@@ -83,7 +83,7 @@ class Preference:
             # the camera that recently saw the ball.
             "AdaptiveFrameDistribution": True,
             "CameraMinYoloHz": 4.0,
-            "CameraFocusYoloHz": 20.0,
+            "CameraFocusYoloHz": 30.0,
             "CameraFocusHoldMs": 250.0,
             "YoloMaxFramesPerTick": 4,
             # 录制配置
@@ -101,7 +101,7 @@ class Preference:
             "MaxWheelRPM": 500,     # 电机命令单位 RPM，正方向为单轮顺时针
         },
         "Motion": {
-            "CatchVal": [6.8, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
+            "CatchVal": [6.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
 
             "LockBallSlip": {
@@ -134,6 +134,9 @@ class Preference:
             },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
+                # XLimit/YLimit 是场地坐标系相对原点的边界坐标上限，不是实时测得的距离；
+                # 机器人中心通常应分别保持在 [-XLimit, XLimit] / [-YLimit, YLimit] 内，
+                # 实际保护线还会结合 Clearance 和车体半径换算。
                 "XLimit": 110.0,
                 "YLimit": 80.0,
                 "GoalBoxWidth": 25.0,
@@ -141,7 +144,12 @@ class Preference:
                 "GoalBoxCornerRadius": 20.0,
                 # 1=严格整车不越线，2=澳洲赛规：允许局部越线但禁止整车进入
                 "ProtectionLevel": 1,
+                # 常规安全余量 (cm)：将场地边界/球门区保护线向可行驶侧收进；
+                # 严格模式还会叠加车体半径，避免机器人外轮廓贴线或越线。
                 "Clearance": 5.0,
+                # 越界后的恢复余量 (cm)：用于计算脱离禁区的目标和绕行点；
+                # 通常应大于 Clearance，使目标落在到达误差窗口之外，避免恢复后再次贴边。
+                # 配置 <= 0 时会按 Clearance + ErrorRange*0.5 + RecoveryExtra 自动推导。
                 "RecoveryClearance": 16.0,
                 "RecoveryExtra": 3.0,
                 # 距离禁区越近速度越低：进入减速区开始线性减速，到边界时降到
