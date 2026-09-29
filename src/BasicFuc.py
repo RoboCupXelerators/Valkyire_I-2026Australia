@@ -344,7 +344,7 @@ class LockSeries:
         # 近球限速铲球，避免高速把球顶飞。
         dist_cm = math.hypot(ball_x, ball_y)
         fwd_cap = LOCKBALL_DOCK_MAX_MPS if dist_cm <= LOCKBALL_DOCK_CM else LOCKBALL_MAX_FORWARD_MPS
-        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, -fwd_cap, fwd_cap) * align
+        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, fwd_cap) * align
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS) * align
 
         # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲/绕球）。

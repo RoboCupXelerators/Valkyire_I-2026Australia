@@ -62,9 +62,14 @@ def test_lockball_uses_piecewise_gain_table(monkeypatch):
         lock, moves = _capture_move(monkeypatch, [ball_x, 0.0])
         assert lock.LockBallSlip() is False
         vx, _vy, wz = moves[-1]
+        cap = (
+            basic.LOCKBALL_DOCK_MAX_MPS
+            if ball_x <= basic.LOCKBALL_DOCK_CM
+            else basic.LOCKBALL_MAX_FORWARD_MPS
+        )
         expected = _clamp(
             ball_x * gain * basic.LOCKBALL_FORWARD_BOOST,
-            basic.LOCKBALL_MAX_FORWARD_MPS,
+            cap,
         )
         assert vx == pytest.approx(expected)
         assert wz == pytest.approx(0.0)
@@ -79,11 +84,13 @@ def test_lockball_clamps_commands(monkeypatch):
     assert abs(wz) <= basic.LOCKBALL_MAX_YAW_DEGPS + 1e-9
 
 
-def test_lockball_rear_ball_moves_backward(monkeypatch):
+def test_lockball_turns_toward_rear_ball_before_charging(monkeypatch):
+    # 球在身后：先原地转对准，不盲目倒车冲。
     lock, moves = _capture_move(monkeypatch, [-20.0, 0.0])
     assert lock.LockBallSlip() is False
-    vx, _vy, _wz = moves[-1]
-    assert vx < 0.0
+    vx, _vy, wz = moves[-1]
+    assert vx == pytest.approx(0.0)
+    assert abs(wz) > 0.0
 
 
 def test_lockball_accepts_a_persistent_jump(monkeypatch):
