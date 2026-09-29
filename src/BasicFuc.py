@@ -25,8 +25,9 @@ import time
 # than relying on a wildcard import to leak the name into this module.
 cfg = Settings
 
-# 简单持球检测：盘球电流（A）超过此值就算滚轮咬住。按实际电流调。
-HOLD_CURRENT_A = 1.2
+# 简单持球检测（相对值）：盘球电流相对空转基线(margin = current - baseline)升过
+# 此值就算滚轮咬住。按实际电流调。
+HOLD_MARGIN_A = 0.15
 
 
 def LinearMap(value, input_range, output_range):
@@ -65,17 +66,18 @@ class LockSeries:
         ball = UnitedPosition.RobotBallPos()
         now = time.time()
 
-        # 简单持球检测：盘球电流过阈值就判咬住（不看球坐标在不在窗口）。
+        # 简单持球检测（相对值）：先让 BallStatus 刷新受载电流/基线，再看
+        # margin = 电流 - 空转基线是否过阈值。过阈值就判咬住。
+        status = UnitedPosition.BallStatus(ball)
         try:
-            current = float(UnitedPosition.BallLoadInfo().get("current"))
+            margin = UnitedPosition.BallLoadInfo().get("margin")
         except Exception:
-            current = None
-        if current is not None and current >= HOLD_CURRENT_A:
+            margin = None
+        if margin is not None and margin >= HOLD_MARGIN_A:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             return ball, True
 
-        status = UnitedPosition.BallStatus(ball)
         if status == "lost":
             if (
                 self._lockball_last_seen is not None
