@@ -61,11 +61,14 @@ LOCKBALL_MIN_APPROACH_CM = 18.0
 # 会自动收前进油，所以放开上限不会导致明显画弧。
 LOCKBALL_MAX_YAW_DEGPS = 480.0
 # 转向微分阻尼：只有 P 时大角度会过冲/绕球，D 项按球方位角变化率减速。
-LOCKBALL_YAW_KD = 0.05
+# 变化率先低通再参与 D，避免视觉跳变把 D 打成尖峰。
+LOCKBALL_YAW_KD = 0.03
+LOCKBALL_YAW_RATE_ALPHA = 0.30
 # 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
-# 时先转不冲。
+# 时先转不冲；近球不再横移（横移会把球滚丢），只保留少量。
 LOCKBALL_DOCK_CM = 22.0
-LOCKBALL_DOCK_MAX_MPS = 0.30
+LOCKBALL_DOCK_MAX_MPS = 0.22
+LOCKBALL_DOCK_LATERAL_SCALE = 0.20
 LOCKBALL_ALIGN_FULL_DEG = 12.0
 
 # 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
@@ -126,6 +129,7 @@ class LockSeries:
         self._lockball_hold_ts = 0.0
         self._lockball_last_angle = None
         self._lockball_last_angle_ts = 0.0
+        self._lockball_rate_filt = 0.0
 
     @staticmethod
     def _chassis_can_move() -> bool:
@@ -343,11 +347,16 @@ class LockSeries:
 
         # 近球限速铲球，避免高速把球顶飞。
         dist_cm = math.hypot(ball_x, ball_y)
-        fwd_cap = LOCKBALL_DOCK_MAX_MPS if dist_cm <= LOCKBALL_DOCK_CM else LOCKBALL_MAX_FORWARD_MPS
+        in_dock = dist_cm <= LOCKBALL_DOCK_CM
+        fwd_cap = LOCKBALL_DOCK_MAX_MPS if in_dock else LOCKBALL_MAX_FORWARD_MPS
         speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, fwd_cap) * align
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS) * align
+        # 近球不再横移：横移会把球滚来滚去，靠近时只靠转向对准 + 前压。
+        if in_dock:
+            speed_y *= LOCKBALL_DOCK_LATERAL_SCALE
 
-        # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲/绕球）。
+        # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲）。
+        # 变化率做低通：视觉球位偶尔跳一格，直接微分会把 D 打成尖峰。
         angle_rate = 0.0
         if self._lockball_last_angle is not None:
             angle_dt = now - self._lockball_last_angle_ts
@@ -356,8 +365,10 @@ class LockSeries:
                 angle_rate = delta / angle_dt
         self._lockball_last_angle = ball_angle
         self._lockball_last_angle_ts = now
+        self._lockball_rate_filt += LOCKBALL_YAW_RATE_ALPHA * (angle_rate - self._lockball_rate_filt)
         speed_w = _clamp(
-            ball_angle * yaw_gain - LOCKBALL_YAW_KD * angle_rate, LOCKBALL_MAX_YAW_DEGPS
+            ball_angle * yaw_gain - LOCKBALL_YAW_KD * self._lockball_rate_filt,
+            LOCKBALL_MAX_YAW_DEGPS,
         )
 
         # 近球防死区：正前方近距离保证一个能启动的最小前进速度。
