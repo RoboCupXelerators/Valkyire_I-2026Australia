@@ -18,385 +18,99 @@ from LunaPre.strategy_tools import (
     clamp,
 )
 import math
+import simple_pid
 import time
 
 # Historical helpers refer to ``cfg``; keep it as an explicit alias rather
 # than relying on a wildcard import to leak the name into this module.
 cfg = Settings
 
-# LockBallSlip dribble profile.  Chasing and possession use one fixed roller
-# power; a lost ball falls back to a weaker command.
-LOCKBALL_DRIBBLE_FAR_POWER = 0.30  # 常态追球功率（抓到后升到 HOLD_POWER=0.5）
-# 注：0.2 在电机死区内（起不来、标定基线=怠速），会污染受载判断，弃用。
-LOCKBALL_DRIBBLE_LOST_POWER = 0.30
-
-# “只有真的抓到球再停”：球进接球窗口后，还要盘球电流确认滚轮确实咬住（受载），
-# 才判定捕获并停车；否则以低速继续往里压，直到真咬住。读不到电流信息时退回旧行为
-# （直接算捕获），避免传感器异常导致永远不停车。
-LOCKBALL_SEAT_REQUIRE_LOAD = True
-LOCKBALL_SEAT_PUSH_MPS = 0.15  # 未咬合时的按压前进速度（m/s）；0.06 低于死区会“贴住不动”
-
-# 抓到球后的 transition：从追球功率在 HOLD_RAMP_S 内平滑提升到保持功率；
-# 期间一旦丢球就中断（回到追球/丢球逻辑）。功率渐变回落到追球功率。
-LOCKBALL_HOLD_POWER = 0.50
-LOCKBALL_HOLD_RAMP_S = 0.5
-
-# LockBallSlip 回滚到 PID 之前的人类手调版：按“最远轴距离”选一档比例增益，
-# 直接对球坐标做比例控制。距离单位 cm，平移输出 m/s，转向输出 deg/s。
-# 调参只改这张表：阈值从远到近排列，(触发距离cm, 平移增益 m/s/cm, 转向增益 deg/s/deg)。
-LOCKBALL_GAIN_TABLE = (
-    (75.0, 0.020, 4.0),   # 远：距离 > 75cm
-    (25.0, 0.017, 1.5),   # 中：25cm < 距离 <= 75cm
-    (0.0,  0.060, 1.0),   # 近：距离 <= 25cm（平移增益要够大，否则转弯半径 > 球距会绕圈）
-)
-LOCKBALL_FORWARD_BOOST = 1.5   # 旧版对前进分量的额外放大
-LOCKBALL_MAX_FORWARD_MPS = 1.80
-LOCKBALL_MAX_LATERAL_MPS = 0.85
-# 近球防死区：球在正前方这段距离内时，前进速度不低于该值，否则会出现
-# “球就在眼前却贴住不动/拿不到”的现象（低于电机启动死区）。
-LOCKBALL_MIN_APPROACH_MPS = 0.22
-LOCKBALL_MIN_APPROACH_CM = 18.0
-# 姿态（转向）响应：旧人类版 KpZ=4 且不封顶，这里给一个远离物理上限的值
-# （底盘 yaw 物理上限约 967 deg/s）。转向越大，底盘 turn_translation_scale
-# 会自动收前进油，所以放开上限不会导致明显画弧。
-LOCKBALL_MAX_YAW_DEGPS = 480.0
-# 转向微分阻尼：只有 P 时大角度会过冲/绕球，D 项按球方位角变化率减速。
-# 变化率先低通再参与 D，避免视觉跳变把 D 打成尖峰。
-LOCKBALL_YAW_KD = 0.0
-LOCKBALL_YAW_RATE_ALPHA = 0.30
-# 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
-# 时先转不冲；近球不再横移（横移会把球滚丢），只保留少量。
-LOCKBALL_DOCK_CM = 22.0
-LOCKBALL_DOCK_MAX_MPS = 0.45
-# 贴到嘴边再降速（1~2cm 级），避免最后一下把球顶飞。
-LOCKBALL_CLOSE_CM = 5.0
-LOCKBALL_CLOSE_MAX_MPS = 0.12
-LOCKBALL_DOCK_LATERAL_SCALE = 0.20
-LOCKBALL_ALIGN_FULL_DEG = 12.0
-
-# 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
-LOCKBALL_LOST_HOLD_SECONDS = 0.18
-LOCKBALL_BALL_JUMP_REJECT_CM = 45.0
-LOCKBALL_BALL_JUMP_CONFIRM_FRAMES = 2
-# 近球丢视觉（球钻进车前/被遮住）时的“座位”宽限：这段时间内继续往前压去铲球，
-# 而不是直接停车。半径内的最后已知球位才触发。
-LOCKBALL_SEAT_RADIUS_CM = 15.0
-LOCKBALL_SEAT_GRACE_S = 1.2
-LOCKBALL_SEARCH_YAW_DEGPS = 60.0  # 丢球后慢速自转搜索速度
-# 提速条件 = “盘到球”：直接用标定受载判据 loaded（BallLoadInfo），不再单独
-# 设一个更低的“接触阈值”——空转/起转的电流起伏会淹没它，导致球没碰到就提速。
 
 def LinearMap(value, input_range, output_range):
-    """把 ``value`` 从一个数值区间线性映射到另一个区间。
-    
-    Args:
-        value: 要映射的值
-        input_range: 输入范围 (min, max)
-        output_range: 输出范围 (min, max)
-    
-    Returns:
-        映射后的值
-    """
+    """把 ``value`` 从一个数值区间线性映射到另一个区间。"""
     input_min, input_max = input_range
     output_min, output_max = output_range
     if input_min == input_max:
         raise ValueError("input_range 的两个端点不能相同")
-    
-    # 计算映射
     input_span = input_max - input_min
     output_span = output_max - output_min
-    
     scaled_value = (value - input_min) / input_span
-    mapped_value = output_min + (scaled_value * output_span)
-    
-    return mapped_value
+    return output_min + (scaled_value * output_span)
 
 
 class LockSeries:
-    """机器人坐标系下的抢球/锁球控制器。"""
+    """机器人坐标系下的抢球/锁球控制器（7 月最简版：抓到停、丢球停、纯比例追）。"""
 
     def __init__(self):
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
-        self.lost_hold_seconds = LOCKBALL_LOST_HOLD_SECONDS
-        self.ball_jump_reject_cm = LOCKBALL_BALL_JUMP_REJECT_CM
-        self.ball_jump_confirm_frames = LOCKBALL_BALL_JUMP_CONFIRM_FRAMES
+        self.lost_hold_seconds = 0.12
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
-        self._lockball_jump_candidate = None
-        self._lockball_jump_candidate_frames = 0
-        self._pose_revision = None
-        self._lockball_was_caught = False
-        self._lockball_in_window = False
-        self._lockball_holding = False
-        self._lockball_hold_ts = 0.0
-        self._lockball_last_angle = None
-        self._lockball_last_angle_ts = 0.0
-        self._lockball_rate_filt = 0.0
+        self.pan_x = simple_pid.PID(0.027, 0, 0, setpoint=self.catch_x, output_limits=(-1.09, 0), auto_mode=True)
+        self.pan_y = simple_pid.PID(0.022, 0, 0, setpoint=self.catch_y, output_limits=(-0.73, 0.73), auto_mode=True)
+        self.pan_w = simple_pid.PID(2.3, 0, 0, setpoint=0, output_limits=(-155, 155), auto_mode=True)
 
-    @staticmethod
-    def _chassis_can_move() -> bool:
-        can_move = getattr(chassis, "CanMove", None)
-        if not callable(can_move):
-            return True
-        try:
-            return bool(can_move())
-        except Exception:
-            return False
-
-    def _reset_on_pose_change(self):
-        bits = getattr(runtime, "Bits", None)
-        getter = getattr(bits, "GetPoseRevision", None)
-        if not callable(getter):
-            return
-        revision = int(getter())
-        if self._pose_revision is not None and revision != self._pose_revision:
-            self._lockball_last_seen = None
-            self._lockball_last_seen_ts = 0.0
-            self._clear_ball_jump_candidate()
-            self._abort_hold()
-        self._pose_revision = revision
-
-    def _clear_ball_jump_candidate(self):
-        self._lockball_jump_candidate = None
-        self._lockball_jump_candidate_frames = 0
-
-    @staticmethod
-    def _grip_confirmed() -> bool:
-        """盘球电流是否确认滚轮真的咬住球（“真的抓到球”的判据）。
-
-        ``BallStatus()`` 只说明球进了接球窗口；这里再叠加电流受载状态
-        （``BallLoadInfo().loaded``，由校准 + 在线细化得出）。读不到电流信息时
-        保守放行、退回旧行为，避免传感器异常导致永远不停车。
-        """
-
-        if not LOCKBALL_SEAT_REQUIRE_LOAD:
-            return True
-        try:
-            loaded = UnitedPosition.BallLoadInfo().get("loaded")
-        except Exception:
-            return True
-        return True if loaded is None else bool(loaded)
-
-    def _begin_hold(self, now: float) -> None:
-        """进入“保持”transition：记录起点，随后在 HOLD_RAMP_S 内升功率。"""
-        self._lockball_holding = True
-        self._lockball_hold_ts = now
-
-    def _abort_hold(self) -> None:
-        """中断保持 transition（丢球 / 脱落时调用），下次抓到重新从追球功率升。"""
-        self._lockball_holding = False
-        self._lockball_hold_ts = 0.0
-
-    def _hold_power(self, now: float) -> float:
-        """保持阶段的下发功率：从追球功率线性升到保持功率。"""
-        if LOCKBALL_HOLD_RAMP_S <= 0.0:
-            return LOCKBALL_HOLD_POWER
-        ratio = (now - self._lockball_hold_ts) / LOCKBALL_HOLD_RAMP_S
-        ratio = max(0.0, min(1.0, ratio))
-        return LOCKBALL_DRIBBLE_FAR_POWER + ratio * (
-            LOCKBALL_HOLD_POWER - LOCKBALL_DRIBBLE_FAR_POWER
-        )
+    def _reset_lockball_pid(self):
+        self.pan_x.reset()
+        self.pan_y.reset()
+        self.pan_w.reset()
 
     def _current_or_recent_ball(self):
-        """返回当前球坐标；如果刚丢球很短时间，就临时沿用上一帧坐标。
-
-        视觉偶尔会闪一下 [0xfff, 0xfff]，直接停车会让追球动作抖动。
-        所以这里保留一个很短的缓存窗口。持球状态由 ``BallStatus()`` 判定，
-        真正持球时清掉缓存。
-        """
+        """返回当前球坐标；刚丢球很短时间就沿用上一帧坐标，避免追球抖动。"""
         ball = UnitedPosition.RobotBallPos()
-        ball_status = UnitedPosition.BallStatus(ball)
-        self._lockball_in_window = ball_status == "held"
         now = time.time()
-        if ball_status == "lost":
-            self._clear_ball_jump_candidate()
-            if self._lockball_last_seen is not None:
-                age = now - self._lockball_last_seen_ts
-                last = self._lockball_last_seen
-                close = math.hypot(float(last[0]), float(last[1])) <= LOCKBALL_SEAT_RADIUS_CM
-                grace = LOCKBALL_SEAT_GRACE_S if close else self.lost_hold_seconds
-                if age <= grace:
-                    # 近球丢视觉：当作“在窗口”，继续往前压去铲球，不要停死。
-                    self._lockball_in_window = close
-                    return last, False
+        status = UnitedPosition.BallStatus(ball)
+        if status == "lost":
+            if (
+                self._lockball_last_seen is not None
+                and now - self._lockball_last_seen_ts <= self.lost_hold_seconds
+            ):
+                return self._lockball_last_seen, False
             return ball, False
-        if ball_status == "held":
-            if not self._grip_confirmed():
-                # 球进了接球窗口，但盘球电流还没确认滚轮咬住——不算“抓到”。
-                # 保留坐标，交给 LockBallSlip 低速往里压，直到真咬住才停车。
-                self._clear_ball_jump_candidate()
-                self._lockball_last_seen = list(ball)
-                self._lockball_last_seen_ts = now
-                return ball, False
+        if status == "held":
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
-            self._clear_ball_jump_candidate()
             return ball, True
-
-        # 电流已确认滚轮咬住、且球确实在车前接球口附近 —— 不管球坐标在不在接球
-        # 窗口，都算抓到球（实测咬合点常略超窗口，只靠 BallStatus 会漏判）。
-        # 必须限制在“车前近处”：否则盘球电流的升功率瞬态/噪声会在球还在侧后方
-        # 时误判捕获，机器人就原地不追了。
-        if (self._grip_confirmed()
-                and 0.0 < float(ball[0]) <= self.catch_x + 6.0
-                and abs(float(ball[1])) <= 6.0):
-            self._lockball_last_seen = None
-            self._lockball_last_seen_ts = 0.0
-            self._clear_ball_jump_candidate()
-            return ball, True
-
-        # A scene reset or delayed simulator packet can briefly report a stale
-        # ball position hundreds of centimetres away from the previous frame.
-        # Reject a single impossible jump, but do not keep rejecting forever:
-        # a genuine target change must be accepted after a few consecutive
-        # observations and the PID state must be restarted for the new target.
-        candidate = list(ball)
-        if self._lockball_last_seen is not None:
-            jump_cm = math.hypot(
-                float(candidate[0]) - float(self._lockball_last_seen[0]),
-                float(candidate[1]) - float(self._lockball_last_seen[1]),
-            )
-            if jump_cm > self.ball_jump_reject_cm:
-                # Count consecutive observations that remain far from the
-                # previous accepted target.  The ball can move between those
-                # observations, so comparing the candidate lists for exact
-                # equality would reject a real moving target forever.
-                self._lockball_jump_candidate = candidate
-                self._lockball_jump_candidate_frames += 1
-
-                if self._lockball_jump_candidate_frames < self.ball_jump_confirm_frames:
-                    return self._lockball_last_seen, False
-
-                self._lockball_last_seen = candidate
-                self._lockball_last_seen_ts = now
-                self._clear_ball_jump_candidate()
-                return candidate, False
-
-        self._clear_ball_jump_candidate()
-
-        self._lockball_last_seen = candidate
+        self._lockball_last_seen = list(ball)
         self._lockball_last_seen_ts = now
         return ball, False
 
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
-        self._reset_on_pose_change()
-        if not self._chassis_can_move():
-            # 权限被裁判锁住时不要下发任何轮速。
-            chassis.stop()
-            return False
-
         ball, caught = self._current_or_recent_ball()
-        now = time.time()
-
-        # 提速条件 = “盘到球”：用标定受载判据 loaded（电流相对空转基线升过标定
-        # margin，且过了启动屏蔽/迟滞）。不用更低的“接触阈值”，因为空转/起转的
-        # 电流起伏会淹没它，导致球还没碰到就误提速。
-        staging = caught
-        if staging and not self._lockball_holding:
-            self._begin_hold(now)
-        elif not staging and self._lockball_holding:
-            self._abort_hold()  # 电流回落（丢了/没咬住）：中断提升
-        hold_power = (
-            self._hold_power(now) if self._lockball_holding
-            else LOCKBALL_DRIBBLE_FAR_POWER
-        )
-
         if caught:
-            # 电流确认滚轮真咬住：捕获沿停车一次，并维持提升后的保持功率。
-            # （不停车会让车一直往前蹭、把球推走；调用方如 TurnTo_with_ball 会在
-            #  随后自己发运动指令，所以只在沿上停一次。）
-            if not self._lockball_was_caught:
-                chassis.stop()
-            self._lockball_was_caught = True
-            peripheral.Dribble(hold_power)
+            peripheral.Dribble(True)
+            chassis.stop()
+            self._reset_lockball_pid()
             return True
-
-        if self._lockball_in_window:
-            self._lockball_was_caught = False
-            peripheral.Dribble(hold_power)
-            chassis.RobotMoveVector(LOCKBALL_SEAT_PUSH_MPS, 0.0, 0.0)
-            return False
-
         if ball == BALL_NOT_FOUND:
-            self._lockball_was_caught = False
-            peripheral.Dribble(LOCKBALL_DRIBBLE_LOST_POWER)
-            # 丢球别停死：慢速自转扫一圈找球（否则球滚到侧后方就永远追不到）。
-            chassis.RobotMoveVector(0.0, 0.0, LOCKBALL_SEARCH_YAW_DEGPS)
+            peripheral.Dribble(True)
+            chassis.stop()
+            self._reset_lockball_pid()
             return False
 
-        self._lockball_was_caught = False
-        ball_x, ball_y = float(ball[0]), float(ball[1])
-        if ball_x == 0.0 and ball_y == 0.0:
-            ball_angle = 0.0
+        ball_x, ball_y = ball[0], ball[1]
+        if ball_x == 0 and ball_y == 0:
+            ball_angle = 0
         else:
-            ball_angle = math.degrees(math.atan2(ball_y, ball_x))
+            ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
+        speed_x = max(0, -self.pan_x(ball_x))
+        speed_y = -self.pan_y(ball_y)
+        speed_w = -self.pan_w(ball_angle)
 
-        # 人类手调分段比例律：按“最远轴距离”选一档增益，直接对球坐标做比例控制。
-        # 后向球得到负的前进分量，自然倒车追球；大角度误差由转向项纠回。
-        # 调参改 LOCKBALL_GAIN_TABLE。
-        reach_cm = max(abs(ball_x), abs(ball_y))
-        gain = LOCKBALL_GAIN_TABLE[-1][1]
-        yaw_gain = LOCKBALL_GAIN_TABLE[-1][2]
-        for min_cm, xy_gain, wz_gain in LOCKBALL_GAIN_TABLE:
-            if reach_cm > min_cm:
-                gain, yaw_gain = xy_gain, wz_gain
-                break
+        if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2:
+            speed_x = 0
+        if ball_x <= 0:
+            speed_x = 0
 
-        # 未对准先转：方位角越大，前进/横移越小；球在身后只转不冲。
-        if abs(ball_angle) >= 90.0:
-            align = 0.0
-        else:
-            align = math.cos(math.radians(min(abs(ball_angle), 90.0)))
-            full = math.cos(math.radians(LOCKBALL_ALIGN_FULL_DEG))
-            if full > 1e-6:
-                align = min(1.0, align / full)
-
-        # 近球限速铲球，避免高速把球顶飞。
-        dist_cm = math.hypot(ball_x, ball_y)
-        in_dock = dist_cm <= LOCKBALL_DOCK_CM
-        if dist_cm <= LOCKBALL_CLOSE_CM:
-            # 贴到嘴边（1~2cm 级）再降速，避免把球顶飞。
-            fwd_cap = LOCKBALL_CLOSE_MAX_MPS
-        elif in_dock:
-            fwd_cap = LOCKBALL_DOCK_MAX_MPS
-        else:
-            fwd_cap = LOCKBALL_MAX_FORWARD_MPS
-        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, fwd_cap) * align
-        speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS) * align
-        # 近球不再横移：横移会把球滚来滚去，靠近时只靠转向对准 + 前压。
-        if in_dock:
-            speed_y *= LOCKBALL_DOCK_LATERAL_SCALE
-
-        # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲）。
-        # 变化率做低通：视觉球位偶尔跳一格，直接微分会把 D 打成尖峰。
-        angle_rate = 0.0
-        if self._lockball_last_angle is not None:
-            angle_dt = now - self._lockball_last_angle_ts
-            if angle_dt > 1e-4:
-                delta = (ball_angle - self._lockball_last_angle + 180.0) % 360.0 - 180.0
-                angle_rate = delta / angle_dt
-        self._lockball_last_angle = ball_angle
-        self._lockball_last_angle_ts = now
-        self._lockball_rate_filt += LOCKBALL_YAW_RATE_ALPHA * (angle_rate - self._lockball_rate_filt)
-        speed_w = _clamp(
-            ball_angle * yaw_gain - LOCKBALL_YAW_KD * self._lockball_rate_filt,
-            LOCKBALL_MAX_YAW_DEGPS,
-        )
-
-        # 近球防死区：正前方近距离保证一个能启动的最小前进速度（不超过当前限速档）。
-        if 0.0 < ball_x <= LOCKBALL_MIN_APPROACH_CM and abs(ball_y) < 6.0:
-            speed_x = max(speed_x, min(LOCKBALL_MIN_APPROACH_MPS, fwd_cap) * align)
-
-        peripheral.Dribble(hold_power)
+        peripheral.Dribble(True)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
     def slip(self):
         return self.LockBallSlip()
-
 
 lockball = LockSeries()
 

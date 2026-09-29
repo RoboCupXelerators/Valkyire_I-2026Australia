@@ -73,6 +73,8 @@ def motion_harness(monkeypatch):
 def _feed_ball(monkeypatch, values):
     stream = iter(values)
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(stream))
+    # 最简版 LockBallSlip 用 BallStatus 判自由/持球；这些用例喂的是自由球坐标。
+    monkeypatch.setattr(basic.UnitedPosition, "BallStatus", lambda *_a, **_k: "free")
 
 
 # ---------------------------------------------------------------- 1. cadence
@@ -89,8 +91,6 @@ def test_lockball_command_stream_tracks_a_moving_ball(motion_harness, monkeypatc
     """
 
     lock = basic.LockSeries()
-    lock.ball_jump_reject_cm = 1000.0
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
 
     frames = 100  # 2 s at 50 Hz
     # Start inside the proportional band (no actuator saturation) so output
@@ -139,7 +139,6 @@ def test_lockball_constant_scene_yields_constant_output(motion_harness, monkeypa
     """
 
     lock = basic.LockSeries()
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     _feed_ball(monkeypatch, [[40.0, 15.0]] * 50)
 
     for _ in range(50):
