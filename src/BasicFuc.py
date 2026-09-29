@@ -236,12 +236,13 @@ class LockSeries:
             self._clear_ball_jump_candidate()
             return ball, True
 
-        # 电流已确认滚轮咬住、且球确实在近处 —— 不管球坐标在不在接球窗口，
-        # 都算抓到球（实测咬合点常略超窗口，只靠 BallStatus 会漏判）。
-        # 必须限制“近处”：否则盘球电流的升功率瞬态/噪声会在球还在很远处时
-        # 误判捕获，机器人就原地不追了。
+        # 电流已确认滚轮咬住、且球确实在车前接球口附近 —— 不管球坐标在不在接球
+        # 窗口，都算抓到球（实测咬合点常略超窗口，只靠 BallStatus 会漏判）。
+        # 必须限制在“车前近处”：否则盘球电流的升功率瞬态/噪声会在球还在侧后方
+        # 时误判捕获，机器人就原地不追了。
         if (self._grip_confirmed()
-                and math.hypot(float(ball[0]), float(ball[1])) <= LOCKBALL_SEAT_RADIUS_CM):
+                and 0.0 < float(ball[0]) <= self.catch_x + 6.0
+                and abs(float(ball[1])) <= 6.0):
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             self._clear_ball_jump_candidate()
