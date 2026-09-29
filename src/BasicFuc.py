@@ -63,7 +63,7 @@ LOCKBALL_MIN_APPROACH_CM = 18.0
 LOCKBALL_MAX_YAW_DEGPS = 480.0
 # 转向微分阻尼：只有 P 时大角度会过冲/绕球，D 项按球方位角变化率减速。
 # 变化率先低通再参与 D，避免视觉跳变把 D 打成尖峰。
-LOCKBALL_YAW_KD = 0.03
+LOCKBALL_YAW_KD = 0.0
 LOCKBALL_YAW_RATE_ALPHA = 0.30
 # 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
 # 时先转不冲；近球不再横移（横移会把球滚丢），只保留少量。
