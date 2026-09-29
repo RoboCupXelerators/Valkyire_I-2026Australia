@@ -303,12 +303,20 @@ def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
             return False
         else:
             dribble_timer = timer()
+            shuffle_timer = timer()
             if not dribble_timer.countdown(hold_s):
                 peripheral.Dribble(0.99)
+                return False
             else:
                 dribble_timer.reset()
-                dribble_timer.reset() if dribble_timer.countdown(shake_s*2) else chassis.RobotMoveVector(0, shake_speed, 0) if dribble_timer.countdown(shake_s) else chassis.RobotMoveVector(0, -shake_speed, 0)
-                return True
+                shuffle_timer.countdown(shake_s)
+                if shuffle_timer.countdown():
+                    chassis.RobotMoveVector(0, shake_speed, 0)
+                    shuffle_timer.reset()
+                    return True
+                else:
+                    chassis.RobotMoveVector(0, -shake_speed, 0)
+                    return False
 
 
 def logic_step(enabled_shots=None):
