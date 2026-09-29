@@ -75,6 +75,7 @@ def _feed_ball(monkeypatch, values):
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(stream))
     # 最简版 LockBallSlip 用 BallStatus 判自由/持球；这些用例喂的是自由球坐标。
     monkeypatch.setattr(basic.UnitedPosition, "BallStatus", lambda *_a, **_k: "free")
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"current": None})
 
 
 # ---------------------------------------------------------------- 1. cadence

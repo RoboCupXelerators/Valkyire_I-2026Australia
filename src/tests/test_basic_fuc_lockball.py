@@ -14,9 +14,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import BasicFuc as basic  # noqa: E402
 
 
-def _lock_with_ball(monkeypatch, ball, status):
+def _lock_with_ball(monkeypatch, ball, status, current=None):
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: ball)
     monkeypatch.setattr(basic.UnitedPosition, "BallStatus", lambda *_a, **_k: status)
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"current": current})
     lock = basic.LockSeries()
     monkeypatch.setattr(lock, "_reset_lockball_pid", lambda: None)
     return lock
@@ -27,6 +28,18 @@ def test_held_ball_stops_and_returns_true(monkeypatch):
     monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
     lock = _lock_with_ball(monkeypatch, [6.9, 0.0], "held")
+    assert lock.LockBallSlip() is True
+    assert stops == [True]
+
+
+def test_high_dribble_current_counts_as_held(monkeypatch):
+    # 简单电流持球检测：电流过阈值就算咬住，即使 BallStatus 说 free。
+    stops = []
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
+    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
+    lock = _lock_with_ball(
+        monkeypatch, [20.0, 0.0], "free", current=basic.HOLD_CURRENT_A + 0.1
+    )
     assert lock.LockBallSlip() is True
     assert stops == [True]
 
