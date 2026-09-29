@@ -81,7 +81,8 @@ LOCKBALL_BALL_JUMP_CONFIRM_FRAMES = 2
 # 近球丢视觉（球钻进车前/被遮住）时的“座位”宽限：这段时间内继续往前压去铲球，
 # 而不是直接停车。半径内的最后已知球位才触发。
 LOCKBALL_SEAT_RADIUS_CM = 15.0
-LOCKBALL_SEAT_GRACE_S = 0.6
+LOCKBALL_SEAT_GRACE_S = 1.2
+LOCKBALL_SEARCH_YAW_DEGPS = 60.0  # 丢球后慢速自转搜索速度
 # 提速条件 = “盘到球”：直接用标定受载判据 loaded（BallLoadInfo），不再单独
 # 设一个更低的“接触阈值”——空转/起转的电流起伏会淹没它，导致球没碰到就提速。
 
@@ -318,7 +319,8 @@ class LockSeries:
         if ball == BALL_NOT_FOUND:
             self._lockball_was_caught = False
             peripheral.Dribble(LOCKBALL_DRIBBLE_LOST_POWER)
-            chassis.stop()
+            # 丢球别停死：慢速自转扫一圈找球（否则球滚到侧后方就永远追不到）。
+            chassis.RobotMoveVector(0.0, 0.0, LOCKBALL_SEARCH_YAW_DEGPS)
             return False
 
         self._lockball_was_caught = False
