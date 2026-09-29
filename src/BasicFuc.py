@@ -60,6 +60,8 @@ LOCKBALL_MIN_APPROACH_CM = 18.0
 # （底盘 yaw 物理上限约 967 deg/s）。转向越大，底盘 turn_translation_scale
 # 会自动收前进油，所以放开上限不会导致明显画弧。
 LOCKBALL_MAX_YAW_DEGPS = 480.0
+# 转向微分阻尼：只有 P 时大角度会过冲/绕球，D 项按球方位角变化率减速。
+LOCKBALL_YAW_KD = 0.05
 
 # 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
@@ -117,6 +119,8 @@ class LockSeries:
         self._lockball_in_window = False
         self._lockball_holding = False
         self._lockball_hold_ts = 0.0
+        self._lockball_last_angle = None
+        self._lockball_last_angle_ts = 0.0
 
     @staticmethod
     def _chassis_can_move() -> bool:
@@ -325,7 +329,19 @@ class LockSeries:
 
         speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, LOCKBALL_MAX_FORWARD_MPS)
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS)
-        speed_w = _clamp(ball_angle * yaw_gain, LOCKBALL_MAX_YAW_DEGPS)
+
+        # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲/绕球）。
+        angle_rate = 0.0
+        if self._lockball_last_angle is not None:
+            angle_dt = now - self._lockball_last_angle_ts
+            if angle_dt > 1e-4:
+                delta = (ball_angle - self._lockball_last_angle + 180.0) % 360.0 - 180.0
+                angle_rate = delta / angle_dt
+        self._lockball_last_angle = ball_angle
+        self._lockball_last_angle_ts = now
+        speed_w = _clamp(
+            ball_angle * yaw_gain - LOCKBALL_YAW_KD * angle_rate, LOCKBALL_MAX_YAW_DEGPS
+        )
 
         # 近球防死区：正前方近距离保证一个能启动的最小前进速度。
         if 0.0 < ball_x <= LOCKBALL_MIN_APPROACH_CM and abs(ball_y) < 6.0:
