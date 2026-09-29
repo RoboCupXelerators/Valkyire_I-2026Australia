@@ -62,6 +62,11 @@ LOCKBALL_MIN_APPROACH_CM = 18.0
 LOCKBALL_MAX_YAW_DEGPS = 480.0
 # 转向微分阻尼：只有 P 时大角度会过冲/绕球，D 项按球方位角变化率减速。
 LOCKBALL_YAW_KD = 0.05
+# 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
+# 时先转不冲。
+LOCKBALL_DOCK_CM = 22.0
+LOCKBALL_DOCK_MAX_MPS = 0.45
+LOCKBALL_ALIGN_FULL_DEG = 30.0
 
 # 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
@@ -327,8 +332,20 @@ class LockSeries:
                 gain, yaw_gain = xy_gain, wz_gain
                 break
 
-        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, LOCKBALL_MAX_FORWARD_MPS)
-        speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS)
+        # 未对准先转：方位角越大，前进/横移越小；球在身后只转不冲。
+        if abs(ball_angle) >= 90.0:
+            align = 0.0
+        else:
+            align = math.cos(math.radians(min(abs(ball_angle), 90.0)))
+            full = math.cos(math.radians(LOCKBALL_ALIGN_FULL_DEG))
+            if full > 1e-6:
+                align = min(1.0, align / full)
+
+        # 近球限速铲球，避免高速把球顶飞。
+        dist_cm = math.hypot(ball_x, ball_y)
+        fwd_cap = LOCKBALL_DOCK_MAX_MPS if dist_cm <= LOCKBALL_DOCK_CM else LOCKBALL_MAX_FORWARD_MPS
+        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, -fwd_cap, fwd_cap) * align
+        speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS) * align
 
         # 转向 PD：P 用球方位角，D 用其变化率做阻尼（抑制过冲/绕球）。
         angle_rate = 0.0
@@ -345,10 +362,8 @@ class LockSeries:
 
         # 近球防死区：正前方近距离保证一个能启动的最小前进速度。
         if 0.0 < ball_x <= LOCKBALL_MIN_APPROACH_CM and abs(ball_y) < 6.0:
-            speed_x = max(speed_x, LOCKBALL_MIN_APPROACH_MPS)
+            speed_x = max(speed_x, LOCKBALL_MIN_APPROACH_MPS * align)
 
-        # 追球不叠加近区降速：旧人类版没有，它会把速度砍半（实测 scale≈0.53），
-        # 边界防护由上层策略/Positions 负责。
         peripheral.Dribble(hold_power)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
