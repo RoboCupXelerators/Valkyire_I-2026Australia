@@ -88,7 +88,7 @@ DRIBBLE_NOISE_MIN_SAMPLES = 30       # 至少这么多空转样本才启用自�
 DRIBBLE_FREESPIN_MIN_CM = 12.0       # 球距离 >= 此值才算“确定空转”，用于估基线/噪声
 DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰）
 DRIBBLE_BASELINE_ALPHA_FAR = 0.0     # 只用标定基线，不做漂移补偿（电流环不准）
-DRIBBLE_LOAD_ENGAGE_S = 0.15         # 受载持续多久才确认（太短会把瞬态电流当抓住）
+DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
 DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
 DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
 DRIBBLE_CMD_EPS = 0.03               # 下发功率变化小于此值不算“换功率”（平滑升功率时不重置）
@@ -494,7 +494,7 @@ class Positions:
             return True
 
     def _send_vision_pose(self) -> None:
-        """Publish pose at 60 Hz to the vision child without giving vision serial ownership."""
+        """Publish pose at 60 Hz to Hybrid without giving vision serial ownership."""
 
         now = time.monotonic()
         sock = self.sock
@@ -509,7 +509,7 @@ class Positions:
             sock.sendto(packet, ("127.0.0.1", 5006))
         except OSError:
             if not self.vision_data_stop_event.is_set():
-                logger.debug("Failed to publish pose to vision")
+                logger.debug("Failed to publish pose to Hybrid vision")
 
     @staticmethod
     def _start_vision_subprocess():
@@ -1194,8 +1194,8 @@ class Positions:
             return "held" if (loaded and in_window) else "free"
 
         if ball_pos == BALL_NOT_FOUND:
-            # 视觉丢球但电流仍受载、且刚在窗口里出现过 -> 大概率仍咬着，判 held。
-            return "held" if (loaded and recently_in_window) else "lost"
+            # 球不在视野里：一律判 lost，不再用电流把它“桥”成 held。
+            return "lost"
 
         if in_window:
             if BALL_STATUS_REQUIRE_LOAD and not loaded:
