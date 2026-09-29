@@ -65,6 +65,10 @@ LOCKBALL_MAX_YAW_DEGPS = 480.0
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
 LOCKBALL_BALL_JUMP_REJECT_CM = 45.0
 LOCKBALL_BALL_JUMP_CONFIRM_FRAMES = 2
+# 近球丢视觉（球钻进车前/被遮住）时的“座位”宽限：这段时间内继续往前压去铲球，
+# 而不是直接停车。半径内的最后已知球位才触发。
+LOCKBALL_SEAT_RADIUS_CM = 15.0
+LOCKBALL_SEAT_GRACE_S = 0.6
 # 提速条件 = “盘到球”：直接用标定受载判据 loaded（BallLoadInfo），不再单独
 # 设一个更低的“接触阈值”——空转/起转的电流起伏会淹没它，导致球没碰到就提速。
 
@@ -191,11 +195,15 @@ class LockSeries:
         now = time.time()
         if ball_status == "lost":
             self._clear_ball_jump_candidate()
-            if (
-                self._lockball_last_seen is not None
-                and now - self._lockball_last_seen_ts <= self.lost_hold_seconds
-            ):
-                return self._lockball_last_seen, False
+            if self._lockball_last_seen is not None:
+                age = now - self._lockball_last_seen_ts
+                last = self._lockball_last_seen
+                close = math.hypot(float(last[0]), float(last[1])) <= LOCKBALL_SEAT_RADIUS_CM
+                grace = LOCKBALL_SEAT_GRACE_S if close else self.lost_hold_seconds
+                if age <= grace:
+                    # 近球丢视觉：当作“在窗口”，继续往前压去铲球，不要停死。
+                    self._lockball_in_window = close
+                    return last, False
             return ball, False
         if ball_status == "held":
             if not self._grip_confirmed():
