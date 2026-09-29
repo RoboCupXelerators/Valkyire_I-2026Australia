@@ -91,7 +91,7 @@ def main():
             print(f"{time.time()-t0:5.2f} {d:6.1f}  {bs}  "
                   f"{_cmd['x']:5.2f}  {_cmd['y']:5.2f}  {_cmd['w']:5.1f}  "
                   f"{power_s} {cur_s} {dev_s} {idx_s}  {str(info['loaded'])[:4]:5s} "
-                  f"{str(B.lockball._lockball_holding)[:4]:5s}",
+                  f"{str(getattr(B.lockball, '_lockball_holding', False))[:4]:5s}",
                   flush=True)
             time.sleep(period)
     except KeyboardInterrupt:

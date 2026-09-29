@@ -116,10 +116,10 @@ def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
 def logic_step():
     """Select and execute one shot strategy tick."""
     pose = UnitedPosition.FieldRobotPose()
-    logger.success("UplaneScore: %s" % UplaneScore(pose))
-    logger.success("HuckScore: %s" % HuckScore(pose))
-    logger.success("JumpScore: %s" % JumpScore(pose))
-    logger.warning("BowScore: %s" % BowScore(pose))
+    # logger.success("UplaneScore: %s" % UplaneScore(pose))
+    # logger.success("HuckScore: %s" % HuckScore(pose))
+    # logger.success("JumpScore: %s" % JumpScore(pose))
+    # logger.warning("BowScore: %s" % BowScore(pose))
 
     if UnitedPosition.RobotBallPos() == BALL_NOT_FOUND:
         peripheral.Dribble(False)
@@ -130,22 +130,34 @@ def logic_step():
     if not lockball.LockBallSlip():
         return
 
-    uplane_score = UplaneScore(pose)
+    # uplane_score = UplaneScore(pose)
     huck_score = HuckScore(pose)
     jump_score = JumpScore(pose)
-    scores = [uplane_score, huck_score, jump_score]
+    scores = [ huck_score, jump_score]
     logger.debug(scores)
 
+    if not UnitedPosition.RestrictedArea():
+        return
+
+    if not lockball.slip():
+        return
+
+    logger.warning(abs((UnitedPosition.Pos2Angle(pose, [100, 0])) % 360))
+
+    if abs((UnitedPosition.Pos2Angle(pose, [100, 0])-180) % 360) >= 100:
+        U_Shoot()
+
     if max(scores) == huck_score:
-        if UnitedPosition.CanShoot():
+        if abs((UnitedPosition.Pos2Angle(pose, [100, 0])-180) % 360) <= 10:
             peripheral.ShootBall()
         else:
-            try:
-                TurnTo_with_ball(-UnitedPosition.ShootWindow()["target_yaw_deg"])
-            except Exception:
-                TurnTo_with_ball(UnitedPosition.Pos2Angle(pose, [100, 0]) % 360)
-    elif max(scores) == uplane_score:
-        UplaneStep()
+            TurnTo_with_ball(UnitedPosition.Pos2Angle(pose, [100, 0]) % 360)
+    elif max(scores) == jump_score:
+            peripheral.ShootBall()
+        
+    # elif max(scores) == uplane_score:
+    #     UplaneStep()
+    
     else:
         logger.debug("Jump/rebound score selected; shot action is disabled.")
 

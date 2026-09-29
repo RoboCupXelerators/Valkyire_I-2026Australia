@@ -25,8 +25,9 @@ import time
 # than relying on a wildcard import to leak the name into this module.
 cfg = Settings
 
-# 简单持球检测（相对值）：盘球电流相对空转基线(margin = current - baseline)升过
-# 此值就算滚轮咬住。按实际电流调。
+# 持球检测：优先用归一化受载指数 index=(I-baseline)/(grip-baseline)（跨机器统一，
+# 由 calibrate_dribble.py 标定）；没有 grip 标定时退回绝对 margin=current-baseline。
+HOLD_INDEX_RATIO = 0.40
 HOLD_MARGIN_A = 0.15
 
 
@@ -52,7 +53,7 @@ class LockSeries:
         self.lost_hold_seconds = 0.12
         self._lockball_last_seen = None
         self._lockball_last_seen_ts = 0.0
-        self.pan_x = simple_pid.PID(0.027, 0, 0, setpoint=self.catch_x, output_limits=(-1.09, 0), auto_mode=True)
+        self.pan_x = simple_pid.PID(0.057, 0, 0, setpoint=self.catch_x, output_limits=(-1.09, 0), auto_mode=True)
         self.pan_y = simple_pid.PID(0.022, 0, 0, setpoint=self.catch_y, output_limits=(-0.73, 0.73), auto_mode=True)
         self.pan_w = simple_pid.PID(2.3, 0, 0, setpoint=0, output_limits=(-155, 155), auto_mode=True)
 
@@ -66,14 +67,23 @@ class LockSeries:
         ball = UnitedPosition.RobotBallPos()
         now = time.time()
 
-        # 简单持球检测（相对值）：先让 BallStatus 刷新受载电流/基线，再看
-        # margin = 电流 - 空转基线是否过阈值。过阈值就判咬住。
+        # 持球检测：先让 BallStatus 刷新受载电流/基线，再看受载程度。
+        # 注意：只有“球在视野里”时才采信电流——球不在视野（哨兵值）一律不判
+        # held，避免“没球也判定有”。视野内优先用归一化 index，退回绝对 margin。
         status = UnitedPosition.BallStatus(ball)
-        try:
-            margin = UnitedPosition.BallLoadInfo().get("margin")
-        except Exception:
-            margin = None
-        if margin is not None and margin >= HOLD_MARGIN_A:
+        gripped = False
+        if ball != BALL_NOT_FOUND:
+            try:
+                info = UnitedPosition.BallLoadInfo()
+            except Exception:
+                info = {}
+            index = info.get("index")
+            margin = info.get("margin")
+            if index is not None:
+                gripped = index >= HOLD_INDEX_RATIO
+            else:
+                gripped = margin is not None and margin >= HOLD_MARGIN_A
+        if gripped:
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             return ball, True
@@ -86,9 +96,11 @@ class LockSeries:
                 return self._lockball_last_seen, False
             return ball, False
         if status == "held":
+            # 球进接球窗口，但电流还没确认咬住 —— 不算抓到。返回坐标让控制器
+            # 往前压，等电流确认（上面的 gripped）后才停车。
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
-            return ball, True
+            return ball, False
         self._lockball_last_seen = list(ball)
         self._lockball_last_seen_ts = now
         return ball, False
@@ -97,12 +109,12 @@ class LockSeries:
         """追到 ``CatchVal`` 指定的持球位置。"""
         ball, caught = self._current_or_recent_ball()
         if caught:
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
             return True
         if ball == BALL_NOT_FOUND:
-            peripheral.Dribble(True)
+            peripheral.Dribble(0.3)
             chassis.stop()
             self._reset_lockball_pid()
             return False
@@ -116,12 +128,14 @@ class LockSeries:
         speed_y = -self.pan_y(ball_y)
         speed_w = -self.pan_w(ball_angle)
 
-        if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2:
-            speed_x = 0
+        # 没咬住就缓慢往前压，直到电流确认咬住（“只有真的抓到球再停”）。
+        # 旧逻辑在这里把 speed_x 归零，会在球前停住、永远咬不住。
+        if ball_x > 0 and abs(ball_y - self.catch_y) < 3 and ball_x <= self.catch_x + 3:
+            speed_x = max(speed_x, 0.08)
         if ball_x <= 0:
             speed_x = 0
 
-        peripheral.Dribble(True)
+        peripheral.Dribble(0.3)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
