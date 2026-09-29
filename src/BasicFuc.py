@@ -67,7 +67,7 @@ LOCKBALL_YAW_RATE_ALPHA = 0.30
 # 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
 # 时先转不冲；近球不再横移（横移会把球滚丢），只保留少量。
 LOCKBALL_DOCK_CM = 22.0
-LOCKBALL_DOCK_MAX_MPS = 0.22
+LOCKBALL_DOCK_MAX_MPS = 0.45
 LOCKBALL_DOCK_LATERAL_SCALE = 0.20
 LOCKBALL_ALIGN_FULL_DEG = 12.0
 
