@@ -39,14 +39,13 @@
         "Rec": {
           "type": "select",
           "label": "识别类型",
-          "options": ["AI", "TI", "XV", "BB", "SY", "HV"],
+          "options": ["AI", "TI", "XV", "BB", "SY"],
           "option_labels": {
             "AI": "AI (Arisu Intelligence)",
             "TI": "TI (Tuna Intelligence)",
             "XV": "XV (Xelerator Vision)",
             "BB": "BB (Blob Based)",
-            "SY": "SY (Sim Yolo)",
-            "HV": "HV (Hybrid Vision)"
+            "SY": "SY (Sim Yolo)"
           },
           "default": "TI",
           "order": 4

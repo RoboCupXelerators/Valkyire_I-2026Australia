@@ -21,21 +21,6 @@ from types import SimpleNamespace as _Namespace
 SRC_DIR = Path(__file__).resolve().parent
 from ReasonData import Settings
 
-
-def _bootstrap_iceloong_backend():
-    """Select the only supported physical backend before LunaPre is imported.
-
-    LunaPre constructs its backend eagerly during import. This real-only
-    strategy fixes the physical backend selection before that import.
-    """
-
-    selected = os.environ.get("ROBOCUPX_BITS", "").strip().upper()
-    if selected and selected != "IL":
-        raise RuntimeError("strategy_real_australia requires ROBOCUPX_BITS=IL")
-    os.environ["ROBOCUPX_BITS"] = "IL"
-
-_bootstrap_iceloong_backend()
-
 from LunaPre import (
     Communication,
     UnitedPosition,
@@ -59,7 +44,6 @@ from LunaPre.strategy_tools import (
 # section, so runtime config.json stays clean. Unit suffixes in names are
 # centimetres, seconds, m/s or degrees. Field size, goal geometry and ball
 # diameter are shared with the global Field/Vision config.
-_REAL_PLATFORM = "jetson_nano"
 
 AUSTRALIA = _Namespace(
     Real=_Namespace(
@@ -102,9 +86,6 @@ AUSTRALIA = _Namespace(
         REAL_CARRY_RECOVERY_ARRIVAL_CM=7.0,
         REAL_HELD_BALL_STALL_TIMEOUT_S=0.75,
         REAL_VISION_TIMEOUT_S=0.18,
-        REAL_PLATFORM_JETSON_NANO=_REAL_PLATFORM,
-        REAL_VISION_BACKEND='HV',
-        REAL_VISION_PROFILE='nano',
         REAL_BALL_DIAMETER_CM=float(Settings.Vision.BallDiameter),
     ),
     Team=_Namespace(
@@ -280,7 +261,6 @@ AUSTRALIA = _Namespace(
         ControlPeriodSeconds=0.016666666666666666,
         TeamLinkPollIntervalSeconds=0.016666666666666666,
         TeamLinkEnabled=True,
-        Platform=_REAL_PLATFORM,
     ),
 )
 
@@ -542,89 +522,38 @@ class RealTeamLink:
     def close(self):
         return None
 
-def _normalise_real_platform(value):
-    aliases = {
-        "jetson_nano": AUSTRALIA.Real.REAL_PLATFORM_JETSON_NANO,
-        "jetson-nano": AUSTRALIA.Real.REAL_PLATFORM_JETSON_NANO,
-        "nano": AUSTRALIA.Real.REAL_PLATFORM_JETSON_NANO,
-    }
-    return aliases.get(str(value or "").strip().lower())
-
-def _real_hardware_profile(platform=None):
-    """Return the one version-controlled physical deployment profile.
-
-    ``platform`` is an optional deployment assertion.  No shell environment or
-    host device-tree value is allowed to select a different strategy profile;
-    this keeps a direct invocation and a checked-in strategy identity
-    reproducible across hosts.
-    """
-
-    selected = _normalise_real_platform(platform)
-    if platform is not None and not selected:
-        raise ValueError("real platform must be jetson-nano")
-    return RealHardwareProfile(
-        selected or AUSTRALIA.Real.REAL_PLATFORM_JETSON_NANO,
-        AUSTRALIA.Real.REAL_VISION_BACKEND,
-        AUSTRALIA.Real.REAL_VISION_PROFILE,
-    )
-
-def _configure_real_hardware_profile(profile):
-    """Publish the resolved hardware pair before importing vision modules."""
-
-    if (
-            profile["platform"] != AUSTRALIA.Real.REAL_PLATFORM_JETSON_NANO
-            or profile["vision_backend"] != AUSTRALIA.Real.REAL_VISION_BACKEND
-            or profile["vision_profile"] != AUSTRALIA.Real.REAL_VISION_PROFILE
-    ):
-        raise ValueError("strategy_real_australia has one fixed Jetson Nano/HV/nano profile")
-    os.environ["ROBOCUPX_VISION_BACKEND"] = profile["vision_backend"]
-    os.environ["ROBOCUPX_VISION_PROFILE"] = profile["vision_profile"]
-
-def _configure_real_rule_settings(vision_settings):
-    """Set physical perception geometry before camera/runtime initialization.
+def _configure_real_safety():
+    """Apply the RCJA full-body white-line safety limit to the loaded config.
 
     RCJA does not make penalty-area entry an automatic damage call. Position
     safety therefore protects the full-body white-line out-area limit only;
-    retaining the legacy goal-box guard would reject legal Australian
-    shots and defensive challenges. The body radius stays hardware-configured
-    so an 18cm robot and a larger legal chassis get their own correct limit.
+    retaining the legacy goal-box guard would reject legal Australian shots
+    and defensive challenges. The body radius stays hardware-configured so an
+    18cm robot and a larger legal chassis get their own correct limit.
     """
 
-    for settings in (Settings, vision_settings):
-        try:
-            configured_ball_diameter = float(settings.Vision.BallDiameter)
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise RuntimeError("physical vision must provide an orange-ball diameter") from exc
-        if not 4.1 <= configured_ball_diameter <= 4.3:
-            raise RuntimeError("Australia Open requires a configured 42 mm orange ball")
-        # Field, goal and ball geometry live in the shared Field/Vision config.
-        # Export the validated values to the vision child process so a stale
-        # shell variable cannot override them across the process boundary.
-        os.environ["ROBOCUPX_VISION_BALL_DIAMETER_CM"] = str(configured_ball_diameter)
-        os.environ["ROBOCUPX_VISION_GOAL_WIDTH_CM"] = str(settings.Vision.GoalWidth)
-        os.environ["ROBOCUPX_VISION_GOAL_HEIGHT_CM"] = str(settings.Vision.GoalHeight)
-        safety = settings.Motion.RestrictedArea
-        safety.ProtectionLevel = 2
-        # At protection level 2 Positions computes its coordinate guard as
-        # ``XLimit - (Clearance - robot_radius)``.  XLimit is the physical
-        # wall envelope in this wall-centred coordinate system, therefore the
-        # configured clearance must include the real chassis radius.  Zero
-        # here would expand the permitted centre position one radius *beyond*
-        # the wall.  The white-line ball-out policy remains in
-        # ``_playing_ball_xy`` and does not constrain legal robot traversal.
-        try:
-            robot_radius_cm = float(settings.Chassis.RobotRadiusM) * 100.0
-        except (AttributeError, TypeError, ValueError) as exc:
-            raise RuntimeError("physical chassis must provide RobotRadiusM") from exc
-        if not math.isfinite(robot_radius_cm) or robot_radius_cm <= 0.0:
-            raise RuntimeError("physical chassis RobotRadiusM must be positive")
-        safety.XLimit = float(settings.Field.Long) / 2.0 - 0.05
-        safety.YLimit = float(settings.Field.Short) / 2.0 - 0.05
-        safety.GoalBoxWidth = 0.0
-        safety.GoalBoxYHalf = 0.0
-        safety.GoalBoxCornerRadius = 0.0
-        safety.Clearance = robot_radius_cm + AUSTRALIA.Real.REAL_WALL_CLEARANCE_CM
-        safety.RecoveryClearance = safety.Clearance
+    safety = Settings.Motion.RestrictedArea
+    safety.ProtectionLevel = 2
+    # At protection level 2 Positions computes its coordinate guard as
+    # ``XLimit - (Clearance - robot_radius)``.  XLimit is the physical wall
+    # envelope in this wall-centred coordinate system, therefore the configured
+    # clearance must include the real chassis radius.  Zero here would expand
+    # the permitted centre position one radius *beyond* the wall.  The
+    # white-line ball-out policy remains in ``_playing_ball_xy`` and does not
+    # constrain legal robot traversal.
+    try:
+        robot_radius_cm = float(Settings.Chassis.RobotRadiusM) * 100.0
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError("physical chassis must provide RobotRadiusM") from exc
+    if not math.isfinite(robot_radius_cm) or robot_radius_cm <= 0.0:
+        raise RuntimeError("physical chassis RobotRadiusM must be positive")
+    safety.XLimit = float(Settings.Field.Long) / 2.0 - 0.05
+    safety.YLimit = float(Settings.Field.Short) / 2.0 - 0.05
+    safety.GoalBoxWidth = 0.0
+    safety.GoalBoxYHalf = 0.0
+    safety.GoalBoxCornerRadius = 0.0
+    safety.Clearance = robot_radius_cm + AUSTRALIA.Real.REAL_WALL_CLEARANCE_CM
+    safety.RecoveryClearance = safety.Clearance
 
 def _configure_mainboard_field(bits):
     """Publish the official wall envelope to the real lidar localiser."""
@@ -641,39 +570,6 @@ def _configure_mainboard_field(bits):
     ):
         raise RuntimeError("MainBoard SET_ROOM_SIZE was rejected")
 
-def _require_four_camera_topology(vision_settings):
-    """Reject incomplete/aliased physical camera configurations pre-motion."""
-
-    ports = list(getattr(getattr(vision_settings, "Vision", object()), "CamPorts", []) or [])
-    try:
-        normalized = [int(port) for port in ports]
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("real strategy requires four numeric camera ports") from exc
-    if len(normalized) != 4 or len(set(normalized)) != 4 or any(port < 0 for port in normalized):
-        raise RuntimeError("real strategy requires four distinct non-negative camera ports")
-    return normalized
-
-def _require_real_vision_runtime(profile, vision_settings):
-    """Verify the real UDP producer configuration without starting cameras.
-
-    The IL backend intentionally has no in-process ``runtime.vision`` object:
-    ``UnitedPosition.StartVision()`` owns the existing physical UDP producer.
-    Preflight must therefore validate the inherited producer configuration,
-    while the packet timestamp is checked after that producer starts.
-    """
-
-    ports = list(getattr(getattr(vision_settings, "Vision", object()), "CamPorts", []) or [])
-    if len(ports) != 4 or len(set(ports)) != 4:
-        raise RuntimeError("physical vision did not expose four distinct camera slots")
-    # ``load_hybrid_config`` is an existing child-process compatibility API and
-    # reads this transport variable.  Set the canonical value immediately
-    # before calling it; the shell never gets authority over the real profile.
-    os.environ["ROBOCUPX_VISION_PROFILE"] = profile["vision_profile"]
-    from vision_utils.hybrid.profiles import load_hybrid_config
-
-    hybrid = load_hybrid_config(vision_settings)
-    if hybrid.profile != profile["vision_profile"]:
-        raise RuntimeError("jetson-nano did not start the Nano HybridVision profile")
 # MainBoardFirmware maps the physical kicker's four calibrated pulse levels
 # (8/10/11/50 ms).  Tactics select only these real controller levels.
 # The held ball remains inside the white line, which is 30 cm before the wall
@@ -7485,11 +7381,6 @@ def _probe_mainboard_readonly_health(bits):
         except (TypeError, ValueError) as exc:
             raise RuntimeError(f"MainBoard {label} is not numeric") from exc
 
-def _real_vision_backend_name():
-    """Resolve the only supported Jetson Nano perception provider."""
-
-    return AUSTRALIA.Real.REAL_VISION_BACKEND
-
 def _require_real_referee_interlock():
     """Reject bench-motion overrides before a physical match strategy starts."""
 
@@ -7575,21 +7466,18 @@ def _configure_real_operating_mode(*, team_link):
             "TEAM LINK DISABLED BY CONFIG; DEGRADED SINGLE-ROBOT TACTIC ACTIVE"
         )
 
-def _log_startup_summary(profile, camera_count, robot_id):
+def _log_startup_summary(camera_count, robot_id):
     """Emit one concise deployment summary; state changes are logged later."""
 
     pose_ok = _pose_valid(UnitedPosition.FieldRobotPose())
     mode = "DEGRADED_SINGLE_ROBOT" if SOLO_TAKEOVER else "PAIRED_COMPETITION"
     strategy_sha256, software_commit = _reproducibility_identity()
     logger.info(
-        "REAL PLATFORM={} BITS=IceLoong MAINBOARD=OK POSE={} "
-        "VISION={}/{} fresh CAMERAS={}/4 REFEREE={} TEAM_LINK={} "
-        "TEAM_LINK_ENABLED={} SOLO={} MODE={} ROBOT_ID={} ROLE={} FIELD={}x{}mm "
-        "STRATEGY_SHA256={} SOFTWARE_COMMIT={}",
-        profile["platform"],
+        "REAL BITS=IceLoong MAINBOARD=OK POSE={} VISION={} CAMERAS={}/4 "
+        "REFEREE={} TEAM_LINK={} TEAM_LINK_ENABLED={} SOLO={} MODE={} "
+        "ROBOT_ID={} ROLE={} FIELD={}x{}mm STRATEGY_SHA256={} SOFTWARE_COMMIT={}",
         "OK" if pose_ok else "INVALID",
-        profile["vision_backend"],
-        profile["vision_profile"],
+        str(getattr(Settings.RoboInfo, "Rec", "")).upper(),
         camera_count,
         _referee_summary(),
         _team_link_summary(),
@@ -7626,22 +7514,10 @@ def preflight():
         raise ValueError("AUSTRALIA.Team must define IDs 1 and 2 with one role each")
     if robot_id not in robot_ids:
         raise ValueError("RoboInfo.number must match an AUSTRALIA.Team.RobotIds entry")
-    hardware_profile = _real_hardware_profile(AUSTRALIA.Runtime.Platform)
     team_link = bool(AUSTRALIA.Runtime.TeamLinkEnabled)
-    _configure_real_hardware_profile(hardware_profile)
-    vision_backend = _real_vision_backend_name()
-    if vision_backend != hardware_profile["vision_backend"]:
-        raise RuntimeError("resolved physical platform and vision backend disagree")
-    # Set this before importing the vision package: its backend class is
-    # selected during import, so establish the physical provider first.
-    os.environ["ROBOCUPX_VISION_BACKEND"] = vision_backend
-    from vision_utils.merged_settings import Settings as vision_settings
-
-    _configure_real_rule_settings(vision_settings)
-    _require_four_camera_topology(vision_settings)
-    Settings.RoboInfo.Bit = "IL"
-    Settings.RoboInfo.number = robot_id
-    vision_settings.RoboInfo.number = robot_id
+    # Safety tuning is a strategy concern; the vision backend and its geometry
+    # are owned by LunaPre and the loaded config, never specified here.
+    _configure_real_safety()
     # A disabled/unavailable optional radio is a true single-robot mode, not
     # a silent fallback to the SUPPORT role of a two-robot match.
     _configure_real_operating_mode(team_link=team_link)
@@ -7655,7 +7531,6 @@ def preflight():
         if callable(worker_alive) and not worker_alive():
             raise RuntimeError("physical MainBoard command worker is not alive")
         _configure_mainboard_field(runtime.Bits)
-        _require_real_vision_runtime(hardware_profile, vision_settings)
         pose = _wait_for_mainboard_pose(runtime.Bits)
         if pose is None:
             raise RuntimeError("MainBoard GET_POSE did not return a valid physical pose")
@@ -7664,7 +7539,7 @@ def preflight():
         if not UnitedPosition.StartVision():
             raise RuntimeError("physical vision UDP receiver did not start")
         if not _wait_for_real_vision():
-            raise RuntimeError("no fresh HybridVision UDP packet received")
+            raise RuntimeError("no fresh physical vision UDP packet received")
         if team_link and _team_transport_configured():
             _configure_team_link_polling(runtime.Bits)
         elif team_link:
@@ -7676,14 +7551,13 @@ def preflight():
             )
     except Exception:
         # StartVision owns a receiver thread and (on the physical profile) a
-        # HybridVision child process; release both when preflight aborts.
+        # vision child process; release both when preflight aborts.
         try:
             UnitedPosition.Stop()
         except Exception:
             pass
         shutdown_runtime()
         raise
-    return hardware_profile
 
 def main():
     global _REAL_DEPLOYMENT_ACTIVE
@@ -7693,7 +7567,7 @@ def main():
     signal.signal(signal.SIGTERM, _stop_signal)
     signal.signal(signal.SIGINT, _stop_signal)
     try:
-        hardware_profile = preflight()
+        preflight()
         # Transport-age deadlines are enforced only in the live physical loop.
         _REAL_DEPLOYMENT_ACTIVE = True
         _start_team_communication()
@@ -7703,7 +7577,7 @@ def main():
             raise RuntimeError("physical vision did not provide a fresh packet after startup")
         reset_strategy()
         _reset_attack_direction()
-        _log_startup_summary(hardware_profile, 4, _robot_id())
+        _log_startup_summary(4, _robot_id())
         last_state = None
         next_deadline = time.monotonic()
         last_overrun_log = -math.inf

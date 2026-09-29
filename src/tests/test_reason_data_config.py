@@ -49,13 +49,13 @@ def test_bits_config_removes_obsolete_scan_settings_preserving_tuning(tmp_path, 
     old["Sensor"] = {"Source": source, "Ros2Model": "s3", "Inverted": True}
     old["Ports"]["LidarPort"] = "/dev/sllidar"
     old["Vision"]["CamPorts"] = [6, 4, 2, 0]
-    old["Motion"]["LockBallSlip"]["TurnOnlyMaxDegS"] = 75
+    old["Motion"]["ErrorRange"] = 42
     module.CONFIG_FILE.write_text(json.dumps(old), encoding="utf-8")
     config = module.Preference().cfg
     assert config["Vision"]["CamPorts"] == [6, 4, 2, 0]
     assert "Sensor" not in config
     assert "LidarPort" not in config["Ports"]
-    assert config["Motion"]["LockBallSlip"]["TurnOnlyMaxDegS"] == 75
+    assert config["Motion"]["ErrorRange"] == 42
     assert json.loads(module.CACHE_FILE.read_text()) == old
 
 

@@ -553,15 +553,11 @@ class ArisuIntelligence(VisionPreUntil):
                         raw_y2 = int(_ball[2] * 640)
                         raw_x2 = int(_ball[3] * 640)
                         Ball_Confidence = float(_ball[4])
-                        refined_ball_bbox = self._refine_ball_bbox_for_overlay(
-                            SourceFrame,
-                            (raw_x1, raw_y1, raw_x2, raw_y2, Ball_Confidence),
-                        )
-                        # Fail closed: a non-circular orange region must never
-                        # become a ball coordinate merely because Hailo emitted
-                        # a candidate nearby.
-                        if refined_ball_bbox is None:
-                            continue
+                        # Pure model output: no HSV colour/circularity post-filter.
+                        # The old filter was fail-closed and vetoed ~1/3 of valid
+                        # detections, which made the ball flicker on/off.
+                        refined_ball_bbox = (
+                            raw_x1, raw_y1, raw_x2, raw_y2, Ball_Confidence)
                         BallBBoxOutputs[CameraIndex] = [
                             CameraIndex,
                             refined_ball_bbox[0], refined_ball_bbox[1],
@@ -599,10 +595,9 @@ class ArisuIntelligence(VisionPreUntil):
                         raw_y2 = int(chassis[2] * 640)
                         raw_x2 = int(chassis[3] * 640)
                         Chassis_Confidence = float(chassis[4])
-                        overlay_chassis_bbox = self._refine_chassis_bbox_for_overlay(
-                            SourceFrame,
-                            (raw_x1, raw_y1, raw_x2, raw_y2, Chassis_Confidence),
-                        )
+                        # Pure model output: no HSV/chassis post-filter for overlay.
+                        overlay_chassis_bbox = (
+                            raw_x1, raw_y1, raw_x2, raw_y2, Chassis_Confidence)
                         # Store bbox in 640x640 space for dashboard.
                         ChassisBBoxOutputs[CameraIndex] = [
                             CameraIndex,
@@ -684,15 +679,11 @@ class ArisuIntelligence(VisionPreUntil):
                     # same source frame; GoalOutputs remains the raw model result
                     # used by robot control.
                     if best_goal_bbox is not None:
-                        overlay_goal_bbox = self._refine_goal_bbox_for_overlay(
-                            SourceFrame,
-                            best_goal_cls,
-                            best_goal_bbox,
-                        )
-                        GoalBBoxOutputs[CameraIndex] = [CameraIndex, best_goal_cls, 
-                                                        overlay_goal_bbox[0], overlay_goal_bbox[1],
-                                                        overlay_goal_bbox[2], overlay_goal_bbox[3],
-                                                        overlay_goal_bbox[4]]
+                        # Pure model output: no HSV colour repair for goal overlay.
+                        GoalBBoxOutputs[CameraIndex] = [CameraIndex, best_goal_cls,
+                                                        best_goal_bbox[0], best_goal_bbox[1],
+                                                        best_goal_bbox[2], best_goal_bbox[3],
+                                                        best_goal_bbox[4]]
             CoordinateSpaces = [None, None, None, None]
             OverlayFrames = [None, None, None, None]
             for CameraIndex, _Bindings, CoordinateSpace, SourceFrame in BindingRecords:
