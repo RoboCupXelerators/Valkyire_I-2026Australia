@@ -77,6 +77,10 @@ ROBOT_BALL_MAX_ABS_Y_CM = 220.0
 DRIBBLE_CALIB_REL = "ReasonData/data/dribble_calib.json"
 DRIBBLE_LOAD_MARGIN_DEFAULT = 0.04   # A：无校准且无功率信息时的兜底 margin
 DRIBBLE_LOAD_MARGIN_K = 2.5          # 自适应时 margin = K * 空转电流稳健标准差
+# 归一化受载指数：index = (I - baseline) / (grip - baseline)。
+# 绝对电流/增量随机器差别很大，但归一化后噪声占比一致，所以阈值用比例、跨机器统一。
+DRIBBLE_LOAD_INDEX_RATIO = 0.40      # index 超过此值算咬住（越小越灵敏）
+DRIBBLE_LOAD_SPAN_MIN = 0.02         # A：span 小于此值认为没标定到咬合，退回 margin
 DRIBBLE_LOAD_MARGIN_FLOOR = 0.010    # A：最小 margin（σ 很小时兜底）
 DRIBBLE_LOAD_MARGIN_CAP_FRAC = 0.9   # margin 不超过空转基线的这个比例
 DRIBBLE_NOISE_WINDOW = 120           # 空转噪声滑动窗帧数
@@ -348,6 +352,7 @@ class Positions:
         self._dribble_margin = DRIBBLE_LOAD_MARGIN_DEFAULT
         self._dribble_cmd: float | None = None
         self._dribble_cmd_since = 0.0
+        self._dribble_span = 0.0
         self._dribble_far_ema: float | None = None
         self._dribble_near_ema: float | None = None
         self._dribble_near_count = 0
@@ -908,7 +913,10 @@ class Positions:
         return cur if math.isfinite(cur) else None
 
     def _load_dribble_calib(self):
-        """懒加载一次性校准表 ``[(cmd, baseline, margin), ...]``（按功率升序）。"""
+        """懒加载一次性校准表 ``[(cmd, baseline, span, margin), ...]``（按功率升序）。
+
+        ``span = grip - baseline``（咬球增量）；有 grip 就能用归一化 index。
+        """
 
         if self._dribble_calib_loaded:
             return self._dribble_calib
@@ -918,11 +926,14 @@ class Positions:
             src_root = Path(__file__).resolve().parents[1]
             path = src_root / DRIBBLE_CALIB_REL
             data = json.loads(path.read_text(encoding="utf-8"))
-            pts = [
-                (float(p["cmd"]), float(p["baseline"]), float(p["margin"]))
-                for p in data.get("points", [])
-                if p.get("baseline") is not None and p.get("cmd") is not None
-            ]
+            pts = []
+            for p in data.get("points", []):
+                if p.get("baseline") is None or p.get("cmd") is None:
+                    continue
+                base = float(p["baseline"])
+                grip = p.get("grip")
+                span = max(0.0, float(grip) - base) if grip is not None else 0.0
+                pts.append((float(p["cmd"]), base, span, float(p.get("margin") or 0.0)))
             self._dribble_calib = sorted(pts)
             if self._dribble_calib:
                 logger.info(f"Dribble calibration loaded: {path.name} "
@@ -934,20 +945,24 @@ class Positions:
         return self._dribble_calib
 
     def _calib_for(self, cmd):
-        """按功率查校准表，线性插值返回 ``(baseline, margin)``；无校准则 None。"""
+        """按功率查校准表，线性插值返回 ``(baseline, span, margin)``；无校准则 None。"""
 
         pts = self._load_dribble_calib()
         if not pts or cmd is None:
             return None
+
+        def lerp(a, b, t):
+            return a + t * (b - a)
+
         if cmd <= pts[0][0]:
-            return pts[0][1], pts[0][2]
+            return pts[0][1], pts[0][2], pts[0][3]
         if cmd >= pts[-1][0]:
-            return pts[-1][1], pts[-1][2]
-        for (c0, b0, m0), (c1, b1, m1) in zip(pts, pts[1:]):
-            if c0 <= cmd <= c1:
-                t = (cmd - c0) / (c1 - c0) if c1 > c0 else 0.0
-                return b0 + t * (b1 - b0), m0 + t * (m1 - m0)
-        return pts[-1][1], pts[-1][2]
+            return pts[-1][1], pts[-1][2], pts[-1][3]
+        for p0, p1 in zip(pts, pts[1:]):
+            if p0[0] <= cmd <= p1[0]:
+                t = (cmd - p0[0]) / (p1[0] - p0[0]) if p1[0] > p0[0] else 0.0
+                return lerp(p0[1], p1[1], t), lerp(p0[2], p1[2], t), lerp(p0[3], p1[3], t)
+        return pts[-1][1], pts[-1][2], pts[-1][3]
 
     @staticmethod
     def _normalize_cmd(cmd):
@@ -1025,6 +1040,7 @@ class Positions:
         # 盘球明确关闭：绝不受载
         if cmd is not None and cmd <= 0.0:
             self._dribble_baseline = cur
+            self._dribble_span = 0.0
             self._dribble_margin = 0.0
             self._dribble_loaded = False
             self._dribble_loaded_since = None
@@ -1033,19 +1049,20 @@ class Positions:
 
         calib = self._calib_for(cmd)
         if calib is not None:
-            base0, margin = calib
+            base0, span0, margin0 = calib
             if cmd_changed or self._dribble_baseline is None:
                 # 换功率/首帧：用校准值做先验，瞬时生效（无需预热）。
-                # margin 只在这里播种，之后交给下面的在线细化，避免每帧被重置。
                 self._dribble_baseline = base0
-                self._dribble_margin = margin
+                self._dribble_span = span0
+                self._dribble_margin = margin0
                 self._dribble_devs.clear()
             elif mode == "far":
                 # 缓慢漂移补偿（温度/电路漂移）
                 self._dribble_baseline += DRIBBLE_BASELINE_ALPHA_FAR * (cur - self._dribble_baseline)
             self._dribble_baseline_samples = DRIBBLE_BASELINE_MIN_SAMPLES
         else:
-            # 无校准：退回自适应（需要少量空转样本，较慢）
+            # 无校准：退回自适应（用 margin，没有 span 时不用 index）
+            self._dribble_span = 0.0
             if self._dribble_baseline is None:
                 self._dribble_baseline = cur
                 self._dribble_baseline_samples = 0
@@ -1079,7 +1096,12 @@ class Positions:
                 target = min(target, DRIBBLE_LOAD_MARGIN_CAP_FRAC * self._dribble_baseline)
             self._dribble_margin += DRIBBLE_MARGIN_ADAPT_ALPHA * (target - self._dribble_margin)
 
-        loaded_now = (cur - self._dribble_baseline) > self._dribble_margin
+        deviation = cur - self._dribble_baseline
+        if self._dribble_span > DRIBBLE_LOAD_SPAN_MIN:
+            # 归一化受载指数：0=空转, 1=完全咬住。阈值用比例，跨机器统一。
+            loaded_now = (deviation / self._dribble_span) > DRIBBLE_LOAD_INDEX_RATIO
+        else:
+            loaded_now = deviation > self._dribble_margin
         if blanking:
             # 盘球刚上电/换功率，滚轮起转电流有尖峰，这段时间不判定受载
             loaded_now = False
@@ -1110,15 +1132,20 @@ class Positions:
             ``loaded`` 是否判定滚轮受载，``margin`` = current - baseline。
         """
 
-        margin = None
+        deviation = None
+        index = None
         if self._dribble_smooth is not None and self._dribble_baseline is not None:
-            margin = self._dribble_smooth - self._dribble_baseline
+            deviation = self._dribble_smooth - self._dribble_baseline
+            if self._dribble_span > DRIBBLE_LOAD_SPAN_MIN:
+                index = deviation / self._dribble_span
         return {
             "current": self._dribble_last_current,
             "smoothed": self._dribble_smooth,
             "baseline": self._dribble_baseline,
+            "span": self._dribble_span,
             "loaded": self._dribble_loaded,
-            "margin": margin,
+            "margin": deviation,
+            "index": index,
             "threshold": self._dribble_margin,
             "cmd": self._dribble_cmd,
             "calibrated": bool(self._load_dribble_calib()),

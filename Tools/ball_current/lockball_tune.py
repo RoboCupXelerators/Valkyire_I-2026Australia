@@ -65,7 +65,7 @@ def main():
     args = parser.parse_args()
     period = 1.0 / max(args.rate, 1e-6)
 
-    print("t     d(cm)  ball(x,y)          vx     vy     w      power  cur    dev    load  hold",
+    print("t     d(cm)  ball(x,y)          vx     vy     w      power  cur    dev    idx    load  hold",
           flush=True)
     t0 = time.time()
     try:
@@ -84,11 +84,13 @@ def main():
             power_s = "  -  " if power is None else f"{float(power):.2f} "
             cur = info.get("current")
             dev = info.get("margin")
+            idx = info.get("index")
             cur_s = "  -  " if cur is None else f"{float(cur):.3f}"
             dev_s = "  -   " if dev is None else f"{float(dev):+.3f}"
+            idx_s = "  -  " if idx is None else f"{float(idx):+.2f}"
             print(f"{time.time()-t0:5.2f} {d:6.1f}  {bs}  "
                   f"{_cmd['x']:5.2f}  {_cmd['y']:5.2f}  {_cmd['w']:5.1f}  "
-                  f"{power_s} {cur_s} {dev_s}  {str(info['loaded'])[:4]:5s} "
+                  f"{power_s} {cur_s} {dev_s} {idx_s}  {str(info['loaded'])[:4]:5s} "
                   f"{str(B.lockball._lockball_holding)[:4]:5s}",
                   flush=True)
             time.sleep(period)

@@ -292,6 +292,14 @@ class LockSeries:
             self._clear_ball_jump_candidate()
             return ball, True
 
+        # 电流已确认滚轮咬住 —— 不管球坐标在不在接球窗口，都算抓到球。
+        # （实测咬合点常略超窗口，只靠 BallStatus 会漏判。）
+        if self._grip_confirmed():
+            self._lockball_last_seen = None
+            self._lockball_last_seen_ts = 0.0
+            self._clear_ball_jump_candidate()
+            return ball, True
+
         # A scene reset or delayed simulator packet can briefly report a stale
         # ball position hundreds of centimetres away from the previous frame.
         # Reject a single impossible jump, but do not keep rejecting forever:
