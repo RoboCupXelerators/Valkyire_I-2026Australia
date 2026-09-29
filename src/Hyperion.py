@@ -101,16 +101,12 @@ def U_Shoot(goal=(100, 0), hold_s=3.0, shake_speed=1.5, shake_s=0.20):
     back_to_goal = (UnitedPosition.Pos2Angle(pose, goal) + 180) % 360
     if not TurnTo_with_ball(back_to_goal):
         return False
-    try:
-        peripheral.Dribble(1.0)
-        time.sleep(hold_s)
-        for speed_y in (shake_speed, -shake_speed, shake_speed, -shake_speed):
-            chassis.RobotMoveVector(0, speed_y, 0)
-            time.sleep(shake_s)
-        return True
-    finally:
-        chassis.stop()
-        peripheral.Dribble(False)
+    peripheral.Dribble(1.0)
+    time.sleep(hold_s)
+    for speed_y in (shake_speed, -shake_speed, shake_speed, -shake_speed):
+        chassis.RobotMoveVector(0, speed_y, 0)
+        time.sleep(shake_s)
+    return True
 
 
 def logic_step():

@@ -100,7 +100,7 @@ class LockSeries:
             # 往前压，等电流确认（上面的 gripped）后才停车。
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
-            return ball, False
+            return ball, True
         self._lockball_last_seen = list(ball)
         self._lockball_last_seen_ts = now
         return ball, False
