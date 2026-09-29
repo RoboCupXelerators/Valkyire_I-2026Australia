@@ -35,7 +35,6 @@ LOCKBALL_DRIBBLE_LOST_POWER = 0.30
 # （直接算捕获），避免传感器异常导致永远不停车。
 LOCKBALL_SEAT_REQUIRE_LOAD = True
 LOCKBALL_SEAT_PUSH_MPS = 0.15  # 未咬合时的按压前进速度（m/s）；0.06 低于死区会“贴住不动”
-LOCKBALL_HOLD_PUSH_MPS = 0.05  # 已咬合保持时的轻微前压，防止球滑出接球口
 
 # 抓到球后的 transition：从追球功率在 HOLD_RAMP_S 内平滑提升到保持功率；
 # 期间一旦丢球就中断（回到追球/丢球逻辑）。功率渐变回落到追球功率。
@@ -306,12 +305,13 @@ class LockSeries:
         )
 
         if caught:
-            # 电流确认滚轮真咬住：维持提升后的保持功率，并**持续轻微前压**把球
-            # 顶在滚轮上。之前一到沿就停车，球常在半秒内滑出接球口。
-            # 调用方（如 TurnTo_with_ball）随后会用自己的运动覆盖这一拍，不受影响。
+            # 电流确认滚轮真咬住：捕获沿停车一次，并维持提升后的保持功率。
+            # （不停车会让车一直往前蹭、把球推走；调用方如 TurnTo_with_ball 会在
+            #  随后自己发运动指令，所以只在沿上停一次。）
+            if not self._lockball_was_caught:
+                chassis.stop()
             self._lockball_was_caught = True
             peripheral.Dribble(hold_power)
-            chassis.RobotMoveVector(LOCKBALL_HOLD_PUSH_MPS, 0.0, 0.0)
             return True
 
         if self._lockball_in_window:

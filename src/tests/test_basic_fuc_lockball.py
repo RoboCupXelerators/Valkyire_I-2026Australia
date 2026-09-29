@@ -263,27 +263,26 @@ def test_turn_with_ball_speedk_scales_orbit(monkeypatch):
     assert fast_wz > base_wz
 
 
-def test_lockball_hold_keeps_a_gentle_forward_press(monkeypatch):
-    # 已咬合时不再停死，而是持续轻微前压，防止球滑出接球口。
-    moves = []
+def test_lockball_held_stop_is_edge_triggered(monkeypatch):
+    # 抓住后必须停车（只在捕获沿停一次），否则车会一直往前蹭把球推走。
+    stops = []
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: basic.BALL_HELD)
     monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": True})
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
     monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
-    monkeypatch.setattr(
-        basic.chassis, "RobotMoveVector",
-        lambda vx, vy, wz, **k: moves.append((vx, vy, wz)),
-    )
 
     lock = basic.LockSeries()
     assert lock.LockBallSlip() is True
+    assert len(stops) == 1
+
     assert lock.LockBallSlip() is True
-    assert len(moves) == 2
-    assert all(vx == pytest.approx(basic.LOCKBALL_HOLD_PUSH_MPS) for vx, _vy, _wz in moves)
+    assert len(stops) == 1
 
 
-def test_lockball_recatch_presses_again(monkeypatch):
-    # 丢球后再抓到会重新进入“轻微前压保持”。
+def test_lockball_recatch_stops_again(monkeypatch):
+    # 丢球后再次抓住，会重新触发一次捕获沿停车。
+    stops = []
     observations = iter([basic.BALL_HELD, [30.0, 0.0], basic.BALL_HELD])
     state = {"ball": None}
 
@@ -297,23 +296,20 @@ def test_lockball_recatch_presses_again(monkeypatch):
         basic.UnitedPosition, "BallLoadInfo",
         lambda: {"loaded": state["ball"] == basic.BALL_HELD},
     )
-    moves = []
-    monkeypatch.setattr(
-        basic.chassis, "RobotMoveVector",
-        lambda vx, vy, wz, **k: moves.append((vx, vy, wz)),
-    )
+    monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
+    monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *a, **k: None)
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
     monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
 
     lock = basic.LockSeries()
     assert lock.LockBallSlip() is True
-    assert moves[-1][0] == pytest.approx(basic.LOCKBALL_HOLD_PUSH_MPS)
+    assert len(stops) == 1
 
-    assert lock.LockBallSlip() is False  # free ball -> chase (not the hold press)
-    assert moves[-1][0] != pytest.approx(basic.LOCKBALL_HOLD_PUSH_MPS)
+    assert lock.LockBallSlip() is False  # free ball -> chase, no capture stop
+    assert len(stops) == 1
 
-    assert lock.LockBallSlip() is True   # re-caught -> hold press again
-    assert moves[-1][0] == pytest.approx(basic.LOCKBALL_HOLD_PUSH_MPS)
+    assert lock.LockBallSlip() is True  # re-caught -> one more edge stop
+    assert len(stops) == 2
 
 
 # ---- raw-coordinate carry loop (merged back from feat 23f2bd5) ----
