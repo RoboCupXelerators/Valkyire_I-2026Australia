@@ -6,7 +6,7 @@ import time
 
 post_shot_until=0.0
 
-def _read_state():
+def read_state():
     """Read a fresh robot pose and ball state for the current control cycle."""
     robot_pos = UnitedPosition.FieldRobotPose()
     ball_pos = UnitedPosition.RobotBallPos()
@@ -14,7 +14,7 @@ def _read_state():
     side = 1 if robot_pos[1] > 0 else -1
     return robot_pos, ball_state, side
 
-def _default_aim(robot_pos):
+def default_aim(robot_pos):
     return math.degrees(math.atan2(0.0 - robot_pos[1], 121.5 - robot_pos[0])) % 360
 
 def IsOpenGoal(window):
@@ -43,7 +43,7 @@ def OpenGoalShoot():
     if not IsOpenGoal(window):
         target_yaw = window.get("target_yaw_deg")
         if target_yaw is None:
-            target_yaw = _default_aim(robot_pos)
+            target_yaw = default_aim(robot_pos)
         TurnTo_with_ball(target_yaw)
         return False
 
@@ -55,12 +55,12 @@ def OpenGoalShoot():
     
     target_yaw = window.get("target_yaw_deg")
     if target_yaw is None:
-        target_yaw = _default_aim(robot_pos)
+        target_yaw = default_aim(robot_pos)
     TurnTo_with_ball(target_yaw)
     return False
 
 def Macon_kick():
-    robot_pos, ball_state, side = _read_state()
+    robot_pos, ball_state, side = read_state()
     if ball_state == "held":
         peripheral.Dribble(0.7)
         TurnTo_with_ball(100 * side)
@@ -80,7 +80,7 @@ def Macon_kick():
         return False
 
 def back_kick():
-    robot_pos, ball_state, side = _read_state()
+    robot_pos, ball_state, side = read_state()
     if ball_state == "held":
         peripheral.Dribble(0.7)
         back_point = 80
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     try:
         while True:
             if UnitedPosition.RestrictedArea():
-                robot_pos, ball_state, side = _read_state()
+                robot_pos, ball_state, side = read_state()
                 if ball_state == "held":
                     if robot_pos[0] < 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
                         Macon_kick()
