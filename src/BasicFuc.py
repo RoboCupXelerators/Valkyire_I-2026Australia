@@ -34,7 +34,7 @@ LOCKBALL_DRIBBLE_LOST_POWER = 0.30
 # 才判定捕获并停车；否则以低速继续往里压，直到真咬住。读不到电流信息时退回旧行为
 # （直接算捕获），避免传感器异常导致永远不停车。
 LOCKBALL_SEAT_REQUIRE_LOAD = True
-LOCKBALL_SEAT_PUSH_MPS = 0.06  # 未咬合时的按压前进速度（m/s），要温柔
+LOCKBALL_SEAT_PUSH_MPS = 0.15  # 未咬合时的按压前进速度（m/s）；0.06 低于死区会“贴住不动”
 
 # 抓到球后的 transition：从追球功率在 HOLD_RAMP_S 内平滑提升到保持功率；
 # 期间一旦丢球就中断（回到追球/丢球逻辑）。功率渐变回落到追球功率。
@@ -47,11 +47,15 @@ LOCKBALL_HOLD_RAMP_S = 0.5
 LOCKBALL_GAIN_TABLE = (
     (75.0, 0.020, 4.0),   # 远：距离 > 75cm
     (25.0, 0.017, 1.5),   # 中：25cm < 距离 <= 75cm
-    (0.0,  0.006, 1.0),   # 近：距离 <= 25cm
+    (0.0,  0.020, 1.0),   # 近：距离 <= 25cm（增益不能太小，否则下发低于电机死区）
 )
 LOCKBALL_FORWARD_BOOST = 1.5   # 旧版对前进分量的额外放大
 LOCKBALL_MAX_FORWARD_MPS = 1.80
 LOCKBALL_MAX_LATERAL_MPS = 0.85
+# 近球防死区：球在正前方这段距离内时，前进速度不低于该值，否则会出现
+# “球就在眼前却贴住不动/拿不到”的现象（低于电机启动死区）。
+LOCKBALL_MIN_APPROACH_MPS = 0.22
+LOCKBALL_MIN_APPROACH_CM = 18.0
 # 姿态（转向）响应：旧人类版 KpZ=4 且不封顶，这里给一个远离物理上限的值
 # （底盘 yaw 物理上限约 967 deg/s）。转向越大，底盘 turn_translation_scale
 # 会自动收前进油，所以放开上限不会导致明显画弧。
@@ -314,6 +318,10 @@ class LockSeries:
         speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, LOCKBALL_MAX_FORWARD_MPS)
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS)
         speed_w = _clamp(ball_angle * yaw_gain, LOCKBALL_MAX_YAW_DEGPS)
+
+        # 近球防死区：正前方近距离保证一个能启动的最小前进速度。
+        if 0.0 < ball_x <= LOCKBALL_MIN_APPROACH_CM and abs(ball_y) < 6.0:
+            speed_x = max(speed_x, LOCKBALL_MIN_APPROACH_MPS)
 
         # 追球不叠加近区降速：旧人类版没有，它会把速度砍半（实测 scale≈0.53），
         # 边界防护由上层策略/Positions 负责。
