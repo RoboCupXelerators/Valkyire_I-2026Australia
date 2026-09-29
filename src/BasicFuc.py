@@ -68,6 +68,9 @@ LOCKBALL_YAW_RATE_ALPHA = 0.30
 # 时先转不冲；近球不再横移（横移会把球滚丢），只保留少量。
 LOCKBALL_DOCK_CM = 22.0
 LOCKBALL_DOCK_MAX_MPS = 0.45
+# 贴到嘴边再降速（1~2cm 级），避免最后一下把球顶飞。
+LOCKBALL_CLOSE_CM = 5.0
+LOCKBALL_CLOSE_MAX_MPS = 0.12
 LOCKBALL_DOCK_LATERAL_SCALE = 0.20
 LOCKBALL_ALIGN_FULL_DEG = 12.0
 
@@ -348,7 +351,13 @@ class LockSeries:
         # 近球限速铲球，避免高速把球顶飞。
         dist_cm = math.hypot(ball_x, ball_y)
         in_dock = dist_cm <= LOCKBALL_DOCK_CM
-        fwd_cap = LOCKBALL_DOCK_MAX_MPS if in_dock else LOCKBALL_MAX_FORWARD_MPS
+        if dist_cm <= LOCKBALL_CLOSE_CM:
+            # 贴到嘴边（1~2cm 级）再降速，避免把球顶飞。
+            fwd_cap = LOCKBALL_CLOSE_MAX_MPS
+        elif in_dock:
+            fwd_cap = LOCKBALL_DOCK_MAX_MPS
+        else:
+            fwd_cap = LOCKBALL_MAX_FORWARD_MPS
         speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, fwd_cap) * align
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS) * align
         # 近球不再横移：横移会把球滚来滚去，靠近时只靠转向对准 + 前压。
@@ -371,9 +380,9 @@ class LockSeries:
             LOCKBALL_MAX_YAW_DEGPS,
         )
 
-        # 近球防死区：正前方近距离保证一个能启动的最小前进速度。
+        # 近球防死区：正前方近距离保证一个能启动的最小前进速度（不超过当前限速档）。
         if 0.0 < ball_x <= LOCKBALL_MIN_APPROACH_CM and abs(ball_y) < 6.0:
-            speed_x = max(speed_x, LOCKBALL_MIN_APPROACH_MPS * align)
+            speed_x = max(speed_x, min(LOCKBALL_MIN_APPROACH_MPS, fwd_cap) * align)
 
         peripheral.Dribble(hold_power)
         chassis.RobotMoveVector(speed_x, speed_y, speed_w)
