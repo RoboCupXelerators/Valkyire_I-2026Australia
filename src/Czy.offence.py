@@ -47,11 +47,7 @@ def OpenGoalShoot():
         TurnTo_with_ball(target_yaw)
         return False
 
-<<<<<<< HEAD
-    if window["can_shoot_now"] and (0<robot_pos[2]<90 or 270<robot_pos<360)>0:
-=======
-    if window["can_shoot_now"] and (0<robot_pos[2]<90 or 270 < robot_pos[2] < 360)>0:
->>>>>>> 8c9024b34187ebaa99d0277e87480e613a6128f6
+    if window["can_shoot_now"] and (0 < robot_pos[2] < 90 or 270 < robot_pos < 360)>0:
         peripheral.ShootBall()
         time.sleep(0.03)
         post_shot_until = time.time() + 0.6
@@ -63,17 +59,10 @@ def OpenGoalShoot():
     TurnTo_with_ball(target_yaw)
     return False
 
-<<<<<<< HEAD
-def Macon_kick():
-    robot_pos, ball_state, side = read_state()
-    if ball_state == "held":
-        peripheral.Dribble(0.7)
-=======
-def Macon_kick_Plus():
+def Macon_kick_Plus():#弹墙版
     robot_pos, ball_state, side = read_state()
     if ball_state == "held":
         peripheral.Dribble(0.5)
->>>>>>> 8c9024b34187ebaa99d0277e87480e613a6128f6
         TurnTo_with_ball(100 * side)
         threshold = [[40, -80], [80, 80]]
         if UnitedPosition.PointInShape(robot_pos, threshold):
@@ -90,11 +79,6 @@ def Macon_kick_Plus():
     else:
         return False
 
-<<<<<<< HEAD
-def back_kick():
-    robot_pos, ball_state, side = read_state()
-    if ball_state == "held":
-=======
 def Macon_kick():
     robot_pos, ball_state, side = read_state()
     if ball_state == "held":
@@ -117,7 +101,6 @@ def Macon_kick():
 def back_kick():
     robot_pos, ball_state, side = read_state()
     if ball_state == "held":
->>>>>>> 8c9024b34187ebaa99d0277e87480e613a6128f6
         peripheral.Dribble(0.7)
         back_point = 80
         if robot_pos[0] > back_point:
@@ -136,33 +119,23 @@ def back_kick():
         return False
 
 if __name__ == "__main__":
-
-        while True:
-            if UnitedPosition.RestrictedArea():
-                robot_pos, ball_state, side = read_state()
-                if ball_state == "held":
-                    if robot_pos[0] < 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
-                        Macon_kick()
-                    elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
-                        back_kick()
-                    elif -50 <= robot_pos[1] <= 50:
-                        OpenGoalShoot()
-                elif ball_state == "lost":
-                    defence_points = UnitedPosition.FieldChassisPos()
-                    if defence_points:
-                        point = defence_points[0]
-                        UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
-                    else:
-                        UnitedPosition.Pos2Pos([-20, 0, 0])
+    while True:
+        if UnitedPosition.RestrictedArea():
+            robot_pos, ball_state, side = read_state()
+            if ball_state == "held":
+                if robot_pos[0] < 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
+                    Macon_kick()
+                elif robot_pos[0] >= 56 and (robot_pos[1] > 50 or robot_pos[1] < -50):
+                    back_kick()
+                elif -50 <= robot_pos[1] <= 50:
+                    OpenGoalShoot()
+            elif ball_state == "lost":
+                defence_points = UnitedPosition.FieldChassisPos()
+                if defence_points:
+                    point = defence_points[0]
+                    UnitedPosition.Pos2Pos([point[0] - 20 * side, point[1] - 20 * side, 0])
                 else:
-                    lockball.LockBallSlip()
-<<<<<<< HEAD
-            time.sleep(0.03)
-    except Exception:
-        try:
-            UnitedPosition.Pos2Pos([0, 0, 0])
-        except Exception:
-            pass
-=======
-            time.sleep(0.03)
->>>>>>> 8c9024b34187ebaa99d0277e87480e613a6128f6
+                    UnitedPosition.Pos2Pos([-20, 0, 0])
+            else:
+                lockball.LockBallSlip()
+        time.sleep(0.03)
