@@ -25,105 +25,25 @@ def test_adaptive_dribbler_layer_is_removed():
     assert not hasattr(basic.peripheral, "GetDribbleAdaptiveTelemetry")
 
 
-def test_lockball_uses_source_owned_pid_terms_and_output_limits(monkeypatch):
-    tuning = SimpleNamespace(
-        ForwardKp=0.02,
-        ForwardKi=0.006,
-        ForwardKd=0.005,
-        LateralKp=0.016,
-        LateralKi=0.0005,
-        LateralKd=0.005,
-        AngularKp=1.3,
-        AngularKi=0.06,
-        AngularKd=0.15,
-        ForwardMaxMps=0.8,
-        LateralMaxMps=0.65,
-        AngularMaxDegS=85.0,
-    )
-    monkeypatch.setattr(basic.Settings.Motion, "LockBallSlip", tuning)
-
-    lock = basic.LockSeries()
-
-    # Old deployments may retain a LockBallSlip section in config, but motion
-    # PID calibration is intentionally source-owned so it cannot drift at
-    # runtime between robots.
-    assert lock.pan_x.tunings == (
-        basic.LOCKBALL_FORWARD_KP,
-        basic.LOCKBALL_FORWARD_KI,
-        basic.LOCKBALL_FORWARD_KD,
-    )
-    assert lock.pan_y.tunings == (
-        basic.LOCKBALL_LATERAL_KP,
-        basic.LOCKBALL_LATERAL_KI,
-        basic.LOCKBALL_LATERAL_KD,
-    )
-    assert lock.pan_w.tunings == (
-        basic.LOCKBALL_ANGULAR_KP,
-        basic.LOCKBALL_ANGULAR_KI,
-        basic.LOCKBALL_ANGULAR_KD,
-    )
-    assert lock.pan_x.output_limits == (-basic.LOCKBALL_FORWARD_MAX_MPS, 0)
-    assert lock.pan_y.output_limits == (
-        -basic.LOCKBALL_LATERAL_MAX_MPS,
-        basic.LOCKBALL_LATERAL_MAX_MPS,
-    )
-    assert lock.pan_w.output_limits == (
-        -basic.LOCKBALL_ANGULAR_MAX_DEGPS,
-        basic.LOCKBALL_ANGULAR_MAX_DEGPS,
-    )
-
-
-def test_lockball_uses_source_owned_near_dock_envelope(monkeypatch):
-    tuning = SimpleNamespace(
-        NearDockDecelMps2=0.6,
-    )
-    monkeypatch.setattr(basic.Settings.Motion, "LockBallSlip", tuning)
-
-    lock = basic.LockSeries()
-
-    assert lock.near_dock_decel == basic.LOCKBALL_NEAR_DOCK_DECEL_MPS2
-
-
 def _lock_with_observations(monkeypatch, observations):
     values = iter(observations)
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(values))
+    # 离线环境没有盘球电流校准：loaded=None 视为“保守放行”，避免持球判定依赖
+    # 其它测试写入的全局标定状态。
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": None})
 
     lock = basic.LockSeries()
     lock.ball_jump_reject_cm = 45.0
     lock.ball_jump_confirm_frames = 2
-    resets = []
-    monkeypatch.setattr(lock, "_reset_lockball_pid", lambda: resets.append(True))
-    return lock, resets
+    return lock
 
 
-def test_lockball_accepts_a_persistent_jump_and_resets_pid(monkeypatch):
-    lock, resets = _lock_with_observations(
-        monkeypatch,
-        ([20.0, 0.0], [100.0, 0.0], [90.0, 10.0]),
-    )
-
-    accepted = [lock._current_or_recent_ball()[0] for _ in range(3)]
-
-    assert accepted == [[20.0, 0.0], [20.0, 0.0], [90.0, 10.0]]
-    assert lock._lockball_last_seen == [90.0, 10.0]
-    assert len(resets) == 1
-
-
-def test_lockball_discards_a_single_jump_when_observation_recovers(monkeypatch):
-    lock, resets = _lock_with_observations(
-        monkeypatch,
-        ([20.0, 0.0], [100.0, 0.0], [21.0, 1.0]),
-    )
-
-    accepted = [lock._current_or_recent_ball()[0] for _ in range(3)]
-
-    assert accepted == [[20.0, 0.0], [20.0, 0.0], [21.0, 1.0]]
-    assert lock._lockball_last_seen == [21.0, 1.0]
-    assert resets == []
+def _clamp(value, limit):
+    return max(-limit, min(limit, value))
 
 
 def _capture_move(monkeypatch, ball_xy):
-    lock, _ = _lock_with_observations(monkeypatch, (ball_xy,))
+    lock = _lock_with_observations(monkeypatch, (ball_xy,))
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     moves = []
     monkeypatch.setattr(
@@ -133,111 +53,84 @@ def _capture_move(monkeypatch, ball_xy):
     return lock, moves
 
 
+def test_lockball_uses_piecewise_gain_table(monkeypatch):
+    # 远 / 中 / 近三档，按“最远轴距离”选档；前进分量额外乘 FORWARD_BOOST。
+    for ball_x, (gain, _yaw_gain) in (
+        (100.0, basic.LOCKBALL_GAIN_TABLE[0][1:]),
+        (40.0, basic.LOCKBALL_GAIN_TABLE[1][1:]),
+        (10.0, basic.LOCKBALL_GAIN_TABLE[2][1:]),
+    ):
+        lock, moves = _capture_move(monkeypatch, [ball_x, 0.0])
+        assert lock.LockBallSlip() is False
+        vx, _vy, wz = moves[-1]
+        expected = _clamp(
+            ball_x * gain * basic.LOCKBALL_FORWARD_BOOST,
+            basic.LOCKBALL_MAX_FORWARD_MPS,
+        )
+        assert vx == pytest.approx(expected)
+        assert wz == pytest.approx(0.0)
+
+
+def test_lockball_clamps_commands(monkeypatch):
+    lock, moves = _capture_move(monkeypatch, [500.0, 500.0])
+    assert lock.LockBallSlip() is False
+    vx, vy, wz = moves[-1]
+    assert abs(vx) <= basic.LOCKBALL_MAX_FORWARD_MPS + 1e-9
+    assert abs(vy) <= basic.LOCKBALL_MAX_LATERAL_MPS + 1e-9
+    assert abs(wz) <= basic.LOCKBALL_MAX_YAW_DEGPS + 1e-9
+
+
+def test_lockball_rear_ball_moves_backward(monkeypatch):
+    lock, moves = _capture_move(monkeypatch, [-20.0, 0.0])
+    assert lock.LockBallSlip() is False
+    vx, _vy, _wz = moves[-1]
+    assert vx < 0.0
+
+
+def test_lockball_accepts_a_persistent_jump(monkeypatch):
+    lock = _lock_with_observations(
+        monkeypatch,
+        ([20.0, 0.0], [100.0, 0.0], [90.0, 10.0]),
+    )
+
+    accepted = [lock._current_or_recent_ball()[0] for _ in range(3)]
+
+    assert accepted == [[20.0, 0.0], [20.0, 0.0], [90.0, 10.0]]
+    assert lock._lockball_last_seen == [90.0, 10.0]
+
+
+def test_lockball_discards_a_single_jump_when_observation_recovers(monkeypatch):
+    lock = _lock_with_observations(
+        monkeypatch,
+        ([20.0, 0.0], [100.0, 0.0], [21.0, 1.0]),
+    )
+
+    accepted = [lock._current_or_recent_ball()[0] for _ in range(3)]
+
+    assert accepted == [[20.0, 0.0], [20.0, 0.0], [21.0, 1.0]]
+    assert lock._lockball_last_seen == [21.0, 1.0]
+
+
 def test_lockball_uses_fixed_dribble_powers(monkeypatch):
     dribbles = []
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda value: dribbles.append(value))
     monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
     monkeypatch.setattr(basic.chassis, "stop", lambda *args, **kwargs: None)
 
-    lock, _ = _lock_with_observations(monkeypatch, (basic.BALL_HELD,))
+    lock = _lock_with_observations(monkeypatch, (basic.BALL_HELD,))
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     assert lock.LockBallSlip() is True
     assert dribbles[-1] == basic.LOCKBALL_DRIBBLE_FAR_POWER
 
-    lock_lost, _ = _lock_with_observations(monkeypatch, (basic.BALL_NOT_FOUND,))
+    lock_lost = _lock_with_observations(monkeypatch, (basic.BALL_NOT_FOUND,))
     monkeypatch.setattr(lock_lost, "_reset_on_pose_change", lambda: None)
     assert lock_lost.LockBallSlip() is False
     assert dribbles[-1] == basic.LOCKBALL_DRIBBLE_LOST_POWER
 
 
-def test_lockball_brakes_on_curve_close_to_ball(monkeypatch):
-    lock, moves = _capture_move(monkeypatch, (12.0, 0.0))
-    lock.pan_x.setpoint = 6.0
-    lock.pan_x.tunings = (0.1, 0.0, 0.0)
-    lock.pan_x.output_limits = (-0.8, 0.8)
-    lock.near_dock_decel = 0.2
-
-    assert lock.LockBallSlip() is False
-    # 0.1 * (12 - 6) = 0.6 would be commanded without the braking curve;
-    # the curve caps it at sqrt(2*0.2*0.06) ~= 0.155.
-    assert moves[-1][0] <= math.sqrt(2.0 * 0.2 * 0.06) + 1e-9
-
-
-def test_lockball_braking_curve_fades_with_distance(monkeypatch):
-    ball = [20.0, 0.0]
-    monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: list(ball))
-    lock = basic.LockSeries()
-    lock.pan_x.setpoint = 6.0
-    lock.pan_x.tunings = (0.025, 0.0, 0.0)
-    lock.pan_x.output_limits = (-0.8, 0.8)
-    lock.pan_x.sample_time = None
-    lock.near_dock_decel = 0.5
-    lock.ball_jump_reject_cm = 1000.0
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    moves = []
-    monkeypatch.setattr(
-        basic.chassis, "RobotMoveVector", lambda *args, **_kwargs: moves.append(args)
-    )
-    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
-
-    # 12cm: inside the brake zone (starts at 0.8^2/(2*0.5) = 64cm).
-    ball[0] = 12.0
-    assert lock.LockBallSlip() is False
-    near_speed = moves[-1][0]
-
-    # 60cm: near the edge of the brake zone, so it runs much faster.
-    ball[0] = 60.0
-    lock.pan_x.reset()
-    assert lock.LockBallSlip() is False
-    far_speed = moves[-1][0]
-
-    assert far_speed > near_speed
-
-
-def test_lockball_uses_wheel_bypass_only_for_aligned_far_chase(monkeypatch):
-    # A 94cm straight, front-side error saturates the new pursuit cap.  This
-    # is the only LockBallSlip geometry permitted to exercise the temporary
-    # wheel-limit debug route.
-    lock, _ = _lock_with_observations(monkeypatch, ([100.0, 1.0],))
-    lock.catch_x = 6.0
-    lock.catch_y = 1.0
-    lock.pan_x.setpoint = lock.catch_x
-    lock.pan_y.setpoint = lock.catch_y
-    lock.pan_x.sample_time = None
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args, **_kwargs: None)
-    commands = []
-    monkeypatch.setattr(
-        basic.chassis,
-        "RobotMoveVector",
-        lambda *args, **kwargs: commands.append((args, kwargs)),
-    )
-
-    assert lock.LockBallSlip() is False
-    args, kwargs = commands[-1]
-    assert args[0] == pytest.approx(basic.LOCKBALL_FORWARD_MAX_MPS)
-    assert kwargs == {"bypass_wheel_limits": True}
-
-
-def test_lockball_turns_in_place_for_large_front_angle(monkeypatch):
-    lock, _ = _lock_with_observations(monkeypatch, ([15.0, 60.0],))
-    lock.turn_only_angle = 70.0
-    lock.turn_only_kp = 0.75
-    lock.turn_only_max = 55.0
-    monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
-    moves = []
-    monkeypatch.setattr(
-        basic.chassis, "RobotMoveVector", lambda *args, **_kwargs: moves.append(args)
-    )
-    monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_args: None)
-
-    assert lock.LockBallSlip() is False
-    assert moves == [(0.0, 0.0, 55.0)]
-
-
 @pytest.mark.parametrize("confirm_frames", [1, 2, 3])
 def test_lockball_confirm_frame_setting_is_respected(monkeypatch, confirm_frames):
-    lock, resets = _lock_with_observations(
+    lock = _lock_with_observations(
         monkeypatch,
         ([20.0, 0.0], [100.0, 0.0], [90.0, 0.0], [80.0, 0.0]),
     )
@@ -252,8 +145,6 @@ def test_lockball_confirm_frame_setting_is_respected(monkeypatch, confirm_frames
         3: [80.0, 0.0],
     }[confirm_frames]
     assert accepted[confirm_frames] == expected_target
-    assert len(resets) == 1
-
 
 def _turn_harness(monkeypatch, yaw, holding=True, raw_ball=None):
     """Stub the chassis for one TurnTo_with_ball tick.
@@ -371,6 +262,7 @@ def test_lockball_held_stop_is_edge_triggered(monkeypatch):
     # callers such as TurnTo_with_ball command their own motion afterwards.
     stops = []
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: basic.BALL_HELD)
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": None})
     monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
     monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
@@ -390,6 +282,7 @@ def test_lockball_recatch_stops_again(monkeypatch):
     monkeypatch.setattr(
         basic.UnitedPosition, "RobotBallPos", lambda: next(observations)
     )
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": None})
     monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
     monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *a, **k: None)
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)

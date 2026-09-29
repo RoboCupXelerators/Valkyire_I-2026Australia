@@ -849,21 +849,6 @@ class ControlPanelApp:
                     if value > 0:
                         result["perf"][key] = round(value, 3)
             result["perf"]["inference_batch_size"] = int(getattr(self.vision, "InferBatchSize", 0) or 0)
-            hybrid_perf_getter = getattr(self.vision, "GetHybridPerf", None)
-            if callable(hybrid_perf_getter):
-                hybrid_perf = hybrid_perf_getter() or {}
-                for key in (
-                    "blob_ms",
-                    "fusion_ms",
-                    "output_hz",
-                    "yolo_hz",
-                    "tracker_hz",
-                    "vision_confidence",
-                    "yolo_backend",
-                    "yolo_error",
-                ):
-                    if key in hybrid_perf:
-                        result["perf"][key] = hybrid_perf[key]
         except Exception as e:
             print(f"[ControlPanel] Error getting performance metrics: {e}")
 
@@ -1145,7 +1130,7 @@ class ControlPanelApp:
             ("RoboInfo", "number"): {"type": "int", "label": "机器人编号", "min": 1, "max": 99, "tab": "robot", "icon": "🤖"},
             ("RoboInfo", "type"): {"type": "select", "label": "机器人类型", "options": ["OP", "DP"], "option_labels": {"OP": "OP (进攻)", "DP": "DP (防守)"}, "tab": "robot"},
             ("RoboInfo", "Bit"): {"type": "select", "label": "Bits 类型", "options": ["SIM", "IL"], "option_labels": {"SIM": "SIM (模拟器)", "IL": "IL (IceLoong Bits)"}, "tab": "robot"},
-            ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY", "HV"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)", "HV": "HV (Hybrid Vision)"}, "tab": "robot"},
+            ("RoboInfo", "Rec"): {"type": "select", "label": "识别类型", "options": ["AI", "TI", "XV", "BB", "SY"], "option_labels": {"AI": "AI (Arisu Intelligence)", "TI": "TI (Tuna Intelligence)", "XV": "XV (Xelerator Vision)", "BB": "BB (Blob Based)", "SY": "SY (Sim Yolo)"}, "tab": "robot"},
             # Sensor
             # Ports
             ("Ports", "IceLoongPort"): {"type": "string", "label": "IceLoong 端口", "tab": "robot"},

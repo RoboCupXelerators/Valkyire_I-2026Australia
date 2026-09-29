@@ -25,8 +25,6 @@ class _OptionalBackendDependencyMissing(VisionBackendImportError):
 _BACKENDS = {
     "AI": ("ArisuIntelligence", "ArisuIntelligence"),
     "TI": ("TunaIntelligence", "TunaIntelligence"),
-    "HV": ("HybridVision", "HybridVision"),
-    "HYBRID": ("HybridVision", "HybridVision"),
     "XV": ("XeleratorVision", "XeleratorVision"),
     "SY": ("LunaIntelligence", "SimYoloVision"),
     "SIMYOLO": ("LunaIntelligence", "SimYoloVision"),
@@ -82,7 +80,7 @@ def _select_backend(requested: str, *, loader=None, blob_loader=None):
     spec = _BACKENDS.get(requested)
     if spec is None:
         raise ValueError(
-            f"Unsupported RoboInfo.Rec={requested!r}; use AI, TI, HV, XV, SY, or BB."
+            f"Unsupported RoboInfo.Rec={requested!r}; use AI, TI, XV, SY, or BB."
         )
 
     module_name, class_name = spec

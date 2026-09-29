@@ -59,7 +59,7 @@ class Preference:
             "CamPorts": [0, 2, 4, 6],
             # 统一模型名称 (不含后缀，各推理库自动选择所需格式)
             # - ArisuIntelligence (AI/Hailo): 使用 .hef
-            # - TunaIntelligence/HybridVision (TI/HV): 使用 .pt 和 .engine
+            # - TunaIntelligence (TI): 使用 .pt 和 .engine
             # - LunaIntelligence/SimYoloVision (SY/LI): 使用 .pt 和 .engine
             "ModelName": "ArisuModel_v1.2s",
             # 0=flexible automatic exposure, 1=auto-meter then lock exposure.
@@ -79,13 +79,6 @@ class Preference:
             "MinBallBBoxArea": 40,
             "BallOffsetXCM": 0.0,
             "BallOffsetYCM": 0.0,
-            # HybridVision: low-rate search on every camera, high-rate focus on
-            # the camera that recently saw the ball.
-            "AdaptiveFrameDistribution": True,
-            "CameraMinYoloHz": 4.0,
-            "CameraFocusYoloHz": 30.0,
-            "CameraFocusHoldMs": 250.0,
-            "YoloMaxFramesPerTick": 4,
             # 录制配置
             "Record": False,
             "RecordDir": "./Records",
@@ -104,34 +97,6 @@ class Preference:
             "CatchVal": [6.5, 0],   # 抱球时的球位置：机器人中心到球心 8.5cm
             "ErrorRange": 10,       # 到达目标的误差范围 (cm)
 
-            "LockBallSlip": {
-                "ForwardKp": 0.025,
-                "ForwardKi": 0.0,
-                "ForwardKd": 0.0,
-                "LateralKp": 0.012,
-                "LateralKi": 0.0,
-                "LateralKd": 0.0,
-                "AngularKp": 0.9,
-                "AngularKi": 0.0,
-                "AngularKd": 0.0,
-                "ForwardMaxMps": 0.35,
-                "LateralMaxMps": 0.35,
-                "AngularMaxDegS": 50.0,
-                "TurnOnlyAngleDeg": 70.0,
-                "TurnOnlyKp": 0.75,
-                "TurnOnlyMaxDegS": 55.0,
-                "RearForwardKp": 0.012,
-                "RearForwardMaxMps": 0.55,
-                "RearLateralKp": 0.016,
-                "RearLateralMaxMps": 0.65,
-                "RearAngularKp": 1.80,
-                "RearAngularMaxDegS": 85.0,
-                "LostHoldSeconds": 0.18,
-                "NearCreepMaxMps": 0.10,
-                "NearDockDecelMps2": 0.5,
-                "BallJumpRejectCm": 45.0,
-                "BallJumpConfirmFrames": 2
-            },
             "RestrictedArea": {
                 # 坐标安全区配置，单位 cm。策略只依赖 FieldRobotPose，不依赖雷达原始距离。
                 # XLimit/YLimit 是场地坐标系相对原点的边界坐标上限，不是实时测得的距离；

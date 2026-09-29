@@ -16,10 +16,8 @@ from LunaPre.strategy_tools import (
     BALL_NOT_FOUND,
     angle_error_deg,
     clamp,
-    register_permission_pid,
 )
 import math
-import simple_pid
 import time
 
 # Historical helpers refer to ``cfg``; keep it as an explicit alias rather
@@ -43,47 +41,23 @@ LOCKBALL_SEAT_PUSH_MPS = 0.06  # 未咬合时的按压前进速度（m/s），�
 LOCKBALL_HOLD_POWER = 0.50
 LOCKBALL_HOLD_RAMP_S = 0.5
 
-# LockBallSlip source-owned pursuit tuning.  CatchVal remains robot-specific
-# runtime geometry, but PID/velocity changes must be explicit source changes.
-LOCKBALL_FORWARD_KP = 0.045
-LOCKBALL_FORWARD_KI = 0.0
-LOCKBALL_FORWARD_KD = 0.0
-LOCKBALL_LATERAL_KP = 0.012
-LOCKBALL_LATERAL_KI = 0.0
-LOCKBALL_LATERAL_KD = 0.0
-LOCKBALL_ANGULAR_KP = 0.90
-LOCKBALL_ANGULAR_KI = 0.0
-LOCKBALL_ANGULAR_KD = 0.0
-LOCKBALL_FORWARD_MAX_MPS = 1.80
-LOCKBALL_LATERAL_MAX_MPS = 0.35
-LOCKBALL_ANGULAR_MAX_DEGPS = 50.0
-LOCKBALL_TURN_ONLY_ANGLE_DEG = 70.0
-LOCKBALL_TURN_ONLY_KP = 1.0
-LOCKBALL_TURN_ONLY_MAX_DEGPS = 75.0
-LOCKBALL_REAR_FORWARD_KP = 0.015
-LOCKBALL_REAR_FORWARD_MAX_MPS = 0.80
-LOCKBALL_REAR_LATERAL_KP = 0.020
-LOCKBALL_REAR_LATERAL_MAX_MPS = 0.85
-LOCKBALL_REAR_ANGULAR_KP = 2.35
-LOCKBALL_REAR_ANGULAR_MAX_DEGPS = 120.0
+# LockBallSlip 回滚到 PID 之前的人类手调版：按“最远轴距离”选一档比例增益，
+# 直接对球坐标做比例控制。距离单位 cm，平移输出 m/s，转向输出 deg/s。
+# 调参只改这张表：阈值从远到近排列，(触发距离cm, 平移增益 m/s/cm, 转向增益 deg/s/deg)。
+LOCKBALL_GAIN_TABLE = (
+    (75.0, 0.020, 4.0),   # 远：距离 > 75cm
+    (25.0, 0.017, 1.5),   # 中：25cm < 距离 <= 75cm
+    (0.0,  0.006, 1.0),   # 近：距离 <= 25cm
+)
+LOCKBALL_FORWARD_BOOST = 1.5   # 旧版对前进分量的额外放大
+LOCKBALL_MAX_FORWARD_MPS = 1.80
+LOCKBALL_MAX_LATERAL_MPS = 0.85
+LOCKBALL_MAX_YAW_DEGPS = 120.0
+
+# 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
-LOCKBALL_NEAR_CREEP_MAX_MPS = 0.20
-LOCKBALL_NEAR_DOCK_DECEL_MPS2 = 2.50
 LOCKBALL_BALL_JUMP_REJECT_CM = 45.0
 LOCKBALL_BALL_JUMP_CONFIRM_FRAMES = 2
-
-# Temporary robot1 far-chase debug envelope.  This bypass is unavailable once
-# the ball is near, lateral, or poorly aligned.  It never bypasses referee
-# permission; an ordinary stop still sends zero wheel output.
-LOCKBALL_DEBUG_BYPASS_WHEEL_LIMITS = True
-LOCKBALL_DEBUG_BYPASS_MIN_REMAINING_CM = 50.0
-LOCKBALL_DEBUG_BYPASS_MAX_ANGLE_DEG = 25.0
-LOCKBALL_FAST_TO_NEAR_START_CM = 50.0
-LOCKBALL_FAST_TO_NEAR_END_CM = 25.0
-LOCKBALL_NEAR_FORWARD_MAX_MPS = 1.10
-# 近处别“渐近爬行”：球在前方、还没进窗口时给一个最小前进速度。
-LOCKBALL_MIN_APPROACH_MPS = 0.22
-LOCKBALL_MIN_APPROACH_CM = 15.0
 # 提速条件 = “盘到球”：直接用标定受载判据 loaded（BallLoadInfo），不再单独
 # 设一个更低的“接触阈值”——空转/起转的电流起伏会淹没它，导致球没碰到就提速。
 
@@ -120,37 +94,7 @@ class LockSeries:
         catch_val = getattr(Settings.Motion, "CatchVal", [8.5, 0])
         self.catch_x = catch_val[0] if len(catch_val) > 0 else 8.5
         self.catch_y = catch_val[1] if len(catch_val) > 1 else 0
-        self.forward_kp = LOCKBALL_FORWARD_KP
-        self.forward_ki = LOCKBALL_FORWARD_KI
-        self.forward_kd = LOCKBALL_FORWARD_KD
-        self.lateral_kp = LOCKBALL_LATERAL_KP
-        self.lateral_ki = LOCKBALL_LATERAL_KI
-        self.lateral_kd = LOCKBALL_LATERAL_KD
-        self.angular_kp = LOCKBALL_ANGULAR_KP
-        self.angular_ki = LOCKBALL_ANGULAR_KI
-        self.angular_kd = LOCKBALL_ANGULAR_KD
-        self.forward_max = LOCKBALL_FORWARD_MAX_MPS
-        self.lateral_max = LOCKBALL_LATERAL_MAX_MPS
-        self.angular_max = LOCKBALL_ANGULAR_MAX_DEGPS
-        self.turn_only_angle = LOCKBALL_TURN_ONLY_ANGLE_DEG
-        self.turn_only_kp = LOCKBALL_TURN_ONLY_KP
-        self.turn_only_max = LOCKBALL_TURN_ONLY_MAX_DEGPS
-        self.rear_forward_kp = LOCKBALL_REAR_FORWARD_KP
-        self.rear_forward_max = LOCKBALL_REAR_FORWARD_MAX_MPS
-        self.rear_lateral_kp = LOCKBALL_REAR_LATERAL_KP
-        self.rear_lateral_max = LOCKBALL_REAR_LATERAL_MAX_MPS
-        self.rear_angular_kp = LOCKBALL_REAR_ANGULAR_KP
-        self.rear_angular_max = LOCKBALL_REAR_ANGULAR_MAX_DEGPS
         self.lost_hold_seconds = LOCKBALL_LOST_HOLD_SECONDS
-        self.near_creep_max = LOCKBALL_NEAR_CREEP_MAX_MPS
-        # Docking: a fast approach carries too much momentum for the low-power
-        # dribbler to hold, so the ball gets punched back out right before it
-        # seats. The forward speed is capped on a continuous constant-deceleration
-        # braking curve v = sqrt(2 a d) once the required stopping distance is
-        # reached, so the far field still runs at its configured limit while the
-        # last centimetres slow down smoothly instead of stepping at a fixed
-        # range. A lower deceleration brakes earlier and docks more gently.
-        self.near_dock_decel = LOCKBALL_NEAR_DOCK_DECEL_MPS2
         self.ball_jump_reject_cm = LOCKBALL_BALL_JUMP_REJECT_CM
         self.ball_jump_confirm_frames = LOCKBALL_BALL_JUMP_CONFIRM_FRAMES
         self._lockball_last_seen = None
@@ -162,38 +106,6 @@ class LockSeries:
         self._lockball_in_window = False
         self._lockball_holding = False
         self._lockball_hold_ts = 0.0
-        self.pan_x = simple_pid.PID(
-            self.forward_kp,
-            self.forward_ki,
-            self.forward_kd,
-            setpoint=self.catch_x,
-            output_limits=(-self.forward_max, 0),
-            auto_mode=True,
-        )
-        self.pan_y = simple_pid.PID(
-            self.lateral_kp,
-            self.lateral_ki,
-            self.lateral_kd,
-            setpoint=self.catch_y,
-            output_limits=(-self.lateral_max, self.lateral_max),
-            auto_mode=True,
-        )
-        self.pan_w = simple_pid.PID(
-            self.angular_kp,
-            self.angular_ki,
-            self.angular_kd,
-            setpoint=0,
-            output_limits=(-self.angular_max, self.angular_max),
-            auto_mode=True,
-        )
-        register_permission_pid(self.pan_x)
-        register_permission_pid(self.pan_y)
-        register_permission_pid(self.pan_w)
-
-    def _reset_lockball_pid(self):
-        self.pan_x.reset()
-        self.pan_y.reset()
-        self.pan_w.reset()
 
     @staticmethod
     def _chassis_can_move() -> bool:
@@ -212,7 +124,6 @@ class LockSeries:
             return
         revision = int(getter())
         if self._pose_revision is not None and revision != self._pose_revision:
-            self._reset_lockball_pid()
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
             self._clear_ball_jump_candidate()
@@ -317,7 +228,6 @@ class LockSeries:
                 self._lockball_last_seen = candidate
                 self._lockball_last_seen_ts = now
                 self._clear_ball_jump_candidate()
-                self._reset_lockball_pid()
                 return candidate, False
 
         self._clear_ball_jump_candidate()
@@ -325,33 +235,6 @@ class LockSeries:
         self._lockball_last_seen = candidate
         self._lockball_last_seen_ts = now
         return ball, False
-
-    def _far_lockball_wheel_bypass(self, ball_x, ball_y, ball_angle) -> bool:
-        """Whether this tick is inside the temporary, supervised fast window."""
-
-        if not LOCKBALL_DEBUG_BYPASS_WHEEL_LIMITS:
-            return False
-        remaining_cm = float(ball_x) - float(self.catch_x)
-        return (
-            remaining_cm >= LOCKBALL_DEBUG_BYPASS_MIN_REMAINING_CM
-            and abs(float(ball_y) - float(self.catch_y)) <= remaining_cm * 0.45
-            and abs(float(ball_angle)) <= LOCKBALL_DEBUG_BYPASS_MAX_ANGLE_DEG
-        )
-
-    @staticmethod
-    def _near_forward_speed_cap(remaining_cm: float) -> float:
-        """Blend from fast far chase into controllable final docking."""
-
-        start = LOCKBALL_FAST_TO_NEAR_START_CM
-        end = LOCKBALL_FAST_TO_NEAR_END_CM
-        if remaining_cm >= start:
-            return LOCKBALL_FORWARD_MAX_MPS
-        if remaining_cm <= end:
-            return LOCKBALL_NEAR_FORWARD_MAX_MPS
-        ratio = (remaining_cm - end) / (start - end)
-        return LOCKBALL_NEAR_FORWARD_MAX_MPS + ratio * (
-            LOCKBALL_FORWARD_MAX_MPS - LOCKBALL_NEAR_FORWARD_MAX_MPS
-        )
 
     @staticmethod
     def _restricted_speed_scale() -> float:
@@ -372,9 +255,7 @@ class LockSeries:
         """追到 ``CatchVal`` 指定的持球位置。"""
         self._reset_on_pose_change()
         if not self._chassis_can_move():
-            # PID output must not accumulate while referee permission blocks
-            # wheel commands, or it will surge when permission returns.
-            self._reset_lockball_pid()
+            # 权限被裁判锁住时不要下发任何轮速。
             chassis.stop()
             return False
 
@@ -400,7 +281,6 @@ class LockSeries:
                 # Callers such as TurnTo_with_ball command their own motion right
                 # after, so only stop on the edge, not every tick.
                 chassis.stop()
-                self._reset_lockball_pid()
             self._lockball_was_caught = True
             peripheral.Dribble(hold_power)
             return True
@@ -417,96 +297,34 @@ class LockSeries:
             self._lockball_was_caught = False
             peripheral.Dribble(LOCKBALL_DRIBBLE_LOST_POWER)
             chassis.stop()
-            self._reset_lockball_pid()
             return False
 
         self._lockball_was_caught = False
-        ball_x, ball_y = ball[0], ball[1]
-        if ball_x == 0 and ball_y == 0:
-            ball_angle = 0
+        ball_x, ball_y = float(ball[0]), float(ball[1])
+        if ball_x == 0.0 and ball_y == 0.0:
+            ball_angle = 0.0
         else:
-            ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
+            ball_angle = math.degrees(math.atan2(ball_y, ball_x))
 
-        # Large heading errors and translation create an orbit: the ball moves
-        # across the camera while the robot keeps turning, then the controller
-        # reverses direction on the next frame. For a ball in front of the
-        # robot, align in place first. The rear-ball controller below has its
-        # own sign and speed limits, so it must keep priority for ball_x <= 0.
-        if ball_x > 0 and abs(ball_angle) >= self.turn_only_angle:
-            self._reset_lockball_pid()
-            speed_w = max(
-                -self.turn_only_max,
-                min(self.turn_only_max, float(ball_angle) * self.turn_only_kp),
-            )
-            peripheral.Dribble(hold_power)
-            chassis.RobotMoveVector(0.0, 0.0, speed_w)
-            return False
+        # 人类手调分段比例律：按“最远轴距离”选一档增益，直接对球坐标做比例控制。
+        # 后向球得到负的前进分量，自然倒车追球；大角度误差由转向项纠回。
+        # 调参改 LOCKBALL_GAIN_TABLE。
+        reach_cm = max(abs(ball_x), abs(ball_y))
+        gain = LOCKBALL_GAIN_TABLE[-1][1]
+        yaw_gain = LOCKBALL_GAIN_TABLE[-1][2]
+        for min_cm, xy_gain, wz_gain in LOCKBALL_GAIN_TABLE:
+            if reach_cm > min_cm:
+                gain, yaw_gain = xy_gain, wz_gain
+                break
 
-        # A rear ball cannot be reached by forward PID. Turn toward it quickly
-        # while using a small lateral correction, then hand control back to the
-        # normal capture loop once the ball is in front of the robot.
-        if ball_x <= 0:
-            self._reset_lockball_pid()
-            speed_x = max(-self.rear_forward_max, min(0.0, float(ball_x) * self.rear_forward_kp))
-            speed_y = max(-self.rear_lateral_max, min(self.rear_lateral_max, float(ball_y) * self.rear_lateral_kp))
-            speed_w = max(-self.rear_angular_max, min(self.rear_angular_max, float(ball_angle) * self.rear_angular_kp))
-            scale = self._restricted_speed_scale()
-            speed_x *= scale
-            speed_y *= scale
-            peripheral.Dribble(hold_power)
-            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
-            return False
+        speed_x = _clamp(ball_x * gain * LOCKBALL_FORWARD_BOOST, LOCKBALL_MAX_FORWARD_MPS)
+        speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS)
+        speed_w = _clamp(ball_angle * yaw_gain, LOCKBALL_MAX_YAW_DEGPS)
 
-        speed_x = -self.pan_x(ball_x)
-        speed_y = -self.pan_y(ball_y)
-        speed_w = -self.pan_w(ball_angle)
-        remaining_cm = max(0.0, float(ball_x) - float(self.catch_x))
-        speed_x = min(float(speed_x), self._near_forward_speed_cap(remaining_cm))
-        # Proximity throttle: shed chase speed near the forbidden boundary while
-        # leaving the creep/dock floors below intact for final ball capture.
-        chase_scale = self._restricted_speed_scale()
-        speed_x *= chase_scale
-        speed_y *= chase_scale
-
-        # If the ball is already closer than CatchVal but still free, keep a
-        # small forward creep so a ~1cm shortfall still gets eaten into the
-        # dribbler instead of freezing with speed_x=0.
-        if ball_x < self.catch_x and abs(ball_y - self.catch_y) < 2.5:
-            creep = min(self.near_creep_max, max(0.04, (self.catch_x - float(ball_x)) * 0.05))
-            speed_x = max(float(speed_x), creep)
-
-        # Gentle final dock: cap the forward speed on a continuous v = sqrt(2 a d)
-        # braking curve so the robot does not punch a low-power-held ball back out
-        # on contact while still approaching at full speed from far away. The
-        # cruise limit comes from the live pan_x output limit so tuning one knob
-        # (ForwardMaxMps) automatically moves where braking starts.
-        if self.near_dock_decel > 0.0:
-            # The docking curve owns its modest final speed.  Reusing the far
-            # chase maximum here would start braking across the full field and
-            # hide the remote PID increase we are trying to validate.
-            cruise = LOCKBALL_NEAR_FORWARD_MAX_MPS
-            remaining_m = remaining_cm / 100.0
-            brake_start_m = (cruise * cruise) / (2.0 * self.near_dock_decel)
-            if cruise > 0.0 and remaining_m < brake_start_m:
-                speed_x = min(
-                    float(speed_x),
-                    math.sqrt(2.0 * self.near_dock_decel * remaining_m),
-                )
-
-        # Near field: the PID tail goes asymptotic as error -> 0, so the last few
-        # centimetres crawl. Once the ball is in front and short of the window,
-        # hold a floor forward speed so it gets eaten promptly instead of creeping.
-        if (self.catch_x < float(ball_x) <= LOCKBALL_MIN_APPROACH_CM
-                and abs(float(ball_y) - self.catch_y) < 4.0):
-            speed_x = max(float(speed_x), LOCKBALL_MIN_APPROACH_MPS * chase_scale)
-
+        # 近边界限速仍保留，避免高速贴线时冲过界。
+        scale = self._restricted_speed_scale()
         peripheral.Dribble(hold_power)
-        if self._far_lockball_wheel_bypass(ball_x, ball_y, ball_angle):
-            chassis.RobotMoveVector(
-                speed_x, speed_y, speed_w, bypass_wheel_limits=True
-            )
-        else:
-            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+        chassis.RobotMoveVector(speed_x * scale, speed_y * scale, speed_w)
         return False
 
     def slip(self):
@@ -653,7 +471,7 @@ def TurnTo_with_ball(Aim_Angle, SpeedK: float | None = 1):
 
     # Position hold on top of the orbit (merged from feat 23f2bd5). A ball
     # ahead (ex>0) or left (ey>0) of CatchVal gets a positive (forward/left)
-    # correction, matching the sign of LockBallSlip's pan_x / pan_y loops.
+    # correction, matching the sign of LockBallSlip's XY proportional gains.
     # TURN_HOLD_*_MPS_PER_CM default to 0.0, so this stays a no-op until tuned.
     ex = ball[0] - lockball.catch_x
     ey = ball[1] - lockball.catch_y

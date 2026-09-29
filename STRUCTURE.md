@@ -80,12 +80,10 @@ src/LunaPre/
 src/vision_utils/
 ├── Vision.py               # 真实视觉主入口
 ├── XeleratorVision.py      # Unity/SIM 视觉适配
-├── HybridVision.py         # 混合视觉入口
 ├── LunaIntelligence.py     # Luna YOLO 后端
 ├── TunaIntelligence.py     # Tuna YOLO 后端
 ├── ArisuIntelligence.py    # 历史 Arisu 视觉后端
 ├── PreProcess.py           # 预处理/标定相关逻辑
-├── hybrid/                 # 融合、Kalman、ROI、调度、YOLO detector
 ├── models/                 # 视觉模型文件
 └── VisionDatas/            # 视觉数据与独立配置兼容层
 ```

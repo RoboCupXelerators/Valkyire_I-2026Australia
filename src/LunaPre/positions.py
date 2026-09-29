@@ -489,7 +489,7 @@ class Positions:
             return True
 
     def _send_vision_pose(self) -> None:
-        """Publish pose at 60 Hz to Hybrid without giving vision serial ownership."""
+        """Publish pose at 60 Hz to the vision child without giving vision serial ownership."""
 
         now = time.monotonic()
         sock = self.sock
@@ -504,7 +504,7 @@ class Positions:
             sock.sendto(packet, ("127.0.0.1", 5006))
         except OSError:
             if not self.vision_data_stop_event.is_set():
-                logger.debug("Failed to publish pose to Hybrid vision")
+                logger.debug("Failed to publish pose to vision")
 
     @staticmethod
     def _start_vision_subprocess():
