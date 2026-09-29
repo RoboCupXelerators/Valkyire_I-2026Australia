@@ -247,21 +247,6 @@ class LockSeries:
         self._lockball_last_seen_ts = now
         return ball, False
 
-    @staticmethod
-    def _restricted_speed_scale() -> float:
-        """Proximity throttle shared with ``Pos2Pos``.
-
-        The robot slows near the forbidden boundary/goal box so a lagging
-        lidar/localization fix cannot carry a fast chase across the line.
-        Returns 1.0 when the guard or pose is unavailable.
-        """
-
-        try:
-            scale = float(UnitedPosition.RestrictedAreaSpeedScale())
-        except Exception:
-            return 1.0
-        return max(0.0, min(1.0, scale))
-
     def LockBallSlip(self):
         """追到 ``CatchVal`` 指定的持球位置。"""
         self._reset_on_pose_change()
@@ -299,9 +284,7 @@ class LockSeries:
         if self._lockball_in_window:
             self._lockball_was_caught = False
             peripheral.Dribble(hold_power)
-            chassis.RobotMoveVector(
-                LOCKBALL_SEAT_PUSH_MPS * self._restricted_speed_scale(), 0.0, 0.0
-            )
+            chassis.RobotMoveVector(LOCKBALL_SEAT_PUSH_MPS, 0.0, 0.0)
             return False
 
         if ball == BALL_NOT_FOUND:
@@ -332,10 +315,10 @@ class LockSeries:
         speed_y = _clamp(ball_y * gain, LOCKBALL_MAX_LATERAL_MPS)
         speed_w = _clamp(ball_angle * yaw_gain, LOCKBALL_MAX_YAW_DEGPS)
 
-        # 近边界限速仍保留，避免高速贴线时冲过界。
-        scale = self._restricted_speed_scale()
+        # 追球不叠加近区降速：旧人类版没有，它会把速度砍半（实测 scale≈0.53），
+        # 边界防护由上层策略/Positions 负责。
         peripheral.Dribble(hold_power)
-        chassis.RobotMoveVector(speed_x * scale, speed_y * scale, speed_w)
+        chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
     def slip(self):

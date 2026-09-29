@@ -25,12 +25,11 @@ def test_adaptive_dribbler_layer_is_removed():
     assert not hasattr(basic.peripheral, "GetDribbleAdaptiveTelemetry")
 
 
-def _lock_with_observations(monkeypatch, observations):
+def _lock_with_observations(monkeypatch, observations, loaded=False):
     values = iter(observations)
     monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", lambda: next(values))
-    # 离线环境没有盘球电流校准：loaded=None 视为“保守放行”，避免持球判定依赖
-    # 其它测试写入的全局标定状态。
-    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": None})
+    # loaded=False -> 盘球未受载，按“追球”处理；True -> 电流确认咬住，直接判捕获。
+    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": loaded})
 
     lock = basic.LockSeries()
     lock.ball_jump_reject_cm = 45.0
@@ -117,7 +116,7 @@ def test_lockball_uses_fixed_dribble_powers(monkeypatch):
     monkeypatch.setattr(basic.chassis, "CanMove", lambda: True)
     monkeypatch.setattr(basic.chassis, "stop", lambda *args, **kwargs: None)
 
-    lock = _lock_with_observations(monkeypatch, (basic.BALL_HELD,))
+    lock = _lock_with_observations(monkeypatch, (basic.BALL_HELD,), loaded=True)
     monkeypatch.setattr(lock, "_reset_on_pose_change", lambda: None)
     assert lock.LockBallSlip() is True
     assert dribbles[-1] == basic.LOCKBALL_DRIBBLE_FAR_POWER
@@ -279,10 +278,18 @@ def test_lockball_recatch_stops_again(monkeypatch):
     # Losing and re-catching the ball must re-arm the capture-edge stop.
     stops = []
     observations = iter([basic.BALL_HELD, [30.0, 0.0], basic.BALL_HELD])
+    state = {"ball": None}
+
+    def next_ball():
+        state["ball"] = next(observations)
+        return state["ball"]
+
+    monkeypatch.setattr(basic.UnitedPosition, "RobotBallPos", next_ball)
+    # 只有 [0xddd,0xddd] 哨兵才算“电流咬住”，自由球坐标不算。
     monkeypatch.setattr(
-        basic.UnitedPosition, "RobotBallPos", lambda: next(observations)
+        basic.UnitedPosition, "BallLoadInfo",
+        lambda: {"loaded": state["ball"] == basic.BALL_HELD},
     )
-    monkeypatch.setattr(basic.UnitedPosition, "BallLoadInfo", lambda: {"loaded": None})
     monkeypatch.setattr(basic.chassis, "stop", lambda *a, **k: stops.append(True))
     monkeypatch.setattr(basic.chassis, "RobotMoveVector", lambda *a, **k: None)
     monkeypatch.setattr(basic.peripheral, "Dribble", lambda *_a: None)
