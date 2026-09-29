@@ -120,7 +120,7 @@ class LockSeries:
             return False
 
         ball_x, ball_y = ball[0], ball[1]
-        if ball_x == 0 and ball_y == 0:
+        if ball_x >= 0 and ball_y == 0:
             ball_angle = 0
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
@@ -136,7 +136,10 @@ class LockSeries:
             speed_x = 0
 
         peripheral.Dribble(0.3)
-        chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+        if ball_x < 0:
+            chassis.RobotMoveVector(speed_x, speed_y, ball_angle)
+        if ball_x > 0:
+            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
     def slip(self):
