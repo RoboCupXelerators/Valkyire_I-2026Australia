@@ -138,7 +138,7 @@ class LockSeries:
         peripheral.Dribble(0.3)
         if ball_x < 0:
             chassis.RobotMoveVector(speed_x, speed_y, ball_angle)
-        if ball_x > 0:
+        else:
             chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
