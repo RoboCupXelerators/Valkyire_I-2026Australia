@@ -704,6 +704,11 @@ class UnitedVision(Detect_Method):
                 # hold last position briefly to reduce flicker
                 if (time.time() - getattr(self, "_ball_pos_ts", 0.0)) > self.ball_hold_seconds:
                     self.BallPos = [0, 0]
+                    # Clear stale raw/pixel debug values too, otherwise the
+                    # control panel shows a ghost "raw position" with no output.
+                    self.BallPosRaw = [0, 0]
+                    self.BallPixelPoint = None
+                    self.BallOcclusion = {"reconstructed": False, "kind": "none", "bbox_wh": [0.0, 0.0]}
             self._record_postprocess_ms(post_start)
             time.sleep(0.01)
 
