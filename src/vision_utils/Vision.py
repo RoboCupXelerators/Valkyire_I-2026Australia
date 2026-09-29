@@ -533,10 +533,6 @@ class UnitedVision(Detect_Method):
                         strength=0.55,
                     )
                     robot_x_cm, robot_y_cm = fused
-                    self.logger.debug(
-                        f"Goal Processed ER: robot_x={robot_x_cm:.2f}, robot_y={robot_y_cm:.2f}, "
-                        f"plane_x={plane_x_cm:.2f}, plane_y={plane_y_cm:.2f}, cls_id={cls_id}, conf={Confidence}"
-                    )
 
                     goal_item = [round(robot_x_cm, 2), round(robot_y_cm, 2), float(Confidence)]
                     goals.append(goal_item)
