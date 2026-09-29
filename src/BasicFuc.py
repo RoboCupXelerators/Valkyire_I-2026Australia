@@ -65,8 +65,8 @@ LOCKBALL_YAW_KD = 0.05
 # 近球铲球：进入该距离后限制前进速度，避免高速把球顶飞；未对准（方位角大）
 # 时先转不冲。
 LOCKBALL_DOCK_CM = 22.0
-LOCKBALL_DOCK_MAX_MPS = 0.45
-LOCKBALL_ALIGN_FULL_DEG = 30.0
+LOCKBALL_DOCK_MAX_MPS = 0.30
+LOCKBALL_ALIGN_FULL_DEG = 12.0
 
 # 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
