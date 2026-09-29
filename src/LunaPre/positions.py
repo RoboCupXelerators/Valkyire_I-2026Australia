@@ -88,7 +88,7 @@ DRIBBLE_NOISE_MIN_SAMPLES = 30       # 至少这么多空转样本才启用自�
 DRIBBLE_FREESPIN_MIN_CM = 12.0       # 球距离 >= 此值才算“确定空转”，用于估基线/噪声
 DRIBBLE_SMOOTH_ALPHA = 0.35          # 电流平滑（抑制空转抖动/尖峰）
 DRIBBLE_BASELINE_ALPHA_FAR = 0.0     # 只用标定基线，不做漂移补偿（电流环不准）
-DRIBBLE_LOAD_ENGAGE_S = 0.08         # 受载持续多久才确认
+DRIBBLE_LOAD_ENGAGE_S = 0.15         # 受载持续多久才确认（太短会把瞬态电流当抓住）
 DRIBBLE_LOAD_RELEASE_S = 0.20        # 失载持续多久才撤销
 DRIBBLE_STARTUP_BLANK_S = 0.30       # 盘球上电/换功率后忽略这段时间的电流尖峰
 DRIBBLE_CMD_EPS = 0.03               # 下发功率变化小于此值不算“换功率”（平滑升功率时不重置）
