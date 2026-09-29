@@ -100,7 +100,7 @@ class LockSeries:
             # 往前压，等电流确认（上面的 gripped）后才停车。
             self._lockball_last_seen = None
             self._lockball_last_seen_ts = 0.0
-            return ball, False
+            return ball, True
         self._lockball_last_seen = list(ball)
         self._lockball_last_seen_ts = now
         return ball, False
@@ -120,7 +120,7 @@ class LockSeries:
             return False
 
         ball_x, ball_y = ball[0], ball[1]
-        if ball_x == 0 and ball_y == 0:
+        if ball_x >= 0 and ball_y == 0:
             ball_angle = 0
         else:
             ball_angle = int(math.degrees(math.atan2(ball_y, ball_x)))
@@ -136,7 +136,10 @@ class LockSeries:
             speed_x = 0
 
         peripheral.Dribble(0.3)
-        chassis.RobotMoveVector(speed_x, speed_y, speed_w)
+        if ball_x < 0:
+            chassis.RobotMoveVector(speed_x, speed_y, ball_angle)
+        else:
+            chassis.RobotMoveVector(speed_x, speed_y, speed_w)
         return False
 
     def slip(self):
