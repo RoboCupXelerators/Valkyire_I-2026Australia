@@ -38,7 +38,7 @@ LOCKBALL_SEAT_PUSH_MPS = 0.15  # 未咬合时的按压前进速度（m/s）；0.
 
 # 抓到球后的 transition：从追球功率在 HOLD_RAMP_S 内平滑提升到保持功率；
 # 期间一旦丢球就中断（回到追球/丢球逻辑）。功率渐变回落到追球功率。
-LOCKBALL_HOLD_POWER = 0.50
+LOCKBALL_HOLD_POWER = 0.80
 LOCKBALL_HOLD_RAMP_S = 0.5
 
 # LockBallSlip 回滚到 PID 之前的人类手调版：按“最远轴距离”选一档比例增益，
