@@ -52,7 +52,10 @@ LOCKBALL_GAIN_TABLE = (
 LOCKBALL_FORWARD_BOOST = 1.5   # 旧版对前进分量的额外放大
 LOCKBALL_MAX_FORWARD_MPS = 1.80
 LOCKBALL_MAX_LATERAL_MPS = 0.85
-LOCKBALL_MAX_YAW_DEGPS = 120.0
+# 姿态（转向）响应：旧人类版 KpZ=4 且不封顶，这里给一个远离物理上限的值
+# （底盘 yaw 物理上限约 967 deg/s）。转向越大，底盘 turn_translation_scale
+# 会自动收前进油，所以放开上限不会导致明显画弧。
+LOCKBALL_MAX_YAW_DEGPS = 480.0
 
 # 丢球后短暂沿用上一帧坐标的窗口，以及跳变的确认帧数。
 LOCKBALL_LOST_HOLD_SECONDS = 0.18
