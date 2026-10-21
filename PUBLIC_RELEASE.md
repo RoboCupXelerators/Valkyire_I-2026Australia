@@ -15,9 +15,9 @@ other RoboCup teams.
 | Preserved history | 592 commits (author/committer dates and messages kept) |
 | Public repository | `RoboCupXelerators/Valkyire_I-2026Australia` |
 
-The `legacy` branch, Git tags, pull-request refs and later commits are not part
-of this repository. The release-notes commit itself is the only commit created
-after the cutoff.
+The `legacy` branch, Git tags, pull-request refs and later code commits are not
+part of this repository. Only the release-notes and Apache-2.0 license commits
+were created after the cutoff.
 
 ## Redactions
 
@@ -65,6 +65,6 @@ Before publication the rewritten history was checked with:
 
 ## License
 
-No license file was present in the source snapshot. The code is published for
-viewing and reference; contact the Xelerators team before redistributing it or
-using it in another project.
+Team-authored code in this snapshot is released under the Apache License 2.0;
+see [LICENSE](LICENSE) and [NOTICE](NOTICE). Third-party components retain their
+original licenses (for example, `Tools/LICENSE`).

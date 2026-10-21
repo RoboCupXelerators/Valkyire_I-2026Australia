@@ -209,3 +209,7 @@ SIM 模式下，`Bits.Kick(1)` 至 `Bits.Kick(4)` 分别使用 Unity 机器人�
     - **场地坐标系**：原点在场地中心，方向定义见 `docs/interface_semantics.md`。
 - **安全停止**：在策略脚本的 `finally` 块中，务必调用 `chassis.stop()` 和 `UnitedPosition.Stop()` 释放资源。
 - **球状态**：新策略优先用 `UnitedPosition.BallState()` 判断，返回 `"lost"` / `"held"` / `"free"`；需要常量时从 `LunaPre.strategy_tools` 导入 `BALL_NOT_FOUND` / `BALL_HELD`，不要在新代码里硬编码原始哨兵。
+
+## 许可证
+
+团队自有代码采用 [Apache License 2.0](LICENSE)。第三方组件保留其原始许可证，例如 `Tools/LICENSE`；版权与归属说明见 [NOTICE](NOTICE)。
