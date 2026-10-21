@@ -119,6 +119,7 @@ docs/
 ## legacy 分支
 
 ROS2、LD07/LD06、DM2325 驱动及相关测试、现场工具保留在 `legacy` 分支。
+本公开快照只包含 `main`，`legacy` 分支未包含。
 main 不再携带这些驱动和 ArisuBits 归档。结构精简仅在 main 维护。
 
 ## scripts/

@@ -37,7 +37,7 @@ python scripts/debug/debug_ball_distance.py
 
 ### 测试与平台检查
 运行通用测试：src/tools/tests/run_tests.sh
-ROS2、LD06/LD07 探测和 DM2325 工具请切换到 `legacy` 分支。
+ROS2、LD06/LD07 探测和 DM2325 工具请切换到 `legacy` 分支（本公开快照未包含）。
 安装 CH344 驱动：bash scripts/install_ch344_driver.sh
 运行 JetPack 检查：src/tools/tests/jetpack_test.sh
 ### 开机服务

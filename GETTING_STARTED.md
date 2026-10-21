@@ -1,7 +1,7 @@
 # 🚀 Xelerators 机器人足球系统 - 新手入门指南
 
 当前 `main` 支持 IceLoong (`IL`) 和 Unity (`SIM`)，统一使用 Bits 位姿。
-ROS2、LD07/LD06 和 DM2325 请使用 `legacy` 分支；ArisuBits 已退出主线。
+本公开快照只包含 `main`；ROS2、LD07/LD06 和 DM2325 的 `legacy` 分支未包含。ArisuBits 已退出主线。
 安装、测试和配置迁移请参阅 [README.md](README.md)。
 
 > 写给第一次接触这套系统的同学们。如果你觉得其他文档太复杂，从这里开始就对了！
@@ -414,7 +414,7 @@ finally:
 
 - 查看 [快速参考](./README.md) 和 [接口语义文档](./docs/interface_semantics.md)
 - 查看 [项目结构](./STRUCTURE.md)
-- 查看 [模拟器文档](../SoccerSimulatorForXels/README.md)
+- 模拟器文档不在本快照中；请向团队获取 `SoccerSimulatorForXels` 仓库
 
 ---
 

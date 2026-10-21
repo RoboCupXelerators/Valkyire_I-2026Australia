@@ -1,5 +1,7 @@
 # Vision Models 说明（TunaIntelligence / Hailo）
 
+> **公开快照说明**：本仓库不包含模型权重/引擎文件。请从私有仓库获取，或按本文档在目标设备上重新导出。详见 [`../../../PUBLIC_RELEASE.md`](../../../PUBLIC_RELEASE.md)。
+
 > Coordinate, pose, sentinel, and live-debug semantics are documented in
 > [`../../../docs/interface_semantics.md`](../../../docs/interface_semantics.md).
 

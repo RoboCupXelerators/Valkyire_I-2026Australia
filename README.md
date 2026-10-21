@@ -1,5 +1,7 @@
 # Xelerators Software
 
+> **公开快照**：本仓库是 Xelerators Software 截至 **2026-09-30** 的 `main` 历史公开快照。仅包含 `main` 分支；模型权重、安装包、标定数据、录包和测试照片未包含，作者信息已匿名化。详见 [PUBLIC_RELEASE.md](PUBLIC_RELEASE.md)。
+
 > **从这里开始**：机器人现场运行时与策略主仓库。它负责 Bits 通信、LunaPre、运动控制、视觉接入、策略和控制面板；模拟器、训练与硬件固件分别在独立仓库维护。
 
 ## 快速导航
@@ -15,7 +17,7 @@
 | 验证改动 | `venv/bin/python -m pytest` |
 | 查目录职责 | `STRUCTURE.md` |
 
-`main` 面向 IceLoong 与 Unity/Bits；需要 ROS2、LD07/LD06 或旧 DM2325 兼容运行时，请使用 `legacy` 并按分支文档配置。新人请先阅读 [新人成员连接与运行指南](./新人成员连接与运行指南.md)。
+`main` 面向 IceLoong 与 Unity/Bits。本公开快照只包含 `main`；需要 ROS2、LD07/LD06 或旧 DM2325 兼容运行时的 `legacy` 分支不在本仓库中。新人请先阅读 [新人成员连接与运行指南](./新人成员连接与运行指南.md)。
 
 机器人足球运行时、策略、视觉和控制面板。
 
@@ -24,13 +26,13 @@
 | 分支 | 支持范围 |
 | --- | --- |
 | `main` | IceLoong (`IL`)、Unity 模拟器 (`SIM`)，定位统一来自 Bits |
-| `legacy` | 保留 ROS2 /scan、LD07/LD06 和 DM2325 兼容运行时 |
+| `legacy` | 私有仓库保留；本公开快照未包含 |
 
 ArisuBits 已从 main 删除；ArisuIntelligence/Hailo 视觉后端仍保留。
 main 不再安装、探测或启动 ROS2，也不提供原生串口雷达驱动。
 
 已有配置的 `Sensor.Source=auto/bits` 会迁移到 Bits 定位，原配置保留为
-`cfg.cache.json`。明确使用 ROS2/LD07 的机器人应切换 `legacy`。
+`cfg.cache.json`。需要 ROS2/LD07 的机器人请使用私有仓库的 `legacy` 分支（本快照未包含）。
 main 的 `Sensor`、`Ports.LidarID/LidarPort` 已移除；PID、场地尺寸和相机映射继续保留。
 
 ## 安装与运行

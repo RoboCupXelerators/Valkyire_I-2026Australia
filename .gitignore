@@ -280,3 +280,12 @@ logs/mlp/
 Records/
 # 盘球空转校准：每台机器不一样，是本地标定产物，不入库
 src/ReasonData/data/dribble_calib.json
+
+# 公开快照不包含模型权重、引擎和厂商安装包
+src/vision_utils/models/*.onnx
+src/vision_utils/models/*.engine
+src/vision_utils/models/*.hef
+src/vision_utils/models/*.pt
+*.whl
+*.deb
+*.ko
